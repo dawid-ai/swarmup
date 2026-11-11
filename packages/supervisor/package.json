@@ -1,0 +1,20 @@
+{
+  "name": "@swarmup/supervisor",
+  "version": "0.3.0-beta.1",
+  "private": true,
+  "description": "swarmupd: per-machine supervisor for agent runs",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "dependencies": {
+    "@swarmup/core": "0.3.0-beta.1"
+  },
+  "bin": {
+    "swarmupd": "dist/main.js",
+    "opsd": "dist/opsd.js"
+  }
+}

@@ -1,0 +1,849 @@
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, relative, sep } from 'node:path';
+import type { UserConfig } from './config.js';
+import { isStoreDirName, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME, ROOT_DIR_NAMES } from './config.js';
+import type { GitSteps } from './git-steps.js';
+import { git, gitAsync, gitOk, gitStep, runSteps, runStepsAsync } from './git-steps.js';
+import { OpsError } from './ids.js';
+import { Root } from './root.js';
+import { scanFiles } from './secrets.js';
+import { isUlid, ulidAfter } from './ulid.js';
+
+export interface SyncOptions {
+  pull?: boolean;
+  push?: boolean;
+  /** Pull and push only when the root's policy says they are due. */
+  auto?: boolean;
+  /** Session end or context compaction: push now, whatever the policy. */
+  sessionEnd?: boolean;
+  /** Push even when unpushed commits touch files outside the root. */
+  allPaths?: boolean;
+  /**
+   * Skip the pull, even when one is asked for or due: for a second sync right after a pull. A push
+   * the remote rejects still pulls and tries again.
+   */
+  skipPull?: boolean;
+  /**
+   * The {@link patchKey}s of commits approved for branch `branch` of the repo whose top folder is
+   * `top`, such as those swarmupd merged into that store branch. An unpushed commit that touches
+   * files outside the root, but whose patch is one of these, does not hold the push back: merged
+   * code goes out with the task store commits (AO-0193). The key survives the rebase of a pull,
+   * which gives the commit a new id. Asked for the repo and branch being pushed, so an approval
+   * in one checkout never lets an equal patch out of another.
+   */
+  approved?: (top: string, branch: string) => ReadonlySet<string>;
+  now?: number;
+}
+
+/** The `git diff-tree` arguments whose output {@link patchKey} reads; the commit goes last. */
+export const PATCH_KEY_ARGS = [
+  '-c',
+  'core.quotePath=false',
+  'diff-tree',
+  '-p',
+  '-r',
+  '--root',
+  '--no-commit-id',
+  '--no-color',
+  '--no-ext-diff',
+  '--no-renames',
+  // Binary changes in full: without it, two different changes to one binary file look the same.
+  '--binary',
+];
+
+/**
+ * A key for what a commit changes, from its {@link PATCH_KEY_ARGS} diff: equal for a commit and
+ * its clean rebase. Blob ids and hunk positions are left out, as `git patch-id` does; paths,
+ * modes, changed and context lines stay. Null for a commit that changes no file.
+ */
+export function patchKey(diff: string): string | null {
+  const kept: string[] = [];
+  let files = 0;
+  for (const raw of diff.replace(/(\r?\n)+$/, '').split('\n')) {
+    const l = raw.replace(/\r$/, '');
+    if (l.startsWith('diff --git ')) files++;
+    if (l.startsWith('index ')) continue;
+    kept.push(l.startsWith('@@') ? '@@' : l);
+  }
+  if (files === 0) return null;
+  return createHash('sha256').update(kept.join('\n')).digest('hex');
+}
+
+/** A claim made on this clone that lost to a claim pushed first from elsewhere. */
+export interface LostClaim {
+  /** The root the task lives in: a mirror root's name for a task in the Master Repo's copy. */
+  root: string;
+  task: string;
+  actor: string;
+  /** Who holds the task now, if anyone. */
+  winner: string | null;
+  event: string;
+}
+
+export interface SyncResult {
+  committed: number;
+  pulled: boolean;
+  pushed: boolean;
+  /** Local event files renamed to sort after the events that came from the remote. */
+  reordered: number;
+  lost: LostClaim[];
+  notes: string[];
+}
+
+interface SyncStamp {
+  lastPull?: number;
+  lastPush?: number;
+  /**
+   * The last push held back because the unpushed commits change files outside the root. An auto
+   * sync tries again `push_minutes` later, not at every swarmupd tick: until a person pushes that
+   * code, each try only runs git for nothing (AO-0164).
+   */
+  lastPushTry?: number;
+  /** The store branch this clone learned on its first sync, when config.yml names none. */
+  branch?: string;
+}
+
+/** How many times a push rejected by a newer remote is retried after pulling again. */
+const PUSH_ATTEMPTS = 3;
+
+function readStamp(root: Root): SyncStamp {
+  try {
+    return JSON.parse(readFileSync(join(root.opsDir, 'sync.json'), 'utf8')) as SyncStamp;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Whether `head` may become this clone's store branch when nothing names one yet: null when it
+ * may, else why not.
+ *
+ * The store's own history decides, not what happens to be checked out: the local branch holding
+ * the newest store commit (`ops: ...` under the root's folder `dir`) is the store branch. `head`
+ * qualifies only when it is the one branch that holds that commit, or when no branch holds a store
+ * commit yet (a new store starts on the branch it is first committed to). A code branch made from the store branch
+ * ties with it until one of them moves; the tie goes to the one branch with an upstream, and with
+ * no such branch the first sync holds instead of guessing.
+ */
+function* firstStoreBranchHold(dir: string, head: string): GitSteps<string | null> {
+  // Run from the root's folder, so the pathspec `.` is the root.
+  function* newest(grep: string[]): GitSteps<string> {
+    return (yield* gitStep(dir, [
+      'log',
+      '--branches',
+      '-1',
+      '--format=%H',
+      ...grep,
+      '--',
+      '.',
+    ])).trim();
+  }
+  let tip: string;
+  try {
+    tip = (yield* newest(['--grep=^ops: '])) || (yield* newest([]));
+  } catch {
+    tip = '';
+  }
+  if (!tip) return null;
+  const refs = (yield* gitStep(dir, [
+    'for-each-ref',
+    '--contains',
+    tip,
+    '--format=%(refname:short) %(upstream)',
+    'refs/heads',
+  ]))
+    .split('\n')
+    .map((l) => l.trim().split(' '))
+    .filter(([b]) => b);
+  const holders = refs.map(([b]) => b!);
+  // On a tie, a branch that pushes somewhere beats local-only branches made from it.
+  const tracked = refs.filter(([, up]) => up).map(([b]) => b!);
+  const pick = holders.length === 1 ? holders : tracked;
+  if (pick.length === 1 && pick[0] === head) return null;
+  const others = holders.filter((b) => b !== head);
+  const why = holders.includes(head)
+    ? `${others.join(', ')} also hold${others.length === 1 ? 's' : ''} the newest store commit`
+    : `the newest store commit is on ${others.join(', ')}, not ${head}`;
+  return (
+    `not synced: no store branch is known yet and ${why}; ` +
+    `set sync.branch in config.yml to the store branch and sync again`
+  );
+}
+
+/**
+ * Why the root's checkout, on branch `head`, may not take store commits now, or null when it may.
+ *
+ * Store commits go only to the store branch: `sync.branch` in config.yml, else the branch this
+ * clone learned on its first sync (kept in `.ops/sync.json`; `learn` records it; see
+ * {@link firstStoreBranchHold}). A commit made while a code branch is checked out in the data
+ * root's checkout lands on that branch, and switching back to the store branch removes its files
+ * from disk. Held files stay uncommitted on disk instead, and the next sync on the store branch
+ * commits them.
+ */
+function* storeBranchHold(
+  root: Root,
+  head: string,
+  stamp: SyncStamp,
+  learn: boolean,
+): GitSteps<string | null> {
+  const want = root.config.sync.branch ?? stamp.branch;
+  if (!head) {
+    return `not synced: HEAD is detached; check out ${want ?? 'the store branch'} and sync again`;
+  }
+  if (!want) {
+    const hold = yield* firstStoreBranchHold(root.dir, head);
+    if (hold) return hold;
+    if (learn) stamp.branch = head;
+    return null;
+  }
+  if (head === want) return null;
+  const from = root.config.sync.branch ? 'sync.branch in config.yml' : '.ops/sync.json';
+  return (
+    `not synced: ${head} is checked out, but the store branch is ${want} (from ${from}); ` +
+    `check out ${want} and sync again, or set sync.branch in config.yml`
+  );
+}
+
+/**
+ * The branch the root's checkout must keep checked out for store commits: `sync.branch` in
+ * config.yml, else the branch this clone learned on its first sync, else null (none known yet).
+ */
+export function storeBranch(root: Root): string | null {
+  return root.config.sync.branch ?? readStamp(root).branch ?? null;
+}
+
+/**
+ * Why the root's checkout may not take store commits now, or null when it may. Read-only: it
+ * never records a store branch. See {@link syncRoot}.
+ */
+export function storeCommitHold(root: Root): string | null {
+  return runSteps(storeCommitHoldSteps(root));
+}
+
+/** {@link storeCommitHold} as git steps, for a caller that runs them off the event loop. */
+export function* storeCommitHoldSteps(root: Root): GitSteps<string | null> {
+  let head = '';
+  try {
+    head = (yield* gitStep(root.dir, ['symbolic-ref', '-q', '--short', 'HEAD'])).trim();
+  } catch {
+    // HEAD is detached, or the root is in no repo at all: this throws for the latter.
+    yield* gitStep(root.dir, ['rev-parse', '--show-toplevel']);
+  }
+  return yield* storeBranchHold(root, head, readStamp(root), false);
+}
+
+/** The checkout's branch, whether its upstream exists, and the changed paths under `rel`. */
+interface CheckoutStatus {
+  /** The checked-out branch; empty when HEAD is detached. */
+  head: string;
+  /** True when the branch has an upstream and its commit is present, as `@{u}` resolves. */
+  upstream: boolean;
+  /** Changed, added and untracked paths, relative to the repo top. */
+  changed: string[];
+}
+
+/** How many space-separated fields come before the path in each porcelain v2 entry type. */
+const V2_FIELDS: Record<string, number> = { '1': 8, '2': 9, u: 10, '?': 1, '!': 1 };
+
+/**
+ * Reads the branch, its upstream and the changes under `rel` in one `git status` call. Each git
+ * process costs tens of milliseconds on Windows, and every sync runs this.
+ */
+function* checkoutStatus(top: string, rel: string): GitSteps<CheckoutStatus> {
+  const out = yield* gitStep(top, [
+    'status',
+    '--porcelain=v2',
+    '--branch',
+    '-z',
+    '--untracked-files=all',
+    '--',
+    rel,
+  ]);
+  const res: CheckoutStatus = { head: '', upstream: false, changed: [] };
+  const entries = out.split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    if (e.startsWith('# branch.head ')) {
+      const head = e.slice('# branch.head '.length);
+      res.head = head === '(detached)' ? '' : head;
+    } else if (e.startsWith('# branch.ab ')) {
+      // Printed only when the upstream is set and its commit is present.
+      res.upstream = true;
+    } else if (V2_FIELDS[e[0] ?? ''] !== undefined && e[1] === ' ') {
+      let at = 0;
+      for (let n = 0; n < V2_FIELDS[e[0]!]! && at !== -1; n++) at = e.indexOf(' ', at + 1);
+      if (at !== -1 && e[0] !== '!') res.changed.push(e.slice(at + 1));
+      // A rename or copy entry is followed by its original path.
+      if (e[0] === '2') i++;
+    }
+  }
+  return res;
+}
+
+/** Decides what an automatic sync does now under the root's policy. */
+export function dueActions(
+  root: Root,
+  stamp: SyncStamp,
+  now: number,
+): { pull: boolean; push: boolean } {
+  const { policy, pull_minutes, push_minutes } = root.config.sync;
+  if (policy === 'manual') return { pull: false, push: false };
+  const pullEvery = policy === 'coordinated' ? Math.min(pull_minutes, 2) : pull_minutes;
+  return {
+    pull: now - (stamp.lastPull ?? 0) >= pullEvery * 60_000,
+    push: now - Math.max(stamp.lastPush ?? 0, stamp.lastPushTry ?? 0) >= push_minutes * 60_000,
+  };
+}
+
+/**
+ * A task event file path, relative to the repo top:
+ * `<rel>/[mirrors/<name>/][archive/]tasks/<ID>/events/<ULID>-<actor>.md`.
+ */
+interface EventPath {
+  /** The task's events folder, relative to the repo top. */
+  dir: string;
+  task: string;
+  id: string;
+  /** Set for a task in a Master Repo's copy of a project root. */
+  mirror?: string;
+}
+
+function eventPaths(paths: string[], prefix: string): EventPath[] {
+  const out: EventPath[] = [];
+  for (const p of paths) {
+    if (!p.startsWith(prefix)) continue;
+    const m =
+      /^((?:mirrors\/([^/]+)\/)?(?:archive\/)?tasks\/([^/]+)\/events)\/([0-9A-Za-z]{26})-[^/]+\.md$/.exec(
+        p.slice(prefix.length),
+      );
+    if (!m || !isUlid(m[4]!)) continue;
+    out.push({ dir: prefix + m[1]!, task: m[3]!, id: m[4]!, mirror: m[2] });
+  }
+  return out;
+}
+
+/** A task whose events changed in a sync, with the root it lives in (a mirror root or the root). */
+interface Touched {
+  root: Root;
+  task: string;
+}
+
+/** Files this clone copied in from a mirror: final names, never renamed by push ordering. */
+const MIRRORED = 'mirrored.json';
+
+export function readMirrored(root: Root): Set<string> {
+  try {
+    const raw = JSON.parse(readFileSync(join(root.opsDir, MIRRORED), 'utf8')) as unknown;
+    return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeMirrored(root: Root, paths: Set<string>): void {
+  root.writeAtomic(join(root.opsDir, MIRRORED), JSON.stringify([...paths].sort()));
+}
+
+/**
+ * Renames this clone's local events in one task folder to ids above the newest pushed one, in
+ * their local order. `pushed` holds the ids that may not change: in the upstream tree, or copied
+ * in from a mirror. Returns the tracked paths renamed, as old and new pairs.
+ */
+export function orderLocalEvents(
+  lockRoot: Root,
+  task: string,
+  top: string,
+  dir: string,
+  pushed: Set<string>,
+  now: number,
+): { renamed: string[]; count: number } {
+  return runSteps(orderLocalEventSteps(lockRoot, task, top, dir, pushed, now));
+}
+
+/**
+ * The local events of a task folder, in order, and the newest pushed id they must sort after;
+ * null when they already do.
+ */
+function localOutOfOrder(
+  abs: string,
+  pushed: Set<string>,
+): { local: string[]; newestPushed: string } | null {
+  const files = readdirSync(abs)
+    .filter((n) => n.endsWith('.md') && isUlid(n.slice(0, 26)))
+    .sort();
+  const local = files.filter((n) => !pushed.has(n.slice(0, 26)));
+  if (local.length === 0) return null;
+  const newestPushed = files
+    .filter((n) => pushed.has(n.slice(0, 26)))
+    .pop()
+    ?.slice(0, 26);
+  if (!newestPushed || local[0]!.slice(0, 26) > newestPushed) return null;
+  return { local, newestPushed };
+}
+
+/** {@link orderLocalEvents} as git steps. */
+export function* orderLocalEventSteps(
+  lockRoot: Root,
+  task: string,
+  top: string,
+  dir: string,
+  pushed: Set<string>,
+  now: number,
+): GitSteps<{ renamed: string[]; count: number }> {
+  const renamed: string[] = [];
+  let count = 0;
+  const abs = join(top, dir);
+  if (!existsSync(abs) || !localOutOfOrder(abs, pushed)) return { renamed, count };
+  // Listed before the task lock, since a step may not wait on git while holding it. Only a sync
+  // commits event files, and the caller holds the git lock, so the list stays true.
+  const tracked = new Set(lines(yield* gitStep(top, ['ls-files', '--', dir])));
+  lockRoot.lock(`task-${task}`, () => {
+    // Read again under the lock: an event may have been written since.
+    const order = localOutOfOrder(abs, pushed);
+    if (!order) return;
+    const { local, newestPushed } = order;
+    let prev = newestPushed;
+    for (const name of local) {
+      const id = ulidAfter(prev, now);
+      prev = id;
+      const next = id + name.slice(26);
+      renameSync(join(abs, name), join(abs, next));
+      const oldPath = `${dir}/${name}`;
+      if (tracked.has(oldPath)) renamed.push(oldPath, `${dir}/${next}`);
+      count++;
+    }
+  });
+  return { renamed, count };
+}
+
+/** Commits renames from push ordering, so the next push carries them. */
+function* commitRenames(top: string, renamed: string[]): GitSteps<void> {
+  if (renamed.length === 0) return;
+  yield* gitStep(top, ['add', '-A', '--', ...renamed]);
+  yield* gitStep(top, [
+    'commit',
+    '-q',
+    '-m',
+    `ops: order ${renamed.length / 2} local event(s) after remote`,
+    '--',
+    ...renamed,
+  ]);
+}
+
+function lines(s: string): string[] {
+  return s.split('\n').filter(Boolean);
+}
+
+/**
+ * Fetches, rebases local commits onto the upstream, then puts local events after remote ones.
+ *
+ * Events fold in id order. An event written here before a remote event was pushed can carry an
+ * older id, so a claim made earlier on this clone but pushed later would win after the fact. For
+ * every task that got remote events, the events this clone has not pushed are renamed to fresh
+ * ids above the newest pushed one, in their local order. Pushed files never change, so every
+ * clone folds the same order, and it equals push order: the claim pushed first wins.
+ *
+ * Returns how many commits HEAD is ahead of the upstream when the upstream brought nothing, or
+ * null when it brought commits (the rebase changed the count).
+ */
+function* pullAndOrder(
+  root: Root,
+  top: string,
+  prefix: string,
+  now: number,
+  result: SyncResult,
+  touched: Map<string, Touched>,
+): GitSteps<number | null> {
+  yield* gitStep(top, ['fetch', '-q']);
+  const [ahead, behind] = (yield* gitStep(top, [
+    'rev-list',
+    '--left-right',
+    '--count',
+    'HEAD...@{u}',
+  ]))
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  result.pulled = true;
+  // The upstream is an ancestor of HEAD: nothing to rebase onto, no remote events.
+  if (behind === 0) return Number.isFinite(ahead) ? ahead! : null;
+
+  const scope = prefix ? [prefix.replace(/\/$/, '')] : ['.'];
+  // `HEAD...@{u}` diffs from the merge base of the two to the upstream: what the remote added.
+  const incoming = eventPaths(
+    lines(
+      yield* gitStep(top, [
+        'diff',
+        '--name-only',
+        '--diff-filter=A',
+        'HEAD...@{u}',
+        '--',
+        ...scope,
+      ]),
+    ),
+    prefix,
+  );
+  try {
+    yield* gitStep(top, ['rebase', '-q', '--autostash', '@{u}']);
+  } catch (err) {
+    if (!(yield* settleTaskMdConflicts(root, top, prefix, result))) {
+      yield* gitOk(top, ['rebase', '--abort']);
+      throw err;
+    }
+  }
+  const followed = yield* followStoreMove(root, top);
+  if (followed !== null) {
+    result.notes.push(
+      `the store moved to ${ROOT_DIR_NAME}/ upstream${followed ? `; moved ${followed} local file(s) there` : ''}`,
+    );
+    // The rest works on this root's folder, which is gone; the next sync runs on the new one.
+    return null;
+  }
+  if (incoming.length === 0) return null;
+
+  const byDir = new Map<string, EventPath>();
+  for (const e of incoming) byDir.set(e.dir, e);
+  const mirrored = readMirrored(root);
+  const renamed: string[] = [];
+  for (const [dir, e] of byDir) {
+    const owner = e.mirror ? new Root(join(root.dir, 'mirrors', e.mirror)) : root;
+    touched.set(dir, { root: owner, task: e.task });
+    // Pushed events are the ones in the upstream tree, plus files copied in from a mirror; the
+    // rest of the folder is local, committed or not.
+    const upstreamFiles = yield* gitStep(top, ['ls-tree', '-r', '--name-only', '@{u}', '--', dir]);
+    const pushed = new Set(eventPaths(lines(upstreamFiles), prefix).map((x) => x.id));
+    for (const p of mirrored) {
+      if (p.startsWith(`${dir}/`)) pushed.add(p.slice(dir.length + 1, dir.length + 27));
+    }
+    const res = yield* orderLocalEventSteps(owner, e.task, top, dir, pushed, now);
+    renamed.push(...res.renamed);
+    result.reordered += res.count;
+  }
+  yield* commitRenames(top, renamed);
+  return null;
+}
+
+/**
+ * After a pull that brought the commit moving the store from `.agent-ops/` to `.swarmup/`
+ * (`swarmup migrate`, AO-0200): moves the files this clone committed under `.agent-ops/` and
+ * had not pushed (events, new tasks) into `.swarmup/` and commits that, so they are not left in
+ * a folder no one reads. Git's rebase keeps them at their old path. A file whose path is taken in
+ * `.swarmup/` stays where it is. Null when the store did not move; else how many files moved.
+ */
+function* followStoreMove(root: Root, top: string): GitSteps<number | null> {
+  if (basename(root.dir) !== OLD_ROOT_DIR_NAME) return null;
+  if (existsSync(join(root.dir, 'config.yml'))) return null;
+  const store = join(dirname(root.dir), ROOT_DIR_NAME);
+  if (!existsSync(join(store, 'config.yml'))) return null;
+  const oldRel = relative(top, root.dir).split(sep).join('/');
+  const newRel = relative(top, store).split(sep).join('/');
+  const left = (yield* gitStep(top, ['ls-files', '-z', '--', oldRel])).split('\0').filter(Boolean);
+  let moved = 0;
+  for (const file of left) {
+    const to = join(top, newRel, file.slice(oldRel.length + 1));
+    if (existsSync(to)) continue;
+    mkdirSync(dirname(to), { recursive: true });
+    renameSync(join(top, file), to);
+    moved++;
+  }
+  if (moved === 0) return 0;
+  // The old folder's .gitignore moved too, so its local state (.ops/) is no longer ignored there.
+  const paths = [oldRel, newRel, `:(exclude)${oldRel}/.ops`];
+  yield* gitStep(top, ['add', '-A', '--', ...paths]);
+  yield* gitStep(top, [
+    'commit',
+    '-q',
+    '-m',
+    `ops: move ${moved} local file(s) to ${ROOT_DIR_NAME}/ after the store moved`,
+    '--',
+    ...paths,
+  ]);
+  return moved;
+}
+
+/**
+ * Path prefixes, relative to the repo top, that count as inside a root at `prefix`: the root's
+ * folder, and for a store folder also the other store name beside it, so the commits that move a
+ * store, and local commits made before a pulled move, push like any store commit (AO-0200).
+ */
+function storePrefixes(root: Root, prefix: string): string[] {
+  if (!prefix || !isStoreDirName(basename(root.dir))) return [prefix];
+  const parent = prefix.slice(0, -1).split('/').slice(0, -1).join('/');
+  return ROOT_DIR_NAMES.map((n) => (parent ? `${parent}/${n}/` : `${n}/`));
+}
+
+/**
+ * This clone's current claims, on tasks that got remote events, that lost to a claim pushed first.
+ * Read from the final state, after every pull of the sync: a claim that lost on one pull can stand
+ * after the next (the winner released in between).
+ */
+export function lostClaims(touched: Iterable<Touched>): LostClaim[] {
+  const out: LostClaim[] = [];
+  for (const { root, task } of touched) {
+    if (!root.hasTask(task)) continue;
+    const token = root.myClaim(task);
+    if (!token) continue;
+    const claim = root.readEvents(task).find((e) => e.type === 'claim' && e.token === token);
+    if (!claim) continue;
+    const state = root.foldTask(task);
+    if (state.lostClaims.includes(claim.id)) {
+      out.push({
+        root: root.name,
+        task,
+        actor: claim.actor,
+        winner: state.claimedBy,
+        event: claim.id,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Commits the root's changes, then pulls and pushes as asked. Only paths inside the root are
+ * committed, so a root inside a code repo never sweeps up code changes. Commits use the
+ * machine's git identity. While the checkout is off the store branch, or HEAD is detached, it
+ * does nothing and says why in a note.
+ */
+export function syncRoot(root: Root, user: UserConfig, opts: SyncOptions = {}): SyncResult {
+  const top = git(root.dir, ['rev-parse', '--show-toplevel']).trim();
+  return root.lock('git', () => runSteps(syncSteps(root, user, opts, top)));
+}
+
+/**
+ * {@link syncRoot} with git run off the event loop, for swarmupd: its API keeps answering while the
+ * sync runs. The git lock is held until the sync ends; a synchronous sync of the same root in
+ * this process meanwhile fails at once instead of waiting.
+ */
+export async function syncRootAsync(
+  root: Root,
+  user: UserConfig,
+  opts: SyncOptions = {},
+): Promise<SyncResult> {
+  const top = (await gitAsync(root.dir, ['rev-parse', '--show-toplevel'])).trim();
+  return root.lockAsync('git', () => runStepsAsync(syncSteps(root, user, opts, top)));
+}
+
+/** The work of {@link syncRoot}, run under the root's git lock; `top` is the repo's top folder. */
+function* syncSteps(
+  root: Root,
+  user: UserConfig,
+  opts: SyncOptions,
+  top: string,
+): GitSteps<SyncResult> {
+  const now = opts.now ?? Date.now();
+  const rel = relative(top, root.dir).split(sep).join('/') || '.';
+  const prefix = rel === '.' ? '' : `${rel}/`;
+  const result: SyncResult = {
+    committed: 0,
+    pulled: false,
+    pushed: false,
+    reordered: 0,
+    lost: [],
+    notes: [],
+  };
+  const stamp = readStamp(root);
+  let { pull, push } = { pull: opts.pull ?? false, push: opts.push ?? false };
+  if (opts.auto) {
+    const due = dueActions(root, stamp, now);
+    pull ||= due.pull;
+    push ||= due.push;
+  }
+  if (opts.sessionEnd) push = true;
+  if (!opts.auto && !opts.sessionEnd && opts.pull === undefined && opts.push === undefined) {
+    pull = true;
+    push = true;
+  }
+  if (opts.skipPull) pull = false;
+
+  // Nothing commits, pulls or pushes while a code branch is checked out in the root's checkout.
+  const status = yield* checkoutStatus(top, rel);
+  const hold = yield* storeBranchHold(root, status.head, stamp, true);
+  if (hold) {
+    result.notes.push(hold);
+    return result;
+  }
+
+  // Commit what changed under the root, after a leak check of those files.
+  const changed = status.changed.filter((p) => !p.startsWith(`${prefix}.ops/`));
+  if (changed.length > 0) {
+    const hits = scanFiles(changed.map((p) => join(top, p)));
+    if (hits.length > 0) {
+      const where = hits.map(
+        (h) => `${relative(top, h.file)}${h.line ? `:${h.line}` : ''} (${h.kind})`,
+      );
+      throw new OpsError(`leak check failed; nothing was committed:\n  ${where.join('\n  ')}`);
+    }
+    yield* gitStep(top, ['add', '-A', '--', rel]);
+    const from = user.machine ? ` from ${user.machine}` : '';
+    yield* gitStep(top, [
+      'commit',
+      '-q',
+      '-m',
+      `ops: ${changed.length} change(s)${from}`,
+      '--',
+      rel,
+    ]);
+    result.committed = changed.length;
+  }
+
+  const upstream = status.upstream;
+  if ((pull || push) && !upstream) {
+    result.notes.push('no upstream branch; skipped pull and push');
+    pull = false;
+    push = false;
+  }
+  const touched = new Map<string, Touched>();
+  const inside = storePrefixes(root, prefix);
+  // Commits to push, when the pull already counted them; null when unknown.
+  let knownAhead: number | null = null;
+  if (pull) {
+    knownAhead = yield* pullAndOrder(root, top, prefix, now, result, touched);
+    stamp.lastPull = now;
+  }
+  if (push) {
+    for (let attempt = 1; ; attempt++) {
+      let ahead = 0;
+      // Per unpushed commit, the files it changes outside the root.
+      const outsideBy = new Map<string, string[]>();
+      if (knownAhead !== 0) {
+        // One log call gives both the unpushed commits (a NUL and the id each) and their files.
+        const log = yield* gitStep(top, ['log', '--format=%x00%H', '--name-only', '@{u}..HEAD']);
+        let commit = '';
+        for (const l of log.split('\n')) {
+          if (l.startsWith('\0')) {
+            ahead++;
+            commit = l.slice(1).trim();
+          } else if (l && !inside.some((p) => l.startsWith(p))) {
+            outsideBy.set(commit, [...(outsideBy.get(commit) ?? []), l]);
+          }
+        }
+      }
+      knownAhead = null;
+      if (ahead === 0) {
+        stamp.lastPush = now;
+        break;
+      }
+      const approved =
+        outsideBy.size > 0 && !opts.allPaths ? opts.approved?.(top, status.head) : undefined;
+      if (approved?.size) {
+        for (const c of [...outsideBy.keys()]) {
+          const key = patchKey(yield* gitStep(top, [...PATCH_KEY_ARGS, c]));
+          if (key && approved.has(key)) outsideBy.delete(c);
+        }
+      }
+      const outside = new Set([...outsideBy.values()].flat());
+      if (outside.size > 0 && !opts.allPaths) {
+        result.notes.push(
+          `not pushed: unpushed commits also change ${outside.size} file(s) outside ${rel}; ` +
+            'push them yourself or pass --all-paths',
+        );
+        stamp.lastPushTry = now;
+        break;
+      }
+      try {
+        yield* gitStep(top, ['push', '-q']);
+        result.pushed = true;
+        stamp.lastPush = now;
+        break;
+      } catch (err) {
+        // Someone pushed first: pull their commits, put our events after theirs, try again.
+        const msg = (err as Error).message;
+        if (attempt >= PUSH_ATTEMPTS || !/rejected|fetch first|non-fast-forward/i.test(msg)) {
+          throw err;
+        }
+        knownAhead = yield* pullAndOrder(root, top, prefix, now, result, touched);
+        stamp.lastPull = now;
+      }
+    }
+  }
+  result.lost = lostClaims(touched.values());
+  // Copied-in files stay pinned until the upstream has them.
+  if (upstream) yield* pruneMirrored(root, top);
+  root.writeAtomic(join(root.opsDir, 'sync.json'), JSON.stringify(stamp));
+  return result;
+}
+
+/** What an automatic sync of this root would do now; the supervisor syncs only when one is due. */
+export function syncDue(root: Root, now: number = Date.now()): { pull: boolean; push: boolean } {
+  return dueActions(root, readStamp(root), now);
+}
+
+/** Drops copied-in files the upstream now has, or that no longer exist. */
+function* pruneMirrored(root: Root, top: string): GitSteps<void> {
+  const kept = readMirrored(root);
+  if (kept.size === 0) return;
+  const upstreamFiles = new Set(
+    lines(
+      yield* gitStep(top, [
+        'ls-tree',
+        '-r',
+        '--name-only',
+        '@{u}',
+        '--',
+        ...[...new Set([...kept].map((p) => p.split('/').slice(0, -1).join('/')))],
+      ]),
+    ),
+  );
+  const still = new Set([...kept].filter((p) => !upstreamFiles.has(p) && existsSync(join(top, p))));
+  if (still.size !== kept.size) writeMirrored(root, still);
+}
+
+/**
+ * Settles a rebase that stopped on `task.md` files only: the version pushed first stays, and this
+ * clone's version is saved under `.ops/conflicts/` with a note, so no edit is lost. Two people
+ * (or a project root and its Master Repo copy) editing the same task.md is the one case where
+ * files written by SwarmUp can conflict. Returns false, leaving the rebase as it is, when any
+ * other file conflicts.
+ */
+function* settleTaskMdConflicts(
+  root: Root,
+  top: string,
+  prefix: string,
+  result: SyncResult,
+): GitSteps<boolean> {
+  const taskMd = new RegExp(
+    `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:mirrors/[^/]+/)?(?:archive/)?tasks/[^/]+/task\\.md$`,
+  );
+  for (let step = 0; step < 100; step++) {
+    const conflicted = lines(yield* gitStep(top, ['diff', '--name-only', '--diff-filter=U']));
+    if (conflicted.length === 0) {
+      const gitDir = (yield* gitStep(top, ['rev-parse', '--git-dir'])).trim();
+      const dir = join(top, gitDir);
+      if (!existsSync(join(gitDir, 'rebase-merge')) && !existsSync(join(dir, 'rebase-merge'))) {
+        return true;
+      }
+      yield* gitStep(top, ['-c', 'core.editor=true', 'rebase', '--continue']);
+      continue;
+    }
+    if (!conflicted.every((p) => taskMd.test(p))) return false;
+    const saveDir = join(root.opsDir, 'conflicts');
+    mkdirSync(saveDir, { recursive: true });
+    for (const p of conflicted) {
+      const mine = (yield* gitOk(top, ['cat-file', '-e', `REBASE_HEAD:${p}`]))
+        ? yield* gitStep(top, ['show', `REBASE_HEAD:${p}`])
+        : '';
+      const name = `${Date.now()}-${p.replace(/[^A-Za-z0-9.-]+/g, '_')}`;
+      writeFileSync(join(saveDir, name), mine);
+      yield* gitStep(top, ['checkout', '--ours', '--', p]);
+      yield* gitStep(top, ['add', '--', p]);
+      result.notes.push(
+        `${p}: your edit conflicted with one pushed first; kept the pushed one, yours is in .ops/conflicts/${name}`,
+      );
+    }
+    try {
+      yield* gitStep(top, ['-c', 'core.editor=true', 'rebase', '--continue']);
+    } catch {
+      // The next commit stopped on a conflict too: the loop looks at it.
+    }
+  }
+  return false;
+}

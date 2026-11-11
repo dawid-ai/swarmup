@@ -1,0 +1,21 @@
+{
+  "name": "@swarmup/cli",
+  "version": "0.3.0-beta.1",
+  "private": true,
+  "description": "The swarmup command",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "swarmup": "dist/main.js",
+    "ops": "dist/ops.js"
+  },
+  "dependencies": {
+    "@swarmup/core": "0.3.0-beta.1",
+    "@swarmup/supervisor": "0.3.0-beta.1"
+  }
+}

@@ -1,0 +1,52 @@
+import { delimiter } from 'node:path';
+import { deleteEnvVars, envVar } from '@swarmup/core';
+
+/**
+ * The environment an agent run starts with: swarmupd's own, plus `extra`, with two adjustments.
+ *
+ * - `ELECTRON_RUN_AS_NODE`, `ELECTRON_NO_ASAR` and `SWARMUP_DAEMON_ENTRY` go: swarmupd may run
+ *   inside the desktop app's executable as Node, and a run that inherits them would start any
+ *   Electron app (a smoke check, the app itself) as Node or unable to read its `.asar`, or the
+ *   installed swarmupd instead of its checkout's.
+ * - The installed app's `bin` folder (`SWARMUP_BIN_DIR`, set by the app and its `swarmup` shims) goes to
+ *   the front of PATH, so runs find `swarmup` without a change to the person's PATH.
+ */
+export function runEnv(
+  base: NodeJS.ProcessEnv,
+  extra: Record<string, string | undefined>,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...extra };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ELECTRON_NO_ASAR;
+  // The installed app's swarmupd entry: a run working in a checkout must start that checkout's swarmupd
+  // (its tests do). The installed `swarmup` sets it again for itself.
+  deleteEnvVars(env, ['DAEMON_ENTRY']);
+  const bin = envVar(env, 'BIN_DIR')?.replace(/[\\/]+$/, '');
+  if (bin) {
+    // Windows keeps it as `Path`; a copied env is a plain object, so match the name ourselves.
+    const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const parts = (env[key] ?? '').split(delimiter).filter(Boolean);
+    const same = (p: string): boolean =>
+      p.replace(/[\\/]+$/, '').toLowerCase() === bin.toLowerCase();
+    env[key] = [bin, ...parts.filter((p) => !same(p))].join(delimiter);
+  }
+  return env;
+}
+
+/**
+ * Deletes `names` from `env`. Windows environment names ignore case, but a copied env is a plain
+ * object, so on Windows every key that matches a name in any case goes (`Github_Token` for
+ * `GITHUB_TOKEN`).
+ */
+export function dropEnv(
+  env: NodeJS.ProcessEnv,
+  names: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== 'win32') {
+    for (const k of names) delete env[k];
+    return;
+  }
+  const drop = new Set(names.map((n) => n.toUpperCase()));
+  for (const k of Object.keys(env)) if (drop.has(k.toUpperCase())) delete env[k];
+}

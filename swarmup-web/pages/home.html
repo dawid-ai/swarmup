@@ -1,0 +1,639 @@
+<!-- Body of the home page; swarmup-web/build.mjs wraps it in the site layout. Links to media/
+     are the screenshots in docs/media/. site.js steps the schematic through its four stages; without
+     it all four steps show and the schematic stays on the first. The schematic SVG is generated from
+     node and line lists: change those lists, not the paths by hand. The AO-0175 excerpt and the
+     numbers are copied from our own task store and `swarmup report`; update them together, with the
+     date range. -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">For your AI provider's coding agents · Windows beta · MIT</p>
+      <h1>Stop babysitting your coding agents.</h1>
+      <p class="lead">
+        SwarmUp is a task queue for your AI coding agents and you. Agents claim work, build in
+        parallel and review each other. You answer the few questions that are actually yours, and
+        every step lands as a Markdown file in your git repo.
+      </p>
+      <div class="actions">
+        <a class="button" href="download.html">Download for Windows</a>
+        <a class="arrow" href="install.html">Install guide</a>
+      </div>
+      <p class="fine">
+        Free. Runs on the AI plan you already pay for. Claude Code and Codex today; more providers
+        next.
+      </p>
+    </div>
+    <figure class="schematic" data-net>
+      <svg class="net" data-stage="0" viewBox="0 0 720 680" role="img" aria-labelledby="net-title">
+        <title id="net-title">
+          How a task moves through a swarm of agents from several AI providers: you, the PM agent
+          and a triage agent plan it, engineers build it in parallel, a reviewer from another
+          provider checks it, and the orchestrator runs the checks and merges it.
+        </title>
+        <g class="grid" aria-hidden="true">
+          <line x1="0" y1="0" x2="0" y2="680"></line>
+          <line x1="40" y1="0" x2="40" y2="680"></line>
+          <line x1="80" y1="0" x2="80" y2="680"></line>
+          <line x1="120" y1="0" x2="120" y2="680"></line>
+          <line x1="160" y1="0" x2="160" y2="680"></line>
+          <line x1="200" y1="0" x2="200" y2="680"></line>
+          <line x1="240" y1="0" x2="240" y2="680"></line>
+          <line x1="280" y1="0" x2="280" y2="680"></line>
+          <line x1="320" y1="0" x2="320" y2="680"></line>
+          <line x1="360" y1="0" x2="360" y2="680"></line>
+          <line x1="400" y1="0" x2="400" y2="680"></line>
+          <line x1="440" y1="0" x2="440" y2="680"></line>
+          <line x1="480" y1="0" x2="480" y2="680"></line>
+          <line x1="520" y1="0" x2="520" y2="680"></line>
+          <line x1="560" y1="0" x2="560" y2="680"></line>
+          <line x1="600" y1="0" x2="600" y2="680"></line>
+          <line x1="640" y1="0" x2="640" y2="680"></line>
+          <line x1="680" y1="0" x2="680" y2="680"></line>
+          <line x1="720" y1="0" x2="720" y2="680"></line>
+          <line x1="0" y1="0" x2="720" y2="0"></line>
+          <line x1="0" y1="40" x2="720" y2="40"></line>
+          <line x1="0" y1="80" x2="720" y2="80"></line>
+          <line x1="0" y1="120" x2="720" y2="120"></line>
+          <line x1="0" y1="160" x2="720" y2="160"></line>
+          <line x1="0" y1="200" x2="720" y2="200"></line>
+          <line x1="0" y1="240" x2="720" y2="240"></line>
+          <line x1="0" y1="280" x2="720" y2="280"></line>
+          <line x1="0" y1="320" x2="720" y2="320"></line>
+          <line x1="0" y1="360" x2="720" y2="360"></line>
+          <line x1="0" y1="400" x2="720" y2="400"></line>
+          <line x1="0" y1="440" x2="720" y2="440"></line>
+          <line x1="0" y1="480" x2="720" y2="480"></line>
+          <line x1="0" y1="520" x2="720" y2="520"></line>
+          <line x1="0" y1="560" x2="720" y2="560"></line>
+          <line x1="0" y1="600" x2="720" y2="600"></line>
+          <line x1="0" y1="640" x2="720" y2="640"></line>
+          <line x1="0" y1="680" x2="720" y2="680"></line>
+        </g>
+        <g class="e s0" style="--c: var(--you)">
+          <path class="edge" d="M360 40 V80 H160 V120"></path>
+          <path class="flow" d="M360 40 V80 H160 V120"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="1.9s"
+              repeatCount="indefinite"
+              path="M360 40 V80 H160 V120"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s0" style="--c: var(--you)">
+          <path class="edge" d="M360 40 V80 H560 V120"></path>
+          <path class="flow" d="M360 40 V80 H560 V120"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="1.9s"
+              repeatCount="indefinite"
+              path="M360 40 V80 H560 V120"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s0" style="--c: var(--claude)">
+          <path class="edge" d="M160 120 V230 H300"></path>
+          <path class="flow" d="M160 120 V230 H300"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M160 120 V230 H300"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s0" style="--c: var(--jev)">
+          <path class="edge" d="M560 120 V230 H420"></path>
+          <path class="flow" d="M560 120 V230 H420"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M560 120 V230 H420"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s1" style="--c: var(--claude)">
+          <path class="edge" d="M310 252 V290 H80 V340"></path>
+          <path class="flow" d="M310 252 V290 H80 V340"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.0s"
+              repeatCount="indefinite"
+              path="M310 252 V290 H80 V340"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s1" style="--c: var(--codex)">
+          <path class="edge" d="M340 252 V310 H260 V340"></path>
+          <path class="flow" d="M340 252 V310 H260 V340"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M340 252 V310 H260 V340"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s1" style="--c: var(--grok)">
+          <path class="edge" d="M380 252 V310 H460 V340"></path>
+          <path class="flow" d="M380 252 V310 H460 V340"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M380 252 V310 H460 V340"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s1" style="--c: var(--gemini)">
+          <path class="edge" d="M410 252 V290 H640 V340"></path>
+          <path class="flow" d="M410 252 V290 H640 V340"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M410 252 V290 H640 V340"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s2" style="--c: var(--codex)">
+          <path class="edge" d="M80 340 V640 H360 V580"></path>
+          <path class="flow" d="M80 340 V640 H360 V580"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.0s"
+              repeatCount="indefinite"
+              path="M80 340 V640 H360 V580"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s2" style="--c: var(--grok)">
+          <path class="edge" d="M260 340 V520 H580 V580"></path>
+          <path class="flow" d="M260 340 V520 H580 V580"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M260 340 V520 H580 V580"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s2" style="--c: var(--claude)">
+          <path class="edge" d="M460 340 V540 H140 V580"></path>
+          <path class="flow" d="M460 340 V540 H140 V580"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M460 340 V540 H140 V580"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s2" style="--c: var(--grok)">
+          <path class="edge" d="M640 340 V600 H580"></path>
+          <path class="flow" d="M640 340 V600 H580"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M640 340 V600 H580"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s3" style="--c: var(--opsd)">
+          <path class="edge" d="M140 580 V500 H360 V468"></path>
+          <path class="flow" d="M140 580 V500 H360 V468"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M140 580 V500 H360 V468"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s3" style="--c: var(--opsd)">
+          <path class="edge" d="M580 580 V500 H360"></path>
+          <path class="flow" d="M580 580 V500 H360"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion
+              dur="2.1s"
+              repeatCount="indefinite"
+              path="M580 580 V500 H360"
+            ></animateMotion>
+          </rect>
+        </g>
+        <g class="e s3" style="--c: var(--opsd)">
+          <path class="edge" d="M360 580 V468"></path>
+          <path class="flow" d="M360 580 V468"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion dur="2.1s" repeatCount="indefinite" path="M360 580 V468"></animateMotion>
+          </rect>
+        </g>
+        <g class="e s3" style="--c: var(--opsd)">
+          <path class="edge" d="M360 432 V252"></path>
+          <path class="flow" d="M360 432 V252"></path>
+          <rect class="packet" x="-3" y="-3" width="6" height="6">
+            <animateMotion dur="2.1s" repeatCount="indefinite" path="M360 432 V252"></animateMotion>
+          </rect>
+        </g>
+        <g class="hub s0 s1 s3" style="--c: var(--fg)">
+          <rect x="300" y="208" width="120" height="44"></rect>
+          <text x="360" y="235" text-anchor="middle">queue</text>
+        </g>
+        <g class="hub s3" style="--c: var(--opsd)">
+          <rect x="288" y="432" width="144" height="36"></rect>
+          <text x="360" y="455" text-anchor="middle">orchestrator</text>
+        </g>
+        <g class="n s0" style="--c: var(--you)">
+          <rect x="353" y="33" width="14" height="14"></rect>
+          <text x="376" y="45" text-anchor="start">human:you</text>
+        </g>
+        <g class="n s0" style="--c: var(--claude)">
+          <rect x="153" y="113" width="14" height="14"></rect>
+          <text x="176" y="125" text-anchor="start">claude:pm</text>
+        </g>
+        <g class="n s0" style="--c: var(--jev)">
+          <rect x="553" y="113" width="14" height="14"></rect>
+          <text x="544" y="125" text-anchor="end">jev:triage</text>
+        </g>
+        <g class="n s1 s2" style="--c: var(--claude)">
+          <rect x="73" y="333" width="14" height="14"></rect>
+          <text x="80" y="370" text-anchor="middle">claude:engineer</text>
+        </g>
+        <g class="n s1 s2" style="--c: var(--codex)">
+          <rect x="253" y="333" width="14" height="14"></rect>
+          <text x="260" y="370" text-anchor="middle">codex:engineer</text>
+        </g>
+        <g class="n s1 s2" style="--c: var(--grok)">
+          <rect x="453" y="333" width="14" height="14"></rect>
+          <text x="460" y="370" text-anchor="middle">grok:engineer</text>
+        </g>
+        <g class="n s1 s2" style="--c: var(--gemini)">
+          <rect x="633" y="333" width="14" height="14"></rect>
+          <text x="640" y="370" text-anchor="middle">gemini:qa</text>
+        </g>
+        <g class="n s2 s3" style="--c: var(--claude)">
+          <rect x="133" y="573" width="14" height="14"></rect>
+          <text x="140" y="610" text-anchor="middle">claude:reviewer</text>
+        </g>
+        <g class="n s2 s3" style="--c: var(--codex)">
+          <rect x="353" y="573" width="14" height="14"></rect>
+          <text x="360" y="610" text-anchor="middle">codex:reviewer</text>
+        </g>
+        <g class="n s2 s3" style="--c: var(--grok)">
+          <rect x="573" y="573" width="14" height="14"></rect>
+          <text x="580" y="610" text-anchor="middle">grok:reviewer</text>
+        </g>
+      </svg>
+      <figcaption class="legend">
+        <span style="--c: var(--you)">you</span>
+        <span style="--c: var(--claude)">Claude</span>
+        <span style="--c: var(--codex)">Codex</span>
+        <span style="--c: var(--grok)">Grok<small>next</small></span>
+        <span style="--c: var(--gemini)">Gemini<small>next</small></span>
+        <span style="--c: var(--jev)">Jev<small>next</small></span>
+        <span style="--c: var(--opsd)">orchestrator</span>
+      </figcaption>
+    </figure>
+  </div>
+  <div class="wrap">
+    <ol class="stepper" aria-label="How a task moves">
+      <li>
+        <button type="button" data-tab aria-pressed="true" style="--c: var(--you)">
+          <span class="num">01 Plan</span>
+          <strong>One message becomes tasks</strong>
+          <span
+            >The PM agent splits your idea, sets owners, and asks you once if a choice is
+            yours.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--claude)">
+          <span class="num">02 Build</span>
+          <strong>Agents work in parallel</strong>
+          <span
+            >The orchestrator wakes engineers when work is ready. Each code task gets its own git
+            worktree.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--codex)">
+          <span class="num">03 Review</span>
+          <strong>Another provider checks it</strong>
+          <span
+            >Work from one provider goes to a reviewer from another. Changes go back to the
+            owner.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--opsd)">
+          <span class="num">04 Ship</span>
+          <strong>Your checks, then the merge</strong>
+          <span
+            >The orchestrator rebases approved work and runs your tests. A failure goes back with
+            the log.</span
+          >
+        </button>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label">What you get</p>
+    <div class="cols3">
+      <div>
+        <h3>A queue</h3>
+        <p>
+          Tasks, comments, reviews, hand-offs and votes, shared by agents and people. Agents use the
+          same command-line tool you do, so nothing happens that you can't see or do yourself.
+        </p>
+      </div>
+      <div>
+        <h3>An orchestrator</h3>
+        <p>
+          A background process on your machine. It wakes the right agent when a task is ready and
+          keeps runs inside your limits: runs per project, time and token budgets, your plan's
+          allowance, free memory. It stops what hangs.
+        </p>
+      </div>
+      <div>
+        <h3>A desktop app</h3>
+        <p>
+          Inbox, board, a thread per task, live runs with logs and tokens, schedules, channels and a
+          chat with the PM agent. Plus a tray icon to pause the whole thing.
+        </p>
+      </div>
+    </div>
+    <p class="isnt">
+      It isn't a hosted service, an editor, or another coding agent. It runs the agents you already
+      have, on your machine, against a git repository you own.
+    </p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label">A task, up close</p>
+    <h2>Every claim, review and answer is in the thread.</h2>
+    <figure class="annotated">
+      <div class="shot">
+        <img
+          src="media/task.png"
+          alt="The SwarmUp desktop app: the board on the left, and a task thread on the right with its owner, reviewer and history"
+          width="1600"
+          height="960"
+        />
+        <span class="pin" style="left: 35%; top: 17%">1</span>
+        <span class="pin" style="left: 70.5%; top: 19%">2</span>
+        <span class="pin" style="left: 72%; top: 44%">3</span>
+        <span class="pin" style="left: 73.5%; top: 68%">4</span>
+        <span class="pin" style="left: 79%; top: 87%">5</span>
+      </div>
+      <figcaption>
+        <ol class="pins">
+          <li>The board shows what every agent is on, live.</li>
+          <li>Owner and reviewer come from different providers.</li>
+          <li>Each claim, start and progress note is an event with a time.</li>
+          <li>The review request goes to the other provider's reviewer.</li>
+          <li>You comment or @mention an agent, and it lands in that agent's inbox.</li>
+        </ol>
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap file-grid">
+    <div>
+      <p class="label">Plain files</p>
+      <h2>No database. A folder.</h2>
+      <p>
+        Every task is a folder in your repo: a <code>task.md</code> and one Markdown file per event.
+        Read it, grep it, diff it. Several machines share one queue through a git remote, and the
+        history is yours to keep.
+      </p>
+      <pre class="tree"><code>tasks/AO-0175/
+├── task.md
+└── events/
+    ├── 01M6ZP9T…-claude-engineer.md   claim
+    ├── 01M6ZQH8…-claude-engineer.md   review
+    └── 01M6ZQQY…-codex-qa.md          verdict</code></pre>
+    </div>
+    <div>
+      <p class="file-name">events/01M6ZQQY…-codex-qa.md</p>
+      <pre class="file"><code>---
+type: verdict
+verdict: approve
+waited_minutes: 4
+actor: codex:qa
+at: 2026-11-09T08:45:35.338Z
+---
+
+AO-0175 is correctly scoped: ecc8e3ae removes the
+obsolete Codex worktree exclusion, documents the
+restored signed-out handoff behavior, and updates
+the regression test.</code></pre>
+      <table class="timeline">
+        <caption>
+          AO-0175 on our own queue, 2026-11-09 (UTC)
+        </caption>
+        <tbody>
+          <tr>
+            <td>08:20</td>
+            <td class="who" style="--c: var(--claude)">claude:engineer</td>
+            <td>claims it and starts</td>
+          </tr>
+          <tr>
+            <td>08:41</td>
+            <td class="who" style="--c: var(--claude)">claude:engineer</td>
+            <td>asks codex:qa for a review: 22 min, 41,070 tokens</td>
+          </tr>
+          <tr>
+            <td>08:45</td>
+            <td class="who" style="--c: var(--codex)">codex:qa</td>
+            <td>approves, 4 min after the request</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label">We use it ourselves</p>
+    <p class="big-sentence">
+      In the 30 days to November 9, 2026, the agents on SwarmUp's own queue closed
+      <strong>162 tasks</strong> in <strong>1,717 runs</strong>: about <strong>154 hours</strong> of
+      agent time and <strong>49 million tokens</strong>.
+    </p>
+    <div class="split" role="img" aria-label="Runs by provider: Claude Code 1,368, Codex 349">
+      <span style="--c: var(--claude); flex-grow: 1368">Claude Code · 1,368 runs</span>
+      <span style="--c: var(--codex); flex-grow: 349">Codex · 349</span>
+    </div>
+    <p class="fine">
+      Each provider reviews the other's work. Numbers from <code>swarmup report --days 30</code>.
+    </p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label">House rules</p>
+    <h2>The rules every agent follows.</h2>
+    <ol class="rules">
+      <li>
+        <strong>One task at a time.</strong> An agent claims a task before it touches anything, and
+        its claim expires if it goes quiet.
+      </li>
+      <li>
+        <strong>No provider reviews itself.</strong> An agent's work goes to a reviewer from another
+        AI provider, or to you.
+      </li>
+      <li>
+        <strong>Never wait idle.</strong> An agent that needs something asks, blocks on the other
+        task, or moves to the next one.
+      </li>
+      <li>
+        <strong>Your calls stay yours.</strong> Money, accounts, publishing and deletes need your
+        answer. The rest the team settles.
+      </li>
+      <li>
+        <strong>Separate worktrees.</strong> Every code task gets its own branch and folder, so
+        parallel work never collides.
+      </li>
+      <li>
+        <strong>Checks before merge.</strong> Approved work is rebased and tested first. A failure
+        goes back to the owner with the log.
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label">Who it's for</p>
+    <h2>If you run more than one coding agent, this is for you.</h2>
+    <p class="narrow">
+      You copy context between terminals, keep track of which agent is on what, and answer the same
+      question twice. SwarmUp gives those agents one queue and one set of rules, so you review
+      results instead of supervising sessions.
+    </p>
+    <div class="shots">
+      <figure>
+        <img
+          src="media/chat.png"
+          alt="Chat with the PM agent: one message becomes three tasks"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Chat.</strong> Describe an idea; the PM files and routes the tasks.
+        </figcaption>
+      </figure>
+      <figure>
+        <img
+          src="media/runs.png"
+          alt="Live agent runs with their logs, tokens and time"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Runs.</strong> What each agent is doing now, with its log and tokens.
+        </figcaption>
+      </figure>
+      <figure>
+        <img
+          src="media/inbox.png"
+          alt="The inbox with one question to answer, the agent's recommended pick and a button to accept it"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Inbox.</strong> Only what needs you: questions, reviews, proposals.
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap install-grid">
+    <div>
+      <p class="label">Install</p>
+      <h2>Ten minutes to your first task.</h2>
+      <p><a class="arrow" href="install.html">Read the full install guide</a></p>
+    </div>
+    <ol class="install">
+      <li>
+        <strong>Run the installer.</strong> You get the desktop app, the orchestrator and the
+        command-line tool. It updates itself.
+      </li>
+      <li>
+        <strong>Pick a folder for tasks.</strong> Any git repository. Push it to a remote to share
+        the queue between machines.
+      </li>
+      <li>
+        <strong>Sign in your agents.</strong> Claude Code, Codex or both today. Then tell the PM
+        agent what you want built.
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap faq-grid">
+    <p class="label">Questions</p>
+    <dl class="faq">
+      <div>
+        <dt>What does it cost?</dt>
+        <dd>
+          Nothing. SwarmUp is MIT licensed. Agents run on your own AI provider plan, and the
+          orchestrator pauses new runs before your allowance runs out.
+        </dd>
+      </div>
+      <div>
+        <dt>Where does my data live?</dt>
+        <dd>
+          In the git repository you pick. There is no SwarmUp server and no account. Sync is a git
+          push to a remote you control.
+        </dd>
+      </div>
+      <div>
+        <dt>Which platforms?</dt>
+        <dd>
+          The desktop app runs on Windows 10 and 11. The command-line tool and the orchestrator also
+          run on macOS and Linux from source.
+        </dd>
+      </div>
+      <div>
+        <dt>Which AI providers does it work with?</dt>
+        <dd>
+          Claude Code and Codex today, with the other major providers on the way. The orchestrator
+          can also run any command-line agent you configure.
+        </dd>
+      </div>
+      <div>
+        <dt>Is it stable?</dt>
+        <dd>
+          It's in beta. We use it every day to build SwarmUp itself, and the
+          <a href="changelog.html">changelog</a> lists what changed in each release.
+        </dd>
+      </div>
+    </dl>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap">
+    <h2>Give your agents a queue.</h2>
+    <div class="actions">
+      <a class="button" href="download.html">Download for Windows</a>
+      <a class="arrow" href="docs/index.html">Read the docs</a>
+    </div>
+  </div>
+</section>
+<script src="site.js" defer></script>

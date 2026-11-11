@@ -1,0 +1,19 @@
+# Keep every text file LF on every OS; Windows checkouts with core.autocrlf=true stay LF too.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.pem binary
+
+# Private: the task store never goes into the public export (scripts/export-public.mjs).
+.agent-ops/** export-ignore
+.agent-ops export-ignore
+docs/proposals/** export-ignore
+# Launch post drafts: Dawid edits and posts them by hand; they never ship in the export.
+docs/launch/** export-ignore
+# Internal working documents: the rename inventory and research reports.
+docs/swarmup-rename.md export-ignore
+docs/research/** export-ignore
+# The notes of the 0.2 betas. The public CHANGELOG.md and UPDATES.md start at 0.3.0-beta.1.
+docs/history/** export-ignore
+.claude/skills/release/** export-ignore
