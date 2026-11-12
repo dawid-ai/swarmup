@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initRoot, PATCH_KEY_ARGS, patchKey, secretKind, Workspace } from '@swarmup/core';
+import { initRoot, PATCH_KEY_ARGS, patchKey, samePath, secretKind, Workspace } from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
 import type {
   MergeGitTimeout,
@@ -527,6 +527,49 @@ describe('merging approved work', () => {
     expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
     expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(text(join(s.repo, 'code.txt'))).toBe('two\nthree\n');
+  });
+
+  it('makes its worktree again when it is left from another repo (AO-0273)', async () => {
+    const s = mergeSetup();
+    // swarmupd's worktree as an earlier merge left it, when the code checkout was another repo.
+    const old = temp();
+    git(old, 'init', '-q', '-b', 'main');
+    git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const wt = join(s.state, 'merge', 'test');
+    mkdirSync(dirname(wt), { recursive: true });
+    git(old, 'worktree', 'add', '-q', '--detach', wt);
+    writeFileSync(join(wt, 'left.txt'), 'from an earlier merge\n');
+    const commit = s.branch('two\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    // The folder is a worktree of the checkout now, and the old repo lists it no more.
+    const listed = (repo: string): string[] =>
+      git(repo, 'worktree', 'list', '--porcelain')
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('worktree '))
+        .map((l) => l.slice('worktree '.length).trim());
+    expect(listed(s.repo).some((p) => samePath(p, wt))).toBe(true);
+    expect(listed(old)).toHaveLength(1);
+    const entries = join(old, '.git', 'worktrees');
+    expect(existsSync(entries) ? readdirSync(entries) : []).toEqual([]);
+    expect(existsSync(join(wt, 'left.txt'))).toBe(false);
+  });
+
+  it('leaves a folder inside another checkout alone and names its repo (AO-0273)', async () => {
+    const s = mergeSetup();
+    const other = temp();
+    git(other, 'init', '-q', '-b', 'main');
+    git(other, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const inside = join(other, 'merge');
+    mkdirSync(inside);
+    writeFileSync(join(inside, 'notes.txt'), 'someone else\n');
+    const repo = new MergeRepo(s.repo, inside, [], { ...process.env, ...ID });
+    await expect(repo.ensureWorktree(git(s.repo, 'rev-parse', 'main'))).rejects.toThrow(
+      /belongs to the repo at .* remove it/,
+    );
+    expect(text(join(inside, 'notes.txt'))).toBe('someone else\n');
   });
 
   it('keeps a task blocked on approved work until the merge is recorded (AO-0228)', async () => {

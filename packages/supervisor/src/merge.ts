@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MergeSource } from '@swarmup/core';
-import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES } from '@swarmup/core';
+import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES, samePath } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
 
@@ -516,17 +516,41 @@ export class MergeRepo {
     }
   }
 
-  /** Creates swarmupd's worktree, detached at `at`, unless it is there already. */
+  /**
+   * Creates swarmupd's worktree, detached at `at`, unless it is there already. A worktree left
+   * from another repo, as after the code checkout moved, is removed there and made again from
+   * `top`: its repo lacks the commits to merge (AO-0273).
+   */
   async ensureWorktree(at: string): Promise<void> {
     if (existsSync(this.worktree)) {
-      // A folder that is no worktree may be someone's: it stays for a person to look at.
+      let own: string;
       try {
-        await this.git(this.worktree, ['rev-parse', '--git-dir']);
-        return;
+        own = await this.commonDir(this.worktree);
       } catch (err) {
         if (err instanceof GitTimeout) throw err;
+        // A folder that is no worktree may be someone's: it stays for a person to look at.
         throw new Error(`${this.worktree} exists but is no git worktree; remove it`);
       }
+      if (samePath(own, await this.commonDir(this.top))) return;
+      // Only a linked worktree whose top folder is this one is swarmupd's to remove; a folder
+      // inside someone's checkout is not.
+      const [gitDir, topLevel] = lines(
+        await this.git(this.worktree, [
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-dir',
+          '--show-toplevel',
+        ]),
+      );
+      if (!gitDir || !topLevel || samePath(gitDir, own) || !samePath(topLevel, this.worktree)) {
+        throw new Error(
+          `${this.worktree} belongs to the repo at ${own}, not to ${this.top}; remove it`,
+        );
+      }
+      // Run from outside the folder: Windows deletes no folder a process works in.
+      const there = ['--git-dir', own, 'worktree'];
+      await this.git(this.top, [...there, 'remove', '--force', this.worktree]);
+      await this.git(this.top, [...there, 'prune'], { allowFail: true });
     }
     mkdirSync(dirname(this.worktree), { recursive: true });
     // `-f` takes over swarmupd's own path when git still lists it after the folder was deleted;
@@ -654,6 +678,13 @@ export class MergeRepo {
         .filter((l) => l.startsWith('refs/heads/'))
         .map((l) => l.slice('refs/heads/'.length)),
     );
+  }
+
+  /** The folder that holds the refs and objects of the repo `cwd` is in. */
+  private async commonDir(cwd: string): Promise<string> {
+    return (
+      await this.git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    ).trim();
   }
 
   private gitEnv(): NodeJS.ProcessEnv {
