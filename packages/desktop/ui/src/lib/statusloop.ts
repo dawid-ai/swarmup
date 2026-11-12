@@ -54,7 +54,7 @@ function lastRunFailed(events: readonly OpsEvent[]): boolean {
 /**
  * The loop for one task, from its state and its events:
  * - `done` when it closed;
- * - `needs-you` when a review or a question waits for a person;
+ * - `needs-you` when a review (to a person, or to nobody by name) or a question waits for a person;
  * - `failed` when its last run failed and nobody has taken it up since;
  * - `working` while an agent or a person holds it.
  * A task in the queue, parked, or waiting on an agent or another task has none.
@@ -68,7 +68,10 @@ export function taskLoop(
 ): LoopState | null {
   if (t.status === 'done') return 'done';
   if (t.status === 'parked') return null;
-  if (t.status === 'needs-review' && t.reviewer && identity(t.reviewer).human) return 'needs-you';
+  // A review without a named reviewer sits in the person's queue, as in the task panel's verdict bar.
+  if (t.status === 'needs-review' && (!t.reviewer || identity(t.reviewer).human)) {
+    return 'needs-you';
+  }
   if (
     t.status === 'blocked' &&
     !t.unblocked &&

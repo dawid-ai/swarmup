@@ -177,7 +177,13 @@ describe('taskLoop', () => {
   it('is needs-you for a review that waits for a person, not for an agent reviewer', () => {
     expect(taskLoop(task({ status: 'needs-review', reviewer: 'human:dawid' }))).toBe('needs-you');
     expect(taskLoop(task({ status: 'needs-review', reviewer: 'codex:reviewer' }))).toBeNull();
-    expect(taskLoop(task({ status: 'needs-review' }))).toBeNull();
+  });
+
+  it("is needs-you for a review with no named reviewer: it waits in the person's queue", () => {
+    expect(taskLoop(task({ status: 'needs-review', reviewer: null }))).toBe('needs-you');
+    // A failed run before the request does not hide that the review waits.
+    const events = [ev('run-end', { reason: 'exit', exit: 1 })];
+    expect(taskLoop(task({ status: 'needs-review', reviewer: null }), events)).toBe('needs-you');
   });
 
   it('is needs-you for a question to a person, not for a block on an agent or a task', () => {
