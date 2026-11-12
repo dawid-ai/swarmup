@@ -5,7 +5,9 @@
 *.icns binary
 *.pem binary
 
-# Private: the task store never goes into the public export (scripts/export-public.mjs).
+# Internal paths: git archive leaves them out, and the docs on swarmup.tech skip them (the docs
+# build in dawid-ai/swarmup-web reads these attributes). The task store and the internal docs live
+# in a private repo of their own; these lines keep a stray copy out of both.
 .agent-ops/** export-ignore
 .agent-ops export-ignore
 .swarmup/** export-ignore
@@ -18,4 +20,3 @@ docs/swarmup-rename.md export-ignore
 docs/research/** export-ignore
 # The notes of the 0.2 betas. The public CHANGELOG.md and UPDATES.md start at 0.3.0-beta.1.
 docs/history/** export-ignore
-.claude/skills/release/** export-ignore

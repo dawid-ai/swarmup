@@ -160,10 +160,10 @@ npm run lint           # eslint and prettier --check
 npm run typecheck
 npm run smoke:desktop  # renders every desktop view offscreen against a scratch root
 npm run leaks          # scans for tokens, keys and webhook URLs
-npm run docs           # builds the docs site into dist/docs and checks its links
-npm run site           # builds the swarmup.tech website (swarmup-web/ plus the docs) into dist/site
-npm run web:publish    # builds it from the public files and pushes it to dawid-ai/swarmup-web
 ```
+
+The website, swarmup.tech, lives in [dawid-ai/swarmup-web](https://github.com/dawid-ai/swarmup-web).
+It builds the docs pages from this README and `docs/`, and the changelog page from `UPDATES.md`.
 
 Changes that users notice add a fragment to [`changelog.d/`](changelog.d/README.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) and [RELEASING.md](RELEASING.md).

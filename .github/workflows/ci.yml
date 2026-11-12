@@ -28,8 +28,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: node scripts/check-leaks.mjs
-      - run: npm run docs
-      - run: node swarmup-web/build.mjs --offline && node scripts/check-docs-links.mjs dist/site
   desktop-smoke:
     # Renders every desktop view offscreen against a scratch root; fails on a page error, a failed
     # swarmupd call or a call the allowlist refuses.
