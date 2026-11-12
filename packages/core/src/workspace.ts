@@ -64,7 +64,7 @@ import {
   isWildcard,
 } from './ids.js';
 import type { KbHit, KbNote } from './kb.js';
-import { readNotes, searchNotes, writeNote } from './kb.js';
+import { readNotes, relatedNotes, searchNotes, writeNote } from './kb.js';
 import type { KbRead, KbShown, NoteUsage } from './kb-reads.js';
 import { noteUsage, readReads, readShown, writeRead, writeShown } from './kb-reads.js';
 import type { RootedPost, SearchHit, SearchResult } from './search.js';
@@ -2233,6 +2233,26 @@ export class Workspace {
       this.roots.flatMap((r) => readNotes(r, topic)),
       words,
     );
+  }
+
+  /**
+   * Learn notes in every root that may apply to a task (see `relatedNotes`), each with the ref
+   * `swarmup kb --read` takes: `<root>/<topic>/<slug>` when another root has the same note ref.
+   * Task titles in every root weigh the words, so ones that name half the tasks count for little.
+   */
+  taskNotes(ref: string, limit?: number): { ref: string; title: string; score: number }[] {
+    const shown = this.showEvents(ref);
+    const all = this.roots.flatMap((root) => readNotes(root));
+    if (all.length === 0) return [];
+    const seen = new Map<string, number>();
+    for (const note of all) seen.set(note.ref, (seen.get(note.ref) ?? 0) + 1);
+    const corpus = this.list().map((task) => task.meta.title);
+    const task = { title: shown.meta.title, body: shown.body };
+    return relatedNotes(all, task, { limit, corpus }).map((hit) => ({
+      ref: (seen.get(hit.note.ref) ?? 0) > 1 ? `${hit.note.root}/${hit.note.ref}` : hit.note.ref,
+      title: hit.note.title,
+      score: hit.score,
+    }));
   }
 
   /**

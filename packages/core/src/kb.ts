@@ -163,3 +163,94 @@ export function searchNotes(notes: KbNote[], words: string[]): KbHit[] {
   }
   return hits.sort((a, b) => b.score - a.score || (a.note.created_at < b.note.created_at ? 1 : -1));
 }
+
+/**
+ * Words too common in task text to say what a task is about. Words under four letters are
+ * dropped before this list applies.
+ */
+const COMMON = new Set(
+  (
+    'about after again agent also because been before being both cannot could does done each every ' +
+    'first from have here into just like make made more most must need needs never note notes ' +
+    'only other over same should some such task tasks than that their them then there these ' +
+    'they this those through today under until very want were what when where which while ' +
+    'will with without would your'
+  ).split(' '),
+);
+
+/** The distinct words of a text that can say what it is about, lowercased, plural `s` dropped. */
+export function topicWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (raw.length < 4 || /^\d+$/.test(raw) || COMMON.has(raw)) continue;
+    const word =
+      raw.length > 4 && raw.endsWith('s') && !raw.endsWith('ss') ? raw.slice(0, -1) : raw;
+    if (!COMMON.has(word)) out.add(word);
+  }
+  return out;
+}
+
+/**
+ * Fewest points a note needs to count as related; see `relatedNotes`. One rare word in the task
+ * title and the note title scores just under 6, so a note needs a little more than that.
+ */
+export const RELATED_MIN_SCORE = 7;
+
+/**
+ * Learn notes that may apply to a task, best first (AO-0049). Unlike `searchNotes`, any word may
+ * match. Each word has a weight from 0 to 1 for how rare it is among the notes and `corpus` (such
+ * as every task title), so words most of them share, like `run` in a store about runs, count for
+ * little. A word in the note's title, tags or topic scores 6 times its weight when it is in the
+ * task title, 3 times when only in the task body; a task-title word only in the note body scores
+ * once. Body-to-body overlap scores nothing: long texts share words by chance. A note needs a
+ * title, tag or topic hit and `RELATED_MIN_SCORE` points. Ties go to the newer note.
+ */
+export function relatedNotes(
+  notes: KbNote[],
+  task: { title: string; body?: string },
+  opts: { limit?: number; corpus?: string[] } = {},
+): KbHit[] {
+  const limit = opts.limit ?? 5;
+  const titleWords = topicWords(task.title);
+  const words = new Set([...titleWords, ...topicWords(task.body ?? '')]);
+  if (words.size === 0 || limit <= 0 || notes.length === 0) return [];
+  const read = notes.map((note) => ({
+    note,
+    head: topicWords(`${note.title} ${(note.tags ?? []).join(' ')} ${note.topic}`),
+    body: topicWords(note.body),
+  }));
+  const frequency = new Map<string, number>();
+  const count = (found: Iterable<string>): void => {
+    for (const word of found) {
+      if (words.has(word)) frequency.set(word, (frequency.get(word) ?? 0) + 1);
+    }
+  };
+  for (const item of read) count(new Set([...item.head, ...item.body]));
+  const corpus = opts.corpus ?? [];
+  for (const document of corpus) count(topicWords(document));
+  const documents = notes.length + corpus.length;
+  // One spare document in the count, so a word in every one still weighs a little; dividing by
+  // the weight of a word in one document keeps the points the same for small and large stores.
+  const top = Math.log(documents + 1);
+  const weight = (word: string): number =>
+    Math.log((documents + 1) / (frequency.get(word) ?? 1)) / top;
+  const hits: KbHit[] = [];
+  for (const item of read) {
+    let score = 0;
+    let inHead = false;
+    for (const word of words) {
+      const inTitle = titleWords.has(word);
+      if (item.head.has(word)) {
+        inHead = true;
+        score += (inTitle ? 6 : 3) * weight(word);
+      } else if (inTitle && item.body.has(word)) {
+        score += weight(word);
+      }
+    }
+    if (inHead && score >= RELATED_MIN_SCORE) {
+      hits.push({ note: item.note, score: Math.round(score * 100) / 100 });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score || (a.note.created_at < b.note.created_at ? 1 : -1));
+  return hits.slice(0, limit);
+}

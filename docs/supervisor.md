@@ -121,6 +121,27 @@ agent's `budget` in the swarmupd config, then the role file's `budget_min`, then
 (default 180). The token budget comes from `--tokens`, then the delegation. Tokens counted are
 input, cache writes and output; cache reads are left out.
 
+### Learn notes in the prompt
+
+The standard prompt of a task run (work, review or question) lists up to 3 learn notes that may
+apply to the task, so the agent sees them without searching `swarmup kb`. swarmupd matches the task's
+title and description against each note's title, tags and topic:
+
+- Any word may match. Words under four letters and very common ones (`that`, `with`, `task`) are
+  left out.
+- A word weighs more the fewer notes and task titles hold it, so words most of them share, such as
+  `run` or `claude`, count for little.
+- A word in the task title counts twice as much as one only in the description. A note is listed
+  only when a word of the task is in the note's title, tags or topic; overlap between the task
+  description and the note body alone never lists a note.
+
+The list is a hint: the agent reads the ones that fit with `swarmup kb --read <ref>`. A note ref
+that exists in several roots is listed as `<root>/<topic>/<slug>`. Each list is recorded in
+`kb-shown/` so `swarmup kb --usage` and `--stale` count prompt exposure separately from explicit
+reads. A work run's prompt also asks the agent to write a learn note before it finishes if the next
+agent should know something; a review run's prompt asks the reviewer to write one when the work took
+several review rounds.
+
 ### Runtimes
 
 | Runtime  | Command line                                                                                                                                       |

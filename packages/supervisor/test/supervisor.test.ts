@@ -351,6 +351,34 @@ describe('runs', () => {
     expect(sup.runs()[0]!.id).toBe(run.id);
   });
 
+  it("puts matching learn notes in a task run's prompt and records them as shown (AO-0049)", async () => {
+    const promptFile = join(temp(), 'prompt.txt');
+    const { sup, as } = setup({ env: { FAKE_PROMPT: promptFile } });
+    const human = as('human:dawid');
+    human.newTask({
+      title: 'killTree: taskkill refused leaves the run tree alive',
+      owner: 'fake:engineer',
+    });
+    as('fake:engineer').learn({
+      topic: 'windows',
+      title: 'Taskkill refused leaves the process tree alive',
+      body: 'Use a job object.',
+    });
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    await ended(sup, run.id);
+    expect(readFileSync(promptFile, 'utf8')).toContain(
+      '- `windows/taskkill-refused-leaves-the-process-tree-alive`: Taskkill refused leaves the ' +
+        'process tree alive',
+    );
+    expect(human.kbUsage().notes).toEqual([
+      expect.objectContaining({
+        shown: 1,
+        reads: 0,
+        note: expect.objectContaining({ root: 'test' }),
+      }),
+    ]);
+  });
+
   it('frees the task when the run ends without finishing', async () => {
     const { sup, as } = setup({ mode: 'crash' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
@@ -3020,6 +3048,32 @@ describe('questions (AO-0063)', () => {
     );
     expect(prompt).not.toContain('Work on T-0002');
     expect(prompt).not.toContain('If you cannot commit');
+  });
+
+  it('lists matching learn notes and asks for a note at the end (AO-0049)', () => {
+    const notes = [{ ref: 'windows/taskkill-refused', title: 'Taskkill refused leaves the tree' }];
+    const work = runPrompt({ agent: 'claude:engineer', task: 'AO-0001', notes });
+    expect(work).toContain(
+      'Learn notes that may apply; read the ones that fit with `swarmup kb --read <ref>`:\n' +
+        '- `windows/taskkill-refused`: Taskkill refused leaves the tree\n\nWork on AO-0001:',
+    );
+    expect(work).toContain('- Before you finish, ask yourself what the next agent should know');
+    expect(work).toContain('`swarmup learn <topic> "<title>" --task AO-0001 -m');
+
+    const review = runPrompt({ agent: 'codex:qa', task: 'AO-0001', review: true, notes });
+    expect(review).toContain('- `windows/taskkill-refused`');
+    expect(review).toContain('- If the work took several review rounds');
+    expect(review).not.toContain('Before you finish, ask yourself');
+
+    const question = runPrompt({
+      agent: 'codex:qa',
+      task: 'AO-0001',
+      question: { from: 'human:dawid', title: 'Why?', body: '', tasks: [], projects: [] },
+      notes,
+    });
+    expect(question).toContain('- `windows/taskkill-refused`');
+    expect(question).not.toContain('swarmup learn <topic>');
+    expect(runPrompt({ agent: 'claude:engineer' })).not.toContain('swarmup learn <topic>');
   });
 
   it('carries earlier answers and the reply a reopened question asks (AO-0134)', () => {

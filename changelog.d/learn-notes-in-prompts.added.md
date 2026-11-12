@@ -1,0 +1,2 @@
+- A supervised task run's prompt lists up to 3 learn notes whose title, tags or topic match the task's title and description, so agents see earlier lessons without searching `swarmup kb`; prompt exposure is included in learn-note usage.
+- A work run's prompt asks the agent to write a learn note before it finishes when the next agent should know something; a review run's prompt asks the reviewer to write one when the work took several review rounds.

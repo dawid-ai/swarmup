@@ -17,9 +17,13 @@ import {
   parseDuration,
   parseTokens,
   parseWhen,
+  relatedNotes,
   Root,
   slugify,
+  topicWords,
+  Workspace,
 } from '../src/index.js';
+import type { KbNote } from '../src/index.js';
 import { fakeToken, gitRepo, setup } from './helpers.js';
 
 const DAY = 86_400_000;
@@ -352,6 +356,91 @@ describe('findings and the KB', () => {
       /Nothing was written/,
     );
     expect(() => c.learn({ topic: 'x', title: 'y', body: ' ' })).toThrow(/needs a body/);
+  });
+
+  it('finds the notes that may apply to a task by its words (AO-0049)', () => {
+    const note = (title: string, topic: string, body = '', created_at = '2026-11-01'): KbNote => ({
+      title,
+      topic,
+      body,
+      created_at,
+      author: 'claude:engineer',
+      root: 'r',
+      slug: slugify(title),
+      ref: `${topic}/${slugify(title)}`,
+      file: '',
+    });
+    expect([...topicWords('The runs: EPIPE when piped to heads, 2 tasks with 12345')]).toEqual([
+      'runs',
+      'epipe',
+      'piped',
+      'head',
+    ]);
+    const notes = [
+      note('Taskkill refused leaves the process tree alive', 'windows', 'Use a job object.'),
+      note('Pipes lose output after the time limit', 'headless-runs', 'Write to a file.'),
+      note('Git Bash forks slowly', 'windows', 'Process starts take seconds under load.'),
+      note('Vote quorum', 'decisions', 'Propose only when voters can answer.'),
+    ];
+    const refs = (title: string, body = '', corpus: string[] = []) =>
+      relatedNotes(notes, { title, body }, { corpus }).map((hit) => hit.note.ref);
+    expect(refs('killTree: taskkill refused on Windows leaves the tree alive')).toEqual([
+      'windows/taskkill-refused-leaves-the-process-tree-alive',
+    ]);
+    expect(refs('Add a settings page', 'Write the page to a file.')).toEqual([]);
+
+    const kill = 'windows/taskkill-refused-leaves-the-process-tree-alive';
+    expect(refs('taskkill refused')).toEqual([kill]);
+    expect(refs('Clean up', 'taskkill refused')).toEqual([]);
+    const [alone] = relatedNotes(notes, { title: 'taskkill refused' });
+    const [helped] = relatedNotes(notes, { title: 'taskkill refused', body: 'the tree' });
+    expect(helped!.score).toBeGreaterThan(alone!.score);
+
+    expect(refs('Windows installer and forks')).toContain('windows/git-bash-forks-slowly');
+    const windowsTitles = Array.from({ length: 30 }, (_, i) => `Windows forks thing ${i}`);
+    expect(refs('Windows installer and forks', '', windowsTitles)).toEqual([]);
+    expect(relatedNotes(notes, { title: 'the a of' })).toEqual([]);
+    expect(relatedNotes([], { title: 'taskkill refused' })).toEqual([]);
+    expect(relatedNotes(notes, { title: 'taskkill refused tree' }, { limit: 0 })).toEqual([]);
+  });
+
+  it("lists a task's related notes across roots with refs swarmup kb --read takes", () => {
+    const { as, repo, env } = setup();
+    const h = as('human:dawid');
+    h.newTask({ title: 'killTree: taskkill refused leaves the run tree alive on Windows' });
+    h.newTask({ title: 'Add a settings page' });
+    const c = as('claude:engineer');
+    expect(c.taskNotes('1')).toEqual([]);
+    c.learn({
+      topic: 'windows',
+      title: 'Taskkill refused leaves the process tree alive',
+      body: 'Use a job object.',
+    });
+    expect(c.taskNotes('1')).toEqual([
+      {
+        ref: 'windows/taskkill-refused-leaves-the-process-tree-alive',
+        title: 'Taskkill refused leaves the process tree alive',
+        score: expect.any(Number),
+      },
+    ]);
+    expect(c.taskNotes('2')).toEqual([]);
+
+    const betaDir = gitRepo();
+    const kb = join(initRoot(betaDir, { name: 'beta', human: 'human:dawid' }), 'kb', 'windows');
+    mkdirSync(kb, { recursive: true });
+    writeFileSync(
+      join(kb, 'taskkill-refused-leaves-the-process-tree-alive.md'),
+      '---\ntitle: Taskkill refused leaves the process tree alive\ncreated_at: 2000-01-01\n---\nOld.\n',
+    );
+    const both = new Workspace({
+      cwd: repo,
+      env: { ...env, SWARMUP_ROOTS: betaDir } as NodeJS.ProcessEnv,
+      actor: 'claude:engineer',
+    });
+    expect(both.taskNotes('test/T-0001').map((note) => note.ref)).toEqual([
+      'test/windows/taskkill-refused-leaves-the-process-tree-alive',
+      'beta/windows/taskkill-refused-leaves-the-process-tree-alive',
+    ]);
   });
 });
 

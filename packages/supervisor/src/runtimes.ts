@@ -334,6 +334,8 @@ export interface PromptInput {
   taskWorktree?: TaskWorktreePrompt;
   /** The run's scratch folder (`SWARMUP_SCRATCH`), for files that belong in no repo (AO-0230). */
   scratch?: string;
+  /** Learn notes whose title or topic matches the task's words (AO-0049), best first. */
+  notes?: { ref: string; title: string }[];
 }
 
 /** The rule that keeps a run's scratch files out of every repo (AO-0230). */
@@ -569,6 +571,24 @@ export function withStoreCheckoutRule(
   return `${head ? `${head}\n\n` : ''}${rule}\n`;
 }
 
+/**
+ * The rule that turns what a run learned into a learn note (AO-0049): the author writes one
+ * before finishing; a reviewer writes one when the work took several review rounds.
+ */
+function learnRule(task: string, review: boolean): string[] {
+  const command =
+    `\`swarmup learn <topic> "<title>" --task ${task} ` + '-m "what, why, what to do instead"`';
+  return review
+    ? [
+        '- If the work took several review rounds and the lesson is not in a learn note yet, write',
+        `  one with ${command} before your verdict.`,
+      ]
+    : [
+        '- Before you finish, ask yourself what the next agent should know (a gotcha, a fix that',
+        `  took several tries). If anything, write it with ${command}.`,
+      ];
+}
+
 /** The standard prompt for a supervised run. */
 export function runPrompt(p: PromptInput): string {
   const lines = [
@@ -584,6 +604,13 @@ export function runPrompt(p: PromptInput): string {
     lines.push(`Read these files before you work: ${p.role.files.join(', ')}.`);
   }
   if (p.role?.style?.trim()) lines.push('Writing style:', p.role.style.trim());
+  if (p.notes && p.notes.length > 0) {
+    lines.push(
+      '',
+      'Learn notes that may apply; read the ones that fit with `swarmup kb --read <ref>`:',
+      ...p.notes.map((note) => `- \`${note.ref}\`: ${note.title}`),
+    );
+  }
   if (p.extra) {
     lines.push('', p.extra.trim());
   } else if (p.task && p.review) {
@@ -637,6 +664,7 @@ export function runPrompt(p: PromptInput): string {
       );
     }
   }
+  if (p.task && !p.question) lines.push(...learnRule(p.task, p.review === true));
   lines.push(
     `- Before you stop, run \`swarmup sync --session-end\` (agent ${actorSlug(p.agent)}).`,
   );

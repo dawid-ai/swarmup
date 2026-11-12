@@ -148,6 +148,9 @@ import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps }
 /** Most referenced tasks a question's prompt lists; the agent reads more with `swarmup show`. */
 const QUESTION_REFS = 20;
 
+/** Most learn notes a task run's prompt lists; the agent finds more with `swarmup kb`. */
+const TASK_NOTES = 3;
+
 /**
  * What a question run's prompt carries (AO-0063): who asked, the question, and each task and
  * project the text references, so the agent starts with the context the asker pointed at.
@@ -1193,6 +1196,21 @@ export class Supervisor extends EventEmitter {
       this.checkoutStates.set(top, await this.checkout(top).stateAsync());
     } catch {
       // The tick finds it the usual way.
+    }
+  }
+
+  /**
+   * Learn notes that match a task's title and description (AO-0049), for its run's prompt. A note
+   * that cannot be read never stops the run: the prompt then lists none.
+   */
+  private taskNotes(ws: Workspace, ref: string): { ref: string; title: string }[] {
+    try {
+      return ws.taskNotes(ref, TASK_NOTES).map(({ ref: noteRef, title }) => ({
+        ref: noteRef,
+        title,
+      }));
+    } catch {
+      return [];
     }
   }
 
@@ -2603,6 +2621,8 @@ export class Supervisor extends EventEmitter {
       stores,
       gitDirs,
     );
+    // Custom prompts are used as given, so only a standard task prompt lists related notes.
+    const notes = req.prompt === undefined && ref ? this.taskNotes(ws, ref) : [];
     // A custom prompt is used as given, plus the store-checkout rule when it applies, plus the
     // read-only Codex note.
     const prompt =
@@ -2625,6 +2645,7 @@ export class Supervisor extends EventEmitter {
             storeCheckout,
             taskWorktree,
             scratch: readOnly || req.chat ? undefined : scratch,
+            notes,
           })) + (inv.note ?? '');
 
     // Claim before the process starts, so two runs never race for one task.
@@ -2740,6 +2761,16 @@ export class Supervisor extends EventEmitter {
     else {
       child.stdin?.on('error', () => {});
       child.stdin?.end(prompt);
+    }
+    if (notes.length > 0 && ref) {
+      // Usage accounting must never stop a run whose prompt was already built. Resolve the
+      // display refs back to notes only here, after the process successfully started.
+      this.safe(() =>
+        ws.recordNotesShown(
+          notes.map((note) => ws.kbNote(note.ref)),
+          { actor: agent, task: ref, run: id },
+        ),
+      );
     }
     void this.trackProcs();
     if (task) {
