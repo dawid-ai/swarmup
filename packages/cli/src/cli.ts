@@ -85,6 +85,7 @@ import {
 } from '@swarmup/supervisor';
 import { envVar } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
+import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
 
 /** The git top level of `cwd`, or `cwd` itself outside a repo. */
@@ -215,6 +216,8 @@ export interface Io {
   env: NodeJS.ProcessEnv;
   cwd: string;
   readStdin?: () => string;
+  /** True when `out` writes to a terminal, not to a pipe or a file. */
+  isTTY?: boolean;
 }
 
 type Options = NonNullable<ParseArgsConfig['options']>;
@@ -2187,7 +2190,10 @@ export function run(argv: string[], io: Io): number | Promise<number> {
     return 0;
   }
   if (name === '--version' || name === 'version') {
-    io.out(VERSION);
+    // The tile banner is for a person at a terminal. A pipe, a file, NO_COLOR, TERM=dumb and
+    // --json all get the bare version, which is what scripts read.
+    const color = rest.includes('--json') ? 'none' : colorLevel({ isTTY: io.isTTY }, io.env);
+    io.out(color === 'none' ? VERSION : banner({ version: VERSION, color, compact: true }));
     return 0;
   }
   const cmd = COMMANDS[name];

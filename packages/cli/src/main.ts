@@ -18,5 +18,6 @@ const result = run(process.argv.slice(2), {
   env: process.env,
   cwd: process.cwd(),
   readStdin: () => readFileSync(0, 'utf8'),
+  isTTY: process.stdout.isTTY,
 });
 process.exitCode = typeof result === 'number' ? result : await result;

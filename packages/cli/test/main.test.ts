@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OPS_ALIAS_NOTICE } from '../src/alias.js';
+import { VERSION } from '../src/version.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoTop = join(here, '..', '..', '..');
@@ -46,6 +47,24 @@ describe('swarmup main', () => {
     );
     expect(err).not.toMatch(/EPIPE|Unhandled/);
     expect(code).toBe(0);
+  });
+
+  it('prints the bare version to a pipe, whatever the terminal variables say', () => {
+    const env = { ...process.env, COLORTERM: 'truecolor', WT_SESSION: 'x', TERM: 'xterm' };
+    delete (env as NodeJS.ProcessEnv).NO_COLOR;
+    for (const name of ['--version', 'version']) {
+      const r = spawnSync(process.execPath, [mainJs, name], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({
+        code: 0,
+        out: `${VERSION}\n`,
+        err: '',
+      });
+    }
   });
 });
 
