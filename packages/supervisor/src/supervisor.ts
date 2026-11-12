@@ -16,7 +16,15 @@ import {
 } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
-import type { AgentDef, Priority, Root, Route, TaskView, UserConfig } from '@swarmup/core';
+import type {
+  AgentDef,
+  OpsEvent,
+  Priority,
+  Root,
+  Route,
+  TaskView,
+  UserConfig,
+} from '@swarmup/core';
 import type { SyncResult } from '@swarmup/core';
 import {
   assertActor,
@@ -54,8 +62,10 @@ import {
   Workspace,
   execOffThread,
   OPEN_STATUSES,
+  MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
+import type { GitDirs } from './checkout.js';
 import type { MergeConfig, OpsdConfig, ScheduleConfig } from './config.js';
 import type {
   CommandResult,
@@ -76,6 +86,7 @@ import {
   notLiveNotice,
   opsdCodeChanges,
   pickMergeSource,
+  reviewSources,
 } from './merge.js';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
@@ -250,7 +261,7 @@ function sleepUnless(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** The actor swarmupd writes merge events, send-backs and notes as. */
-export const MERGE_ACTOR = 'opsd:merge';
+export { MERGE_ACTOR };
 /** Who tells the human that a checkout's changes hold writing runs (AO-0137), and where. */
 export const DIRTY_ACTOR = 'opsd:checkout';
 /** Who gives ownerless work a role group as its owner (AO-0140). */
@@ -530,6 +541,8 @@ interface WakeState {
 interface KnownCheckout {
   changes: string[] | Error;
   head?: string | null;
+  /** The checkout's git dirs as git named them; undefined until something needs them. */
+  gitDirs?: GitDirs | null;
 }
 
 /** A writing run that cannot start because its checkout has changes (AO-0137). */
@@ -593,8 +606,49 @@ interface WakeCandidate {
   type?: string;
   /** Review runs: the request's `task:event` key, so each request gets one run. */
   key?: string;
+  /** Task candidates: the session outside swarmupd that worked on it last, while it may go on. */
+  outside?: OutsideSession;
   /** Agents that may take it, best first. */
   agents: string[];
+}
+
+/** A session of an agent with no `SWARMUP_RUN` that wrote on a task under its own claim. */
+export interface OutsideSession {
+  agent: string;
+  /** When it last wrote an event on the task, in ms. */
+  at: number;
+}
+
+/** Events swarmupd writes as the agent, which say nothing about a session of the agent. */
+const SUPERVISOR_EVENTS = new Set(['run-start', 'run-end', 'renew']);
+/** Events with which anyone sends a task to an owner: what a session did before counts no more. */
+const ROUTING_EVENTS = new Set(['handoff', 'delegate', 'assign']);
+/** Events with which a session gives its task away or closes it: it works on it no more. */
+const GIVES_UP_EVENTS = new Set([...ROUTING_EVENTS, 'release', 'done', 'park']);
+
+/**
+ * The session outside swarmupd that worked on a claimable task last, or null. The task's newest
+ * claim is one this clone made with no run (`record`, from `.ops/claims`; swarmupd binds a claim
+ * to the run it launches, and a run's own claim names it), that agent's newest event since does
+ * not give the task away, and nobody routed the task after it. Such a session often works on
+ * without a claim, say after a change request, and a run started beside it writes in the same
+ * worktree (AO-0236).
+ */
+export function outsideSession(
+  events: OpsEvent[],
+  record: { token?: string; run?: string },
+): OutsideSession | null {
+  if (!record.token || record.run) return null;
+  const claimAt = events.findLastIndex((e) => e.type === 'claim');
+  const claim = events[claimAt];
+  if (!claim || claim.token !== record.token) return null;
+  const last = events
+    .slice(claimAt)
+    .findLast((e) =>
+      e.actor === claim.actor ? !SUPERVISOR_EVENTS.has(e.type) : ROUTING_EVENTS.has(e.type),
+    );
+  if (!last || GIVES_UP_EVENTS.has(last.type)) return null;
+  return { agent: claim.actor, at: Date.parse(last.at) };
 }
 
 /** A task waking agents could take, and why no run has started on it. */
@@ -762,6 +816,8 @@ export class Supervisor extends EventEmitter {
   private mergePlan: Promise<void> | null = null;
   /** Per task, the last event already looked at for a merge, so unchanged tasks are not read again. */
   private readonly mergeSeen = new Map<string, string>();
+  /** Approved tasks swarmupd found nothing to merge for, by the last event they had then. */
+  private readonly mergeNone = new Map<string, string>();
 
   constructor(opts: SupervisorOptions = {}) {
     super();
@@ -1057,6 +1113,23 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * The git dirs of the checkout that holds `dir`, as git named them when the tick or the API
+   * launch read the checkout, off the event loop; null outside a repo. Git runs now only for a
+   * checkout neither has read: `git rev-parse` at each launch of a writing Codex run held
+   * swarmupd's API for 0.2-1.5 s under load (AO-0215).
+   */
+  private gitDirsOf(dir: string): GitDirs | null {
+    const top = this.gitTopOf(dir);
+    if (!top) return null;
+    this.wantedTops.set(top, this.now());
+    const known = this.tickStates?.get(top);
+    if (known?.gitDirs !== undefined) return known.gitDirs;
+    const found = this.checkout(top).gitDirs();
+    if (known) known.gitDirs = found;
+    return found;
+  }
+
+  /**
    * What opsd knows of the checkout at `top`: the state the tick read at its start, or any
    * earlier one while `waits` plans. Otherwise git reads its changes now, on the event loop: a
    * launch from the API, or a checkout no tick has read yet. Each tick then reads it again.
@@ -1134,14 +1207,14 @@ export class Supervisor extends EventEmitter {
 
   /**
    * The checkout a top-level run of `agent` works in: the launch's folder, else the agent's
-   * `cwd`, else the top of the git repo of the task's root (or the first root).
+   * `cwd`, else the code checkout of the task's root (or the first root; see {@link codeTopOf}).
    */
   checkoutOf(ws: Workspace, agent: string, rootName?: string, cwd?: string): string {
-    const rootDir = rootName ? ws.roots.find((r) => r.name === rootName)?.dir : undefined;
+    const root = (rootName ? ws.roots.find((r) => r.name === rootName) : undefined) ?? ws.roots[0];
     return resolve(
       cwd ??
         this.config.agents[agent]?.cwd ??
-        this.gitTopOf(rootDir ?? ws.roots[0]?.dir ?? this.cwd) ??
+        (root ? this.codeTopOf(root) : this.gitTopOf(this.cwd)) ??
         this.cwd,
     );
   }
@@ -1156,19 +1229,27 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
-   * The git checkout of a data root that `cwd` is in, with the root's store branch (null when
-   * none is known yet); null when `cwd` is in no root's checkout. Each linked worktree is a
+   * The shared checkout of a data root that `cwd` is in: the root's own checkout, with its store
+   * branch (null when none is known yet), or the root's code checkout of `swarmupd.code` (AO-0252),
+   * with its merge base (`code` set). Null when `cwd` is in neither. Each linked worktree is a
    * checkout of its own, so a run in a worktree is in none.
    */
   private storeCheckoutOf(
     ws: Workspace,
     cwd: string,
-  ): { top: string; branch: string | null } | null {
+  ): { top: string; branch: string | null; code?: true } | null {
     const top = this.gitTopOf(resolve(cwd));
     if (!top) return null;
     for (const root of ws.roots) {
       const rootTop = this.gitTopOf(resolve(root.dir));
       if (rootTop && samePath(rootTop, top)) return { top, branch: storeBranch(root) };
+    }
+    for (const root of ws.roots) {
+      if (!this.config.code[root.name]) continue;
+      const codeTop = this.codeTopOf(root);
+      if (codeTop && samePath(codeTop, top)) {
+        return { top, branch: this.config.merge[root.name]?.base ?? null, code: true };
+      }
     }
     return null;
   }
@@ -1291,7 +1372,7 @@ export class Supervisor extends EventEmitter {
     const tops = new Map<string, Root[]>();
     for (const root of ws.roots) {
       if (root.isMirror) continue;
-      const top = this.gitTopOf(resolve(root.dir));
+      const top = this.codeTopOf(root);
       if (!top) continue;
       const key = [...tops.keys()].find((t) => samePath(t, top)) ?? top;
       tops.set(key, [...(tops.get(key) ?? []), root]);
@@ -1636,16 +1717,31 @@ export class Supervisor extends EventEmitter {
     return found;
   }
 
-  /** True when the task's newest verdict approves it and swarmupd has not merged it yet. */
+  /**
+   * True when the task's newest verdict approves it and swarmupd has not merged it yet. Like
+   * `awaitsMerge` in core's fold, only a merge event or a `no_merge` note of swarmupd settles
+   * it: after a note that the merge failed, the work is still not in the base, so the task's
+   * worktree stays and the tasks blocked on it keep waiting (AO-0228).
+   */
   private mergeWaits(ws: Workspace, ref: string): boolean {
+    const after = this.afterApproval(ws, ref)?.wrote;
+    return !!after && !after.some((e) => e.type === 'merge' || e.no_merge);
+  }
+
+  /**
+   * The time of the newest verdict of a task whose root swarmupd merges, and what swarmupd wrote
+   * after it, a note of a failed merge included; null when that verdict does not approve the
+   * task.
+   */
+  private afterApproval(ws: Workspace, ref: string) {
     const root = ref.slice(0, ref.lastIndexOf('/'));
-    if (!this.config.merge[root]) return false;
+    if (!this.config.merge[root]) return null;
     const { events } = ws.showEvents(ref);
     let at = events.length - 1;
     while (at >= 0 && events[at]!.type !== 'verdict') at--;
     const verdict = events[at];
-    if (!verdict || verdict.verdict !== 'approve' || verdict.actor === MERGE_ACTOR) return false;
-    return !events.slice(at + 1).some((e) => e.actor === MERGE_ACTOR);
+    if (!verdict || verdict.verdict !== 'approve' || verdict.actor === MERGE_ACTOR) return null;
+    return { at: verdict.at, wrote: events.slice(at + 1).filter((e) => e.actor === MERGE_ACTOR) };
   }
 
   /** Warns about a worktree swarmupd leaves in place, once per path and message. */
@@ -1728,6 +1824,33 @@ export class Supervisor extends EventEmitter {
     if (!top) return null;
     this.gitTops.set(dir, top);
     return top;
+  }
+
+  /**
+   * The folder of a root's code: `swarmupd.code.<root>` when its store is a repo of its own
+   * (AO-0252), else the root's own folder, whose git top is then the code checkout.
+   */
+  private codeDirOf(root: Pick<Root, 'name' | 'dir'>): string {
+    const code = this.config.code[root.name];
+    return resolve(code ?? root.dir);
+  }
+
+  /** The checkout of a root's code (see {@link codeDirOf}), or null when it is no git checkout. */
+  private codeTopOf(root: Pick<Root, 'name' | 'dir'>): string | null {
+    return this.gitTopOf(this.codeDirOf(root));
+  }
+
+  /** {@link codeTopOf} with git off the event loop. */
+  private codeTopAsync(root: Pick<Root, 'name' | 'dir'>): Promise<string | null> {
+    return this.gitTopAsync(this.codeDirOf(root));
+  }
+
+  /** Whether `top` is the git checkout a task store is in (not only a code checkout). */
+  private holdsStore(top: string): boolean {
+    return this.ws().roots.some((r) => {
+      const t = this.gitTopOf(resolve(r.dir));
+      return t !== null && samePath(t, top);
+    });
   }
 
   /** Why a schedule's run cannot start now, or null. */
@@ -2073,7 +2196,7 @@ export class Supervisor extends EventEmitter {
   /** The linked worktree a task's work is in (`out/wt-<id>` or a branch naming the id), or null. */
   private taskWorktree(ws: Workspace, v: TaskView): { path: string; branch: string | null } | null {
     const root = ws.roots.find((r) => r.name === v.root);
-    const top = root ? this.gitTopOf(resolve(root.dir)) : null;
+    const top = root ? this.codeTopOf(root) : null;
     if (!top) return null;
     let list: Array<{ path: string; branch: string | null }>;
     try {
@@ -2305,7 +2428,7 @@ export class Supervisor extends EventEmitter {
       // A claim by the same agent id from another clone is another run's; ws.claim refuses it.
       if (!req.review) {
         // Held by this clone without this run: bind it to the new run, unless a live run owns it.
-        heldHere = this.ws(agent).holdsClaim(ref);
+        heldHere = this.ws(agent).holdsClaim(ref, { anyRun: true });
         if (heldHere) {
           const owner = root.claimRecord(id).run;
           if (owner && this.live.has(owner))
@@ -2419,7 +2542,7 @@ export class Supervisor extends EventEmitter {
     if (mirrorRoot && !parent && !req.cwd && !agentCfg.cwd) {
       throw new OpsError(
         `${rootName} is a project mirrored in the Master Repo and has no checkout here: add the ` +
-          `project's root to this machine, or give the run a folder (opsd.agents.${agent}.cwd)`,
+          `project's root to this machine, or give the run a folder (swarmupd.agents.${agent}.cwd)`,
         2,
       );
     }
@@ -2449,7 +2572,7 @@ export class Supervisor extends EventEmitter {
       ? {
           path: worktree.path,
           branch: worktreeBranch(worktree.path),
-          store: { top: worktree.top, branch: this.storeCheckoutOf(ws, worktree.top)?.branch },
+          store: { ...this.storeCheckoutOf(ws, worktree.top), top: worktree.top },
         }
       : undefined;
     // The folder holds a stale copy of a root (a worktree on a store branch): `swarmup` in the run
@@ -2465,7 +2588,8 @@ export class Supervisor extends EventEmitter {
       .map((r) => r.dir)
       .sort((a, b) => Number(inside(b, checkoutTop)) - Number(inside(a, checkoutTop)));
     // A writing Codex run may commit in a worktree of its checkout (AO-0155).
-    const gitDirs = runtimeOf(agent) === 'codex' && !readOnly ? codexGitDirs(cwd) : [];
+    const gitDirs =
+      runtimeOf(agent) === 'codex' && !readOnly ? codexGitDirsOf(this.gitDirsOf(cwd)) : [];
     const inv = invocation(
       rc,
       agent,
@@ -3921,13 +4045,16 @@ export class Supervisor extends EventEmitter {
    * Pushes the task branches of each repo the roots live in, those with commits no base and no
    * remote branch holds, so unmerged work is not only on this machine. Then deletes the remote
    * branches of merged work whose base the remote has. A repo is skipped when any of its roots
-   * has `opsd.push_branches.<root>` set to false.
+   * has `swarmupd.push_branches.<root>` set to false.
    */
   private async pushBranches(roots: Root[]): Promise<void> {
     const repos = new Map<string, Root[]>();
+    // Each root's code checkout: the store's own repo, or `swarmupd.code` (AO-0252).
     for (const root of roots) {
-      const top = await this.gitTopAsync(resolve(root.dir));
-      if (top) repos.set(top, [...(repos.get(top) ?? []), root]);
+      const top = await this.codeTopAsync(root);
+      if (!top) continue;
+      const key = [...repos.keys()].find((t) => samePath(t, top)) ?? top;
+      repos.set(key, [...(repos.get(key) ?? []), root]);
     }
     if (repos.size === 0) return;
     const state = this.branchState();
@@ -3976,6 +4103,13 @@ export class Supervisor extends EventEmitter {
       }
     }
     this.store.writeJson('branches.json', state);
+  }
+
+  /** Pushes a merged `commit` as `base` from a code checkout with no task store (AO-0252). */
+  private async pushBase(ref: string, top: string, base: string, commit: string): Promise<void> {
+    const why = await new BranchPusher(top, this.commandEnv()).pushBase(base, commit);
+    if (why) this.emit('warn', `merge of ${ref}: ${why}`);
+    else this.emit('merge', `${ref}: pushed ${base} (${short(commit)}) from ${top}`);
   }
 
   /**
@@ -4084,7 +4218,7 @@ export class Supervisor extends EventEmitter {
     // up: the base's remote branch is never deleted (AO-0193).
     if (branch === base || Object.values(this.config.merge).some((m) => m.base === branch)) return;
     const root = this.ws().roots.find((r) => r.name === rootName);
-    const top = root ? this.gitTopOf(resolve(root.dir)) : null;
+    const top = root ? this.codeTopOf(root) : null;
     if (!top) return;
     // Queued: a push round under way holds `branches.json` until it ends.
     void this.syncWork(async () => {
@@ -4101,7 +4235,7 @@ export class Supervisor extends EventEmitter {
   // ---- Merging approved work ------------------------------------------------------------------
 
   /**
-   * Starts merging one approved task of a root with `opsd.merge` set, when no merge runs and no
+   * Starts merging one approved task of a root with `swarmupd.merge` set, when no merge runs and no
    * writing run is live in the checkout the base is built in. A task qualifies when its last
    * verdict approves it, came after swarmupd first saw the root's merge setting, has nothing from
    * swarmupd after it, and the review it approved names a branch. Planning asks git which branches
@@ -4155,8 +4289,9 @@ export class Supervisor extends EventEmitter {
     if (Object.keys(merge).length === 0) return;
     const ws = this.ws();
     const since = this.mergeSince(ws.roots.filter((r) => merge[r.name]).map((r) => r.name));
-    const done = ws
-      .views()
+    const views = ws.views();
+    this.freeMergeWaiters(ws, views, since);
+    const done = views
       .filter((v) => v.status === 'done' && merge[v.root] && v.updatedAt >= since[v.root]!)
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     for (const v of done) {
@@ -4170,7 +4305,10 @@ export class Supervisor extends EventEmitter {
       const now = this.ws().view(ref);
       if (now.status !== 'done' || now.lastEvent !== v.lastEvent) continue;
       if (!job) {
-        if (v.lastEvent) this.mergeSeen.set(ref, v.lastEvent);
+        if (v.lastEvent) {
+          this.mergeSeen.set(ref, v.lastEvent);
+          this.mergeNone.set(ref, v.lastEvent);
+        }
         continue;
       }
       // The checkout's writing run finishes first; this task waits for the next tick.
@@ -4180,6 +4318,53 @@ export class Supervisor extends EventEmitter {
         (runner) => this.mergeOne(ref, job, runner),
       );
       return;
+    }
+  }
+
+  /**
+   * Notes on approved tasks that other tasks wait on, and that swarmupd merges nothing for, that
+   * no merge comes: a task blocked on approved work waits for the merge event (AO-0228), and
+   * without the note it would wait for good with nobody told. An approval from before the root's
+   * merge setting (by the time of the verdict, whatever came after it), and reviews whose only `branch <word>` is prose, have nothing to merge: the
+   * note frees the waiters. Reviews that name `<commit> on branch <name>` the repo lacks (found
+   * by an earlier tick's `mergeJob`) are work that is missing from the base: the waiters stay
+   * blocked, and the note tells the human. Once per approval: nothing follows a note, or the
+   * note of a merge that failed.
+   */
+  private freeMergeWaiters(ws: Workspace, views: TaskView[], since: Record<string, string>): void {
+    const waited = new Set(ws.mergeWaited());
+    if (waited.size === 0) return;
+    for (const v of views) {
+      const ref = `${v.root}/${v.meta.id}`;
+      if (!waited.has(ref) || v.status !== 'done' || !v.awaitsMerge) continue;
+      const from = since[v.root];
+      if (!from) continue;
+      const approval = this.afterApproval(ws, ref);
+      // swarmupd wrote about this approval already, say that its merge failed.
+      if (approval?.wrote.length !== 0) continue;
+      // The approval's own time, as `mergeJob` reads it: a later comment moves `updatedAt`
+      // past the merge setting, and the approval is still one swarmupd never merges.
+      const before = approval.at < from;
+      if (!before && !(v.lastEvent && this.mergeNone.get(ref) === v.lastEvent)) continue;
+      const id = v.meta.id;
+      const named =
+        !before &&
+        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSources(e.body).named);
+      if (named) {
+        this.mergeNote(
+          ref,
+          `swarmupd cannot merge ${id}: its review requests name a commit and a branch, and the repo has neither. The tasks blocked on ${id} stay blocked: reopen ${id} to get the work merged, or free each of them with \`swarmup unblock\`.`,
+          ws.roots.find((r) => r.name === v.root)?.config.human,
+        );
+        continue;
+      }
+      const why = before
+        ? `it was approved before swarmupd merged approved work of ${v.root}`
+        : 'no review request names a branch or commit';
+      this.mergeNothing(
+        ref,
+        `swarmupd merges nothing for ${id}: ${why}. The tasks blocked on it go on.`,
+      );
     }
   }
 
@@ -4436,7 +4621,7 @@ export class Supervisor extends EventEmitter {
     const review = reviews[0];
     if (!review) return null;
     const root = ws.resolve(ref).root;
-    const top = cfg.checkout ? resolve(cfg.checkout) : this.gitTopOf(resolve(root.dir));
+    const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
     if (!top) return null;
     const repo = new MergeRepo(top, '', [], this.commandEnv());
     const texts = reviews.map((e) => e.body);
@@ -4636,6 +4821,17 @@ export class Supervisor extends EventEmitter {
       const { head } = merged;
       this.safe(() => this.branchMerged(ref, job.root, branch, source, cfg.base, head));
     }
+    // A code checkout with no task store (`swarmupd.code`) has no store sync to push its base, so the
+    // merged commit is pushed here (AO-0252). A `merge.checkout` without `swarmupd.code` is left as
+    // it was: nothing pushed its base before.
+    if (
+      this.config.code[job.root] &&
+      !this.holdsStore(top) &&
+      this.config.push_branches[job.root] !== false
+    ) {
+      const head = merged.head;
+      void this.syncWork(() => this.pushBase(ref, top, cfg.base, head));
+    }
     const changed = await repo.changedFiles(merged.onto, merged.head);
     const files = changed.length;
     const installDirs = lockfileDirs(changed);
@@ -4679,10 +4875,38 @@ export class Supervisor extends EventEmitter {
     const steps = cfg.build ?? [];
     const dirs = p.install === true ? ['.'] : (p.install ?? []);
     const install = steps.length > 0 ? installSteps(cfg.install, p.top, dirs) : [];
-    const build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
+    let build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
       this.mergeCommand('build', s),
     );
-    const broke = build.find((c) => !c.ok);
+    let installs = install.length;
+    // An install step with nothing to do leaves no result (AO-0229), so a result's place in the
+    // list it came from, not in `build`, tells an install from a build step.
+    const isInstall = (c: CommandResult): boolean => (c.entry ?? build.indexOf(c)) < installs;
+    let broke = build.find((c) => !c.ok);
+    // A build step that fails in a checkout swarmupd did not install in may only miss its
+    // dependencies: `node_modules` gone, behind a lockfile another commit changed, or in the
+    // middle of someone's install. The checks passed on this code, so the checkout gets one
+    // install and the build one more try before anyone hears of it (AO-0232).
+    let first: CommandResult | null = null;
+    const again = dirs.includes('.') ? [] : installSteps(cfg.install, p.top, ['.']);
+    if (
+      broke &&
+      !isInstall(broke) &&
+      broke.why !== 'stopped' &&
+      !broke.interrupted &&
+      again.length > 0
+    ) {
+      first = broke;
+      this.emit(
+        'warn',
+        `merge of ${p.ref}: build \`${broke.command}\` failed (${broke.why}) in ${p.top}; swarmupd installs the dependencies there and builds once more`,
+      );
+      build = await runner.runAll([...again, ...steps], p.top, timeout, (s) =>
+        this.mergeCommand('build', s),
+      );
+      installs = again.length;
+      broke = build.find((c) => !c.ok);
+    }
     // Stopped with swarmupd, or broken by the PC's sleep: the build stays pending, and the next swarmupd,
     // or for a sleep the next tick, runs it again.
     if (broke?.why === 'stopped' || broke?.interrupted) {
@@ -4705,7 +4929,9 @@ export class Supervisor extends EventEmitter {
           ? ''
           : broke
             ? ` Build: \`${broke.command}\` failed (${broke.why}).`
-            : ` Built with ${commands}.`;
+            : first
+              ? ` Built with ${commands}, after \`${first.command}\` failed (${first.why}) before the install.`
+              : ` Built with ${commands}.`;
       this.mergeRecord(p, `${p.text}${built}`);
     } else if (!broke && build.length > 0) {
       this.mergeNote(
@@ -4716,15 +4942,50 @@ export class Supervisor extends EventEmitter {
     this.dropPendingBuild(p.ref);
     // Once per merge: a build stopped with swarmupd returned above, and the next swarmupd tells.
     this.tellNotLive(p, build.length > 0 && !broke);
-    if (broke) {
-      this.mergeBack(
-        p.ref,
-        p.what,
-        p.author,
-        `${p.base} has it as ${short(p.commit)}, but \`${broke.command}\` failed (${broke.why}) in ${p.top}; fix it in a new commit`,
-        broke.output,
-      );
+    if (!broke) return;
+    // A failed install says nothing about the merged code: the human hears of it, and the task
+    // stays closed (AO-0232).
+    if (isInstall(broke)) {
+      this.mergeEnvFailure(p, broke);
+      return;
     }
+    const retried = first ? ', also after swarmupd installed the dependencies there' : '';
+    this.mergeBack(
+      p.ref,
+      p.what,
+      p.author,
+      `${p.base} has it as ${short(p.commit)}, but \`${broke.command}\` failed (${broke.why}) in ${p.top}${retried}; fix it in a new commit`,
+      broke.output,
+    );
+  }
+
+  /**
+   * Tells the human that the checkout of a merged base could not get its dependencies, so its
+   * build did not run. The merge stands and the task keeps its state: the author has nothing to
+   * fix. The output goes to a log file, without lines that look like secrets.
+   */
+  private mergeEnvFailure(p: PendingBuild, broke: CommandResult): void {
+    this.safe(() => {
+      const ws = this.ws(MERGE_ACTOR);
+      const human = this.user.me ?? p.human ?? ws.roots[0]?.config.human;
+      const safe = redactSecrets(broke.output);
+      const log = this.mergeLog(p.ref, safe);
+      const out = lastLines(safe);
+      const head =
+        `${ws.resolve(p.ref).id}: swarmupd merged ${p.what} into \`${p.base}\` as ${short(p.commit)}, ` +
+        `but could not install the dependencies in \`${p.top}\`: \`${broke.command}\` failed ` +
+        `(${broke.why}), so the build there did not run. This is the checkout, not the merged ` +
+        'code: the task stays as it is.';
+      const tail =
+        `Action: once no other install runs in \`${p.top}\`, install the dependencies and run ` +
+        `the build there.${log ? ` Full output: ${log}` : ''}`;
+      const fence = '```';
+      ws.comment(
+        p.ref,
+        out ? `${head}\n\n${fence}\n${out}\n${fence}\n\n${tail}` : `${head} ${tail}`,
+        human,
+      );
+    });
   }
 
   /** Builds an earlier swarmupd left pending, by task. */
@@ -4810,9 +5071,17 @@ export class Supervisor extends EventEmitter {
     });
   }
 
-  /** A comment from swarmupd on a merge it did not do, for a person. */
+  /**
+   * A comment from swarmupd on a merge it did not do, for a person. The work is still not in the
+   * base, so the tasks blocked on `ref` keep waiting (AO-0228).
+   */
   private mergeNote(ref: string, text: string, to?: string): void {
     this.safe(() => this.ws(MERGE_ACTOR).comment(ref, text, to));
+  }
+
+  /** A comment from swarmupd that it has nothing to merge for `ref`; tasks blocked on it go on. */
+  private mergeNothing(ref: string, text: string): void {
+    this.safe(() => this.ws(MERGE_ACTOR).noMerge(ref, text));
   }
 
   /** Keeps a merge's whole output, already without secrets, in swarmupd's state folder; returns the file, or null. */
@@ -4829,9 +5098,14 @@ export class Supervisor extends EventEmitter {
     }
   }
 
-  /** The environment merge commands run with: swarmupd's, without any run's identity. */
+  /**
+   * The environment merge commands run with: swarmupd's, without any run's identity. As for an
+   * agent run (`runEnv`), without the desktop app's host flags and its `SWARMUP_DAEMON_ENTRY`: a
+   * check that starts swarmupd (this repo's own tests) must start its checkout's build, not the
+   * installed app's (AO-0235).
+   */
   private commandEnv(): NodeJS.ProcessEnv {
-    const env = { ...this.env };
+    const env = runEnv(this.env, {});
     deleteEnvVars(env, ['AGENT', 'RUN', 'PARENT_RUN', 'ROOTS']);
     return env;
   }
@@ -4955,6 +5229,22 @@ export class Supervisor extends EventEmitter {
     const now = this.now();
     // Every task read once for all agents: each inbox and queue read them all again (AO-0171).
     const views = this.ws().snapshot();
+    // The session outside swarmupd that worked on a task last, read once per task.
+    const outside = new Map<string, OutsideSession | null>();
+    const outsideOf = (ws: Workspace, ref: string, events?: OpsEvent[]): OutsideSession | null => {
+      let found = outside.get(ref);
+      if (found === undefined) {
+        try {
+          const { root, id } = ws.resolve(ref);
+          found = outsideSession(events ?? ws.showEvents(ref).events, root.claimRecord(id));
+        } catch {
+          // Not a task: a channel or a vote.
+          found = null;
+        }
+        outside.set(ref, found);
+      }
+      return found;
+    };
     for (const agent of agents) {
       this.safe(() => {
         const ws = this.ws(agent);
@@ -4993,7 +5283,15 @@ export class Supervisor extends EventEmitter {
         inboxItems.set(agent, items);
         const keys = items.map((i) => i.key);
         const prev = state[agent] ?? { keys: [], at: 0 };
-        const fresh = keys.filter((k) => !prev.keys.includes(k));
+        // An item about a task that a session outside swarmupd may still work on wakes no inbox
+        // run either: that run would take the task up beside the session (AO-0236).
+        const fresh = items
+          .filter((i) => {
+            const s = outsideOf(ws, `${i.root}/${i.id}`);
+            return !(s && this.outsideHold(s));
+          })
+          .map((i) => i.key)
+          .filter((k) => !prev.keys.includes(k));
         const cooled = now - prev.at >= this.config.wake_cooldown_minutes * 60_000;
         if (fresh.length > 0 && cooled) {
           byTask.set(`inbox:${agent}`, {
@@ -5008,8 +5306,9 @@ export class Supervisor extends EventEmitter {
         }
         for (const v of ws.queue(agent, { views })) {
           const ref = `${v.root}/${v.meta.id}`;
+          const events = ws.showEvents(ref).events;
           // Work that comes back after an answer or a change request finishes before new work.
-          const last = [...ws.showEvents(ref).events]
+          const last = [...events]
             .reverse()
             .find((e) =>
               ['answer', 'verdict', 'unblock', 'claim', 'release', 'handoff', 'delegate'].includes(
@@ -5034,6 +5333,7 @@ export class Supervisor extends EventEmitter {
             avoid: v.delegation?.review,
             question: v.meta.type === QUESTION_TYPE || undefined,
             type: v.meta.type,
+            outside: outsideOf(ws, ref, events) ?? undefined,
             agents: [],
           };
           c.agents.push(agent);
@@ -5101,6 +5401,12 @@ export class Supervisor extends EventEmitter {
           continue;
         }
       } else if (live.some((r) => r.root === c.root && r.task === c.id)) {
+        continue;
+      }
+      // No agent starts beside a session outside swarmupd that may still work on the task.
+      const outside = c.kind === 'task' && c.outside ? this.outsideHold(c.outside) : null;
+      if (outside) {
+        steps.push({ c, agent: null, reason: outside });
         continue;
       }
       const backlog = this.reviewBacklog(views, c.project);
@@ -5195,6 +5501,20 @@ export class Supervisor extends EventEmitter {
         steps.push({ c, agent: null, reason: reasons.join('; ') });
       }
     }
+  }
+
+  /**
+   * Why a task waits for the session outside swarmupd that worked on it last, or null once
+   * `outside_session_minutes` have passed since that session's last event (AO-0236).
+   */
+  private outsideHold(s: OutsideSession): string | null {
+    const wait = this.config.outside_session_minutes;
+    const ago = Math.max(0, Math.floor((this.now() - s.at) / 60_000));
+    if (wait <= 0 || ago >= wait) return null;
+    return (
+      `a session of ${s.agent} outside swarmupd worked on it ${ago} min ago and may still do; ` +
+      `a run starts in ${wait - ago} min unless that session claims it (outside_session_minutes)`
+    );
   }
 
   /**
@@ -5460,30 +5780,28 @@ function gitTop(dir: string): string | null {
 }
 
 /**
- * The git folders a writing Codex run in `dir` may write: in a worktree, its own git dir
- * (`<common>/worktrees/<name>`) and the {@link CODEX_GIT_DIRS} of the repo's common dir; none
- * outside a repo. In the main checkout they all lie under the checkout's read-only `.git`, so
- * {@link codexWritableDirs} leaves them out. `logs` is made when missing, since the run cannot
- * make folders in the common dir itself.
+ * The git folders a writing Codex run in `dir` may write; git names them now, synchronously.
+ * A launch takes them from the checkout's state instead ({@link codexGitDirsOf}).
  */
-export function codexGitDirs(dir: string): string[] {
-  let out: string[];
-  try {
-    out = execFileSync('git', ['rev-parse', '--git-dir', '--git-common-dir'], {
-      cwd: dir,
-      encoding: 'utf8',
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .trim()
-      .split(/\r?\n/);
-  } catch {
-    return [];
-  }
-  const [gitDir, common] = out;
-  if (!gitDir || !common) return [];
-  const own = resolve(dir, gitDir);
-  const abs = resolve(dir, common);
+export function codexGitDirs(dir: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const top = gitTop(dir);
+  return top ? codexGitDirsOf(new Checkout(top, [], env).gitDirs()) : [];
+}
+
+/**
+ * The git folders a writing Codex run may write in a checkout whose git dirs are `found`: in a
+ * worktree, its own git dir (`<common>/worktrees/<name>`) and the {@link CODEX_GIT_DIRS} of the
+ * repo's common dir; none when git named no repo. In the main checkout they all lie under the
+ * checkout's read-only `.git`, so {@link codexWritableDirs} leaves them out. `logs` is made when
+ * missing, since the run cannot make folders in the common dir itself.
+ *
+ * `found` must be git's own answer. Reading `.git` and `commondir` as files skips git's checks
+ * (a valid git dir, `safe.directory`), and a malformed pointer then makes folders outside the
+ * repo writable.
+ */
+export function codexGitDirsOf(found: GitDirs | null): string[] {
+  if (!found) return [];
+  const { own, common: abs } = found;
   const dirs: string[] = [];
   if (own !== abs && existsSync(own)) dirs.push(own);
   for (const name of CODEX_GIT_DIRS) {

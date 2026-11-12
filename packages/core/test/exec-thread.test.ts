@@ -38,6 +38,28 @@ describe('execOffThread', () => {
     expect(err.killed).toBe(true);
   });
 
+  it('names the stream that printed too much and keeps each stream up to the limit', async () => {
+    const run = (script: string): Promise<ExecFailure> =>
+      execOffThread(node, ['-e', script], { maxBuffer: 10 }).catch(
+        (e: unknown) => e,
+      ) as Promise<ExecFailure>;
+    const code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+
+    const out = await run('process.stdout.write("o".repeat(25));process.stderr.write("e")');
+    expect(out.message).toBe('stdout maxBuffer length exceeded');
+    expect(out).toMatchObject({ code, stdout: 'o'.repeat(10), stderr: 'e' });
+
+    const err = await run('process.stdout.write("o");process.stderr.write("e".repeat(25))');
+    expect(err.message).toBe('stderr maxBuffer length exceeded');
+    expect(err).toMatchObject({ code, stdout: 'o', stderr: 'e'.repeat(10) });
+
+    const both = await run(
+      'process.stdout.write("o".repeat(25));process.stderr.write("e".repeat(25))',
+    );
+    expect(both.message).toBe('stdout maxBuffer length exceeded');
+    expect(both).toMatchObject({ code, stdout: 'o'.repeat(10), stderr: 'e'.repeat(10) });
+  });
+
   it('answers while the calling thread starts long-lived processes at the same time', async () => {
     // On Windows, a process started on the calling thread while the worker starts one can inherit
     // the worker's child pipes; a pipe held open by a long-lived run never reports its end.

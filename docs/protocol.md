@@ -38,7 +38,14 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
   extend it by `leases.work_minutes` (240). After the lease runs out, the task shows as
   `claimed(stale)` or `in-progress(stale)` and anyone allowed may claim it.
 - **Dependencies.** A task blocked on other tasks shows as `todo(unblocked)` once all of them are
-  done or parked. The next claim records an `unblock` event first.
+  done or parked. The next claim records an `unblock` event first. On a machine where swarmupd
+  merges the dependency's root (`swarmupd.merge.<root name>`), a dependency that a review approved,
+  and whose review request names a branch, counts only after swarmupd writes one of two events to
+  it as `opsd:merge`: the `merge` event, or a comment with `no_merge` that says it has nothing to
+  merge. Until then the task stays `blocked`, and `swarmup show` lists the dependency under
+  `waits for the merge of`. A merge that fails frees nothing: swarmupd sends the dependency back,
+  or leaves it done with a comment to the human, and the task keeps waiting until the work is
+  merged after a new review or someone runs `swarmup unblock`.
 
 ## Commands
 
@@ -61,7 +68,7 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | `done ID [MSG]`                                                           | Closes the task. On a `question`, MSG is the answer and goes to the asker's inbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `handoff ID TO MSG`                                                       | New owner; back to `todo`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `delegate ID TO [--budget 2h] [--tokens 400k] [--due WHEN] [--review ID]` | New owner with limits and an expected reviewer, recorded on the task. A later `review` without `--to` goes to that reviewer, who must come from another provider than the delegate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `ask ID QUESTION [--to ID \| --human]`                                    | `blocked`. Without `--to`, an agent's question waits for the PM (the `opsd.chat.agent` when it is a PM, else the first PM); the PM's own, the orchestrator's, one with `--human`, or any when no PM is configured waits for the human. The addressee of an open ask may forward it with its own `ask`; the answer still goes to the agent that asked first.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `ask ID QUESTION [--to ID \| --human]`                                    | `blocked`. Without `--to`, an agent's question waits for the PM (the `swarmupd.chat.agent` when it is a PM, else the first PM); the PM's own, the orchestrator's, one with `--human`, or any when no PM is configured waits for the human. The addressee of an open ask may forward it with its own `ask`; the answer still goes to the agent that asked first.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `block ID MSG [--on IDS] [--to ID]`                                       | Blocked on other tasks, or on a person.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `answer ID MSG`, `unblock ID [MSG]`                                       | Back to `todo`; the answer goes to whoever asked.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `release ID [MSG]`                                                        | Back to the queue.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -154,7 +161,7 @@ How a repeat fires:
   have a repeat of that name. An edit changes the repeat in the root it lives in. `swarmup repeat
 list` and the desktop cards show such a repeat as `ROOT/NAME`, the form the commands take.
 - **More than one PC.** Two PCs that both run swarmupd on one task store can fire the same slot
-  before they sync. Set `opsd.repeats: false` on all but one of them. A project root and its
+  before they sync. Set `swarmupd.repeats: false` on all but one of them. A project root and its
   Master Repo copy count as one store here.
 
 Conditions left for later: a label or status that appears, an inbox or channel event, and time
@@ -205,6 +212,13 @@ a final full stop), or an approving verdict. `swarmup report` sums these in its 
 given, tasks unblocked (total and median per answer), the median wait, recommendations accepted, and
 the five answers that unblocked the most tasks. Events written before these fields count as given
 but not in the sums.
+
+Where an approval leaves tasks waiting for swarmupd's merge (see "State machine"), the
+approving `verdict` lists only the tasks it lets move at once, such as open children. swarmupd's
+`merge` event, or its `no_merge` comment, then carries `freed` and `freed_indirect` for the tasks
+that waited for the merge, and `swarmup report` adds them to that approval's count when both the
+approval and that event lie in the report window. A note on a
+failed merge frees nothing and records nothing.
 
 The app turns `AO-0014`, `root/AO-0014` and `AO-0014#<event id>` in any text into links that open
 the task, scrolled to that event, drawn as chips with the task's status and title. People insert
@@ -277,7 +291,8 @@ Fields by type: `to` (addressee), `on` (block: task ids), `verdict` (`approve` o
 `review` (delegate), `ref` (finding: the new task; learn: the note), `token` (claim: a random id
 for this claim), `holder` (start, progress, renew, checkpoint, release: the token of the claim the
 writer acted under), `commit`, `branch` and `into` (merge: the commit the base moved to, the
-branch the work came from, the base), `keep_wait` (assign: a blocked task keeps its open question
+branch the work came from, the base), `no_merge` (comment by `opsd:merge`: swarmupd has nothing to
+merge for the approved task, so tasks blocked on it go on), `keep_wait` (assign: a blocked task keeps its open question
 or task wait under the new owner; `assign` writes it whenever the task is blocked, and triage when
 it assigns without answering; `answer` or `unblock` drop the wait on purpose, and `handoff` always
 clears it). Types that change state:
@@ -319,9 +334,9 @@ to 4000 characters) as `detail` when it says more.
 Every task that can run has an owner (AO-0140):
 
 - `swarmup new` and `swarmup assign` take a person, a configured agent, or a group (`*:engineer`,
-  `claude:*`) that a waking agent (`opsd.agents.<id>.wake: true`, role file active) answers to.
+  `claude:*`) that a waking agent (`swarmupd.agents.<id>.wake: true`, role file active) answers to.
   For a role group, that agent's provider must be one swarmupd starts the role's group work on:
-  listed in `opsd.roles.<role>.providers` (default: every runtime), and the first one when
+  listed in `swarmupd.roles.<role>.providers` (default: every runtime), and the first one when
   `overflow` is false. When no agent wakes, a group needs a configured agent instead. Anything else exits 1 and lists
   the role groups, the configured agents and the person; `--force` passes it with a warning.
 - Each tick, before it wakes agents, swarmupd gives an owner to open `todo` or `blocked` work, or to a
@@ -354,12 +369,14 @@ claim. Across machines, **the claim pushed first wins**:
    `renew` and `checkpoint` under it do not extend the winner's lease.
 3. Each clone remembers the tokens of the claims it made (`.ops/claims/<id>.json`, never committed),
    with the supervised run that made it (`SWARMUP_RUN`). The same agent id on two machines is two
-   runs, and so are two live runs of one agent id on one machine: a caller with `SWARMUP_RUN` holds a
-   claim only if the record names its run. On the clone whose claim lost, or in another run,
-   `swarmup start`, `progress` and `release` refuse with "held by ... under another claim". A claim
-   made without a run belongs to no run until swarmupd binds it to the run it launches on it. A person
-   or swarmupd acting as the agent without `SWARMUP_RUN` is not checked for a run; swarmupd renews and
-   releases as the run, so it never touches a claim another run took over.
+   runs, and so are two sessions of one agent id on one machine: a caller with `SWARMUP_RUN` holds a
+   claim only if the record names its run, and a caller without it (a session outside swarmupd)
+   only if the record names no run. On the clone whose claim lost, or in another session,
+   `swarmup start`, `progress`, `release` and the finishing commands refuse with "held by ...
+   under another claim", also when the task names that agent as its owner; `checkpoint` still
+   records the owner's notes without renewing the claim, and `--force` overrides the check. A
+   claim made without a run belongs to no run until swarmupd binds it to the run it launches on
+   it. swarmupd renews and releases as the run, so it never touches a claim another run took over.
 4. `swarmup sync` prints each lost claim. Under `coordinated` sync, `swarmup claim` reports it at once:
    "lost the claim on X to Y; pick other work". Do not release a lost claim; the task belongs to
    the winner. swarmupd stops a live run whose claim lost (reason `lost-claim`) and writes no release.

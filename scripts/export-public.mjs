@@ -44,10 +44,13 @@ if (git(top, 'status', '--porcelain', '--untracked-files=no')) {
 }
 
 // Only what git archive leaves out may be private: refuse if the task store would be included.
-const attrs = git(top, 'check-attr', 'export-ignore', '--', '.agent-ops/config.yml');
-if (!attrs.endsWith('export-ignore: set')) {
-  console.error('.agent-ops is not export-ignore in .gitattributes: refusing to export');
-  process.exit(1);
+// Both store names: `.swarmup/` since the rename, `.agent-ops/` before it.
+for (const store of ['.swarmup', '.agent-ops']) {
+  const attrs = git(top, 'check-attr', 'export-ignore', '--', `${store}/config.yml`);
+  if (!attrs.endsWith('export-ignore: set')) {
+    console.error(`${store} is not export-ignore in .gitattributes: refusing to export`);
+    process.exit(1);
+  }
 }
 
 for (const name of readdirSync(target)) {

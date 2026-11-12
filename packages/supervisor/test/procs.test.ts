@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProcInfo, ProcLedger } from '../src/index.js';
 import {
+  MarkerSplitter,
   parseLinuxStat,
   parsePs,
   parseWindows,
@@ -177,6 +178,60 @@ describe('process ledger', () => {
         start: Date.parse('Sun Nov 1 12:00:05 2026'),
       },
     ]);
+  });
+});
+
+describe('lister output splitting', () => {
+  const END = '<<END>>';
+  const feed = (chunks: string[]) => {
+    const s = new MarkerSplitter(END);
+    return chunks.flatMap((c) => s.push(c));
+  };
+  const listing = Array.from({ length: 400 }, (_, i) => `${i}\t4\t\tp${i}.exe\tp${i} --x`).join(
+    '\r\n',
+  );
+  const stream = `${listing}${END}\r\nsecond < one <<${END}${END}tail`;
+  const want = [listing, '\r\nsecond < one <<', ''];
+
+  it('gives the same outputs however the stream is cut into chunks', () => {
+    for (const size of [1, 2, 3, END.length - 1, END.length, END.length + 1, 64, stream.length]) {
+      const chunks: string[] = [];
+      for (let i = 0; i < stream.length; i += size) chunks.push(stream.slice(i, i + size));
+      expect(feed(chunks), `chunks of ${size}`).toEqual(want);
+    }
+  });
+
+  it('finds a marker split at every position across two chunks', () => {
+    for (let cut = 1; cut < END.length; cut++) {
+      expect(feed([`a${END.slice(0, cut)}`, `${END.slice(cut)}b${END}`])).toEqual(['a', 'b']);
+    }
+  });
+
+  it('holds an unfinished output until its marker arrives, and drops it on reset', () => {
+    const s = new MarkerSplitter(END);
+    expect(s.push('one')).toEqual([]);
+    expect(s.push('')).toEqual([]);
+    expect(s.push(` two${END}thr`)).toEqual(['one two']);
+    s.reset();
+    expect(s.push(`ee${END}`)).toEqual(['ee']);
+  });
+
+  it('searches each chunk once, not the whole buffer', () => {
+    const s = new MarkerSplitter(END);
+    const chunk = 'x'.repeat(4096);
+    const seen: number[] = [];
+    const indexOf = String.prototype.indexOf;
+    String.prototype.indexOf = function (this: string, ...args: [string, number?]) {
+      if (args[0] === END) seen.push(this.length - (args[1] ?? 0));
+      return indexOf.apply(this, args);
+    };
+    try {
+      for (let i = 0; i < 500; i++) s.push(chunk);
+      expect(s.push(END)).toEqual([chunk.repeat(500)]);
+    } finally {
+      String.prototype.indexOf = indexOf;
+    }
+    expect(Math.max(...seen)).toBeLessThan(chunk.length + END.length);
   });
 });
 

@@ -171,12 +171,12 @@ export function roleGroupFor(type: string, labels: readonly string[] = []): stri
 }
 
 /**
- * Providers swarmupd knows before its config lists its own (`opsd.seeded`); the keys of the
+ * Providers swarmupd knows before its config lists its own (`swarmupd.seeded`); the keys of the
  * supervisor's `DEFAULT_RUNTIMES`, which a test keeps equal.
  */
 export const DEFAULT_PROVIDERS: readonly string[] = ['claude', 'codex'];
 
-/** Which providers take work owned by `*:<role>` or by nobody: `opsd.roles.<role>`. */
+/** Which providers take work owned by `*:<role>` or by nobody: `swarmupd.roles.<role>`. */
 export interface GroupProviders {
   /** In order of preference. */
   providers: readonly string[];

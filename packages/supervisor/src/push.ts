@@ -137,6 +137,28 @@ export class BranchPusher {
     return round;
   }
 
+  /**
+   * Pushes `commit`, which swarmupd just merged, as `base` to the repo's remote: for a code
+   * checkout with no task store, whose base no store sync pushes (AO-0252). Never forces: a remote
+   * base with commits this clone lacks refuses it. A commit that adds a secret is not pushed.
+   * Returns null when pushed or when there is no remote, else why not.
+   */
+  async pushBase(base: string, commit: string): Promise<string | null> {
+    const remote = await this.remote();
+    if (!remote) return null;
+    const theirs = (await this.tips([`refs/remotes/${remote}`])).get(
+      `refs/remotes/${remote}/${base}`,
+    );
+    const leak = await this.leak(commit, theirs ? [theirs] : []);
+    if (leak) return `push of ${base} to ${remote}: a merged commit adds ${leak}; not pushed`;
+    try {
+      await this.git(['push', '-q', remote, `${commit}:refs/heads/${base}`]);
+      return null;
+    } catch (err) {
+      return `push of ${base} to ${remote} failed: ${gitError(err)}; swarmupd never forces a push`;
+    }
+  }
+
   /** The commit `branch` points at on `remote`, asked of the remote itself; null when it is gone. */
   async remoteTip(remote: string, branch: string): Promise<string | null> {
     const out = (await this.git(['ls-remote', remote, `refs/heads/${branch}`])).trim();

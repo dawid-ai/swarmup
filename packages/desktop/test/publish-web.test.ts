@@ -7,26 +7,25 @@
 import { execFile } from 'node:child_process';
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const scripts = fileURLToPath(new URL('../../../scripts/', import.meta.url));
+// The installed marked, wherever Node finds it: next to scripts/, or above a git worktree.
+const marked = dirname(createRequire(import.meta.url).resolve('marked/package.json'));
 const dirs: string[] = [];
-const links: string[] = [];
 afterEach(() => {
-  // Links first, so removing a scratch folder never reaches into what they point at.
-  for (const l of links.splice(0)) unlinkSync(l);
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -141,7 +140,8 @@ describe('publishing the website', () => {
   it('publishes what HEAD holds, with uncommitted sources and build scripts left out', async () => {
     const { d, engine, remote, published } = await setup();
     // The engine carries its own committed copy of the scripts, as the real repository does, and
-    // finds marked through a link to the installed packages.
+    // has marked installed in its own node_modules (a copy: the scratch folder is outside the
+    // repository, with no node_modules above it).
     const tools = [
       'scripts/build-docs.mjs',
       'scripts/check-docs-links.mjs',
@@ -156,8 +156,7 @@ describe('publishing the website', () => {
       mkdirSync(dirname(join(engine, name)), { recursive: true });
       copyFileSync(join(scripts, '..', name), join(engine, name));
     }
-    symlinkSync(join(scripts, '..', 'node_modules'), join(engine, 'node_modules'), 'junction');
-    links.push(join(engine, 'node_modules'));
+    cpSync(marked, join(engine, 'node_modules', 'marked'), { recursive: true });
     writeFileSync(join(engine, '.gitignore'), 'node_modules\n');
     await git(engine, 'add', '-A');
     await git(engine, 'commit', '-qm', 'scripts');
@@ -192,8 +191,8 @@ describe('publishing the website', () => {
     expect(await git(d, '--git-dir', remote, 'show', 'main:site.css')).not.toContain(
       'leaked-style',
     );
-    // The link went first, so the installed packages are still there.
-    expect(existsSync(join(scripts, '..', 'node_modules', 'marked'))).toBe(true);
+    // The build ran on a copy of the package, so the installed one is untouched.
+    expect(existsSync(join(marked, 'lib', 'marked.esm.js'))).toBe(true);
   });
 
   it('stops when the website checkout has changes of its own', async () => {

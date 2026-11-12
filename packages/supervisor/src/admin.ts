@@ -2,6 +2,8 @@ import type { ChannelMessage, UserConfig } from '@swarmup/core';
 import {
   assertActor,
   checkRoot,
+  daemonKeyIn,
+  daemonSection,
   editUserConfig,
   isHuman,
   masterRoot,
@@ -127,7 +129,7 @@ export function settingsView(sup: Supervisor): SettingsView {
   ]);
   roleNames.delete('');
   roleNames.delete('*');
-  const raw = (user as { opsd?: Record<string, unknown> }).opsd ?? {};
+  const raw = daemonSection(user) ?? {};
   const { env } = sup.context;
   return {
     path: sup.configPath,
@@ -199,8 +201,11 @@ export interface SettingsPatch {
 }
 
 function setOrDelete(doc: Document, path: string[], value: unknown): void {
-  if (value === null) doc.deleteIn(path);
-  else doc.setIn(path, value);
+  // `deleteIn` throws when a parent map is missing, as `swarmupd:` is in a fresh user config;
+  // removing a key that is not there leaves the file as it is.
+  if (value === null) {
+    if (doc.hasIn(path)) doc.deleteIn(path);
+  } else doc.setIn(path, value);
 }
 
 function obj(v: unknown, what: string): Record<string, unknown> {
@@ -260,8 +265,9 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
       if (roots) setOrDelete(doc, ['roots'], roots.length > 0 ? roots : null);
       if (master !== undefined) setOrDelete(doc, ['master'], master);
       if (notify?.webhook !== undefined)
-        setOrDelete(doc, ['opsd', 'notify', 'webhook'], notify.webhook);
-      if (notify?.kinds !== undefined) setOrDelete(doc, ['opsd', 'notify', 'kinds'], notify.kinds);
+        setOrDelete(doc, [daemonKeyIn(doc), 'notify', 'webhook'], notify.webhook);
+      if (notify?.kinds !== undefined)
+        setOrDelete(doc, [daemonKeyIn(doc), 'notify', 'kinds'], notify.kinds);
       for (const [k, v] of Object.entries(o)) {
         // Own keys only: `in` would also pass __proto__, constructor and toString.
         if (
@@ -270,18 +276,18 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
           k === 'usage_pause_at' ||
           k === 'sync'
         ) {
-          setOrDelete(doc, ['opsd', k], v);
+          setOrDelete(doc, [daemonKeyIn(doc), k], v);
         } else if (k === 'paused') {
           // Resuming removes the key, so the file keeps only what differs from the default.
-          setOrDelete(doc, ['opsd', 'paused'], v === false ? null : v);
+          setOrDelete(doc, [daemonKeyIn(doc), 'paused'], v === false ? null : v);
         } else if (k === 'roles') {
-          for (const [role, r] of Object.entries(obj(v, 'opsd.roles'))) {
-            if (!NAME_RE.test(role)) throw new OpsError(`opsd.roles: bad role '${role}'`, 2);
+          for (const [role, r] of Object.entries(obj(v, 'swarmupd.roles'))) {
+            if (!NAME_RE.test(role)) throw new OpsError(`swarmupd.roles: bad role '${role}'`, 2);
             if (r === null) {
-              doc.deleteIn(['opsd', 'roles', role]);
+              doc.deleteIn([daemonKeyIn(doc), 'roles', role]);
               continue;
             }
-            for (const [rk, rv] of Object.entries(obj(r, `opsd.roles.${role}`))) {
+            for (const [rk, rv] of Object.entries(obj(r, `swarmupd.roles.${role}`))) {
               const editable: Array<keyof RoleConfig> = [
                 ...ROLE_COUNTS,
                 'writes',
@@ -289,73 +295,79 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
                 'providers',
               ];
               if (!editable.includes(rk as keyof RoleConfig)) {
-                throw new OpsError(`opsd.roles.${role}.${rk} is not editable`, 2);
+                throw new OpsError(`swarmupd.roles.${role}.${rk} is not editable`, 2);
               }
-              setOrDelete(doc, ['opsd', 'roles', role, rk], rv);
+              setOrDelete(doc, [daemonKeyIn(doc), 'roles', role, rk], rv);
             }
           }
         } else if (k === 'runtimes') {
-          for (const [name, r] of Object.entries(obj(v, 'opsd.runtimes'))) {
+          for (const [name, r] of Object.entries(obj(v, 'swarmupd.runtimes'))) {
             // `"default"` restores a seeded provider, removed or changed, to its seeded entry.
             if (r === 'default') {
               if (!Object.hasOwn(DEFAULT_RUNTIMES, name)) {
-                throw new OpsError(`opsd.runtimes.${name}: not a default provider`, 2);
+                throw new OpsError(`swarmupd.runtimes.${name}: not a default provider`, 2);
               }
-              doc.setIn(['opsd', 'runtimes', name], doc.createNode({ ...DEFAULT_RUNTIMES[name] }));
+              doc.setIn(
+                [daemonKeyIn(doc), 'runtimes', name],
+                doc.createNode({ ...DEFAULT_RUNTIMES[name] }),
+              );
               continue;
             }
             if (!runtimes.includes(name)) {
               throw new OpsError(
-                `opsd.runtimes: no provider '${name}'; add it in Settings > Providers`,
+                `swarmupd.runtimes: no provider '${name}'; add it in Settings > Providers`,
                 2,
               );
             }
             // Removing starts no program, so the API may do it; live runs go on.
             if (r === null) {
-              doc.deleteIn(['opsd', 'runtimes', name]);
+              doc.deleteIn([daemonKeyIn(doc), 'runtimes', name]);
               continue;
             }
-            for (const [rk, rv] of Object.entries(obj(r, `opsd.runtimes.${name}`))) {
+            for (const [rk, rv] of Object.entries(obj(r, `swarmupd.runtimes.${name}`))) {
               if (!RUNTIME_KEYS.includes(rk)) {
                 throw new OpsError(
-                  `opsd.runtimes.${name}.${rk} is not editable here; the program, arguments ` +
+                  `swarmupd.runtimes.${name}.${rk} is not editable here; the program, arguments ` +
                     'and environment change in Settings > Providers > Edit',
                   2,
                 );
               }
-              setOrDelete(doc, ['opsd', 'runtimes', name, rk], rv === '' ? null : rv);
+              setOrDelete(doc, [daemonKeyIn(doc), 'runtimes', name, rk], rv === '' ? null : rv);
             }
           }
         } else if (k === 'agents') {
-          for (const [id, a] of Object.entries(obj(v, 'opsd.agents'))) {
+          for (const [id, a] of Object.entries(obj(v, 'swarmupd.agents'))) {
             assertActor(id, 'agent');
             if (isHuman(id) || id.includes('*')) {
-              throw new OpsError(`opsd.agents: '${id}' is not one agent`, 2);
+              throw new OpsError(`swarmupd.agents: '${id}' is not one agent`, 2);
             }
             if (a === null) {
-              doc.deleteIn(['opsd', 'agents', id]);
+              doc.deleteIn([daemonKeyIn(doc), 'agents', id]);
               continue;
             }
-            if (!doc.hasIn(['opsd', 'agents', id]) || doc.getIn(['opsd', 'agents', id]) === null) {
+            if (
+              !doc.hasIn([daemonKeyIn(doc), 'agents', id]) ||
+              doc.getIn([daemonKeyIn(doc), 'agents', id]) === null
+            ) {
               // A new agent needs a provider to run on; one whose provider was removed later
               // stays editable, and its runs say why they cannot start.
               const provider = id.split(':')[0]!;
               if (!Object.hasOwn(sup.config.runtimes, provider)) {
                 throw new OpsError(
-                  `opsd.agents: no provider '${provider}' for ${id}; add it in Settings > Providers first`,
+                  `swarmupd.agents: no provider '${provider}' for ${id}; add it in Settings > Providers first`,
                   2,
                 );
               }
-              doc.setIn(['opsd', 'agents', id], doc.createNode({}));
+              doc.setIn([daemonKeyIn(doc), 'agents', id], doc.createNode({}));
             }
-            for (const [ak, av] of Object.entries(obj(a, `opsd.agents.${id}`))) {
+            for (const [ak, av] of Object.entries(obj(a, `swarmupd.agents.${id}`))) {
               if (ak !== 'wake' && ak !== 'budget' && ak !== 'model') {
-                throw new OpsError(`opsd.agents.${id}.${ak} is not editable here`, 2);
+                throw new OpsError(`swarmupd.agents.${id}.${ak} is not editable here`, 2);
               }
               // Wake off is the default, so turning it off removes the key; the agent stays.
               setOrDelete(
                 doc,
-                ['opsd', 'agents', id, ak],
+                [daemonKeyIn(doc), 'agents', id, ak],
                 (ak === 'wake' && av === false) || av === '' ? null : av,
               );
             }
@@ -394,7 +406,7 @@ export function setPaused(env: NodeJS.ProcessEnv, paused: boolean): void {
   }
   editUserConfig(
     env,
-    (doc) => setOrDelete(doc, ['opsd', 'paused'], paused ? true : null),
+    (doc) => setOrDelete(doc, [daemonKeyIn(doc), 'paused'], paused ? true : null),
     (next) => void opsdConfig(next as UserConfig & { opsd?: Partial<OpsdConfig> }),
   );
 }
@@ -466,11 +478,11 @@ export function editRuntime(env: NodeJS.ProcessEnv, name: string, input: unknown
       // A config from before seeding would bring a removed default back; seed it in this write.
       seedDoc(doc, env);
       if (rc === null) {
-        doc.deleteIn(['opsd', 'runtimes', name]);
+        doc.deleteIn([daemonKeyIn(doc), 'runtimes', name]);
         return;
       }
       for (const k of ['command', 'args', 'unset_env'] as const) {
-        setOrDelete(doc, ['opsd', 'runtimes', name, k], rc[k] ?? null);
+        setOrDelete(doc, [daemonKeyIn(doc), 'runtimes', name, k], rc[k] ?? null);
       }
     },
     (next) => {
@@ -484,12 +496,12 @@ export function editRuntime(env: NodeJS.ProcessEnv, name: string, input: unknown
 /** One id the desktop offers in its agent pickers, and why it is there. */
 export interface DirectoryEntry {
   id: string;
-  /** `role`: a role file; `config`: named in opsd.agents; `runtime`: a runtime with a usual
+  /** `role`: a role file; `config`: named in swarmupd.agents; `runtime`: a runtime with a usual
    * role, runnable without a role file; `seen`: acted in a task lately. */
   source: 'role' | 'config' | 'runtime' | 'seen';
   /**
    * A write that hands it work (owner, reviewer, delegate, question target) accepts it without
-   * `--force`: a role file or an opsd.agents entry, or any id while the store defines no agent.
+   * `--force`: a role file or a swarmupd.agents entry, or any id while the store defines no agent.
    * `runtime` and `seen` ids are false then; pickers that set an owner must not offer them.
    */
   configured: boolean;
@@ -611,7 +623,7 @@ export function saveSchedule(
   sup.editConfig(
     (doc) => {
       const list = ((
-        doc.getIn(['opsd', 'schedules']) as { toJSON?: () => unknown } | undefined
+        doc.getIn([daemonKeyIn(doc), 'schedules']) as { toJSON?: () => unknown } | undefined
       )?.toJSON?.() ?? []) as ScheduleConfig[];
       const at = list.findIndex((x) => x.name === old);
       if (previous && at < 0) throw new OpsError(`no schedule '${previous}'`, 2);
@@ -621,14 +633,15 @@ export function saveSchedule(
       }
       if (at >= 0) {
         // Key by key on the existing entry, so its comments stay.
-        const path = ['opsd', 'schedules', at];
+        const path = [daemonKeyIn(doc), 'schedules', at];
         for (const k of SCHEDULE_KEYS) {
           const v = (s as unknown as Record<string, unknown>)[k];
           if (v === undefined) doc.deleteIn([...path, k]);
           else doc.setIn([...path, k], v);
         }
-      } else if (doc.hasIn(['opsd', 'schedules'])) doc.addIn(['opsd', 'schedules'], s);
-      else doc.setIn(['opsd', 'schedules'], [s]);
+      } else if (doc.hasIn([daemonKeyIn(doc), 'schedules']))
+        doc.addIn([daemonKeyIn(doc), 'schedules'], s);
+      else doc.setIn([daemonKeyIn(doc), 'schedules'], [s]);
     },
     (next) => void opsdConfig(next as UserConfig & { opsd?: Partial<OpsdConfig> }),
   );
@@ -639,11 +652,11 @@ const SCHEDULE_KEYS = ['name', 'agent', 'every', 'at', 'prompt', 'task', 'paused
 export function deleteSchedule(sup: Supervisor, name: string): void {
   sup.editConfig((doc) => {
     const list = ((
-      doc.getIn(['opsd', 'schedules']) as { toJSON?: () => unknown } | undefined
+      doc.getIn([daemonKeyIn(doc), 'schedules']) as { toJSON?: () => unknown } | undefined
     )?.toJSON?.() ?? []) as ScheduleConfig[];
     const at = list.findIndex((x) => x.name === name);
     if (at < 0) throw new OpsError(`no schedule '${name}'`, 2);
-    doc.deleteIn(['opsd', 'schedules', at]);
+    doc.deleteIn([daemonKeyIn(doc), 'schedules', at]);
   });
 }
 

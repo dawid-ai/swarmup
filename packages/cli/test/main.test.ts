@@ -1,5 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,17 +9,16 @@ import { OPS_ALIAS_NOTICE } from '../src/alias.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoTop = join(here, '..', '..', '..');
+// Resolved like any import, so a worktree without its own node_modules finds the tsc of the
+// checkout that holds it.
+const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
 const mainJs = join(repoTop, 'packages', 'cli', 'dist', 'main.js');
 const opsJs = join(repoTop, 'packages', 'cli', 'dist', 'ops.js');
 let cwd = '';
 
 beforeAll(() => {
   // Build incrementally, so the test never runs a stale main.js.
-  execFileSync(
-    process.execPath,
-    [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/cli'],
-    { cwd: repoTop, windowsHide: true },
-  );
+  execFileSync(process.execPath, [tsc, '-b', 'packages/cli'], { cwd: repoTop, windowsHide: true });
   cwd = mkdtempSync(join(tmpdir(), 'swarmup-main-'));
 }, 120_000);
 

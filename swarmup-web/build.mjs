@@ -4,11 +4,12 @@
 //   index.html      home page, from swarmup-web/pages/home.html
 //   download.html   the newest release with an installer, read from the GitHub API at build time
 //   install.html    install guide, from swarmup-web/pages/install.md
+//   founder.html    who builds SwarmUp, from swarmup-web/pages/founder.html (when the root has one)
 //   changelog.html  release notes, from UPDATES.md (the same text each GitHub Release carries)
 //   docs/           the docs site, built by scripts/build-docs.mjs from README.md and docs/
 //   404.html        sends old docs addresses (/protocol.html) to their new place under /docs/
 //   CNAME           the custom domain
-//   site.css, site.js, favicon.svg   copied from swarmup-web/assets/
+//   site.css, site.js, favicon.svg, og.png   copied from swarmup-web/assets/
 //
 // The download page never names a fixed version. It shows the release the build found, and a
 // small script asks the GitHub API again in the browser, so a release published after the build
@@ -251,12 +252,17 @@ function markdownPage(src, outFile) {
 
 // ---- Layout -------------------------------------------------------------------------------
 
+// The founder page is optional: a root without swarmup-web/pages/founder.html (a scratch repo in
+// the tests) builds the site without it and without its nav entry.
+const FOUNDER = 'swarmup-web/pages/founder.html';
+const hasFounder = existsSync(join(root, FOUNDER));
 const NAV = [
   ['index.html', 'Home'],
   ['download.html', 'Download'],
   ['install.html', 'Install'],
   ['docs/index.html', 'Docs'],
   ['changelog.html', 'Changelog'],
+  ...(hasFounder ? [['founder.html', 'Founder']] : []),
 ];
 
 // The site's own files: the mark (four squares, one per kind of worker: you, two AI providers, the
@@ -269,7 +275,9 @@ const assets = existsSync(join(root, 'swarmup-web', 'assets'))
 const asset = (name) => readFileSync(join(assets, name), 'utf8');
 const LOGO = asset('logo.svg').trim();
 const FONTS =
-  'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap';
+  'https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=Big+Shoulders+Display:wght@700;800;900&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap';
+// The picture a shared link shows. Optional, like the founder page.
+const OG_IMAGE = existsSync(join(assets, 'og.png')) ? 'og.png' : '';
 
 /**
  * One page of the site. `main`: `prose` is a text column, `wide` a page that lays out its own
@@ -283,6 +291,7 @@ function layout({
   body,
   description = '',
   script = '',
+  share = '',
   main = 'prose',
   current = file,
   up,
@@ -295,15 +304,30 @@ function layout({
   }).join('\n');
   const github = repoUrl ? `<a href="${repoUrl}">GitHub</a>` : '';
   const full = title ? `${title} · ${PRODUCT}` : PRODUCT;
+  const founder = hasFounder
+    ? `<a href="${href('founder.html')}">Built by one person and a swarm</a>`
+    : '';
+  // A shared link shows the page title, its description and the site's card image.
+  const image = OG_IMAGE
+    ? `<meta property="og:image" content="https://${domain}/${OG_IMAGE}">
+<meta name="twitter:card" content="summary_large_image">
+`
+    : '';
   const meta = description
-    ? `<meta name="description" content="${escapeHtml(description)}">\n`
+    ? `<meta name="description" content="${escapeHtml(description)}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="${PRODUCT}">
+<meta property="og:title" content="${escapeHtml(share || full)}">
+<meta property="og:description" content="${escapeHtml(description)}">
+<meta property="og:url" content="https://${domain}/${file === 'index.html' ? '' : file}">
+${image}`
     : '';
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#0E1015">
+<meta name="theme-color" content="#F1EDE2">
 <title>${escapeHtml(full)}</title>
 ${meta}<link rel="icon" href="${href('favicon.svg')}" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -325,6 +349,7 @@ ${body}
 </main>
 <footer class="bottom">
 <span>${PRODUCT} · MIT licensed · made in the open</span>
+${founder}
 ${github}
 </footer>
 ${script}</body>
@@ -335,8 +360,9 @@ ${script}</body>
 // The home page's schematic: the four steps under it light up one stage at a time, on their own
 // until the reader clicks one. Without it all four steps show and the schematic stays on Plan.
 
-// The site theme: a dark, flat ground with hairline rules, IBM Plex, and color only where it
-// means something: who did the work (you, Claude, Codex, opsd). No gradients, no glows.
+// The site theme: paper and ink with one acid accent, set in Big Shoulders Display, Archivo and
+// IBM Plex Mono. The dark bands hold the schematic and the house rules; the provider colors (you,
+// Claude, Codex, the orchestrator) show only where they say who did the work.
 
 // ---- Build --------------------------------------------------------------------------------
 
@@ -365,18 +391,24 @@ for (const src of [
 const install = markdownPage('swarmup-web/pages/install.md', 'install.html');
 const changelog = markdownPage('UPDATES.md', 'changelog.html');
 const home = readFileSync(join(root, 'swarmup-web', 'pages', 'home.html'), 'utf8');
+const founderPage = hasFounder ? readFileSync(join(root, FOUNDER), 'utf8') : '';
 // Files the build writes next to the pages, which the home page may link.
-const ASSETS = ['site.js', 'site.css', 'favicon.svg'];
+const ASSETS = ['site.js', 'site.css', 'favicon.svg', ...(OG_IMAGE ? [OG_IMAGE] : [])];
 // The home page links pages of the site and images under media/, which are the docs' own
 // screenshots (docs/media/), copied at build time so they never drift apart.
 const media = new Set();
-for (const m of home.matchAll(/\s(?:href|src)="([^"]*)"/g)) {
-  const link = m[1].split('#')[0];
-  if (!link || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.startsWith('//')) continue;
-  const known = [...NAV.map(([p]) => p), ...Object.values(SITE_PAGES), ...ASSETS];
-  if (known.includes(link)) continue;
-  if (link.startsWith('media/') && existsSync(join(root, 'docs', link))) media.add(link);
-  else errors.push(`swarmup-web/pages/home.html: broken link ${m[1]}`);
+for (const [src, html] of [
+  ['swarmup-web/pages/home.html', home],
+  [FOUNDER, founderPage],
+]) {
+  for (const m of html.matchAll(/\s(?:href|src)="([^"]*)"/g)) {
+    const link = m[1].split('#')[0];
+    if (!link || /^[a-z][a-z0-9+.-]*:/i.test(link) || link.startsWith('//')) continue;
+    const known = [...NAV.map(([p]) => p), ...Object.values(SITE_PAGES), ...ASSETS];
+    if (known.includes(link)) continue;
+    if (link.startsWith('media/') && existsSync(join(root, 'docs', link))) media.add(link);
+    else errors.push(`${src}: broken link ${m[1]}`);
+  }
 }
 if (errors.length) {
   for (const e of errors) console.error(e);
@@ -427,11 +459,25 @@ write(
     file: 'index.html',
     title: '',
     description:
-      'SwarmUp runs a team of AI coding agents and one human on one task queue, with tasks as files in git.',
+      'SwarmUp gives your Claude Code and Codex agents one task queue. They claim work, build in parallel, review each other and merge when your tests pass. You answer the few questions that are yours.',
+    share: 'SwarmUp: your coding agents need a manager. It shouldn\u2019t be you.',
     body: home,
     main: 'wide',
   }),
 );
+if (hasFounder) {
+  write(
+    'founder.html',
+    layout({
+      file: 'founder.html',
+      title: 'Founder',
+      description:
+        'Dawid J\u00f3\u017awiak builds SwarmUp alone, with the swarm it runs: 20 years in performance marketing, now building the AI that does the work.',
+      body: founderPage,
+      main: 'wide',
+    }),
+  );
+}
 
 write('install.html', layout({ file: 'install.html', title: install.title, body: install.html }));
 write(
@@ -500,7 +546,7 @@ write(
 </script>
 `,
   }).replace(
-    /href="(?:\.\/)?(site\.css|favicon\.svg|index\.html|download\.html|install\.html|changelog\.html|docs\/index\.html)"/g,
+    /href="(?:\.\/)?(site\.css|favicon\.svg|index\.html|download\.html|install\.html|changelog\.html|founder\.html|docs\/index\.html)"/g,
     'href="/$1"',
   ),
 );

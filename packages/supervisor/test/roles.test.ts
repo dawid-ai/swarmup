@@ -224,7 +224,7 @@ describe('who the app can address', () => {
     });
     expect(dir.find((d) => d.id === 'grok:pm')).toMatchObject({ source: 'seen' });
     expect(ids.some((id) => id.startsWith('human:'))).toBe(false);
-    // No role file and no opsd.agents entry: a write checks no id, so every entry is configured.
+    // No role file and no swarmupd.agents entry: a write checks no id, so every entry is configured.
     expect(dir.every((d) => d.configured)).toBe(true);
   });
 

@@ -3,6 +3,7 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { UserConfig } from '@swarmup/core';
 import {
+  daemonSection,
   envVar,
   isActorId,
   isHuman,
@@ -132,7 +133,7 @@ export interface ScheduleConfig {
 }
 
 /**
- * Merging approved work of one root (`opsd.merge.<root name>`). Kept per machine, in the user
+ * Merging approved work of one root (`swarmupd.merge.<root name>`). Kept per machine, in the user
  * config: the commands run here, and a task store's shared config never names what swarmupd runs.
  */
 export interface MergeConfig {
@@ -148,7 +149,9 @@ export interface MergeConfig {
    * Commands run before `build` in each directory of `checkout` whose `package-lock.json` or
    * `npm-shrinkwrap.json` the merge changed, so the build sees new dependencies (AO-0185).
    * Defaults to `npm install --no-save --no-audit --no-fund` in each of those directories that
-   * still has an npm lockfile; `[]` turns it off.
+   * still has an npm lockfile, followed by an install by name of the optional packages it left
+   * out (AO-0229); `[]` turns it off. Also run in `checkout` itself, once, when a `build`
+   * command fails without it, before one more build (AO-0232).
    */
   install?: string[];
   /** Minutes each command may take; default 30. */
@@ -194,6 +197,12 @@ export interface OpsdConfig {
   /** Minutes before the same agent is woken again for the same items. */
   wake_cooldown_minutes: number;
   /**
+   * Minutes swarmupd starts no run on a task after a session of an agent outside swarmupd (one
+   * with no `SWARMUP_RUN`) last wrote an event on it under its own claim, so that session can take
+   * the task up again, say after a change request (AO-0236). 0 never waits.
+   */
+  outside_session_minutes: number;
+  /**
    * Runs of a task in a row that end without finishing and with no work between them before
    * swarmupd stops starting it: it blocks the task for a PM and files a finding with what the run
    * logs say. 0 turns this off. Default 3.
@@ -202,7 +211,7 @@ export interface OpsdConfig {
   /** Commit, pull and push each root when its sync policy says so. */
   sync: boolean;
   /**
-   * The default providers were written into the file (`opsd.seeded`). From then on the file's
+   * The default providers were written into the file (`swarmupd.seeded`). From then on the file's
    * `runtimes` are the only providers; before, the defaults fill in what the file leaves out.
    */
   seeded: boolean;
@@ -224,6 +233,12 @@ export interface OpsdConfig {
    * deletes a merged one's remote branch. On for every root unless set to false.
    */
   push_branches: Record<string, boolean>;
+  /**
+   * Per root name, the code checkout of a root whose task store is a repo of its own (AO-0252).
+   * Runs start there, task worktrees are made in it, and swarmupd pushes the merge base there after
+   * each merge. Without an entry, the code is the repo the store is in.
+   */
+  code: Record<string, string>;
   /**
    * Start each run on a code task, of a role that writes, in the task's own worktree
    * (`out/wt-<ID>`, made on a task branch when missing) instead of the store checkout, so
@@ -260,7 +275,7 @@ export const DEFAULT_RUNTIMES: Record<string, RuntimeConfig> = {
 /** Roles seeded as agents for each installed default provider, such as `claude:engineer`. */
 export const DEFAULT_AGENT_ROLES = ['engineer', 'qa', 'reviewer', 'pm'];
 
-/** Written as `opsd.seeded`; bump it when the seed adds something a seeded config should get. */
+/** Written as `swarmupd.seeded`; bump it when the seed adds something a seeded config should get. */
 export const SEED_VERSION = 1;
 
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,99}$/;
@@ -283,25 +298,31 @@ export function checkModel(v: unknown, where: string): string {
  */
 function mergeRuntimes(raw: unknown, seeded: boolean): Record<string, RuntimeConfig> {
   if (raw !== undefined && raw !== null && (typeof raw !== 'object' || Array.isArray(raw))) {
-    throw new OpsError('opsd.runtimes: use one entry per provider name', 2);
+    throw new OpsError('swarmupd.runtimes: use one entry per provider name', 2);
   }
   const out: Record<string, RuntimeConfig> = {};
   if (!seeded) for (const [name, rc] of Object.entries(DEFAULT_RUNTIMES)) out[name] = { ...rc };
   for (const [name, rc] of Object.entries((raw ?? {}) as Record<string, unknown>)) {
     if (rc === null || typeof rc !== 'object') {
-      throw new OpsError(`opsd.runtimes.${name}: expected command, args and limits`, 2);
+      throw new OpsError(`swarmupd.runtimes.${name}: expected command, args and limits`, 2);
     }
     const merged = { ...out[name], ...rc } as RuntimeConfig;
     if (typeof merged.command !== 'string' || !merged.command.trim()) {
-      throw new OpsError(`opsd.runtimes.${name}.command: name the program to start`, 2);
+      throw new OpsError(`swarmupd.runtimes.${name}.command: name the program to start`, 2);
     }
     out[name] = merged;
   }
   return out;
 }
 
-export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): OpsdConfig {
-  const raw = user.opsd ?? {};
+/**
+ * swarmupd's config from the user config's `swarmupd` section, or from the old `opsd` section
+ * while the config has no `swarmupd` key, with defaults for what it leaves out.
+ */
+export function opsdConfig(
+  user: UserConfig & { swarmupd?: Partial<OpsdConfig>; opsd?: Partial<OpsdConfig> },
+): OpsdConfig {
+  const raw: Partial<OpsdConfig> = daemonSection(user) ?? {};
   const seeded = (raw as { seeded?: unknown }).seeded !== undefined;
   const cfg: OpsdConfig = {
     port: raw.port ?? DEFAULT_PORT,
@@ -317,6 +338,7 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
     signed_out_handoff_minutes: raw.signed_out_handoff_minutes ?? 15,
     budget_minutes: raw.budget_minutes ?? 180,
     wake_cooldown_minutes: raw.wake_cooldown_minutes ?? 10,
+    outside_session_minutes: raw.outside_session_minutes ?? 30,
     stuck_runs: raw.stuck_runs ?? 3,
     sync: raw.sync ?? true,
     seeded,
@@ -333,6 +355,7 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
     },
     merge: checkMerge((raw as { merge?: unknown }).merge),
     push_branches: checkPushBranches((raw as { push_branches?: unknown }).push_branches),
+    code: checkCode((raw as { code?: unknown }).code),
     task_worktrees: raw.task_worktrees ?? true,
     reclaim_worktrees: raw.reclaim_worktrees ?? true,
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
@@ -349,13 +372,14 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
     }
   };
   count(cfg.max_runs, 'max_runs', 0);
-  if (typeof cfg.paused !== 'boolean') throw new OpsError('opsd.paused: use true or false', 2);
-  if (typeof cfg.repeats !== 'boolean') throw new OpsError('opsd.repeats: use true or false', 2);
+  if (typeof cfg.paused !== 'boolean') throw new OpsError('swarmupd.paused: use true or false', 2);
+  if (typeof cfg.repeats !== 'boolean')
+    throw new OpsError('swarmupd.repeats: use true or false', 2);
   if (typeof cfg.task_worktrees !== 'boolean') {
-    throw new OpsError('opsd.task_worktrees: use true or false', 2);
+    throw new OpsError('swarmupd.task_worktrees: use true or false', 2);
   }
   if (typeof cfg.reclaim_worktrees !== 'boolean') {
-    throw new OpsError('opsd.reclaim_worktrees: use true or false', 2);
+    throw new OpsError('swarmupd.reclaim_worktrees: use true or false', 2);
   }
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');
   amount(cfg.scratch_days, 'scratch_days');
@@ -363,14 +387,14 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
   amount(cfg.tick_seconds, 'tick_seconds');
   amount(cfg.proc_seconds, 'proc_seconds');
   if (!(cfg.tick_seconds > 0 && cfg.proc_seconds > 0)) {
-    throw new OpsError('opsd.tick_seconds and opsd.proc_seconds must be above 0', 2);
+    throw new OpsError('swarmupd.tick_seconds and swarmupd.proc_seconds must be above 0', 2);
   }
   for (const [name, rc] of Object.entries(cfg.runtimes)) {
     if (rc.max_live !== undefined) count(rc.max_live, `runtimes.${name}.max_live`, 0);
     if (rc.paused !== undefined && typeof rc.paused !== 'boolean') {
-      throw new OpsError(`opsd.runtimes.${name}.paused: use true or false`, 2);
+      throw new OpsError(`swarmupd.runtimes.${name}.paused: use true or false`, 2);
     }
-    if (rc.model !== undefined) checkModel(rc.model, `opsd.runtimes.${name}.model`);
+    if (rc.model !== undefined) checkModel(rc.model, `swarmupd.runtimes.${name}.model`);
     const check = rc.sign_in_check;
     if (
       check !== undefined &&
@@ -378,7 +402,7 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
       (!Array.isArray(check) || check.length === 0 || check.some((a) => typeof a !== 'string'))
     ) {
       throw new OpsError(
-        `opsd.runtimes.${name}.sign_in_check: use a list of arguments, such as [auth, status], or false`,
+        `swarmupd.runtimes.${name}.sign_in_check: use a list of arguments, such as [auth, status], or false`,
         2,
       );
     }
@@ -390,33 +414,34 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
     if (r.max_children !== undefined) count(r.max_children, `roles.${name}.max_children`, 0);
     for (const key of ['writes', 'overflow'] as const) {
       if (r[key] !== undefined && typeof r[key] !== 'boolean') {
-        throw new OpsError(`opsd.roles.${name}.${key}: use true or false`, 2);
+        throw new OpsError(`swarmupd.roles.${name}.${key}: use true or false`, 2);
       }
     }
     if (
       r.providers !== undefined &&
       (!Array.isArray(r.providers) || r.providers.some((p) => typeof p !== 'string'))
     ) {
-      throw new OpsError(`opsd.roles.${name}.providers: use a list of runtime names`, 2);
+      throw new OpsError(`swarmupd.roles.${name}.providers: use a list of runtime names`, 2);
     }
   }
   count(cfg.review_backlog, 'review_backlog', 1);
   count(cfg.budget_minutes, 'budget_minutes', 1);
   count(cfg.wake_cooldown_minutes, 'wake_cooldown_minutes', 0);
+  count(cfg.outside_session_minutes, 'outside_session_minutes', 0);
   count(cfg.stuck_runs, 'stuck_runs', 0);
-  if (typeof cfg.sync !== 'boolean') throw new OpsError('opsd.sync: use true or false', 2);
+  if (typeof cfg.sync !== 'boolean') throw new OpsError('swarmupd.sync: use true or false', 2);
   for (const [id, a] of Object.entries(cfg.agents)) {
     if (a.wake !== undefined && typeof a.wake !== 'boolean') {
-      throw new OpsError(`opsd.agents.${id}.wake: use true or false`, 2);
+      throw new OpsError(`swarmupd.agents.${id}.wake: use true or false`, 2);
     }
     if (a.budget !== undefined) {
       // Text only: a bare number would pass here and crash the agent's next launch.
       if (typeof a.budget !== 'string') {
-        throw new OpsError(`opsd.agents.${id}.budget: use a duration such as 90m or 2h`, 2);
+        throw new OpsError(`swarmupd.agents.${id}.budget: use a duration such as 90m or 2h`, 2);
       }
       parseDuration(a.budget);
     }
-    if (a.model !== undefined) checkModel(a.model, `opsd.agents.${id}.model`);
+    if (a.model !== undefined) checkModel(a.model, `swarmupd.agents.${id}.model`);
   }
   count(cfg.usage_cooldown_minutes, 'usage_cooldown_minutes', 1);
   count(cfg.signed_out_handoff_minutes, 'signed_out_handoff_minutes', 0);
@@ -424,32 +449,32 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
     typeof cfg.usage_pause_at !== 'number' ||
     !(cfg.usage_pause_at > 0 && cfg.usage_pause_at <= 1)
   ) {
-    throw new OpsError('opsd.usage_pause_at: use a share from 0 to 1, such as 0.9', 2);
+    throw new OpsError('swarmupd.usage_pause_at: use a share from 0 to 1, such as 0.9', 2);
   }
   for (const [name, rc] of Object.entries(cfg.runtimes)) {
     if (
       rc.pause_at !== undefined &&
       (typeof rc.pause_at !== 'number' || !(rc.pause_at > 0 && rc.pause_at <= 1))
     ) {
-      throw new OpsError(`opsd.runtimes.${name}.pause_at: use a share from 0 to 1`, 2);
+      throw new OpsError(`swarmupd.runtimes.${name}.pause_at: use a share from 0 to 1`, 2);
     }
   }
   checkChat(cfg.chat);
   const names = new Set<string>();
   for (const s of cfg.schedules) {
-    if (names.has(s.name)) throw new OpsError(`opsd.schedules: '${s.name}' appears twice`, 2);
+    if (names.has(s.name)) throw new OpsError(`swarmupd.schedules: '${s.name}' appears twice`, 2);
     names.add(s.name);
     if (!s.name || !s.agent)
-      throw new OpsError('opsd.schedules: each needs a name and an agent', 2);
+      throw new OpsError('swarmupd.schedules: each needs a name and an agent', 2);
     if (!s.every === !s.at) {
-      throw new OpsError(`opsd.schedules.${s.name}: set exactly one of every or at`, 2);
+      throw new OpsError(`swarmupd.schedules.${s.name}: set exactly one of every or at`, 2);
     }
     if (s.every) parseDuration(s.every);
     if (s.paused !== undefined && typeof s.paused !== 'boolean') {
-      throw new OpsError(`opsd.schedules.${s.name}: paused is true or false`, 2);
+      throw new OpsError(`swarmupd.schedules.${s.name}: paused is true or false`, 2);
     }
     if (s.at && !/^([01]?\d|2[0-3]):[0-5]\d$/.test(s.at)) {
-      throw new OpsError(`opsd.schedules.${s.name}: at must be a time from 00:00 to 23:59`, 2);
+      throw new OpsError(`swarmupd.schedules.${s.name}: at must be a time from 00:00 to 23:59`, 2);
     }
   }
   return cfg;
@@ -457,25 +482,25 @@ export function opsdConfig(user: UserConfig & { opsd?: Partial<OpsdConfig> }): O
 
 function checkChat(c: ChatConfig): void {
   if (typeof c.agent !== 'string' || !isActorId(c.agent) || isHuman(c.agent)) {
-    throw new OpsError('opsd.chat.agent: name an agent such as claude:pm', 2);
+    throw new OpsError('swarmupd.chat.agent: name an agent such as claude:pm', 2);
   }
   if (c.agent.includes('*')) {
-    throw new OpsError('opsd.chat.agent: name one agent, not a wildcard', 2);
+    throw new OpsError('swarmupd.chat.agent: name one agent, not a wildcard', 2);
   }
   // Only Claude runs get a session to resume and a streamed reply (see `invocation`); on any
   // other runtime each turn would forget the last and the view would show no reply.
   if (runtimeOf(c.agent) !== 'claude') {
     throw new OpsError(
-      'opsd.chat.agent: the chat runs on Claude for now (it resumes a session)',
+      'swarmupd.chat.agent: the chat runs on Claude for now (it resumes a session)',
       2,
     );
   }
   if (typeof c.mentions !== 'boolean') {
-    throw new OpsError('opsd.chat.mentions: use true or false', 2);
+    throw new OpsError('swarmupd.chat.mentions: use true or false', 2);
   }
   if (c.budget !== undefined) {
     if (typeof c.budget !== 'string') {
-      throw new OpsError('opsd.chat.budget: use a duration such as 20m', 2);
+      throw new OpsError('swarmupd.chat.budget: use a duration such as 20m', 2);
     }
     parseDuration(c.budget);
   }
@@ -484,43 +509,59 @@ function checkChat(c: ChatConfig): void {
 function checkPushBranches(raw: unknown): Record<string, boolean> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new OpsError('opsd.push_branches: use one entry per root name, true or false', 2);
+    throw new OpsError('swarmupd.push_branches: use one entry per root name, true or false', 2);
   }
   for (const [root, on] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof on !== 'boolean') {
-      throw new OpsError(`opsd.push_branches.${root}: use true or false`, 2);
+      throw new OpsError(`swarmupd.push_branches.${root}: use true or false`, 2);
     }
   }
   return { ...(raw as Record<string, boolean>) };
 }
 
+function checkCode(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError('swarmupd.code: use one entry per root name, each a folder', 2);
+  }
+  for (const [root, dir] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof dir !== 'string' || dir.trim() === '') {
+      throw new OpsError(`swarmupd.code.${root}: use the folder of the code checkout`, 2);
+    }
+  }
+  return { ...(raw as Record<string, string>) };
+}
+
 function checkMerge(raw: unknown): Record<string, MergeConfig> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new OpsError('opsd.merge: use one entry per root name, each with a base branch', 2);
+    throw new OpsError('swarmupd.merge: use one entry per root name, each with a base branch', 2);
   }
   const out: Record<string, MergeConfig> = {};
   const commands = (v: unknown, name: string): string[] | undefined => {
     if (v === undefined) return undefined;
     if (!Array.isArray(v) || v.some((c) => typeof c !== 'string' || !c.trim())) {
-      throw new OpsError(`opsd.merge.${name}: use a list of commands`, 2);
+      throw new OpsError(`swarmupd.merge.${name}: use a list of commands`, 2);
     }
     return v as string[];
   };
   for (const [root, m] of Object.entries(raw as Record<string, unknown>)) {
     if (m === null || typeof m !== 'object' || Array.isArray(m)) {
-      throw new OpsError(`opsd.merge.${root}: set base, and checks and build if needed`, 2);
+      throw new OpsError(`swarmupd.merge.${root}: set base, and checks and build if needed`, 2);
     }
     const e = m as Record<string, unknown>;
     if (typeof e.base !== 'string' || !/^[A-Za-z0-9._/-]+$/.test(e.base)) {
-      throw new OpsError(`opsd.merge.${root}.base: name the branch to merge into`, 2);
+      throw new OpsError(`swarmupd.merge.${root}.base: name the branch to merge into`, 2);
     }
     if (e.checkout !== undefined && (typeof e.checkout !== 'string' || !e.checkout.trim())) {
-      throw new OpsError(`opsd.merge.${root}.checkout: use a folder path`, 2);
+      throw new OpsError(`swarmupd.merge.${root}.checkout: use a folder path`, 2);
     }
     const t = e.timeout_minutes;
     if (t !== undefined && (typeof t !== 'number' || !Number.isInteger(t) || t < 1)) {
-      throw new OpsError(`opsd.merge.${root}.timeout_minutes: use a whole number of at least 1`, 2);
+      throw new OpsError(
+        `swarmupd.merge.${root}.timeout_minutes: use a whole number of at least 1`,
+        2,
+      );
     }
     out[root] = {
       base: e.base,

@@ -26,8 +26,6 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
-  symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,7 +61,25 @@ const fail = (msg, code = 1) => {
   process.exit(code);
 };
 
+// The packages the build scripts import. Each has no dependencies of its own.
+const PACKAGES = ['marked'];
+/** The folder of an installed package, found as Node finds it: in the node_modules of `from` or
+ *  of a folder above it. A git worktree in out/ has its packages in the main checkout, above. */
+function installed(name, from) {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const found = join(dir, 'node_modules', name);
+    if (existsSync(join(found, 'package.json'))) return found;
+    if (dirname(dir) === dir) return '';
+  }
+}
+
 if (resolve(repo) === resolve(top)) fail('--repo is this repository', 2);
+// Checked before anything is cloned or created: fail() exits without cleaning up.
+const packages = PACKAGES.map((name) => {
+  const from = installed(name, self);
+  if (!from) fail(`the build needs the package ${name}; run npm ci in ${self}`);
+  return { name, from };
+});
 if (!existsSync(join(repo, '.git'))) {
   mkdirSync(dirname(repo), { recursive: true });
   git(dirname(repo), 'clone', '--quiet', remote, repo);
@@ -78,7 +94,6 @@ if (push && git(repo, 'branch', '-r')) git(repo, 'pull', '--quiet', '--ff-only')
 
 const head = git(top, 'rev-parse', '--short', 'HEAD');
 const work = mkdtempSync(join(tmpdir(), 'swarmup-web-'));
-let modules = ''; // the node_modules link inside work
 try {
   // The exported tree: git archive leaves out every export-ignore path.
   const src = join(work, 'src');
@@ -88,8 +103,10 @@ try {
   // Relative paths: GNU tar (Git Bash) reads C:\... as a remote host.
   run('tar', ['-xf', 'tree.tar', '-C', 'src'], work);
   // The build scripts, as committed in the repository this script lives in (the same one as
-  // --root unless a test points --root elsewhere). They find their packages (marked) through a
-  // link to its installed node_modules: dependencies are installed, not edited, source.
+  // --root unless a test points --root elsewhere). They run from the temporary folder, which has
+  // no node_modules above it, so their packages are copied in from where this script finds them:
+  // dependencies are installed, not edited, source. A copy, not a link: removing the folder then
+  // never reaches into the installed packages, and nothing outside it is referenced.
   const tools = join(work, 'tools');
   mkdirSync(tools);
   git(
@@ -103,10 +120,8 @@ try {
     'swarmup-web',
   );
   run('tar', ['-xf', 'tools.tar', '-C', 'tools'], work);
-  if (existsSync(join(self, 'node_modules'))) {
-    modules = join(tools, 'node_modules');
-    symlinkSync(join(self, 'node_modules'), modules, 'junction');
-  }
+  for (const { name, from } of packages)
+    cpSync(from, join(tools, 'node_modules', name), { recursive: true });
   const out = join(work, 'site');
   const build = ['--root', src, '--out', out, ...(offline ? ['--offline'] : [])];
   execFileSync(process.execPath, [join(tools, 'swarmup-web', 'build.mjs'), ...build], {
@@ -156,7 +171,5 @@ try {
     }
   }
 } finally {
-  // Unlink first, so removing work can never reach into the linked node_modules.
-  if (modules) unlinkSync(modules);
   rmSync(work, { recursive: true, force: true });
 }

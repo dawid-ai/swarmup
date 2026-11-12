@@ -136,6 +136,11 @@ export interface OpsEvent {
   /** merge: the base branch it went into. */
   into?: string;
   /**
+   * comment by swarmupd (`opsd:merge`): it has nothing to merge for the approved task, so tasks
+   * blocked on it stop waiting for a merge (AO-0228). A note on a merge that failed has none.
+   */
+  no_merge?: boolean;
+  /**
    * ask, review: the decision the writer recommends, so the person can accept it as-is (AO-0065).
    * Older events have none.
    */
@@ -144,6 +149,10 @@ export interface OpsEvent {
    * answer, unblock, approving verdict: the open tasks that waited on this decision when it was
    * written (AO-0068). For an answer or unblock the task itself comes first, then the tasks that
    * wait on it directly; for a verdict only those. Older events have none.
+   *
+   * Tasks that stay blocked until swarmupd merges the approved work are not on the verdict: the
+   * `merge` event or `no_merge` comment of swarmupd (`opsd:merge`) that ends the wait lists them
+   * (AO-0228).
    */
   freed?: string[];
   /** answer, unblock, approving verdict: the tasks that waited on `freed` at any depth. */
@@ -227,15 +236,29 @@ export interface TaskState {
    * released or answered); null in any other status.
    */
   todoSince: string | null;
+  /**
+   * The newest verdict approves work that a review request names a branch for, and no `merge`
+   * event or `no_merge` comment of swarmupd (`opsd:merge`) follows it: where swarmupd merges
+   * approved work, the work is not in the base yet (AO-0228).
+   */
+  awaitsMerge: boolean;
 }
+
+/** The actor swarmupd writes merge events, notes and send-backs as. */
+export const MERGE_ACTOR = 'opsd:merge';
 
 /** Task state after rules that need the clock or other tasks: leases and dependencies. */
 export interface TaskView extends TaskState {
   root: string;
   /** The claim's lease ran out; the task is claimable again. */
   stale: boolean;
-  /** Every task this one waited on is closed; the task is claimable again. */
+  /**
+   * Every task this one waited on is closed, and merged where swarmupd merges its approved work;
+   * the task is claimable again.
+   */
   unblocked: boolean;
+  /** blocked: the tasks it waits on that are approved but not merged yet (AO-0228). */
+  mergeWait?: string[];
   /** The task folder is under `archive/tasks/`. */
   archived?: boolean;
 }

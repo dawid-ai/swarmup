@@ -1,8 +1,17 @@
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { UserConfig } from '../src/index.js';
-import { initRoot, syncAll, Workspace } from '../src/index.js';
+import { initRoot, syncAllAsync, Workspace } from '../src/index.js';
 import { git, GIT_TEST_TIMEOUT, gitRepo, tempDir, TEST_IDENTITY, turn } from './helpers.js';
+
+/*
+ * Every sync here goes through syncAllAsync, the form swarmupd runs: its git runs off the event
+ * loop, so the vitest worker reads its RPC replies between git processes. With the synchronous
+ * syncAll, one sync under merge-check load ran past 60 s without a loop turn, and the run failed
+ * with 'Timeout calling onTaskUpdate' though every test passed (AO-0238). syncAll and
+ * syncAllAsync share their steps; mirror-sync-form.test.ts runs a scenario through syncAll, the
+ * form `swarmup sync` uses.
+ */
 
 /*
  * The two-machine world the Master Repo mirror tests share. Each scenario lives in its own
@@ -54,7 +63,7 @@ export function cloneOf(remote: string): string {
 
 /**
  * Machine 1 has the project repo and the Master Repo; machine 2 has only the Master Repo. Both
- * run every sync through syncAll, as `swarmup sync` and swarmupd do.
+ * run every sync through syncAllAsync, as swarmupd does.
  */
 export function world() {
   const site = hosted('site', 'WEB', true);
@@ -69,17 +78,17 @@ export function world() {
     new Workspace({ cwd: hub2, env, actor, user: user2, now });
   const sync1 = async () => {
     await turn();
-    return syncAll(m1('human:dawid').roots, user1, { pull: true, push: true });
+    return syncAllAsync(m1('human:dawid').roots, user1, { pull: true, push: true });
   };
   const sync2 = async () => {
     await turn();
-    return syncAll(m2('human:dawid').roots, user2, { pull: true, push: true });
+    return syncAllAsync(m2('human:dawid').roots, user2, { pull: true, push: true });
   };
   return { site, hub, hub2, m1, m2, sync1, sync2, env, user1, user2 };
 }
 
 /**
- * A machine with one project root and a Master Repo clone, syncing the way `swarmup sync` does. Use it
+ * A machine with one project root and a Master Repo clone, syncing the way swarmupd does. Use it
  * when both machines keep a project root, which world() does not model.
  */
 export function machine(site: string, hub: string, block: number) {
@@ -88,7 +97,7 @@ export function machine(site: string, hub: string, block: number) {
   const ws = (actor: string) => new Workspace({ cwd: site, env, actor, user });
   const sync = async () => {
     await turn();
-    return syncAll(ws('human:dawid').roots, user, { pull: true, push: true });
+    return syncAllAsync(ws('human:dawid').roots, user, { pull: true, push: true });
   };
   return { ws, sync };
 }

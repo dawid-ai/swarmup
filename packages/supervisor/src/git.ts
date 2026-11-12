@@ -8,7 +8,18 @@ export interface GitFailure extends Error {
   stderr: string;
   /** The exit code, or `ETIMEDOUT` when the command ran past its timeout. */
   code?: number | string;
+  /**
+   * On a tree timeout, why swarmupd could not stop what git started, such as a hook: it may still
+   * run and hold files in the checkout (AO-0251). Unset when the stop went through.
+   */
+  treeLeft?: string;
 }
+
+/**
+ * Stops the process `pid` and every process under it. Resolves to why it could not, or to
+ * `undefined` when the stop went through.
+ */
+export type TreeStop = (pid: number) => Promise<string | undefined>;
 
 /**
  * Runs git off the event loop and returns its output. swarmupd's API must keep answering while git
@@ -17,14 +28,22 @@ export interface GitFailure extends Error {
  *
  * @param opts.timeoutMs Stops git after this long; 0 or unset waits for it.
  * @param opts.tree On a timeout, stops what git started too, such as a hook that never exits
- *   (AO-0172). Without it, only git itself is stopped.
+ *   (AO-0172). Without it, only git itself is stopped. Where that stop fails, the failure's
+ *   `treeLeft` says why.
+ * @param opts.stopTree Stops git's tree on a timeout; tests replace it.
  * @param opts.maxBuffer How many bytes git may print on each stream; more ends the call with
  *   `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, as `execFile`'s `maxBuffer`. Defaults to 64 MiB.
  */
 export function gitAsync(
   cwd: string,
   args: string[],
-  opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number; tree?: boolean; maxBuffer?: number } = {},
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    tree?: boolean;
+    stopTree?: TreeStop;
+    maxBuffer?: number;
+  } = {},
 ): Promise<string> {
   const tree = Boolean(opts.tree && opts.timeoutMs);
   // Started from a worker thread: on Windows, starting a process alone held the event loop for
@@ -33,6 +52,7 @@ export function gitAsync(
   if (!tree) return gitOffThread(cwd, args, opts);
   return new Promise((resolve, reject) => {
     let timedOut = false;
+    let treeLeft: string | undefined;
     let timer: NodeJS.Timeout | undefined;
     // `spawn`, not `execFile`: `execFile` drops `detached`, so off Windows git stayed in swarmupd's
     // process group and the group kill on a timeout reached nothing (AO-0240).
@@ -81,8 +101,10 @@ export function gitAsync(
       // Too much output first, as `execFile` reports it, then a timeout; a string code names
       // another cause.
       if (overflow) failure.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-      else if (timedOut) failure.code = 'ETIMEDOUT';
-      else if (startErr) failure.code = startErr.code;
+      else if (timedOut) {
+        failure.code = 'ETIMEDOUT';
+        if (treeLeft) failure.treeLeft = treeLeft;
+      } else if (startErr) failure.code = startErr.code;
       else if (code !== null) failure.code = code;
       reject(failure);
     };
@@ -109,8 +131,18 @@ export function gitAsync(
         };
         // On Windows, an exited git's PID may already name another process, and `taskkill /T`
         // cannot reach what git left behind anyway. Off Windows, git's process group outlives git.
-        if (exited && process.platform === 'win32') drain();
-        else stopTree(pid, drain);
+        // Either way, what holds git's output open past its exit was not stopped.
+        if (exited && process.platform === 'win32') {
+          treeLeft = 'git had exited, and its PID no longer leads to what it started';
+          drain();
+        } else {
+          void (opts.stopTree ?? stopTree)(pid)
+            .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+            .then((left) => {
+              treeLeft = left;
+              drain();
+            });
+        }
       }, opts.timeoutMs);
     }
   });
@@ -135,6 +167,16 @@ async function gitOffThread(
       failure.code = 'ETIMEDOUT';
     }
     throw failure;
+  }
+}
+
+/** Whether a process with this PID runs; one that may not be asked counts as running. */
+function runs(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -171,24 +213,56 @@ function collect(stream: Readable, limit: number, onOverflow: () => void): { tex
 }
 
 /**
- * Stops `pid` and every process under it, while `pid` still runs, then calls `then`. A failure is
- * ignored: `then` kills git itself in any case.
+ * Stops `pid` and every process under it, while `pid` still runs. Resolves to why the stop
+ * failed, or to `undefined` when it went through; the caller kills git itself in any case.
  */
-function stopTree(pid: number, then: () => void): void {
+const stopTree: TreeStop = (pid) => {
   if (process.platform !== 'win32') {
     try {
       process.kill(-pid, 'SIGKILL');
-    } catch {
-      // The group is already gone.
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // `ESRCH`: the group is already gone.
+      if (code !== 'ESRCH') return Promise.resolve(`killing its process group failed (${code})`);
     }
-    return then();
+    return Promise.resolve(undefined);
   }
   // `/T` follows parent PIDs, so it reaches a hook's shell and what that shell started. Run off
-  // the event loop, like git itself.
-  execFile(
-    'taskkill',
-    ['/T', '/F', '/PID', String(pid)],
-    { windowsHide: true, timeout: 15_000 },
-    () => then(),
-  );
+  // the event loop, like git itself. A sandbox may refuse it; it then exits with an error
+  // (AO-0251).
+  return new Promise((resolve) => {
+    execFile(
+      'taskkill',
+      ['/T', '/F', '/PID', String(pid)],
+      { windowsHide: true, timeout: 15_000 },
+      (err, _stdout, stderr) => {
+        resolve(err ? taskkillLeft(err, String(stderr)) : undefined);
+      },
+    );
+  });
+};
+
+/**
+ * Why a failed `taskkill /T` may have left processes running, or `undefined` when it left none.
+ *
+ * A process that ended by itself while taskkill walked the tree, such as a hook's `sleep`, also
+ * makes it exit with an error: 1 time in 10 for a hook that loops. Its text is localized, but it
+ * names each PID it could not end, so when none of them runs any more, the stop went through.
+ *
+ * @param err What `execFile` reported: an exit code, a timeout (`killed`) or a failed start.
+ * @param stderr What taskkill printed about the processes it could not end.
+ * @param running Whether a PID still runs; tests replace it.
+ */
+export function taskkillLeft(
+  err: { code?: number | string | null; killed?: boolean; message: string },
+  stderr: string,
+  running: (pid: number) => boolean = runs,
+): string | undefined {
+  const named = (stderr.match(/\d+/g) ?? []).map(Number);
+  if (typeof err.code === 'number' && named.length > 0 && !named.some(running)) return undefined;
+  let how = `did not start (${err.code ?? err.message})`;
+  if (err.killed) how = 'did not end in 15 s';
+  else if (typeof err.code === 'number') how = `exited ${err.code}`;
+  const said = stderr.trim().split(/\r?\n/).pop()?.trim();
+  return `\`taskkill /T\` ${how}${said ? `: ${said}` : ''}`;
 }

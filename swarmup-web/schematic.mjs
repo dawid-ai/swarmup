@@ -24,7 +24,7 @@ const C = {
   grok: 'var(--grok)',
   gemini: 'var(--gemini)',
   jev: 'var(--jev)',
-  opsd: 'var(--opsd)',
+  opsd: 'var(--orchestrator)',
   queue: 'var(--fg)',
 };
 

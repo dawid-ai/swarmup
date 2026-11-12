@@ -162,7 +162,7 @@ export interface DirectoryEntry {
   /** A wildcard (`claude:*`, `*:engineer`): whoever matches claims it. */
   group?: boolean;
   /**
-   * A write that hands it work accepts it: a person, a wildcard, a role file or an opsd.agents
+   * A write that hands it work accepts it: a person, a wildcard, a role file or a swarmupd.agents
    * entry. False for a runtime with a usual role or an agent only seen lately; `swarmup assign` and
    * the other owner writes refuse those without `--force` (AO-0096).
    */
@@ -172,7 +172,7 @@ export interface DirectoryEntry {
 /**
  * Whether swarmupd marks `a` configured. An older swarmupd leaves the flag out; then the rest of its
  * directory `data` decides, the way `Workspace.unreachable` does: with a role file or an
- * opsd.agents entry, only those count; with neither, the store checks no id, so every id counts.
+ * swarmupd.agents entry, only those count; with neither, the store checks no id, so every id counts.
  */
 export function isConfigured(a: DirectoryItem, data: DirectoryItem[]): boolean {
   if (a.configured !== undefined) return a.configured;
@@ -244,7 +244,7 @@ export function directoryEntries(data: DirectoryItem[], me: string | null): Dire
 
 /**
  * Whether the store checks agent ids: swarmupd marks some entry not configured. A store with no role
- * file and no opsd.agents entry accepts every id (`Workspace.knownAgents`), typed ones too.
+ * file and no swarmupd.agents entry accepts every id (`Workspace.knownAgents`), typed ones too.
  */
 function checksIds(dir: DirectoryEntry[]): boolean {
   return dir.some((e) => !e.configured);
@@ -311,7 +311,7 @@ function UnconfiguredRow({ e, onOpen }: { e: DirectoryEntry; onOpen: () => void 
  * role; Enter picks the highlighted entry (or a typed id); Backspace on an empty box removes the
  * last tag.
  *
- * Only ids a write accepts are offered: people, wildcards, role files and opsd.agents entries.
+ * Only ids a write accepts are offered: people, wildcards, role files and swarmupd.agents entries.
  * The others (a runtime with a usual role, an agent seen lately, a typed unknown id) show greyed
  * under **Not configured**, and a click on one opens Add agent for it. Run pickers pass
  * `runnable`: swarmupd starts a run as any runtime and role, so they offer every id.

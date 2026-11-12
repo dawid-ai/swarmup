@@ -87,6 +87,36 @@ export interface UserConfig {
   id_block?: number;
 }
 
+/** The user config key that holds swarmupd's settings, such as `swarmupd.agents`. */
+export const DAEMON_KEY = 'swarmupd';
+/** The same key before the rename. Read when the config has no `swarmupd` key. */
+export const OLD_DAEMON_KEY = 'opsd';
+
+/**
+ * swarmupd's section of a user config: `swarmupd`, else the old `opsd`. The two are never merged:
+ * a config with both uses `swarmupd` alone, so one section holds every setting. An empty
+ * `swarmupd:` counts as present, the same as in `daemonKeyIn`: reads and edits use one key.
+ */
+export function daemonSection(user: UserConfig): Record<string, unknown> | undefined {
+  const u = user as Record<string, unknown>;
+  const section = Object.hasOwn(u, DAEMON_KEY) ? u[DAEMON_KEY] : u[OLD_DAEMON_KEY];
+  return section && typeof section === 'object' && !Array.isArray(section)
+    ? (section as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * The key an edit of the user config writes swarmupd's settings under: `swarmupd`, or the old
+ * `opsd` while the file holds only that one. An edit never renames or moves a person's section.
+ * A section left empty (`swarmupd:` with no value) becomes an empty map here, because `setIn`
+ * refuses to write a setting under a null.
+ */
+export function daemonKeyIn(doc: YAML.Document): string {
+  const key = !doc.has(DAEMON_KEY) && doc.has(OLD_DAEMON_KEY) ? OLD_DAEMON_KEY : DAEMON_KEY;
+  if (doc.has(key) && doc.get(key) == null) doc.set(key, doc.createNode({}));
+  return key;
+}
+
 /** The store folder inside a repo. */
 export const ROOT_DIR_NAME = '.swarmup';
 /**

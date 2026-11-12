@@ -1,5 +1,5 @@
 import type { Workspace } from '@swarmup/core';
-import { OpsError, runtimeOf } from '@swarmup/core';
+import { MERGE_ACTOR, OpsError, runtimeOf } from '@swarmup/core';
 import type { RunRecord } from './runs.js';
 
 export interface ProjectReport {
@@ -134,7 +134,20 @@ export function buildReport(
     tasksIn.add(`${t.root}/${t.meta.id}`);
     // Answers in the window: only tasks with an event since the window opened can have one.
     if (t.updatedAt >= fromIso) {
+      // The approval whose dependents wait for swarmupd's merge (AO-0228): the merge event, or
+      // swarmupd's note that it merges nothing, names the tasks it frees, and they count for
+      // that approval. Both events must lie in the window: a merge after its end adds nothing,
+      // so the report of a past window does not change later.
+      let approval: AnswerLine | undefined;
       for (const e of ws.showEvents(`${t.root}/${t.meta.id}`).events) {
+        if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) {
+          if (approval && e.freed && inWindow(e.at)) {
+            approval.unblocked += e.freed.length + (e.freed_indirect?.length ?? 0);
+          }
+          approval = undefined;
+          continue;
+        }
+        if (e.type === 'verdict') approval = undefined;
         const answer =
           e.type === 'answer' ||
           e.type === 'unblock' ||
@@ -147,7 +160,7 @@ export function buildReport(
         if (!answer) continue;
         given++;
         if (!e.freed) continue;
-        answers.push({
+        const line: AnswerLine = {
           task: t.meta.id,
           event: e.id,
           type: e.type,
@@ -156,7 +169,9 @@ export function buildReport(
           unblocked: e.freed.length + (e.freed_indirect?.length ?? 0),
           ...(e.waited_minutes !== undefined ? { waitedMinutes: e.waited_minutes } : {}),
           ...(e.accepted !== undefined ? { accepted: e.accepted } : {}),
-        });
+        };
+        answers.push(line);
+        if (e.type === 'verdict') approval = line;
       }
     }
     const p = project(t.meta.project ?? t.root);

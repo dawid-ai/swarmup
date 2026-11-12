@@ -35,6 +35,11 @@ function writeInfo(pid: number): void {
   );
 }
 
+/** What swarmupd writes when it takes the per-state-folder lock, before its API listens. */
+function writeLock(pid: number): void {
+  writeFileSync(join(dir, 'opsd.lock'), JSON.stringify({ pid, start: null }));
+}
+
 function track<T>(p: Promise<T>): { settled: boolean; value?: T } {
   const s: { settled: boolean; value?: T } = { settled: false };
   void p.then((v) => {
@@ -72,6 +77,41 @@ describe('awaitDaemon', () => {
     await vi.advanceTimersByTimeAsync(400);
     expect(wait.settled).toBe(true);
     expect(wait.value).toBeNull();
+  });
+
+  it('waits for the lock holder to answer when the child exited before it wrote its address', async () => {
+    // The child lost the lock to a slower swarmupd (this process stands in for it).
+    writeLock(process.pid);
+    const wait = track(awaitDaemon({ pid: 999_999, exitCode: 1 }, env));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(wait.settled).toBe(false);
+    writeInfo(process.pid);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(wait.settled).toBe(true);
+    expect(wait.value).toMatchObject({ pid: process.pid, port: 1 });
+  });
+
+  it('gives up at the deadline on a lock holder that never answers', async () => {
+    writeLock(process.pid);
+    const wait = track(awaitDaemon({ pid: 999_999, exitCode: 1 }, env));
+    await vi.advanceTimersByTimeAsync(START_WAIT_MS - 1_000);
+    expect(wait.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(wait.settled).toBe(true);
+    expect(wait.value).toBeNull();
+  });
+
+  it('stops at once when the child exited and the lock names a dead process or the child', async () => {
+    writeLock(999_999);
+    const dead = track(awaitDaemon({ pid: 999_998, exitCode: 1 }, env));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(dead.settled).toBe(true);
+    expect(dead.value).toBeNull();
+    writeLock(process.pid);
+    const own = track(awaitDaemon({ pid: process.pid, exitCode: 1 }, env));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(own.settled).toBe(true);
+    expect(own.value).toBeNull();
   });
 
   it('returns the swarmupd that won the lock when the child exited', async () => {

@@ -39,10 +39,11 @@ export interface DoctorOptions {
 /** Disk space below which a root gets a warning: clones, logs and builds need room. */
 const DISK_WARN_GB = 5;
 
-function gitOut(cwd: string, args: string[]): string | null {
+function gitOut(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string | null {
   try {
     return execFileSync('git', args, {
       cwd,
+      env,
       encoding: 'utf8',
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -277,6 +278,17 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
               fix: 'push the branch once with `git push -u`',
             },
       );
+      // `swarmup sync` and every agent run commit here; with no name and email git refuses (AO-0211).
+      if (gitOut(r.dir, ['var', 'GIT_COMMITTER_IDENT'], env) === null) {
+        add({
+          id: `git-identity:${r.dir}`,
+          label: `Git identity for ${r.name}`,
+          status: 'fail',
+          detail:
+            'git has no user name and email here, so swarmup sync and agent runs cannot commit',
+          fix: 'run `git config --global user.name "Your Name"` and `git config --global user.email you@example.com`',
+        });
+      }
     }
     for (const p of ws.agentProblems()) {
       add({
@@ -320,7 +332,7 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
         label: `Runtime ${name}`,
         status: 'fail',
         detail: 'no command set',
-        fix: `set opsd.runtimes.${name}.command to the program to run`,
+        fix: `set swarmupd.runtimes.${name}.command to the program to run`,
       });
       continue;
     }
@@ -336,7 +348,7 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
         label: `Runtime ${name}`,
         status: 'fail',
         detail: `'${command}' is not on PATH`,
-        fix: `install ${name}, or set opsd.runtimes.${name}.command to its full path`,
+        fix: `install ${name}, or set swarmupd.runtimes.${name}.command to its full path`,
       });
       continue;
     }
@@ -425,7 +437,7 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
           label: 'Free memory',
           status: 'fail',
           detail: `${gb(mem)} free; min_free_gb is ${minGb}, so swarmupd starts no runs`,
-          fix: 'close programs, or lower opsd.min_free_gb in Settings',
+          fix: 'close programs, or lower swarmupd.min_free_gb in Settings',
         }
       : {
           id: 'memory',

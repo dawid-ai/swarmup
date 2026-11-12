@@ -1,5 +1,6 @@
 import type { OpsEvent, Status, TaskMeta, TaskState, TaskView } from './model.js';
-import { OPEN_STATUSES } from './model.js';
+import { MERGE_ACTOR, OPEN_STATUSES } from './model.js';
+import { reviewSources } from './review-source.js';
 import { ownerMatches } from './ids.js';
 import { ulidTime } from './ulid.js';
 
@@ -69,7 +70,10 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
     lostClaims: [],
     delegation: null,
     todoSince: meta.created_at,
+    awaitsMerge: false,
   };
+  // Whether a review request so far names a branch: what swarmupd looks for to merge.
+  let namesBranch = false;
   if (meta.blocked_by && meta.blocked_by.length > 0) {
     s.status = 'blocked';
     s.blockedOn = [...meta.blocked_by];
@@ -107,6 +111,10 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         ...(e.recommend ? { recommend: e.recommend } : {}),
       });
     }
+    // Only the merge itself, or swarmupd's word that it has nothing to merge, settles an approval's
+    // merge. A note on a merge that failed leaves the work out of the base, so it settles nothing;
+    // a send-back is a verdict, handled below.
+    if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) s.awaitsMerge = false;
     switch (e.type) {
       case 'claim': {
         const free =
@@ -192,9 +200,14 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
           ...(e.recommend ? { recommend: e.recommend } : {}),
         };
         clearClaim();
+        if (!namesBranch) {
+          const src = reviewSources(e.body);
+          namesBranch = !!src.named || src.loose.length > 0;
+        }
         break;
       case 'verdict':
         s.status = e.verdict === 'approve' ? 'done' : 'todo';
+        s.awaitsMerge = e.verdict === 'approve' && e.actor !== MERGE_ACTOR && namesBranch;
         s.reviewer = null;
         clearClaim();
         break;
@@ -258,12 +271,17 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
   return s;
 }
 
-/** Applies the rules that need the clock or other tasks: expired leases and finished dependencies. */
+/**
+ * Applies the rules that need the clock or other tasks: expired leases and finished dependencies.
+ * `mergePending` says whether a dependency is approved work that swarmupd on this machine still
+ * has to merge; such a dependency is closed but does not free the task yet (AO-0228).
+ */
 export function derive(
   state: TaskState,
   root: string,
   nowMs: number,
   statusOf: (id: string) => Status | undefined,
+  mergePending: (id: string) => boolean = () => false,
 ): TaskView {
   const view: TaskView = { ...state, root, stale: false, unblocked: false };
   if (
@@ -278,7 +296,12 @@ export function derive(
       const st = statusOf(id);
       return st === 'done' || st === 'parked';
     });
-    if (allClosed) view.unblocked = true;
+    // A parked dependency is closed for good, whatever its last verdict said.
+    const unmerged = allClosed
+      ? state.blockedOn.filter((id) => statusOf(id) === 'done' && mergePending(id))
+      : [];
+    if (unmerged.length > 0) view.mergeWait = unmerged;
+    else if (allClosed) view.unblocked = true;
   }
   return view;
 }

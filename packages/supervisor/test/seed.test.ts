@@ -13,6 +13,7 @@ import {
   runModel,
   seedOnStart,
   seedUserConfig,
+  setPaused,
 } from '../src/index.js';
 
 const dirs: string[] = [];
@@ -110,6 +111,81 @@ describe('seeding providers and agents', () => {
     expect(opsdConfig({ opsd: { agents: { 'codex:qa': null } } } as never).agents).toEqual({
       'codex:qa': {},
     });
+  });
+});
+
+describe('the swarmupd section and its old key (AO-0250)', () => {
+  it('seeds a clean profile under swarmupd', () => {
+    const env = configAt();
+    seedUserConfig(env, { agents: true, installed: onlyClaude });
+    const text = readFileSync(env.SWARMUP_CONFIG!, 'utf8');
+    expect(text).toMatch(/^swarmupd:$/m);
+    expect(text).not.toMatch(/opsd/);
+  });
+
+  it('reads the swarmupd section in swarmupd and in core', () => {
+    const user = {
+      swarmupd: {
+        seeded: 1,
+        max_runs: 3,
+        runtimes: { fake: { command: 'fake' } },
+        agents: { 'fake:qa': { wake: true } },
+        roles: { qa: { providers: ['fake'], overflow: false } },
+        chat: { agent: 'claude:pm' },
+      },
+    } as UserConfig;
+    const cfg = opsdConfig(user);
+    expect(cfg.max_runs).toBe(3);
+    expect(Object.keys(cfg.runtimes)).toEqual(['fake']);
+    const cwd = mkdtempSync(join(tmpdir(), 'swarmupd-section-'));
+    dirs.push(cwd);
+    const ws = new Workspace({ user, cwd, actor: 'human:dawid', env: {} as NodeJS.ProcessEnv });
+    expect(ws.wakingAgents()).toEqual(['fake:qa']);
+    expect(ws.knownAgents()).toEqual(['fake:qa']);
+    expect(ws.groupProviders('fake:qa')).toEqual({ providers: ['fake'], overflow: false });
+  });
+
+  it('keeps reading and editing an opsd section while the file has no swarmupd key', () => {
+    const env = configAt('opsd:\n  max_runs: 4 # four\n');
+    expect(opsdConfig(readUserConfig(env)).max_runs).toBe(4);
+    expect(seedUserConfig(env).seeded).toBe(true);
+    setPaused(env, true);
+    const text = readFileSync(env.SWARMUP_CONFIG!, 'utf8');
+    expect(text).toMatch(/^opsd:\n {2}max_runs: 4 # four$/m);
+    expect(text).not.toMatch(/swarmupd/);
+    const cfg = opsdConfig(readUserConfig(env));
+    expect(cfg.paused).toBe(true);
+    expect(cfg.seeded).toBe(true);
+  });
+
+  it('uses swarmupd alone when a file has both, and leaves the opsd section as it is', () => {
+    const env = configAt('opsd:\n  max_runs: 4\n  paused: true\nswarmupd:\n  seeded: 1\n');
+    const cfg = opsdConfig(readUserConfig(env));
+    expect(cfg.max_runs).not.toBe(4);
+    expect(cfg.paused).toBe(false);
+    setPaused(env, true);
+    expect(readFileSync(env.SWARMUP_CONFIG!, 'utf8')).toBe(
+      'opsd:\n  max_runs: 4\n  paused: true\nswarmupd:\n  seeded: 1\n  paused: true\n',
+    );
+  });
+
+  it('ignores the opsd section when the file has an empty swarmupd key', () => {
+    for (const empty of ['swarmupd:\n', 'swarmupd: {}\n', 'swarmupd: ~\n']) {
+      const env = configAt(`opsd:\n  max_runs: 4\n  paused: true\n${empty}`);
+      const before = opsdConfig(readUserConfig(env));
+      expect(before.max_runs).not.toBe(4);
+      expect(before.paused).toBe(false);
+      setPaused(env, true);
+      const text = readFileSync(env.SWARMUP_CONFIG!, 'utf8');
+      expect(text).toMatch(/^opsd:\n {2}max_runs: 4\n {2}paused: true\n/);
+      const after = opsdConfig(readUserConfig(env));
+      expect(after.paused).toBe(true);
+      expect(after.max_runs).toBe(before.max_runs);
+    }
+  });
+
+  it('names the new key in what it refuses', () => {
+    expect(() => opsdConfig({ opsd: { sync: 'no' } } as never)).toThrow(/^swarmupd\.sync/);
   });
 });
 

@@ -32,7 +32,7 @@ import {
   readChannel,
 } from './channels.js';
 import type { UserConfig } from './config.js';
-import { discoverRoots, readUserConfig } from './config.js';
+import { daemonSection, discoverRoots, readUserConfig } from './config.js';
 import { envVar } from './env.js';
 import type { Decision, DecisionMeta } from './decisions.js';
 import {
@@ -73,7 +73,8 @@ import { searchBudget, searchSources } from './search-index.js';
 import type { Timeline, TimelineTask } from './timeline.js';
 import { buildTimeline } from './timeline.js';
 import type { OpsEvent, Priority, Status, TaskMeta, TaskView } from './model.js';
-import { OPEN_STATUSES, PRIORITIES } from './model.js';
+import { MERGE_ACTOR, OPEN_STATUSES, PRIORITIES } from './model.js';
+import { reviewSources } from './review-source.js';
 import type {
   Condition,
   FiredRepeat,
@@ -487,6 +488,15 @@ function blockedSet(
   return { direct: direct.map(show), indirect: indirect.sort().map(show) };
 }
 
+/** A blocked set as the `freed` fields of an event, after the task itself when `self` is given. */
+function freedFields(
+  set: BlockedSet,
+  self?: string,
+): Pick<PlannedEvent, 'freed' | 'freed_indirect'> {
+  const freed = self === undefined ? set.direct : [self, ...set.direct];
+  return { freed, ...(set.indirect.length > 0 ? { freed_indirect: set.indirect } : {}) };
+}
+
 /** A recommendation (AO-0065) trimmed to one line of at most 500 characters; undefined if empty. */
 function recommendText(text: string | undefined): string | undefined {
   const t = text?.trim().replace(/\s*\n\s*/g, ' ');
@@ -611,6 +621,15 @@ export class Workspace {
     return dep.root === from ? dep.id : `${dep.root.name}/${dep.id}`;
   }
 
+  /**
+   * The roots whose approved work swarmupd merges on this machine (`swarmupd.merge.<root name>` in
+   * the user config). A task blocked on approved work of such a root waits for the merge (AO-0228).
+   */
+  private mergeRoots(): Set<string> {
+    const merge = daemonSection(this.user)?.merge;
+    return new Set(merge && typeof merge === 'object' ? Object.keys(merge) : []);
+  }
+
   /** The task a dependency stored on a task in `from` points at, if it still exists. */
   private depTarget(from: Root, ref: string): { root: Root; id: string } | undefined {
     const slash = ref.indexOf('/');
@@ -697,13 +716,13 @@ export class Workspace {
 
   /**
    * Agent ids a run can start as: role files (`agents/*.md`) in any root, and the agents in the
-   * user config's swarmupd section (`opsd.agents`). Empty when neither defines one; then no id is
+   * user config's swarmupd section (`swarmupd.agents`). Empty when neither defines one; then no id is
    * checked, so a store without agent definitions keeps working.
    */
   knownAgents(): string[] {
-    const opsd = (this.user as { opsd?: { agents?: unknown } }).opsd;
+    const daemon = daemonSection(this.user);
     const configured =
-      opsd?.agents && typeof opsd.agents === 'object' ? Object.keys(opsd.agents) : [];
+      daemon?.agents && typeof daemon.agents === 'object' ? Object.keys(daemon.agents) : [];
     const ids = [...this.agents().map((a) => a.id), ...configured.filter(isActorId)];
     return [...new Set(ids)].filter((id) => !isHuman(id)).sort();
   }
@@ -723,12 +742,12 @@ export class Workspace {
   }
 
   /**
-   * Agents swarmupd starts runs for on its own: `opsd.agents.<id>.wake: true` in the user config,
+   * Agents swarmupd starts runs for on its own: `swarmupd.agents.<id>.wake: true` in the user config,
    * without a paused or proposed role file.
    */
   wakingAgents(): string[] {
-    const opsd = (this.user as { opsd?: { agents?: unknown } }).opsd;
-    const agents = opsd?.agents && typeof opsd.agents === 'object' ? opsd.agents : {};
+    const daemon = daemonSection(this.user);
+    const agents = daemon?.agents && typeof daemon.agents === 'object' ? daemon.agents : {};
     return Object.entries(agents as Record<string, { wake?: unknown } | null>)
       .filter(([id, c]) => isActorId(id) && !isHuman(id) && c?.wake === true)
       .filter(([id]) => !roleInactive(this.agent(id)))
@@ -755,11 +774,11 @@ export class Workspace {
 
   /**
    * The PM that triages findings and answers agents' asks (AO-0173): the chat agent when it is a
-   * PM (`opsd.chat.agent`), else the first configured PM. Undefined without one; then findings
+   * PM (`swarmupd.chat.agent`), else the first configured PM. Undefined without one; then findings
    * and asks go to the person, as before.
    */
   triagePm(): string | undefined {
-    const chat = (this.user as { opsd?: { chat?: { agent?: unknown } } }).opsd?.chat?.agent;
+    const chat = (daemonSection(this.user)?.chat as { agent?: unknown } | null | undefined)?.agent;
     return this.defaultAgent('pm', undefined, typeof chat === 'string' ? [chat] : []);
   }
 
@@ -789,24 +808,23 @@ export class Workspace {
     }
     const matching = waking.filter((a) => ownerMatches(id, a));
     if (matching.length === 0) return `${id} matches no waking agent`;
-    // swarmupd starts `*:<role>` work only on the role's providers (`opsd.roles.<role>.providers`,
+    // swarmupd starts `*:<role>` work only on the role's providers (`swarmupd.roles.<role>.providers`,
     // `overflow`); a provider group (`claude:*`) is not limited by them.
     if (!id.startsWith('*:') || matching.some((a) => takesGroupWork(a, this.groupProviders(a)))) {
       return null;
     }
     const role = roleOf(id);
-    return `${id} matches no waking agent of the role's providers (opsd.roles.${role}.providers, overflow)`;
+    return `${id} matches no waking agent of the role's providers (swarmupd.roles.${role}.providers, overflow)`;
   }
 
   /**
    * Which providers take `*:<role>` work for the role of `agent`, from the user config's
-   * `opsd.roles.<role>`: `providers` (default: every runtime swarmupd knows) and `overflow` (default
+   * `swarmupd.roles.<role>`: `providers` (default: every runtime swarmupd knows) and `overflow` (default
    * true). swarmupd passes the same from its parsed config (`roleLimits`).
    */
   groupProviders(agent: string): GroupProviders {
-    const opsd = (this.user as { opsd?: { roles?: unknown; runtimes?: unknown; seeded?: unknown } })
-      .opsd;
-    const roles = opsd?.roles && typeof opsd.roles === 'object' ? opsd.roles : {};
+    const daemon = daemonSection(this.user);
+    const roles = daemon?.roles && typeof daemon.roles === 'object' ? daemon.roles : {};
     const r = (roles as Record<string, { providers?: unknown; overflow?: unknown } | null>)[
       roleOf(agent)
     ];
@@ -815,10 +833,12 @@ export class Workspace {
         ? (r.providers as string[])
         : undefined;
     const configured =
-      opsd?.runtimes && typeof opsd.runtimes === 'object' ? Object.keys(opsd.runtimes) : [];
+      daemon?.runtimes && typeof daemon.runtimes === 'object' ? Object.keys(daemon.runtimes) : [];
     // Before seeding, swarmupd fills in the default providers, as its `mergeRuntimes` does.
     const runtimes =
-      opsd?.seeded !== undefined ? configured : [...new Set([...DEFAULT_PROVIDERS, ...configured])];
+      daemon?.seeded !== undefined
+        ? configured
+        : [...new Set([...DEFAULT_PROVIDERS, ...configured])];
     return {
       providers: listed ?? runtimes,
       overflow: typeof r?.overflow === 'boolean' ? r.overflow : true,
@@ -879,7 +899,7 @@ export class Workspace {
       let blocker: string | undefined;
       if (answering.length === 0) blocker = `no waking agent answers to ${to}`;
       else if (providers.length === 0) {
-        blocker = `no waking agent of ${to} is one of its providers (opsd.roles.${role}.providers, overflow)`;
+        blocker = `no waking agent of ${to} is one of its providers (swarmupd.roles.${role}.providers, overflow)`;
       } else if (eligible.length === 0) {
         blocker = `every waking provider of ${to} is the provider of the expected reviewer ${avoid}`;
       } else if (!eligible.some((a) => canClaimType(this.agent(a), v.meta.type, a))) {
@@ -1035,13 +1055,18 @@ export class Workspace {
     // Keyed by root name and id: two roots can both hold T-0001.
     const status = new Map(all.map(({ root, s }) => [`${root.name}/${s.meta.id}`, s.status]));
     const nowMs = this.now();
+    const merges = this.mergeRoots();
     return all.map(({ root, s, archived }) => {
       const statusOf = (ref: string): Status | undefined => {
         const dep = this.depTarget(root, ref);
         if (!dep) return undefined;
         return status.get(`${dep.root.name}/${dep.id}`) ?? dep.root.foldTask(dep.id).status;
       };
-      const v = derive(s, root.name, nowMs, statusOf);
+      const mergePending = (ref: string): boolean => {
+        const dep = this.depTarget(root, ref);
+        return !!dep && merges.has(dep.root.name) && dep.root.foldTask(dep.id).awaitsMerge;
+      };
+      const v = derive(s, root.name, nowMs, statusOf, mergePending);
       if (archived) v.archived = true;
       return v;
     });
@@ -1088,6 +1113,24 @@ export class Workspace {
     return out;
   }
 
+  /**
+   * The closed tasks that a blocked task still waits on because swarmupd has not merged their
+   * approved work yet, as `root/id` (AO-0228).
+   */
+  mergeWaited(): string[] {
+    const out = new Set<string>();
+    for (const v of this.allViews()) {
+      if (!v.mergeWait) continue;
+      const root = this.roots.find((r) => r.name === v.root);
+      if (!root) continue;
+      for (const d of v.mergeWait) {
+        const dep = this.depTarget(root, d);
+        if (dep) out.add(`${dep.root.name}/${dep.id}`);
+      }
+    }
+    return [...out];
+  }
+
   /** One task with a fresh fold (no cache). */
   view(ref: string): TaskView {
     const { root, id } = this.resolve(ref);
@@ -1109,7 +1152,12 @@ export class Workspace {
       return dep && dep.root.foldTask(dep.id).status;
     };
     const known = new Map(deps.map((d) => [d, statusOf(d)] as const));
-    const v = derive(state, root.name, this.now(), (d) => known.get(d));
+    const merges = this.mergeRoots();
+    const mergePending = (ref: string): boolean => {
+      const dep = this.depTarget(root, ref);
+      return !!dep && merges.has(dep.root.name) && dep.root.foldTask(dep.id).awaitsMerge;
+    };
+    const v = derive(state, root.name, this.now(), (d) => known.get(d), mergePending);
     if (root.isArchived(id)) v.archived = true;
     return v;
   }
@@ -1359,17 +1407,20 @@ export class Workspace {
     return { view: this.freshView(root, id), events: res.events, notes };
   }
 
-  /** Whether the acting id holds the task's claim, made from this clone. */
-  holdsClaim(ref: string): boolean {
+  /**
+   * Whether the acting id holds the task's claim, made from this clone. With `anyRun`, whichever
+   * run the claim is bound to: for swarmupd, before it binds the claim to the run it launches.
+   */
+  holdsClaim(ref: string, opts: { anyRun?: boolean } = {}): boolean {
     const actor = this.requireActor();
     const { root, id } = this.resolve(ref);
-    return holds(root, this.freshView(root, id), actor, this.run);
+    return holds(root, this.freshView(root, id), actor, this.run, opts.anyRun);
   }
 
   /**
-   * Binds this clone's claim on the task to this workspace's run, so only that run (and callers
-   * without a run) may act on it. For the supervisor, when it launches a run on a claim it already
-   * holds; it checks first that no live run owns the claim.
+   * Binds this clone's claim on the task to this workspace's run, so only that run may act on
+   * it. For the supervisor, when it launches a run on a claim this clone already holds; it checks
+   * first that no live run owns the claim.
    */
   bindClaim(ref: string): void {
     const actor = this.requireActor();
@@ -1507,7 +1558,17 @@ export class Workspace {
     fields: Required<Pick<OpsEvent, 'commit' | 'into'>> & Pick<OpsEvent, 'branch'>,
     message = '',
   ): ActResult {
-    return this.act(ref, () => [{ type: 'merge', ...fields, body: message }]);
+    const freed = this.freedByMerge(ref);
+    return this.act(ref, () => [{ type: 'merge', ...fields, ...freed, body: message }]);
+  }
+
+  /**
+   * Notes that swarmupd has nothing to merge for an approved task, which ends the wait of the
+   * tasks blocked on it (AO-0228). It counts only when swarmupd (`opsd:merge`) writes it.
+   */
+  noMerge(ref: string, message: string): ActResult {
+    const freed = this.freedByMerge(ref);
+    return this.act(ref, () => [{ type: 'comment', no_merge: true, ...freed, body: message }]);
   }
 
   /**
@@ -1527,15 +1588,19 @@ export class Workspace {
   checkpoint(ref: string, summary: string, next?: string): ActResult {
     const { root } = this.resolve(ref);
     return this.act(ref, (v, ctx) => {
-      if (!ctx.holds) ctx.needOwnerOrHolder();
+      if (!ctx.holds) ctx.needOwnerOrHolder({ notes: true });
+      // An owner who does not hold the claim (say, on a clone whose claim lost) records the
+      // checkpoint without renewing the standing claim. A session beside a run on this PC
+      // reads the run's own token from the clone's claim record, so that token names no claim
+      // of the session either.
+      const mine = root.myClaim(v.meta.id);
+      const notHolder = mine && mine !== v.claimToken ? mine : NO_CLAIM;
       return [
         {
           type: 'checkpoint',
           next,
           lease_until: this.lease(root, 'work'),
-          // An owner who does not hold the claim (say, on a clone whose claim lost) records the
-          // checkpoint without renewing the standing claim.
-          holder: ctx.holds ? (v.claimToken ?? undefined) : (root.myClaim(v.meta.id) ?? NO_CLAIM),
+          holder: ctx.holds ? (v.claimToken ?? undefined) : notHolder,
           body: summary,
         },
       ];
@@ -1661,8 +1726,14 @@ export class Workspace {
   }
 
   verdict(ref: string, verdict: 'approve' | 'changes', message: string): ActResult {
-    // An approval closes the task, so the tasks waiting on it can go on (AO-0068).
-    const freed = verdict === 'approve' ? this.freedBy(ref, false) : {};
+    // An approval closes the task, so the tasks waiting on it can go on (AO-0068). The tasks
+    // blocked on work swarmupd still has to merge stay blocked; its merge event names them.
+    const freed =
+      verdict !== 'approve'
+        ? {}
+        : this.approvalAwaitsMerge(ref)
+          ? freedFields(this.mergeSplit(ref).free)
+          : this.freedBy(ref, false);
     return this.act(ref, (v, ctx) => {
       ctx.requireStatus(['needs-review'], 'give a verdict on');
       if (!v.reviewer || !ownerMatches(v.reviewer, ctx.actor)) {
@@ -1819,8 +1890,91 @@ export class Workspace {
   private freedBy(ref: string, self: boolean): Pick<PlannedEvent, 'freed' | 'freed_indirect'> {
     const { root, id } = this.resolve(ref);
     const set = this.blocks(ref);
-    const freed = self ? [this.keyRef()(`${root.name}/${id}`), ...set.direct] : set.direct;
-    return { freed, ...(set.indirect.length > 0 ? { freed_indirect: set.indirect } : {}) };
+    return freedFields(set, self ? this.keyRef()(`${root.name}/${id}`) : undefined);
+  }
+
+  /**
+   * Whether an approval of `ref` written now leaves the tasks blocked on it waiting for
+   * swarmupd's merge (AO-0228): the same rule as `awaitsMerge` in the fold, on a root swarmupd
+   * merges on this machine.
+   */
+  private approvalAwaitsMerge(ref: string): boolean {
+    const { root, id } = this.resolve(ref);
+    if (this.actor === MERGE_ACTOR || !this.mergeRoots().has(root.name)) return false;
+    return root.readEvents(id).some((e) => {
+      if (e.type !== 'review') return false;
+      const src = reviewSources(e.body);
+      return !!src.named || src.loose.length > 0;
+    });
+  }
+
+  /**
+   * The blocked set of `ref` in two parts (AO-0228): `held` starts at the tasks blocked on it
+   * (`--on` or `blocked_by`), which wait for its merge where swarmupd merges; `free` is the rest,
+   * which its approval lets move. No task is in both.
+   */
+  private mergeSplit(ref: string): { free: BlockedSet; held: BlockedSet } {
+    const { root, id } = this.resolve(ref);
+    const key = `${root.name}/${id}`;
+    const views = this.allViews();
+    const index = this.waitersIndex(views);
+    const held = new Set<string>();
+    for (const v of views) {
+      if (v.archived || v.status !== 'blocked' || v.unblocked) continue;
+      const from = this.roots.find((r) => r.name === v.root);
+      if (!from) continue;
+      const waiter = `${v.root}/${v.meta.id}`;
+      if (waiter === key) continue;
+      const onRef = v.blockedOn.some((d) => {
+        const dep = this.depTarget(from, d);
+        return dep?.root === root && dep.id === id;
+      });
+      if (onRef) held.add(waiter);
+    }
+    const rest = new Map([...index].map(([k, l]) => [k, l.filter((w) => !held.has(w))] as const));
+    const free = blockedSet(rest, key, (k) => k);
+    const freeKeys = new Set([...free.direct, ...free.indirect]);
+    const only = new Map(index);
+    only.set(key, [...held]);
+    const all = blockedSet(only, key, (k) => k);
+    const show = this.keyRef();
+    return {
+      free: { direct: free.direct.map(show), indirect: free.indirect.map(show) },
+      held: {
+        direct: all.direct.map(show),
+        indirect: all.indirect.filter((k) => !freeKeys.has(k)).map(show),
+      },
+    };
+  }
+
+  /**
+   * What swarmupd's merge of `ref`, or its word that it merges nothing, lets move (AO-0228): the
+   * tasks that stayed blocked at the approval. Empty fields unless swarmupd writes it while the
+   * approval still waits for its merge; a task the approval already recorded is left out, as when
+   * the approval was written on a machine where swarmupd merges nothing, whichever roots that
+   * machine sees.
+   */
+  private freedByMerge(ref: string): Pick<PlannedEvent, 'freed' | 'freed_indirect'> {
+    const { root, id } = this.resolve(ref);
+    if (this.actor !== MERGE_ACTOR || !this.mergeRoots().has(root.name)) return {};
+    if (!root.foldTask(id).awaitsMerge) return {};
+    const approval = [...root.readEvents(id)]
+      .reverse()
+      .find((e) => e.type === 'verdict' && e.verdict === 'approve');
+    // The approval may come from a machine that sees another set of roots: with one root it
+    // holds bare ids, with several `root/id`. Compare the tasks, not the spelling.
+    const key = (r: string): string => {
+      const dep = this.depTarget(root, r);
+      return dep ? `${dep.root.name}/${dep.id}` : r.includes('/') ? r : `${root.name}/${r}`;
+    };
+    const counted = new Set(
+      [...(approval?.freed ?? []), ...(approval?.freed_indirect ?? [])].map(key),
+    );
+    const { held } = this.mergeSplit(ref);
+    return freedFields({
+      direct: held.direct.filter((r) => !counted.has(key(r))),
+      indirect: held.indirect.filter((r) => !counted.has(key(r))),
+    });
   }
 
   /**
@@ -2105,7 +2259,11 @@ export class Workspace {
         ? this.roots
         : this.roots.filter((r) => query.root.includes(r.name.toLowerCase()));
     const budget = searchBudget(wantedKinds(query).length, roots.length);
-    const hits = runSearch(searchSources(roots, this.now(), budget), query, opts.limit);
+    const hits = runSearch(
+      searchSources(roots, this.now(), budget, this.mergeRoots()),
+      query,
+      opts.limit,
+    );
     return { hits, partial: budget.partial };
   }
 
@@ -3094,21 +3252,26 @@ function archivable(status: Status, updatedAt: string, cutoff: number): boolean 
 }
 
 /**
- * The actor holds the claim when it is theirs and, for claims with a token, when this clone made
- * it: the same agent id on another clone is a different run.
+ * True when this actor in this clone holds the task's claim: it is theirs and, for a claim with a
+ * token, this clone made it. A caller with a run (`SWARMUP_RUN`) holds it only if the claim record
+ * names that run, and a caller without one (a session outside swarmupd) only if the record names
+ * no run: two sessions with one agent id on one PC are two holders (AO-0236). A claim recorded
+ * without a run belongs to no run until swarmupd binds it. With `anyRun`, swarmupd asks for every
+ * session of the agent on this clone, whichever run the record names.
  */
-/**
- * True when this actor in this clone holds the task's claim. A caller with a run (`SWARMUP_RUN`) holds
- * it only if the claim record names that run: two live runs with one agent id on one PC are two
- * holders, and a claim recorded without a run belongs to no run until swarmupd binds it. Callers
- * without a run (a person acting as the agent, swarmupd itself) are not checked for one.
- */
-function holds(root: Root, v: TaskView, actor: string, run: string | null): boolean {
+function holds(
+  root: Root,
+  v: TaskView,
+  actor: string,
+  run: string | null,
+  anyRun = false,
+): boolean {
   if (v.claimedBy !== actor) return false;
   if (!v.claimToken) return !run;
   const rec = root.claimRecord(v.meta.id);
   if (rec.token !== v.claimToken) return false;
-  return !run || rec.run === run;
+  if (anyRun) return true;
+  return run ? rec.run === run : !rec.run;
 }
 
 /** Permission and state checks for one write, collected so `--force` can be recorded. */
@@ -3178,7 +3341,7 @@ class ActCtx {
     if (this.v.claimedBy === this.actor) {
       this.needPrivilege(
         `${this.v.meta.id} is held by ${this.actor} under another claim: another run on this ` +
-          'PC, or a claim from another clone that won',
+          'PC, a session outside swarmupd, or a claim from another clone that won',
       );
       return;
     }
@@ -3191,8 +3354,12 @@ class ActCtx {
    * The holder may act, and so may the owner. A wildcard owner (`claude:*`, `*:engineer`) names
    * who may claim, not who owns the work: once another agent holds the task, only the holder acts.
    */
-  needOwnerOrHolder(): void {
+  needOwnerOrHolder(opts: { notes?: boolean } = {}): void {
     if (this.holds) return;
+    // Another session of the same agent id holds it: being the owner by name does not make this
+    // session the holder, or two sessions would both finish the task (AO-0236). `notes` is for a
+    // write that changes no state, which the owner may still add.
+    if (this.v.claimedBy === this.actor && !opts.notes) return this.needHolder();
     const owner = this.v.owner;
     if (owner && ownerMatches(owner, this.actor) && (!isWildcard(owner) || !this.v.claimedBy)) {
       return;

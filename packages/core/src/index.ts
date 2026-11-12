@@ -16,6 +16,7 @@ export * from './kb-reads.js';
 export * from './lock.js';
 export * from './model.js';
 export * from './repeats.js';
+export * from './review-source.js';
 export * from './root.js';
 export * from './search.js';
 export * from './search-index.js';

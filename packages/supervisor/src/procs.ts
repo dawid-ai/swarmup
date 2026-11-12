@@ -283,6 +283,45 @@ const KILL_TYPE =
   'return TerminateProcess(h, 1) ? "killed" : "error"; } finally { CloseHandle(h); } } }';
 
 /**
+ * Splits a stream of text chunks into the outputs that end with `marker`. Each chunk is searched
+ * once: the text before it is kept as a list of pieces and never rescanned, except for the last
+ * `marker.length - 1` characters, where a marker split across two chunks can start. A full
+ * process listing arrives in hundreds of chunks, so rescanning the whole buffer on each one costs
+ * quadratic time on the event loop.
+ */
+export class MarkerSplitter {
+  /** Text of the current output that is known to hold no part of a marker. */
+  private parts: string[] = [];
+  /** The end of the current output, which may be the start of a marker. */
+  private carry = '';
+
+  constructor(private readonly marker: string) {}
+
+  /** Adds a chunk and returns every output it completes, in order, without the marker. */
+  push(chunk: string): string[] {
+    const done: string[] = [];
+    const text = this.carry + chunk;
+    let from = 0;
+    for (let i = text.indexOf(this.marker); i >= 0; i = text.indexOf(this.marker, from)) {
+      this.parts.push(text.slice(from, i));
+      done.push(this.parts.join(''));
+      this.parts = [];
+      from = i + this.marker.length;
+    }
+    const keep = Math.min(text.length - from, this.marker.length - 1);
+    if (text.length - keep > from) this.parts.push(text.slice(from, text.length - keep));
+    this.carry = text.slice(text.length - keep);
+    return done;
+  }
+
+  /** Drops the unfinished output. */
+  reset(): void {
+    this.parts = [];
+    this.carry = '';
+  }
+}
+
+/**
  * Windows: one PowerShell process answers every snapshot and kill, so a look starts no new
  * process. It reads commands on stdin and exits when swarmupd closes it or exits.
  */
@@ -291,7 +330,7 @@ class PowerShellLister implements ProcLister {
   readonly clockSlack = 0;
   private child?: ChildProcess;
   private killReady = false;
-  private buf = '';
+  private out = new MarkerSplitter(END);
   private queue: Array<{ resolve: (s: string) => void; reject: (e: Error) => void }> = [];
 
   private ensure(): ChildProcess {
@@ -303,17 +342,12 @@ class PowerShellLister implements ProcLister {
     child.on('error', () => {});
     child.stdout!.setEncoding('utf8');
     child.stdout!.on('data', (d: string) => {
-      this.buf += d;
-      for (let i = this.buf.indexOf(END); i >= 0; i = this.buf.indexOf(END)) {
-        const out = this.buf.slice(0, i);
-        this.buf = this.buf.slice(i + END.length);
-        this.queue.shift()?.resolve(out);
-      }
+      for (const out of this.out.push(d)) this.queue.shift()?.resolve(out);
     });
     child.on('exit', () => {
       for (const q of this.queue.splice(0)) q.reject(new Error('process lister exited'));
       if (this.child === child) this.child = undefined;
-      this.buf = '';
+      this.out.reset();
     });
     // The helper never keeps swarmupd (or a test) alive on its own.
     child.unref();

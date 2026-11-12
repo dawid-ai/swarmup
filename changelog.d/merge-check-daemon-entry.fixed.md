@@ -1,0 +1,2 @@
+- Merge checks no longer inherit the installed desktop app's swarmupd entry (`SWARMUP_DAEMON_ENTRY`) and Electron host flags when the app hosts swarmupd. A check that starts swarmupd, such as the engine's own tests, starts its checkout's build instead of the installed one.
+- When swarmupd does not start, the error names the entry it started and shows the last lines that start logged, without the lines that look like a secret.

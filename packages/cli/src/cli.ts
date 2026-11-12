@@ -616,6 +616,7 @@ function compact(v: TaskView): Record<string, unknown> {
     reviewer: v.reviewer,
     waitingOn: v.waitingOn,
     blockedOn: v.blockedOn.length ? v.blockedOn : undefined,
+    mergeWait: v.mergeWait,
     checkpoint: v.checkpoint,
     delegation: v.delegation ?? undefined,
     archived: v.archived || undefined,
@@ -925,6 +926,7 @@ const COMMANDS: Record<string, Command> = {
       if (v.reviewer) o(`reviewer: ${v.reviewer}`);
       if (v.waitingOn) o(`waiting:  ${v.waitingOn}`);
       if (v.blockedOn.length) o(`blocked on: ${v.blockedOn.join(', ')}`);
+      if (v.mergeWait) o(`waits for the merge of: ${v.mergeWait.join(', ')}`);
       if (v.leaseUntil) o(`lease:    ${localTime(v.leaseUntil)}`);
       if (v.delegation) {
         const d = v.delegation;

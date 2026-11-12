@@ -1,6 +1,12 @@
 import { existsSync } from 'node:fs';
 import type { UserConfig } from '@swarmup/core';
-import { editUserConfig, readUserConfig, userConfigPath } from '@swarmup/core';
+import {
+  daemonKeyIn,
+  daemonSection,
+  editUserConfig,
+  readUserConfig,
+  userConfigPath,
+} from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
 import { DEFAULT_AGENT_ROLES, DEFAULT_RUNTIMES, SEED_VERSION, opsdConfig } from './config.js';
 import { resolveCommand } from './proc.js';
@@ -29,7 +35,7 @@ export interface SeedOptions {
 }
 
 /**
- * Seeds a parsed user config in place, unless it was seeded before (`opsd.seeded`). A config
+ * Seeds a parsed user config in place, unless it was seeded before (`swarmupd.seeded`). A config
  * from before seeding keeps every entry it has: a provider entry with limits only gets the
  * default command, and missing defaults are added, because that config ran them all along.
  * Returns what it wrote, or null when the config was seeded already.
@@ -39,7 +45,7 @@ export function seedDoc(
   env: NodeJS.ProcessEnv,
   opts: SeedOptions = {},
 ): Omit<SeedResult, 'path' | 'seeded'> | null {
-  const raw = (doc.toJS() as { opsd?: Record<string, unknown> } | null)?.opsd ?? {};
+  const raw = daemonSection((doc.toJS() ?? {}) as UserConfig) ?? {};
   if (raw.seeded !== undefined && raw.seeded !== null) return null;
   const runtimes: string[] = [];
   const agents: string[] = [];
@@ -48,8 +54,8 @@ export function seedDoc(
     const entry = have[name];
     if (entry && typeof entry.command === 'string' && entry.command.trim()) continue;
     if (entry && typeof entry === 'object') {
-      doc.setIn(['opsd', 'runtimes', name, 'command'], rc.command);
-    } else doc.setIn(['opsd', 'runtimes', name], doc.createNode({ ...rc }));
+      doc.setIn([daemonKeyIn(doc), 'runtimes', name, 'command'], rc.command);
+    } else doc.setIn([daemonKeyIn(doc), 'runtimes', name], doc.createNode({ ...rc }));
     runtimes.push(name);
   }
   if (opts.agents && (raw.agents === undefined || raw.agents === null)) {
@@ -60,12 +66,12 @@ export function seedDoc(
     for (const p of providers) {
       for (const role of DEFAULT_AGENT_ROLES) {
         const id = `${p}:${role}`;
-        doc.setIn(['opsd', 'agents', id], doc.createNode({}));
+        doc.setIn([daemonKeyIn(doc), 'agents', id], doc.createNode({}));
         agents.push(id);
       }
     }
   }
-  doc.setIn(['opsd', 'seeded'], SEED_VERSION);
+  doc.setIn([daemonKeyIn(doc), 'seeded'], SEED_VERSION);
   return { runtimes, agents };
 }
 
@@ -80,8 +86,8 @@ export function seedUserConfig(
   opts: SeedOptions = {},
 ): SeedResult {
   const path = userConfigPath(env);
-  const before = readUserConfig(env) as UserConfig & { opsd?: Record<string, unknown> };
-  if (before.opsd?.seeded !== undefined && before.opsd.seeded !== null) {
+  const seeded = daemonSection(readUserConfig(env))?.seeded;
+  if (seeded !== undefined && seeded !== null) {
     return { path, seeded: false, runtimes: [], agents: [] };
   }
   let wrote: ReturnType<typeof seedDoc> = null;

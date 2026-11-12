@@ -122,8 +122,8 @@ export function Schedules({ nav, selected }: { nav: Nav; selected?: string }) {
         {data && data.length === 0 && (
           <Empty icon={CalendarClock} title="No schedules yet">
             A schedule starts an agent run every so often or at a time each day: a standup, an inbox
-            sweep, a nightly review. They live in your user config under <code>opsd.schedules</code>
-            .
+            sweep, a nightly review. They live in your user config under{' '}
+            <code>swarmupd.schedules</code>.
           </Empty>
         )}
         {data && data.length === 0 && (

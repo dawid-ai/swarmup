@@ -1,6 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   initRoot,
   PATCH_KEY_ARGS,
@@ -12,28 +22,78 @@ import {
   Workspace,
 } from '../src/index.js';
 import type { SyncResult } from '../src/index.js';
-import { fakeToken, git, GIT_TEST_TIMEOUT, gitRepo, tempDir, turn } from './helpers.js';
+import {
+  fakeToken,
+  git,
+  GIT_TEST_TIMEOUT,
+  gitRepo,
+  tempDir,
+  TEST_IDENTITY,
+  turn,
+} from './helpers.js';
 
-function machines(opts: { policy?: string } = {}) {
-  const remote = tempDir();
+/** The remote and the two clones each test starts from, built once per sync policy. */
+const worlds = new Map<string, string>();
+
+afterAll(() => {
+  for (const dir of worlds.values()) rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+});
+
+function worldDirs(dir: string): [remote: string, a: string, b: string] {
+  return [join(dir, 'remote'), join(dir, 'a'), join(dir, 'b')];
+}
+
+/** Builds `remote/` (bare), `a/` (holds the root, pushed) and `b/` (a clone) in a new folder. */
+function buildWorld(policy?: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'swarmup-test-world-'));
+  const [remote, a, b] = worldDirs(dir);
+  for (const d of [remote, a, b]) mkdirSync(d);
   git(remote, 'init', '-q', '--bare', '-b', 'main');
-  const a = gitRepo();
+  gitRepo(a);
   initRoot(a, { name: 'shared', human: 'human:dawid' });
-  if (opts.policy) {
+  if (policy) {
     const file = join(a, '.swarmup', 'config.yml');
     writeFileSync(
       file,
-      readFileSync(file, 'utf8').replace('policy: checkpoint', `policy: ${opts.policy}`),
+      readFileSync(file, 'utf8').replace('policy: checkpoint', `policy: ${policy}`),
     );
   }
   git(a, 'add', '-A');
   git(a, 'commit', '-q', '-m', 'init');
   git(a, 'remote', 'add', 'origin', remote);
   git(a, 'push', '-q', '-u', 'origin', 'main');
-  const b = tempDir();
   git(b, 'clone', '-q', remote, '.');
-  git(b, 'config', 'user.name', 'Test');
-  git(b, 'config', 'user.email', 'test@example.invalid');
+  appendFileSync(join(b, '.git', 'config'), TEST_IDENTITY);
+  return dir;
+}
+
+/** Points a copied clone's `origin` at the copied remote; the copy still names the original. */
+function setOrigin(repo: string, remote: string): void {
+  const file = join(repo, '.git', 'config');
+  const url = JSON.stringify(remote.split(sep).join('/'));
+  const config = readFileSync(file, 'utf8');
+  const next = config.replace(/^(\s*url = ).*$/m, (_, key: string) => key + url);
+  if (next === config) throw new Error(`no origin url in ${file}`);
+  writeFileSync(file, next);
+}
+
+/**
+ * Two machines sharing a remote. Building them takes 14 git processes (init, commit, push, clone
+ * and their children), and process starts are what these tests cost on Windows under full-suite
+ * load (AO-0221). So each policy's world is built once, and every test gets a file copy of it.
+ */
+function machines(opts: { policy?: string } = {}) {
+  const key = opts.policy ?? '';
+  let world = worlds.get(key);
+  if (!world) {
+    world = buildWorld(opts.policy);
+    worlds.set(key, world);
+  }
+  const dir = tempDir();
+  cpSync(world, dir, { recursive: true });
+  const [remote, a, b] = worldDirs(dir);
+  setOrigin(a, remote);
+  setOrigin(b, remote);
   const env = { SWARMUP_CONFIG: join(a, 'none.yml') } as NodeJS.ProcessEnv;
   const ws = (cwd: string, actor: string, block = 0, now?: () => number) =>
     new Workspace({ cwd, env, actor, now, user: { id_block: block, machine: `m${block}` } });
@@ -42,7 +102,19 @@ function machines(opts: { policy?: string } = {}) {
   return { remote, a, b, ws, ra, rb };
 }
 
-/** syncRoot after one event-loop turn, so a long synchronous test still lets vitest's RPC in. */
+/**
+ * A sync with git off the event loop, the form swarmupd runs. The vitest worker reads its RPC
+ * replies between git processes; one synchronous sync under merge-check load ran past 60 s
+ * without a loop turn and failed the run with 'Timeout calling onTaskUpdate' (AO-0238).
+ */
+function sync(...args: Parameters<typeof syncRootAsync>): Promise<SyncResult> {
+  return syncRootAsync(...args);
+}
+
+/**
+ * syncRoot, the form `swarmup sync` runs, after one event-loop turn. Only the tests that check
+ * syncRoot itself use it: it shares its steps with syncRootAsync, and each call holds the loop.
+ */
 async function syncTurn(...args: Parameters<typeof syncRoot>): Promise<SyncResult> {
   await turn();
   return syncRoot(...args);
@@ -61,6 +133,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     ws(b, 'human:dawid', 1).newTask({ title: 'from b' });
     const ra = new Root(join(a, '.swarmup'));
     const rb = new Root(join(b, '.swarmup'));
+    // On syncRoot, the form `swarmup sync` runs.
     expect(await syncTurn(ra, { machine: 'a' })).toMatchObject({ committed: 1, pushed: true });
     expect(await syncTurn(rb, { machine: 'b' })).toMatchObject({ pulled: true, pushed: true });
     await syncTurn(ra, {});
@@ -84,13 +157,13 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     ws(a, 'human:dawid').newTask({ title: 't' });
     const ra = new Root(join(a, '.swarmup'));
     const rb = new Root(join(b, '.swarmup'));
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     ws(a, 'human:dawid').comment('1', 'from a');
     ws(b, 'human:dawid', 1).comment('1', 'from b');
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
-    await syncTurn(ra, {});
+    await sync(ra, {});
+    await sync(rb, {});
+    await sync(ra, {});
     expect(
       ws(a, 'human:dawid')
         .showEvents('1')
@@ -102,8 +175,8 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('lets the claim pushed first win, even when the other clone claimed earlier', async () => {
     const { a, b, ws, ra, rb } = machines();
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     // Both clones run claude:engineer. b's clock is a minute behind, so its events carry older
     // ids; a pushes first.
     const behind = () => Date.now() - 60_000;
@@ -113,9 +186,9 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     const aRes = ws(a, 'claude:engineer').start('1', 'a plan');
     const aToken = aRes.events.find((e) => e.type === 'claim')!.token;
     expect(aToken).not.toBe(bToken);
-    expect((await syncTurn(ra, {})).pushed).toBe(true);
+    expect((await sync(ra, {})).pushed).toBe(true);
 
-    const res = await syncTurn(rb, {});
+    const res = await sync(rb, {});
     expect(res.pushed).toBe(true);
     expect(res.reordered).toBe(3);
     expect(res.lost).toEqual([
@@ -130,13 +203,13 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     expect(() => bEng.release('1', 'lost it')).toThrow(/claim from another clone/);
     expect(() => bEng.progress('1', 'still here')).toThrow(/claim from another clone/);
     ws(a, 'claude:engineer').progress('1', 'a works');
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     // The loser is still the owner, so it may checkpoint; that must not renew the winner's lease.
     const leaseBefore = ws(a, 'human:dawid').view('1').leaseUntil;
     ws(b, 'claude:engineer', 1, () => Date.now() + 3600_000).checkpoint('1', 'notes from b');
-    await syncTurn(rb, {});
-    await syncTurn(ra, {});
+    await sync(rb, {});
+    await sync(ra, {});
     expect(ws(a, 'human:dawid').view('1').leaseUntil).toBe(leaseBefore);
 
     const va = ws(a, 'human:dawid').view('1');
@@ -160,17 +233,17 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('keeps a local claim made after the remote claim was released', async () => {
     const { a, b, ws, ra, rb } = machines();
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     const aEng = ws(a, 'claude:engineer');
     aEng.claim('1');
     aEng.release('1', 'not mine after all');
-    await syncTurn(ra, {});
+    await sync(ra, {});
     const bToken = ws(b, 'claude:engineer', 1, () => Date.now() - 60_000)
       .claim('1')
       .events.find((e) => e.type === 'claim')!.token;
-    expect((await syncTurn(rb, {})).lost).toEqual([]);
-    await syncTurn(ra, {});
+    expect((await sync(rb, {})).lost).toEqual([]);
+    await sync(ra, {});
     for (const cwd of [a, b]) {
       expect(agreed(ws(cwd, 'human:dawid').view('1'))).toEqual({
         status: 'claimed',
@@ -183,15 +256,15 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('pulls and orders again when a push is rejected', async () => {
     const { a, b, ws, ra, rb } = machines();
     ws(a, 'human:dawid').newTask({ title: 't' });
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     // b writes first, so its event has the older id, but a pushes first.
     ws(b, 'human:dawid', 1).comment('1', 'from b');
     ws(a, 'human:dawid').comment('1', 'from a');
-    await syncTurn(ra, {});
-    const res = await syncTurn(rb, {}, { pull: false, push: true });
+    await sync(ra, {});
+    const res = await sync(rb, {}, { pull: false, push: true });
     expect(res).toMatchObject({ pulled: true, pushed: true, reordered: 1 });
-    await syncTurn(ra, {});
+    await sync(ra, {});
     expect(
       ws(a, 'human:dawid')
         .showEvents('1')
@@ -202,15 +275,15 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('reports a claim as lost only when it lost in the final state of the sync', async () => {
     const { a, b, ws, ra, rb } = machines();
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     const aEng = ws(a, 'claude:engineer');
     aEng.claim('1');
-    await syncTurn(ra, {});
+    await sync(ra, {});
     // a releases but does not push yet; b's pre-push hook pushes it, so b's first pull sees only
     // a's claim and b's push is rejected once.
     aEng.release('1', 'done with it');
-    await syncTurn(ra, {}, { pull: false, push: false });
+    await sync(ra, {}, { pull: false, push: false });
     const marker = join(b, 'hook-ran');
     writeFileSync(
       join(b, '.git', 'hooks', 'pre-push'),
@@ -228,11 +301,11 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     const bToken = ws(b, 'claude:engineer', 1)
       .claim('1')
       .events.find((e) => e.type === 'claim')!.token;
-    const res = await syncTurn(rb, {});
+    const res = await sync(rb, {});
     expect(readFileSync(marker, 'utf8')).toBe('');
     expect(res.pushed).toBe(true);
     expect(res.lost).toEqual([]);
-    await syncTurn(ra, {});
+    await sync(ra, {});
     for (const cwd of [a, b]) {
       expect(agreed(ws(cwd, 'human:dawid').view('1'))).toEqual({
         status: 'claimed',
@@ -245,8 +318,8 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('pushes a claim at once under coordinated sync and tells the loser', async () => {
     const { remote, a, b, ws, ra, rb } = machines({ policy: 'coordinated' });
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
-    await syncTurn(rb, {});
+    await sync(ra, {});
+    await sync(rb, {});
     const before = git(remote, 'rev-parse', 'main');
     const aToken = ws(a, 'claude:engineer')
       .claim('1')
@@ -258,7 +331,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     expect(() => ws(b, 'claude:engineer', 1).start('1', 'plan')).toThrow(
       /claim from another clone/,
     );
-    await syncTurn(ra, {});
+    await sync(ra, {});
     for (const cwd of [a, b]) {
       expect(ws(cwd, 'human:dawid').view('1').claimToken).toBe(aToken);
     }
@@ -267,7 +340,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('keeps a coordinated claim locally when the push fails', async () => {
     const { a, ws, ra } = machines({ policy: 'coordinated' });
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
+    await sync(ra, {});
     git(a, 'remote', 'set-url', 'origin', join(a, 'no-such-remote'));
     const res = ws(a, 'claude:engineer').claim('1');
     expect(res.view.claimedBy).toBe('claude:engineer');
@@ -277,7 +350,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('hands a coordinated sync to queueConfirm instead of running git (AO-0169)', async () => {
     const { remote, a, ws, ra } = machines({ policy: 'coordinated' });
     ws(a, 'human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
-    await syncTurn(ra, {});
+    await sync(ra, {});
     const before = git(remote, 'rev-parse', 'main');
     const queued: string[][] = [];
     const opsd = new Workspace({
@@ -311,15 +384,15 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     writeFileSync(join(a, 'code.ts'), 'export {};\n');
     ws(a, 'human:dawid').newTask({ title: 't' });
     const ra = new Root(join(a, '.swarmup'));
-    expect((await syncTurn(ra, {})).pushed).toBe(true);
+    expect((await sync(ra, {})).pushed).toBe(true);
     expect(git(a, 'status', '--porcelain')).toContain('code.ts');
     git(a, 'add', 'code.ts');
     git(a, 'commit', '-q', '-m', 'code');
     ws(a, 'human:dawid').newTask({ title: 'u' });
-    const res = await syncTurn(ra, {});
+    const res = await sync(ra, {});
     expect(res.pushed).toBe(false);
     expect(res.notes.join()).toMatch(/outside \.swarmup/);
-    expect((await syncTurn(ra, {}, { allPaths: true })).pushed).toBe(true);
+    expect((await sync(ra, {}, { allPaths: true })).pushed).toBe(true);
   });
 
   it('pushes code commits that are approved merges, also after a pull rebased them', async () => {
@@ -337,13 +410,13 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
       asked.push(branch);
       return samePath(top, a) && branch === 'main' ? keys : new Set<string>();
     };
-    expect((await syncTurn(ra, {})).pushed).toBe(false);
-    expect((await syncTurn(ra, {}, { approved: () => new Set<string>() })).pushed).toBe(false);
+    expect((await sync(ra, {})).pushed).toBe(false);
+    expect((await sync(ra, {}, { approved: () => new Set<string>() })).pushed).toBe(false);
     // Another clone pushes first: the pull rebases the merged commit, which gets a new id.
     ws(b, 'human:dawid', 1).newTask({ title: 'from b' });
-    expect((await syncTurn(rb, {})).pushed).toBe(true);
+    expect((await sync(rb, {})).pushed).toBe(true);
     ws(a, 'human:dawid').newTask({ title: 'from a' });
-    const res = await syncTurn(ra, {}, { approved });
+    const res = await sync(ra, {}, { approved });
     expect(res).toMatchObject({ pulled: true, pushed: true });
     expect(asked).toEqual(['main']);
     expect(git(a, 'log', '-1', '--format=%H', '--', 'code.ts').trim()).not.toBe(before);
@@ -356,7 +429,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     git(a, 'add', 'more.ts');
     git(a, 'commit', '-q', '-m', 'merged too');
     keys.add(keyOf('HEAD')!);
-    const held = await syncTurn(ra, {}, { approved });
+    const held = await sync(ra, {}, { approved });
     expect(held.pushed).toBe(false);
     expect(held.notes.join()).toMatch(/1 file\(s\) outside \.swarmup/);
   });
@@ -386,21 +459,21 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     const { a, ws, ra } = machines();
     const t = Date.now();
     ws(a, 'human:dawid').newTask({ title: 't' });
-    expect((await syncTurn(ra, {}, { auto: true, now: t })).pushed).toBe(true);
+    expect((await sync(ra, {}, { auto: true, now: t })).pushed).toBe(true);
     writeFileSync(join(a, 'code.ts'), 'export {};\n');
     git(a, 'add', 'code.ts');
     git(a, 'commit', '-q', '-m', 'code');
     ws(a, 'human:dawid').newTask({ title: 'u' });
     const push = 30 * 60_000;
-    const held = await syncTurn(ra, {}, { auto: true, now: t + push });
+    const held = await sync(ra, {}, { auto: true, now: t + push });
     expect(held.pushed).toBe(false);
     expect(held.notes.join()).toMatch(/outside \.swarmup/);
     // Within push_minutes of the held try: no push is due, so no second try and no note.
     ws(a, 'human:dawid').newTask({ title: 'v' });
-    const quiet = await syncTurn(ra, {}, { auto: true, now: t + push + 60_000 });
+    const quiet = await sync(ra, {}, { auto: true, now: t + push + 60_000 });
     expect(quiet).toMatchObject({ committed: 1, pushed: false, notes: [] });
     // push_minutes after the held try, it tries again.
-    const again = await syncTurn(ra, {}, { auto: true, now: t + 2 * push });
+    const again = await sync(ra, {}, { auto: true, now: t + 2 * push });
     expect(again.notes.join()).toMatch(/outside \.swarmup/);
   });
 
@@ -409,32 +482,32 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     const ra = new Root(join(a, '.swarmup'));
     ws(a, 'human:dawid').newTask({ title: 't' });
     const t = Date.now();
-    expect(await syncTurn(ra, {}, { auto: true, now: t })).toMatchObject({
+    expect(await sync(ra, {}, { auto: true, now: t })).toMatchObject({
       pulled: true,
       pushed: true,
     });
     ws(a, 'human:dawid').newTask({ title: 'u' });
-    expect(await syncTurn(ra, {}, { auto: true, now: t + 60_000 })).toMatchObject({
+    expect(await sync(ra, {}, { auto: true, now: t + 60_000 })).toMatchObject({
       committed: 1,
       pulled: false,
       pushed: false,
     });
-    expect(
-      (await syncTurn(ra, {}, { auto: true, sessionEnd: true, now: t + 120_000 })).pushed,
-    ).toBe(true);
+    expect((await sync(ra, {}, { auto: true, sessionEnd: true, now: t + 120_000 })).pushed).toBe(
+      true,
+    );
   });
 
   it('commits only on the store branch and keeps held files for the next sync there', async () => {
     const { a, ws, ra } = machines();
     ws(a, 'human:dawid').newTask({ title: 't' });
-    expect((await syncTurn(ra, {})).committed).toBe(1);
+    expect((await sync(ra, {})).committed).toBe(1);
     expect(JSON.parse(readFileSync(join(ra.opsDir, 'sync.json'), 'utf8')).branch).toBe('main');
 
     // A code branch checked out in the data root's checkout, as in AO-0133.
     git(a, 'checkout', '-q', '-b', 'code');
     ws(a, 'human:dawid').comment('1', 'written while code is checked out');
     const codeHead = git(a, 'rev-parse', 'code');
-    const res = await syncTurn(ra, {});
+    const res = await sync(ra, {});
     expect(res).toMatchObject({ committed: 0, pulled: false, pushed: false });
     expect(res.notes.join()).toMatch(/code is checked out, but the store branch is main/);
     expect(git(a, 'rev-parse', 'code')).toBe(codeHead);
@@ -445,13 +518,13 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
         .showEvents('1')
         .events.some((e) => e.body.trim() === 'written while code is checked out'),
     ).toBe(true);
-    expect(await syncTurn(ra, {})).toMatchObject({ committed: 1, pushed: true });
+    expect(await sync(ra, {})).toMatchObject({ committed: 1, pushed: true });
     expect(git(a, 'status', '--porcelain', '--', '.swarmup')).toBe('');
   });
 
   it('takes the store branch from sync.branch in config.yml over the learned one', async () => {
     const { a, ws, ra } = machines();
-    await syncTurn(ra, {});
+    await sync(ra, {});
     const file = join(a, '.swarmup', 'config.yml');
     writeFileSync(
       file,
@@ -461,7 +534,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
       ),
     );
     ws(a, 'human:dawid').newTask({ title: 't' });
-    const res = await syncTurn(new Root(join(a, '.swarmup')), {});
+    const res = await sync(new Root(join(a, '.swarmup')), {});
     expect(res.committed).toBe(0);
     expect(res.notes.join()).toMatch(/store branch is store \(from sync\.branch in config\.yml\)/);
   });
@@ -474,7 +547,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     git(a, 'checkout', '-q', '-b', 'code');
     ws(a, 'human:dawid').newTask({ title: 'written while code is checked out' });
     const codeHead = git(a, 'rev-parse', 'code');
-    const res = await syncTurn(ra, {});
+    const res = await sync(ra, {});
     expect(res).toMatchObject({ committed: 0, pulled: false, pushed: false });
     expect(res.notes.join()).toMatch(/no store branch is known yet and main also holds/);
     expect(git(a, 'rev-parse', 'code')).toBe(codeHead);
@@ -484,14 +557,14 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     writeFileSync(join(a, 'code.txt'), 'x');
     git(a, 'add', 'code.txt');
     git(a, 'commit', '-q', '-m', 'code change');
-    expect((await syncTurn(ra, {})).committed).toBe(0);
+    expect((await sync(ra, {})).committed).toBe(0);
 
     git(a, 'checkout', '-q', 'main');
-    expect(await syncTurn(ra, {})).toMatchObject({ committed: 1, pushed: true });
+    expect(await sync(ra, {})).toMatchObject({ committed: 1, pushed: true });
     expect(JSON.parse(readFileSync(join(ra.opsDir, 'sync.json'), 'utf8')).branch).toBe('main');
     git(a, 'checkout', '-q', 'code');
     ws(a, 'human:dawid').newTask({ title: 'later' });
-    expect((await syncTurn(ra, {})).notes.join()).toMatch(
+    expect((await sync(ra, {})).notes.join()).toMatch(
       /store branch is main \(from \.ops\/sync\.json\)/,
     );
   });
@@ -504,17 +577,17 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     git(a, 'commit', '-q', '-m', 'ops: 1 change(s)');
     git(a, 'checkout', '-q', 'code');
     ws(a, 'human:dawid').newTask({ title: 'u' });
-    const res = await syncTurn(ra, {});
+    const res = await sync(ra, {});
     expect(res.committed).toBe(0);
     expect(res.notes.join()).toMatch(/the newest store commit is on main, not code/);
   });
 
   it('does not commit on a detached HEAD', async () => {
     const { a, ws, ra } = machines();
-    await syncTurn(ra, {});
+    await sync(ra, {});
     git(a, 'checkout', '-q', '--detach');
     ws(a, 'human:dawid').newTask({ title: 't' });
-    const res = await syncTurn(ra, {});
+    const res = await sync(ra, {});
     expect(res.committed).toBe(0);
     expect(res.notes.join()).toMatch(/HEAD is detached; check out main/);
   });
@@ -550,16 +623,16 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   });
 
   it('settles a task.md conflict in syncRootAsync as syncRoot does', async () => {
-    const conflicted = async (sync: (r: Root) => SyncResult | Promise<SyncResult>) => {
+    const conflicted = async (via: (r: Root) => SyncResult | Promise<SyncResult>) => {
       const { a, b, ws, ra, rb } = machines();
       ws(a, 'human:dawid').newTask({ title: 't' });
-      await syncTurn(ra, {});
-      await syncTurn(rb, {});
+      await sync(ra, {});
+      await sync(rb, {});
       const md = (cwd: string) => join(cwd, '.swarmup', 'tasks', 'T-0001', 'task.md');
       writeFileSync(md(a), `${readFileSync(md(a), 'utf8')}\nedited on a\n`);
       writeFileSync(md(b), `${readFileSync(md(b), 'utf8')}\nedited on b\n`);
-      await syncTurn(ra, {});
-      const res = await sync(rb);
+      await sync(ra, {});
+      const res = await via(rb);
       expect(res.notes.join('\n')).toMatch(/task\.md: your edit conflicted with one pushed first/);
       expect(readFileSync(md(b), 'utf8')).toContain('edited on a');
       expect(readFileSync(md(b), 'utf8')).not.toContain('edited on b');
@@ -574,7 +647,7 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
   it('notes a missing upstream instead of failing', async () => {
     const repo = gitRepo();
     initRoot(repo, { name: 'solo' });
-    const res = await syncTurn(new Root(join(repo, '.swarmup')), {});
+    const res = await sync(new Root(join(repo, '.swarmup')), {});
     expect(res.committed).toBeGreaterThan(0);
     expect(res.notes).toEqual(['no upstream branch; skipped pull and push']);
   });

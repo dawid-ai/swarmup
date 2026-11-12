@@ -74,8 +74,27 @@ describe('tasks', () => {
       /another run on this PC/,
     );
     runA.start('1', 'plan');
-    // No run: a person or the supervisor acting as the agent.
-    as('claude:engineer').progress('1', 'from the supervisor');
+    // No run: a session of the agent outside swarmupd is another holder too (AO-0236).
+    const outside = as('claude:engineer');
+    expect(outside.holdsClaim('1')).toBe(false);
+    expect(outside.holdsClaim('1', { anyRun: true })).toBe(true);
+    expect(() => outside.progress('1', 'x')).toThrow(/a session outside swarmupd/);
+    expect(() => outside.start('1', 'mine too')).toThrow(/under another claim/);
+    // Owning the task by name does not let it finish the run's work.
+    expect(() => outside.review('1', 'check', 'codex:qa')).toThrow(/under another claim/);
+    expect(() => outside.done('1', 'x')).toThrow(/under another claim/);
+    expect(() => outside.release('1', 'x')).toThrow(/under another claim/);
+    // It may still leave notes, which change no state, and a person may force it.
+    // The notes do not renew the run's lease, though both share one claim record.
+    const leaseBefore = runA.view('1').leaseUntil;
+    as('claude:engineer', { now: () => Date.now() + 3600_000 }).checkpoint(
+      '1',
+      'notes from outside the run',
+    );
+    expect(runA.view('1').checkpoint?.summary).toBe('notes from outside the run');
+    expect(runA.view('1').leaseUntil).toBe(leaseBefore);
+    as('claude:engineer', { force: true }).progress('1', 'forced');
+    runA.progress('1', 'the run goes on');
     // A claim taken without a run belongs to no run until it is bound to one.
     as('human:dawid').newTask({ title: 'y', owner: 'claude:engineer' });
     as('claude:engineer').claim('2');

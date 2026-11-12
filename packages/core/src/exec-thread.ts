@@ -112,7 +112,12 @@ parentPort.on('message', ({ id, file, args, opts }) => {
     let error;
     if (spawnErr) error = failure(spawnErr);
     else if (stdout.length > max || stderr.length > max) {
-      error = { message: 'stdout maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' };
+      // Like execFile: the error names the stream and each stream stops at the limit. The files
+      // don't record which stream passed it first, so stdout is named when both did.
+      const stream = stdout.length > max ? 'stdout' : 'stderr';
+      error = { message: stream + ' maxBuffer length exceeded', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' };
+      stdout = stdout.slice(0, max);
+      stderr = stderr.slice(0, max);
     } else if (code !== 0 || signal || killed) {
       const cmd = [file, ...args].join(' ');
       error = { message: 'Command failed: ' + cmd + '\\n' + stderr, code, killed, signal };

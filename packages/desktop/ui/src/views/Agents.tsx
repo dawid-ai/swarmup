@@ -596,7 +596,7 @@ function AgentCard(props: {
   backlog: Task[];
   nav: Nav;
   now: number;
-  /** The agent's `opsd.agents.<id>` settings; undefined until Settings loads. */
+  /** The agent's `swarmupd.agents.<id>` settings; undefined until Settings loads. */
   config?: { wake?: boolean; budget?: string; model?: string };
   defaultBudget?: number;
   /** The model its provider sets, if any. */

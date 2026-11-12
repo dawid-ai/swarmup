@@ -186,7 +186,7 @@ describe('routes for ownerless work', () => {
     expect(
       blockers({ engineer: { providers: ['other'], overflow: true }, qa: open }).get(bug.id),
     ).toBe(
-      'no waking agent of *:engineer is one of its providers (opsd.roles.engineer.providers, overflow)',
+      'no waking agent of *:engineer is one of its providers (swarmupd.roles.engineer.providers, overflow)',
     );
     // Without overflow only the first provider takes the work.
     expect(
@@ -287,7 +287,7 @@ describe('owners swarmup new and swarmup assign refuse', () => {
     const user = waking(['fake:engineer'], { engineer: { providers: ['other'] } });
     const h = as('human:dawid', { user });
     expect(h.ownerRefusal('*:engineer')).toBe(
-      "*:engineer matches no waking agent of the role's providers (opsd.roles.engineer.providers, overflow)",
+      "*:engineer matches no waking agent of the role's providers (swarmupd.roles.engineer.providers, overflow)",
     );
     // A provider group is not limited by role providers, as in the wake planner.
     expect(h.ownerRefusal('fake:*')).toBeNull();
@@ -296,7 +296,7 @@ describe('owners swarmup new and swarmup assign refuse', () => {
     expect(h.ownerSuggestions()).toBe('use a configured agent (fake:engineer), or human:dawid');
     expect(() => h.newTask({ title: 'x', owner: '*:engineer' })).toThrow(
       "owner *:engineer matches no waking agent of the role's providers " +
-        '(opsd.roles.engineer.providers, overflow), so no run picks it up; ' +
+        '(swarmupd.roles.engineer.providers, overflow), so no run picks it up; ' +
         'use a configured agent (fake:engineer), or human:dawid (use --force to override)',
     );
     // A waking provider of another role still gets its group suggested.

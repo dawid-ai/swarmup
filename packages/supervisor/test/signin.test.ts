@@ -59,6 +59,9 @@ describe('sign-in check (AO-0154)', () => {
     expect(cfg({}).signed_out_handoff_minutes).toBe(15);
     expect(cfg({ signed_out_handoff_minutes: 0 }).signed_out_handoff_minutes).toBe(0);
     expect(() => cfg({ signed_out_handoff_minutes: -1 })).toThrow(/signed_out_handoff_minutes/);
+    expect(cfg({}).outside_session_minutes).toBe(30);
+    expect(cfg({ outside_session_minutes: 0 }).outside_session_minutes).toBe(0);
+    expect(() => cfg({ outside_session_minutes: -1 })).toThrow(/outside_session_minutes/);
     const rt = (sign_in_check: unknown) =>
       cfg({ runtimes: { claude: { command: 'claude', sign_in_check } } });
     expect(rt(false).runtimes.claude!.sign_in_check).toBe(false);

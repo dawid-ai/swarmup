@@ -4,6 +4,7 @@
 // (org names, logins, machine names) outside the repo and pass it with --deny.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -17,9 +18,11 @@ const run = (cmd, args) =>
     stdio: ['ignore', 'pipe', 'inherit'],
   });
 
+// tsc is resolved like any import, so a worktree without its own node_modules (an opsd task
+// worktree under out/) finds the one of the checkout that holds it.
 if (!existsSync(coreDist))
   run(process.execPath, [
-    join(repo, 'node_modules', 'typescript', 'bin', 'tsc'),
+    createRequire(import.meta.url).resolve('typescript/bin/tsc'),
     '-b',
     'packages/core',
   ]);

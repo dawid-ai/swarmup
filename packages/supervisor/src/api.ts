@@ -147,6 +147,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     );
   });
 
+  // Node closes an idle keep-alive socket after 5 s by default. A client whose event loop stalls
+  // past that sends its next request as the server closes the socket, and fetch fails with 'other
+  // side closed' without retrying a POST. Clients are few and local, so idle sockets stay open
+  // until the client closes them or `close()` runs (AO-0223).
+  server.keepAliveTimeout = 0;
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
     const host = (req.headers.host ?? '').toLowerCase();
@@ -852,6 +858,7 @@ export function compact(v: TaskView): Json {
     status: v.status,
     stale: v.stale || undefined,
     unblocked: v.unblocked || undefined,
+    mergeWait: v.mergeWait,
     archived: v.archived || undefined,
     owner: v.owner,
     claimedBy: v.claimedBy,

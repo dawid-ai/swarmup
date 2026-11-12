@@ -1,4 +1,6 @@
-/* global document, window, setInterval */
+/* global document, window, setInterval, IntersectionObserver */
+// The home page schematic: its four steps light up one stage at a time, on their own until the
+// reader clicks one.
 (function () {
   var svg = document.querySelector('[data-net] svg.net');
   var tabs = document.querySelectorAll('[data-tab]');
@@ -31,4 +33,23 @@
   setInterval(function () {
     if (!manual && !document.hidden) show((stage + 1) % tabs.length);
   }, 3400);
+})();
+
+// Blocks marked data-reveal fade up when they scroll into view. The class on <html> turns the
+// hidden state on, so a browser that never runs this shows everything.
+(function () {
+  var blocks = document.querySelectorAll('[data-reveal]');
+  if (blocks.length === 0 || !('IntersectionObserver' in window)) return;
+  document.documentElement.classList.add('reveal-on');
+  var seen = new IntersectionObserver(
+    function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (!entries[i].isIntersecting) continue;
+        entries[i].target.classList.add('in');
+        seen.unobserve(entries[i].target);
+      }
+    },
+    { rootMargin: '0px 0px -8% 0px' },
+  );
+  for (var k = 0; k < blocks.length; k++) seen.observe(blocks[k]);
 })();

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type GitFailure, gitAsync } from '../src/git.js';
+import { type GitFailure, gitAsync, taskkillLeft } from '../src/git.js';
 
 const dirs: string[] = [];
 const pids: number[] = [];
@@ -92,6 +92,8 @@ describe('gitAsync', () => {
 
     expect(err).toMatchObject({ code: 'ETIMEDOUT' });
     expect((err as GitFailure).stderr).toContain('hook waits for the lock');
+    // The stop went through, so the failure names nothing left running.
+    expect((err as GitFailure).treeLeft).toBeUndefined();
     // The timeout, the stop and a few seconds for the output; not until the orphan ends.
     expect(Date.now() - started).toBeLessThan(20_000);
     // The orphan outlived the stop, so the call did not end by the output closing.
@@ -152,6 +154,10 @@ describe('gitAsync', () => {
     expect(result).toBeInstanceOf(Error);
     expect(result).toMatchObject({ code: 'ETIMEDOUT' });
     expect((result as GitFailure).stderr).toContain('hook left a holder');
+    // On Windows nothing leads from an exited git to the holder, and the failure says so.
+    if (process.platform === 'win32') {
+      expect((result as GitFailure).treeLeft).toContain('git had exited');
+    }
     expect(Date.now() - started).toBeLessThan(20_000);
     // The holder kept the output open until the drain ended the call.
     expect(pids).toHaveLength(1);
@@ -162,6 +168,110 @@ describe('gitAsync', () => {
     while (alive(pid) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
     expect(alive(pid)).toBe(false);
   }, 40_000);
+
+  it('says why what git started may still run when the stop of its tree is refused (AO-0251)', async () => {
+    const repo = temp();
+    const state = temp();
+    const beat = join(state, 'beat.txt');
+    const go = join(state, 'go.txt');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, windowsHide: true });
+    // A hook that leaves a mark every 100 ms until `go.txt` exists.
+    writeFileSync(
+      join(repo, '.git', 'hooks', 'pre-commit'),
+      [
+        '#!/bin/sh',
+        `while [ ! -f '${go.split(sep).join('/')}' ]; do printf x >> '${beat.split(sep).join('/')}'; sleep 0.1; done`,
+        'exit 1',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'opsd',
+      GIT_AUTHOR_EMAIL: 'swarmupd@example.com',
+      GIT_COMMITTER_NAME: 'opsd',
+      GIT_COMMITTER_EMAIL: 'swarmupd@example.com',
+    };
+    const asked: number[] = [];
+    const started = Date.now();
+    const err = await gitAsync(repo, ['commit', '-q', '--allow-empty', '-m', 'x'], {
+      env,
+      timeoutMs: 2_000,
+      tree: true,
+      // As where a sandbox refuses `taskkill /T`: nothing under git is stopped.
+      stopTree: (pid) => {
+        asked.push(pid);
+        return Promise.resolve('`taskkill /T` exited 1: Access is denied.');
+      },
+    }).catch((e: unknown) => e as GitFailure);
+
+    try {
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toMatchObject({
+        code: 'ETIMEDOUT',
+        treeLeft: '`taskkill /T` exited 1: Access is denied.',
+      });
+      expect(asked).toHaveLength(1);
+      // The call still ends: git is killed, and the drain stops reading the hook's output.
+      expect(Date.now() - started).toBeLessThan(20_000);
+      // The hook outlived the call, as the failure says: its marks go on.
+      const size = statSync(beat).size;
+      const end = Date.now() + 5_000;
+      while (statSync(beat).size === size && Date.now() < end) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(statSync(beat).size).toBeGreaterThan(size);
+    } finally {
+      // Ends the hook, so nothing has to kill it; waits for its marks to stop.
+      writeFileSync(go, 'go\n');
+      let size = -1;
+      const end = Date.now() + 10_000;
+      while (Date.now() < end && size !== statSync(beat).size) {
+        size = statSync(beat).size;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }, 40_000);
+
+  it('names nothing left running on a tree call that fails without a timeout', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, windowsHide: true });
+    // No timeout, so the stop is never asked: a plain failure carries no `treeLeft`.
+    const err = await gitAsync(repo, ['rev-parse', '--verify', '-q', 'nope'], {
+      timeoutMs: 20_000,
+      tree: true,
+      stopTree: () => Promise.reject(new Error('never asked')),
+    }).catch((e: unknown) => e as GitFailure);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as GitFailure).code).toBe(1);
+    expect((err as GitFailure).treeLeft).toBeUndefined();
+  }, 40_000);
+
+  it('tells a refused taskkill from one that met a process already gone (AO-0251)', () => {
+    const denied =
+      'ERROR: The process with PID 4321 (child process of PID 1234) could not be terminated.\r\nReason: Access is denied.\r\n';
+    // A process it names still runs: the stop was refused.
+    expect(taskkillLeft({ code: 1, message: 'x' }, denied, (pid) => pid === 4321)).toBe(
+      '`taskkill /T` exited 1: Reason: Access is denied.',
+    );
+    // None of the processes it names runs any more: they ended by themselves, nothing is left.
+    const gone =
+      'ERROR: The process with PID 4321 (child process of PID 1234) could not be terminated.\r\nReason: There is no running instance of the task.\r\n';
+    expect(taskkillLeft({ code: 255, message: 'x' }, gone, () => false)).toBeUndefined();
+    // It names no process, so nothing shows the tree ended.
+    expect(taskkillLeft({ code: 1, message: 'x' }, 'Access is denied.\r\n', () => false)).toBe(
+      '`taskkill /T` exited 1: Access is denied.',
+    );
+    // It did not run at all, or did not end.
+    expect(taskkillLeft({ code: 'ENOENT', message: 'spawn taskkill ENOENT' }, '')).toBe(
+      '`taskkill /T` did not start (ENOENT)',
+    );
+    expect(taskkillLeft({ code: null, killed: true, message: 'x' }, '')).toBe(
+      '`taskkill /T` did not end in 15 s',
+    );
+  });
 
   // The tree path collects git's output itself; it reports too much output as `execFile` does.
   it('keeps stdout up to maxBuffer and names stdout when it overflows on a tree call', async () => {

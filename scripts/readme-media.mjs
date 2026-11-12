@@ -113,7 +113,7 @@ function workspace(tag) {
       `me: ${ME}`,
       'roots:',
       `  - '${fwd(docs)}'`,
-      'opsd:',
+      'swarmupd:',
       '  port: 0',
       '  sync: false',
       '  max_runs: 6',

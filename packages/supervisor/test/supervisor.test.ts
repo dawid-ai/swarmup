@@ -7,25 +7,38 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { initRoot, mirrorPair, Root, samePath, syncRoot, Workspace } from '@swarmup/core';
+import {
+  initRoot,
+  mirrorPair,
+  Root,
+  samePath,
+  secretKind,
+  syncRoot,
+  Workspace,
+} from '@swarmup/core';
+import type { OpsEvent } from '@swarmup/core';
 import type { ProcLister, ProcTarget, RunRecord } from '../src/index.js';
 import {
   daemonCall,
   processStartSync,
+  codexGitDirs,
   codexWritableDirs,
   invocation,
   isAlive,
   opsdConfig,
+  outsideSession,
   questionPrompt,
   readDaemon,
   runDaemon,
@@ -48,17 +61,16 @@ import { until, WAIT_MS } from './until.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoTop = join(here, '..', '..', '..');
+// Resolved like any import, so a worktree without its own node_modules finds the tsc of the
+// checkout that holds it.
+const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
 const coreDist = join(repoTop, 'packages', 'core', 'dist', 'index.js');
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
 
 beforeAll(() => {
   // The fake agent is a separate process, so it needs the built core.
-  execFileSync(
-    process.execPath,
-    [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/core'],
-    { cwd: repoTop, windowsHide: true },
-  );
+  execFileSync(process.execPath, [tsc, '-b', 'packages/core'], { cwd: repoTop, windowsHide: true });
 });
 
 // `close` may wait about a minute for killed runs and their wrap-up (its own limits add up to
@@ -156,10 +168,11 @@ else if (mode === 'hit-both') {
   console.log(JSON.stringify({ type: 'error', message: "You've hit your usage limit." }));
 }
 else if ((mode === 'edit-wait' || mode === 'edit-move') && process.env.SWARMUP_PARENT_RUN) {
-  // A helper: writes in the checkout until it is killed.
+  // A helper: writes in the checkout until it is killed. It appends, so a kill between two
+  // writes never empties a file that had content (AO-0239).
   const fs = await import('node:fs');
   for (let i = 0; ; i++) {
-    fs.writeFileSync(process.env.FAKE_HELPER_GO ?? 'helper.txt', String(i) + '\\n');
+    fs.appendFileSync(process.env.FAKE_HELPER_GO ?? 'helper.txt', String(i) + '\\n');
     await new Promise((r) => setTimeout(r, 50));
   }
 }
@@ -1127,6 +1140,25 @@ describe('api', () => {
     }
   });
 
+  it('keeps idle API sockets open, so a late request never meets a closing socket', async () => {
+    // The shutdown tests send a second POST on the first one's socket after a run ends. Under
+    // full-suite load that wait passed Node's 5 s keep-alive timeout, and the server closed the
+    // socket as fetch wrote to it ('other side closed'; AO-0192, AO-0223).
+    const { sup } = setup();
+    const api = await startApi(sup, { port: 0, token: 'secret-test-token', version: 't' });
+    try {
+      expect(api.server.keepAliveTimeout).toBe(0);
+      const res = await fetch(`http://127.0.0.1:${api.port}/api/health`, {
+        headers: { authorization: 'Bearer secret-test-token' },
+      });
+      await res.json();
+      // No `Keep-Alive: timeout=5` hint: the server sets no deadline for the client to race.
+      expect(res.headers.get('keep-alive')).toBeNull();
+    } finally {
+      await api.close();
+    }
+  });
+
   it('shuts down on ifIdle only with no run live, and refuses launches once it agreed', async () => {
     const { sup, as } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
@@ -1137,11 +1169,6 @@ describe('api', () => {
       version: 't',
       onShutdown: () => shutdowns++,
     });
-    // The second POST reuses the first one's socket after a run ends. Under full-suite load that
-    // wait passes the server's 5 s keep-alive timeout, and the server closes the socket just as
-    // fetch writes to it ('other side closed'). With no keep-alive timeout, it stays open until
-    // api.close() (AO-0192).
-    api.server.keepAliveTimeout = 0;
     const post = (body: unknown) =>
       fetch(`http://127.0.0.1:${api.port}/api/shutdown`, {
         method: 'POST',
@@ -1183,11 +1210,6 @@ describe('api', () => {
       version: 't',
       onShutdown: () => shutdowns++,
     });
-    // The second POST reuses the first one's socket after a run ends. Under full-suite load that
-    // wait passes the server's 5 s keep-alive timeout, and the server closes the socket just as
-    // fetch writes to it ('other side closed'). With no keep-alive timeout, it stays open until
-    // api.close() (AO-0192).
-    api.server.keepAliveTimeout = 0;
     const post = (body: unknown) =>
       fetch(`http://127.0.0.1:${api.port}/api/shutdown`, {
         method: 'POST',
@@ -1319,11 +1341,10 @@ describe('state', () => {
 
 describe('daemon', () => {
   it('starts in the background, runs an agent through the API and stops', async () => {
-    execFileSync(
-      process.execPath,
-      [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/supervisor'],
-      { cwd: repoTop, windowsHide: true },
-    );
+    execFileSync(process.execPath, [tsc, '-b', 'packages/supervisor'], {
+      cwd: repoTop,
+      windowsHide: true,
+    });
     const { repo, as, state } = setup();
     const agentFile = join(temp(), 'fake-agent.mjs');
     writeFileSync(agentFile, FAKE_AGENT);
@@ -1378,11 +1399,10 @@ describe('daemon', () => {
   });
 
   it('stops and restarts with a live run: the next swarmupd adopts it', async () => {
-    execFileSync(
-      process.execPath,
-      [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/supervisor'],
-      { cwd: repoTop, windowsHide: true },
-    );
+    execFileSync(process.execPath, [tsc, '-b', 'packages/supervisor'], {
+      cwd: repoTop,
+      windowsHide: true,
+    });
     const { repo, as, state } = setup();
     const agentFile = join(temp(), 'fake-agent.mjs');
     writeFileSync(agentFile, FAKE_AGENT);
@@ -1469,6 +1489,64 @@ describe('daemon', () => {
       // Only this test's own fake agent, by the PID its swarmupd printed, while it still runs it.
       if (runPid !== undefined && isAlive(runPid)) await killOwn(runPid, runSeen);
     }
+  });
+
+  it('says what the child logged when swarmupd does not start (AO-0235)', async () => {
+    const state = temp();
+    const entry = join(temp(), 'broken.mjs');
+    writeFileSync(entry, "console.error('broken entry says no'); process.exit(1);\n");
+    writeFileSync(join(state, 'opsd.log'), 'a line from an earlier start\n');
+    const env = {
+      ...process.env,
+      SWARMUP_STATE_DIR: state,
+      SWARMUP_DAEMON_ENTRY: entry,
+    } as NodeJS.ProcessEnv;
+    const err = await startDaemon({ env, cwd: state }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toContain('swarmupd did not start');
+    // The entry it started and that start's own output, without older lines of the log.
+    expect(message).toContain(entry);
+    expect(message).toContain('broken entry says no');
+    expect(message).not.toContain('earlier start');
+  });
+
+  it('keeps secret-looking child output out of the start error (AO-0235)', async () => {
+    const state = temp();
+    const entry = join(temp(), 'leaky.mjs');
+    // Built here and passed through the environment, so no file holds a secret-looking string.
+    const token = `ghp_${'a1B2'.repeat(9)}`;
+    const hook = `https://hooks.${'slack'}.com/services/${'T0AB12CD3/'.repeat(3)}`;
+    writeFileSync(
+      entry,
+      [
+        "console.error('config read from the state folder');",
+        "console.error('GH_TOKEN=' + process.env.LEAKY_TOKEN);",
+        "console.error('posting to ' + process.env.LEAKY_HOOK);",
+        "console.error('port 7777 is taken');",
+        'process.exit(1);',
+        '',
+      ].join('\n'),
+    );
+    const env = {
+      ...process.env,
+      SWARMUP_STATE_DIR: state,
+      SWARMUP_DAEMON_ENTRY: entry,
+      LEAKY_TOKEN: token,
+      LEAKY_HOOK: hook,
+    } as NodeJS.ProcessEnv;
+    const err = await startDaemon({ env, cwd: state }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toContain('swarmupd did not start');
+    expect(message).not.toContain(token);
+    expect(message).not.toContain(hook);
+    expect(secretKind(message)).toBeNull();
+    expect(message).toContain('[line removed: it looks like a GitHub token]');
+    expect(message).toContain('[line removed: it looks like a Slack webhook URL]');
+    // The lines that help stay.
+    expect(message).toContain('config read from the state folder');
+    expect(message).toContain('port 7777 is taken');
   });
 
   it('fails a stop when the old swarmupd is still alive, so a restart cannot start a second one', async () => {
@@ -2516,8 +2594,120 @@ describe('run limits', () => {
     expect(asRun(a.id).holdsClaim('1')).toBe(true);
     expect(asRun(b.id).holdsClaim('1')).toBe(false);
     expect(() => asRun(b.id).release('1', 'not mine')).toThrow(/another run on this PC/);
-    // swarmupd itself acts for every run it started.
-    expect(sup.ws('fake:engineer').holdsClaim('1')).toBe(true);
+    // A session of the agent with no run is another holder too; swarmupd asks for any of them.
+    expect(sup.ws('fake:engineer').holdsClaim('1')).toBe(false);
+    expect(sup.ws('fake:engineer').holdsClaim('1', { anyRun: true })).toBe(true);
+    expect(() => sup.ws('fake:engineer').start('1', 'mine too')).toThrow(
+      /a session outside swarmupd/,
+    );
+  });
+
+  it('leaves a task to the session outside swarmupd that worked on it last (AO-0236)', async () => {
+    let now = Date.now();
+    const { sup, as } = setup({
+      mode: 'hang',
+      now: () => now,
+      opsd: { agents: { 'fake:engineer': { wake: true } } },
+    });
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    const ref = `test/${t.id}`;
+    // A session with no run does the work and sends it to review; the change request comes back
+    // while that session is still there.
+    const session = as('fake:engineer');
+    session.start(t.id, 'plan');
+    session.review(t.id, 'check', 'codex:qa');
+    now += 4 * 60_000;
+    as('codex:qa').verdict(t.id, 'changes', 'one more case');
+    now += 60_000;
+    await sup.tick();
+    expect(sup.runs({ live: true })).toEqual([]);
+    expect(sup.waits().find((w) => w.task === ref)).toMatchObject({
+      reason:
+        'a session of fake:engineer outside swarmupd worked on it 5 min ago and may still do; ' +
+        'a run starts in 25 min unless that session claims it (outside_session_minutes)',
+    });
+    // Its next event counts from then, and its own claim keeps the task out of the queue.
+    session.start(t.id, 'the extra case');
+    session.review(t.id, 'check again', 'codex:qa');
+    as('codex:qa').verdict(t.id, 'changes', 'and another');
+    now += 29 * 60_000;
+    await sup.tick();
+    expect(sup.runs({ live: true })).toEqual([]);
+    // The session is gone: after outside_session_minutes a run takes the task.
+    now += 60_000;
+    await sup.tick();
+    expect(sup.runs({ live: true }).map((r) => r.task)).toEqual([t.id]);
+  });
+
+  it('holds no task its last session gave away, or that a run worked on last', () => {
+    const { sup, as, repo } = setup({
+      mode: 'hang',
+      opsd: { max_runs: 4, agents: { 'fake:engineer': { wake: true } } },
+    });
+    const h = as('human:dawid');
+    // Released by the session that held it.
+    const released = h.newTask({ title: 'released', owner: 'fake:engineer', project: 'a' });
+    as('fake:engineer').start(released.id, 'plan');
+    as('fake:engineer').release(released.id, 'not now');
+    // Sent back, then routed by a person.
+    const routed = h.newTask({ title: 'routed', owner: 'fake:engineer', project: 'b' });
+    as('fake:engineer').start(routed.id, 'plan');
+    as('fake:engineer').review(routed.id, 'check', 'codex:qa');
+    as('codex:qa').verdict(routed.id, 'changes', 'more');
+    h.assign(routed.id, 'fake:engineer');
+    // Worked on by a supervised run, whose claim names it.
+    const ran = h.newTask({ title: 'ran', owner: 'fake:engineer', project: 'c' });
+    const run = new Workspace({
+      cwd: repo,
+      env: { SWARMUP_CONFIG: 'none.yml' },
+      actor: 'fake:engineer',
+      run: 'EARLIER',
+      user: {},
+    });
+    run.start(ran.id, 'plan');
+    run.review(ran.id, 'check', 'codex:qa');
+    as('codex:qa').verdict(ran.id, 'changes', 'more');
+    const waits = sup.waits().filter((w) => w.kind === 'task');
+    expect(waits.map((w) => w.task?.split('/').pop()).sort()).toEqual(
+      [released.id, routed.id, ran.id].sort(),
+    );
+    for (const w of waits) expect(w.reason).not.toMatch(/outside swarmupd/);
+    expect(waits[0]!.reason).toBe('starts at the next tick');
+  });
+
+  it('judges a session outside swarmupd from the task events and the claim record', () => {
+    const at = (min: number) => new Date(Date.UTC(2026, 0, 1, 0, min)).toISOString();
+    const e = (type: string, actor: string, min: number, extra: Partial<OpsEvent> = {}) =>
+      ({ id: `${min}`, type, actor, at: at(min), body: '', ...extra }) as OpsEvent;
+    const events = [
+      e('claim', 'a:engineer', 0, { token: 'T1' }),
+      e('start', 'a:engineer', 1),
+      e('review', 'a:engineer', 2),
+      e('verdict', 'b:qa', 3, { verdict: 'changes' }),
+    ];
+    const session = { agent: 'a:engineer', at: Date.parse(at(2)) };
+    expect(outsideSession(events, { token: 'T1' })).toEqual(session);
+    // A claim a run made or swarmupd bound, another clone's claim, and no claim at all.
+    expect(outsideSession(events, { token: 'T1', run: 'R' })).toBeNull();
+    expect(outsideSession(events, { token: 'OTHER' })).toBeNull();
+    expect(outsideSession(events, {})).toBeNull();
+    expect(outsideSession([], { token: 'T1' })).toBeNull();
+    // What swarmupd writes as the agent is no sign of a session; a comment of the agent is.
+    expect(outsideSession([...events, e('run-end', 'a:engineer', 9)], { token: 'T1' })).toEqual(
+      session,
+    );
+    expect(outsideSession([...events, e('comment', 'a:engineer', 9)], { token: 'T1' })).toEqual({
+      agent: 'a:engineer',
+      at: Date.parse(at(9)),
+    });
+    // The session gave the task away, or someone routed it since.
+    expect(outsideSession([...events, e('release', 'a:engineer', 9)], { token: 'T1' })).toBeNull();
+    expect(outsideSession([...events, e('assign', 'human:x', 9)], { token: 'T1' })).toBeNull();
+    // Only the newest claim counts.
+    const later = [...events, e('claim', 'a:engineer', 9, { token: 'T2' })];
+    expect(outsideSession(later, { token: 'T1' })).toBeNull();
+    expect(outsideSession(later, { token: 'T2' })?.at).toBe(Date.parse(at(9)));
   });
 
   it('keeps to the PC, provider and role settings', () => {
@@ -2646,6 +2836,9 @@ describe('run limits', () => {
       ['second', 'fake:engineer: 1 engineer run(s) live on test; per_project is 1'],
     ]);
     expect(plans).toHaveBeenCalledTimes(4);
+    // The run's own start event lands whenever its process gets to it. Wait for it here, or
+    // under load it lands between two of the calls counted next and plans once more (AO-0253).
+    await until(() => h.view('1').status === 'in-progress');
     // A tick plans its own wake, and the next waits plans again after it.
     await sup.tick();
     expect(plans).toHaveBeenCalledTimes(5);
@@ -3004,7 +3197,12 @@ describe('bottlenecks and providers', () => {
   it('counts planned runs against max_runs, resumes answered work first, and reads inboxes last', async () => {
     const { sup, as } = setup({
       mode: 'hang',
-      opsd: { max_runs: 1, agents: { 'fake:engineer': { wake: true } } },
+      // The agent's earlier work is written here with no run; it stands for a run's (AO-0236).
+      opsd: {
+        max_runs: 1,
+        outside_session_minutes: 0,
+        agents: { 'fake:engineer': { wake: true } },
+      },
     });
     const h = as('human:dawid');
     const fresh = h.newTask({
@@ -3083,7 +3281,12 @@ describe('bottlenecks and providers', () => {
     // second.
     const { sup, as } = setup({
       mode: 'hang',
-      opsd: { agents: { 'fake:auditor': { wake: true } }, roles: AUDITOR },
+      // The auditor's first round is written here with no run; it stands for a run's (AO-0236).
+      opsd: {
+        outside_session_minutes: 0,
+        agents: { 'fake:auditor': { wake: true } },
+        roles: AUDITOR,
+      },
     });
     const h = as('human:dawid');
     const other = h.newTask({ title: 'other', owner: 'codex:engineer' });
@@ -3677,6 +3880,8 @@ describe('runtime backoff (AO-0150)', () => {
       mode: 'hang',
       now: () => now,
       opsd: {
+        // The author's work is written here with no run; it stands for a run's (AO-0236).
+        outside_session_minutes: 0,
         agents: { 'fake:engineer': { wake: true }, 'other:engineer': { wake: true } },
         runtimes: { other: HANG_RUNTIME },
         roles: { engineer: { providers: ['fake', 'other'], writes: false, per_project: 2 } },
@@ -4332,6 +4537,86 @@ describe('what runs leave in the checkout', () => {
     expect(added.some((d) => samePath(d, join(repo, '.swarmup')))).toBe(true);
   });
 
+  it('starts a writing Codex run with the git dirs git named, without running git (AO-0215)', async () => {
+    const out = join(temp(), 'codex-call.json');
+    const recorder = join(temp(), 'codex.mjs');
+    writeFileSync(
+      recorder,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2) }));',
+      ].join('\n'),
+    );
+    const { repo, sup } = setup({
+      env: { CODEX_CALL: out },
+      opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
+    });
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const wt = join(temp(), 'wt');
+    git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    // The first launch there teaches swarmupd the checkout; each later one reads it beforehand.
+    await ended(sup, (await sup.launchFresh({ agent: 'codex:engineer', cwd: wt })).id);
+    rmSync(out);
+    const spy = spySyncProcs();
+    let run: RunRecord;
+    try {
+      run = await sup.launchFresh({ agent: 'codex:engineer', cwd: wt });
+    } finally {
+      spy.restore();
+    }
+    // `git rev-parse --git-dir --git-common-dir` held the API for 0.2-1.5 s per launch under load.
+    expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
+    await ended(sup, run.id);
+    const call = JSON.parse(text(out)) as { args: string[] };
+    const added = call.args.filter((_, i) => call.args[i - 1] === '--add-dir');
+    for (const d of [join(repo, '.git', 'worktrees', 'wt'), join(repo, '.git', 'objects')]) {
+      expect(added.some((a) => samePath(a, d))).toBe(true);
+    }
+  });
+
+  it('gives a writing Codex run no git dirs that git itself refuses (AO-0215)', () => {
+    const repo = temp();
+    git(repo, 'init', '-q');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const wt = join(temp(), 'wt');
+    git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    expect(codexGitDirs(wt).length).toBe(4);
+    expect(codexGitDirs(temp())).toEqual([]);
+
+    // A `.git` file that names a folder which is no git dir: nothing there becomes writable,
+    // and no `logs` folder is made in it.
+    const lure = temp();
+    mkdirSync(join(lure, 'objects'));
+    mkdirSync(join(lure, 'refs'));
+    const fake = temp();
+    writeFileSync(join(fake, '.git'), `gitdir: ${lure}\n`);
+    expect(codexGitDirs(fake)).toEqual([]);
+    expect(existsSync(join(lure, 'logs'))).toBe(false);
+
+    // A `.git` folder that is no git dir.
+    const hollow = temp();
+    mkdirSync(join(hollow, '.git', 'objects'), { recursive: true });
+    expect(codexGitDirs(hollow)).toEqual([]);
+    expect(existsSync(join(hollow, '.git', 'logs'))).toBe(false);
+
+    // A checkout git refuses for its owner (`safe.directory`).
+    const none = join(temp(), 'gitconfig');
+    writeFileSync(none, '');
+    const unsafe = {
+      ...process.env,
+      GIT_TEST_ASSUME_DIFFERENT_OWNER: '1',
+      GIT_CONFIG_GLOBAL: none,
+      GIT_CONFIG_NOSYSTEM: '1',
+    };
+    expect(codexGitDirs(wt, unsafe)).toEqual([]);
+
+    // A worktree whose `commondir` names a folder that is no repo.
+    const empty = temp();
+    writeFileSync(join(repo, '.git', 'worktrees', 'wt', 'commondir'), `${empty}\n`);
+    expect(codexGitDirs(wt)).toEqual([]);
+    expect(existsSync(join(empty, 'logs'))).toBe(false);
+  });
+
   it('lets a chat turn neither hold a checkout nor wait on one (AO-0136)', async () => {
     const { repo, sup, as } = setup({ mode: 'hang', env: ID });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
@@ -4624,8 +4909,9 @@ describe('what runs leave in the checkout', () => {
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await until(() => as('human:dawid').view('1').status === 'in-progress');
     const helper = sup.launch({ agent: 'fake:engineer', parent: run.id, prompt: 'help' });
-    // Helpers write until they are killed; the parent ends first.
-    await until(() => existsSync(join(repo, 'helper.txt')));
+    // Helpers write until they are killed; the parent ends first. The file exists before its
+    // first line is in it, so wait for the content the commit must hold (AO-0239).
+    await until(() => !!statSync(join(repo, 'helper.txt'), { throwIfNoEntry: false })?.size);
     sup.kill(run.id);
     await ended(sup, run.id, 30_000);
     expect(sup.run(helper.id).status).toBe('ended');
@@ -5583,7 +5869,7 @@ describe('routing ownerless work (AO-0140)', () => {
     expect(wait?.reason).toBe(
       'no waking agent may take it (role providers, overflow or the expected reviewer); ' +
         'swarmupd cannot route it: no waking agent of *:engineer is one of its providers ' +
-        '(opsd.roles.engineer.providers, overflow)',
+        '(swarmupd.roles.engineer.providers, overflow)',
     );
   });
 

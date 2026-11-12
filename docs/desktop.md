@@ -70,7 +70,7 @@ was built), flagged when it is older than the app installed now. It has these co
   are live.
 - **Pause new runs** and **Resume new runs**. While paused, no wake, schedule, **Run now** or
   `swarmup launch` starts a run; helper runs of live runs still start, live runs finish, and sync,
-  notifications and the API keep working. The pause is `opsd.paused: true` in the user config, so
+  notifications and the API keep working. The pause is `swarmupd.paused: true` in the user config, so
   it lasts across restarts until you resume. From a terminal: `swarmup daemon pause` and
   `swarmup daemon resume`.
 - **Start swarmupd**: **When I open the app** (the default) or **When I sign in to Windows**. Sign-in

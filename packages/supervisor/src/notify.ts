@@ -42,10 +42,11 @@ export function checkWebhook(raw: unknown): string {
 export function checkNotify(raw: unknown): NotifyConfig {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw))
-    throw new OpsError('opsd.notify: use a mapping', 2);
+    throw new OpsError('swarmupd.notify: use a mapping', 2);
   const r = raw as Record<string, unknown>;
   for (const k of Object.keys(r)) {
-    if (k !== 'webhook' && k !== 'kinds') throw new OpsError(`opsd.notify.${k}: not a setting`, 2);
+    if (k !== 'webhook' && k !== 'kinds')
+      throw new OpsError(`swarmupd.notify.${k}: not a setting`, 2);
   }
   const out: NotifyConfig = {};
   if (r.webhook !== undefined && r.webhook !== null) out.webhook = checkWebhook(r.webhook);
@@ -54,7 +55,7 @@ export function checkNotify(raw: unknown): NotifyConfig {
       !Array.isArray(r.kinds) ||
       r.kinds.some((k) => !(NOTIFY_KINDS as readonly string[]).includes(String(k)))
     ) {
-      throw new OpsError(`opsd.notify.kinds: use any of ${NOTIFY_KINDS.join(', ')}`, 2);
+      throw new OpsError(`swarmupd.notify.kinds: use any of ${NOTIFY_KINDS.join(', ')}`, 2);
     }
     out.kinds = r.kinds.map(String);
   }

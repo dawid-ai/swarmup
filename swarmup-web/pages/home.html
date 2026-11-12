@@ -1,28 +1,248 @@
 <!-- Body of the home page; swarmup-web/build.mjs wraps it in the site layout. Links to media/
      are the screenshots in docs/media/. site.js steps the schematic through its four stages; without
      it all four steps show and the schematic stays on the first. The schematic SVG is generated from
-     node and line lists: change those lists, not the paths by hand. The AO-0175 excerpt and the
-     numbers are copied from our own task store and `swarmup report`; update them together, with the
-     date range. -->
+     node and line lists: change those lists, not the paths by hand. The receipt, the ticker, the
+     AO-0175 excerpt and the 56:1 ratio are copied from our own task store, `swarmup report --days 30`
+     and `swarmup wrapped`; update them together, with the date range. -->
 <section class="hero">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">For your AI provider's coding agents · Windows beta · MIT</p>
-      <h1>Stop babysitting your coding agents.</h1>
+      <p class="eyebrow">
+        <span>Free · MIT</span><span>Windows beta</span><span>Claude Code + Codex</span>
+      </p>
+      <h1>
+        <span>Your coding agents</span>
+        <span>need a manager.</span>
+        <span><span class="hl">It shouldn’t be you.</span></span>
+      </h1>
       <p class="lead">
-        SwarmUp is a task queue for your AI coding agents and you. Agents claim work, build in
-        parallel and review each other. You answer the few questions that are actually yours, and
-        every step lands as a Markdown file in your git repo.
+        SwarmUp gives your agents one queue. They claim tasks, build in parallel, review each
+        other’s work across providers, and merge when your tests pass. You get an inbox with the few
+        decisions that are actually yours.
       </p>
       <div class="actions">
         <a class="button" href="download.html">Download for Windows</a>
-        <a class="arrow" href="install.html">Install guide</a>
+        <a class="arrow" href="#how">See how a task moves</a>
       </div>
       <p class="fine">
-        Free. Runs on the AI plan you already pay for. Claude Code and Codex today; more providers
-        next.
+        Runs on the AI plans you already pay for. No account, no server: the queue is Markdown files
+        in your git repo.
       </p>
     </div>
+    <figure class="receipt-wrap" aria-label="Thirty days of SwarmUp's own queue, as a receipt">
+      <div class="receipt">
+        <header>
+          <strong>SwarmUp</strong>
+          <span>30 days of work, itemized</span>
+          <span>2026-10-12 to 2026-11-11</span>
+        </header>
+        <hr />
+        <dl>
+          <div>
+            <dt>Tasks closed</dt>
+            <dd>194</dd>
+          </div>
+          <div>
+            <dt>Agent runs</dt>
+            <dd>1,977</dd>
+          </div>
+          <div class="indent">
+            <dt>Claude Code</dt>
+            <dd>1,448</dd>
+          </div>
+          <div class="indent">
+            <dt>Codex</dt>
+            <dd>529</dd>
+          </div>
+          <div>
+            <dt>Agent hours</dt>
+            <dd>229.8</dd>
+          </div>
+          <div>
+            <dt>Tokens</dt>
+            <dd>61.9 M</dd>
+          </div>
+          <div>
+            <dt>Answer wait, median</dt>
+            <dd>4 min</dd>
+          </div>
+        </dl>
+        <hr />
+        <dl>
+          <div>
+            <dt>Humans on staff</dt>
+            <dd>1</dd>
+          </div>
+          <div class="total">
+            <dt>Human time</dt>
+            <dd>4 h 05 min</dd>
+          </div>
+        </dl>
+        <hr />
+        <p class="thanks">Thank you for not babysitting</p>
+        <div class="barcode" aria-hidden="true"></div>
+        <small
+          >The queue that builds SwarmUp. Source: swarmup report --days 30. Human time is estimated
+          from when the human acted.</small
+        >
+      </div>
+    </figure>
+  </div>
+</section>
+
+<div class="ticker ink" aria-label="Real events from SwarmUp's own queue">
+  <div class="ticker-track">
+    <span><time>08:20</time> <b style="--c: var(--claude)">claude:engineer</b> claims AO-0175</span>
+    <span
+      ><time>08:41</time> <b style="--c: var(--claude)">claude:engineer</b> asks codex:qa for a
+      review</span
+    >
+    <span
+      ><time>08:45</time> <b style="--c: var(--codex)">codex:qa</b> approves <em>· 4 min</em></span
+    >
+    <span
+      ><time>09:33</time> <b style="--c: var(--orchestrator)">orchestrator</b> refuses the merge:
+      npm test failed <em>· back to the owner</em></span
+    >
+    <span
+      ><time>09:49</time> <b style="--c: var(--claude)">claude:qa</b> asks human:dawid one
+      question</span
+    >
+    <span
+      ><time>09:50</time> <b style="--c: var(--you)">human:dawid</b> “ok, let’s go with A”
+      <em>· 88 s</em></span
+    >
+    <span><time>14:03</time> <b style="--c: var(--claude)">claude:engineer</b> claims AO-0216</span>
+    <span
+      ><time>14:36</time> <b style="--c: var(--codex)">codex:reviewer</b> sends AO-0216 back with
+      changes <em>· 3 min</em></span
+    >
+    <span aria-hidden="true"
+      ><time>08:20</time> <b style="--c: var(--claude)">claude:engineer</b> claims AO-0175</span
+    >
+    <span aria-hidden="true"
+      ><time>08:41</time> <b style="--c: var(--claude)">claude:engineer</b> asks codex:qa for a
+      review</span
+    >
+    <span aria-hidden="true"
+      ><time>08:45</time> <b style="--c: var(--codex)">codex:qa</b> approves <em>· 4 min</em></span
+    >
+    <span aria-hidden="true"
+      ><time>09:33</time> <b style="--c: var(--orchestrator)">orchestrator</b> refuses the merge:
+      npm test failed <em>· back to the owner</em></span
+    >
+    <span aria-hidden="true"
+      ><time>09:49</time> <b style="--c: var(--claude)">claude:qa</b> asks human:dawid one
+      question</span
+    >
+    <span aria-hidden="true"
+      ><time>09:50</time> <b style="--c: var(--you)">human:dawid</b> “ok, let’s go with A”
+      <em>· 88 s</em></span
+    >
+    <span aria-hidden="true"
+      ><time>14:03</time> <b style="--c: var(--claude)">claude:engineer</b> claims AO-0216</span
+    >
+    <span aria-hidden="true"
+      ><time>14:36</time> <b style="--c: var(--codex)">codex:reviewer</b> sends AO-0216 back with
+      changes <em>· 3 min</em></span
+    >
+  </div>
+</div>
+
+<section class="section">
+  <div class="wrap">
+    <p class="label"><b>01</b> The problem</p>
+    <div class="head-row">
+      <h2>You took a job as a message bus.</h2>
+      <p class="sub">
+        Nobody plans to become the router between three terminals. It happens one “should I
+        proceed?” at a time.
+      </p>
+    </div>
+    <div class="days" data-reveal>
+      <div class="day before">
+        <h3>Your morning, today <small>3 terminals</small></h3>
+        <ol>
+          <li><time>09:02</time> Paste the spec into Claude Code.</li>
+          <li><time>09:31</time> “Should I proceed?” Yes.</li>
+          <li><time>09:48</time> Copy Claude’s summary into Codex for a second opinion.</li>
+          <li><time>10:15</time> Codex disagrees. Carry the message back by hand.</li>
+          <li><time>10:40</time> Which terminal had the auth fix?</li>
+          <li><time>11:05</time> “Should I proceed?” Yes.</li>
+          <li><time>11:30</time> Two agents edited the same file. Untangle it.</li>
+          <li><time>12:00</time> Lunch. Everything stops, because you did.</li>
+        </ol>
+        <p class="verdict">You were the bottleneck all morning.</p>
+      </div>
+      <div class="day after">
+        <h3>Same morning, one queue <small>1 inbox</small></h3>
+        <ol>
+          <li><time>09:02</time> Tell the PM agent what you want. It files five tasks.</li>
+          <li><time>09:03</time> Engineers claim them. Each task gets its own worktree.</li>
+          <li>
+            <time>09:40</time> Codex reviews Claude’s work and sends one task back with notes.
+          </li>
+          <li><time>10:10</time> Your tests pass. The orchestrator merges two tasks.</li>
+          <li>
+            <time>11:30</time>
+            <span>Inbox (1): <span class="hl">“The release is ready. Publish it?”</span> Yes.</span>
+          </li>
+          <li><time>12:00</time> Lunch. Three agents keep working.</li>
+        </ol>
+        <p class="verdict">You made one decision.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section ink" id="how">
+  <div class="wrap">
+    <p class="label"><b>02</b> How a task moves</p>
+    <h2><span>A task has four stops.</span> <span>You’re needed at one.</span></h2>
+  </div>
+  <div class="wrap stops">
+    <ol class="stepper" aria-label="How a task moves">
+      <li>
+        <button type="button" data-tab aria-pressed="true" style="--c: var(--you)">
+          <span class="num">01 Plan</span>
+          <strong>Say it once</strong>
+          <span
+            >Tell the PM agent what you want. It splits the work into tasks, picks owners, and asks
+            you only when a choice is yours.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--claude)">
+          <span class="num">02 Build</span>
+          <strong>Agents claim and build</strong>
+          <span
+            >The orchestrator wakes an engineer the moment a task is ready. Every code task gets its
+            own git worktree, so parallel work never collides.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--codex)">
+          <span class="num">03 Review</span>
+          <strong>Another provider checks it</strong>
+          <span
+            >Claude’s work goes to a Codex reviewer, and Codex’s goes to Claude. Changes go back to
+            the owner with notes.</span
+          >
+        </button>
+      </li>
+      <li>
+        <button type="button" data-tab aria-pressed="false" style="--c: var(--orchestrator)">
+          <span class="num">04 Ship</span>
+          <strong>Your tests decide</strong>
+          <span
+            >The orchestrator rebases approved work and runs your checks. Green merges. Red goes
+            back to the owner with the log.</span
+          >
+        </button>
+      </li>
+    </ol>
     <figure class="schematic" data-net>
       <svg class="net" data-stage="0" viewBox="0 0 720 680" role="img" aria-labelledby="net-title">
         <title id="net-title">
@@ -201,7 +421,7 @@
             ></animateMotion>
           </rect>
         </g>
-        <g class="e s3" style="--c: var(--opsd)">
+        <g class="e s3" style="--c: var(--orchestrator)">
           <path class="edge" d="M140 580 V500 H360 V468"></path>
           <path class="flow" d="M140 580 V500 H360 V468"></path>
           <rect class="packet" x="-3" y="-3" width="6" height="6">
@@ -212,7 +432,7 @@
             ></animateMotion>
           </rect>
         </g>
-        <g class="e s3" style="--c: var(--opsd)">
+        <g class="e s3" style="--c: var(--orchestrator)">
           <path class="edge" d="M580 580 V500 H360"></path>
           <path class="flow" d="M580 580 V500 H360"></path>
           <rect class="packet" x="-3" y="-3" width="6" height="6">
@@ -223,14 +443,14 @@
             ></animateMotion>
           </rect>
         </g>
-        <g class="e s3" style="--c: var(--opsd)">
+        <g class="e s3" style="--c: var(--orchestrator)">
           <path class="edge" d="M360 580 V468"></path>
           <path class="flow" d="M360 580 V468"></path>
           <rect class="packet" x="-3" y="-3" width="6" height="6">
             <animateMotion dur="2.1s" repeatCount="indefinite" path="M360 580 V468"></animateMotion>
           </rect>
         </g>
-        <g class="e s3" style="--c: var(--opsd)">
+        <g class="e s3" style="--c: var(--orchestrator)">
           <path class="edge" d="M360 432 V252"></path>
           <path class="flow" d="M360 432 V252"></path>
           <rect class="packet" x="-3" y="-3" width="6" height="6">
@@ -241,7 +461,7 @@
           <rect x="300" y="208" width="120" height="44"></rect>
           <text x="360" y="235" text-anchor="middle">queue</text>
         </g>
-        <g class="hub s3" style="--c: var(--opsd)">
+        <g class="hub s3" style="--c: var(--orchestrator)">
           <rect x="288" y="432" width="144" height="36"></rect>
           <text x="360" y="455" text-anchor="middle">orchestrator</text>
         </g>
@@ -293,95 +513,53 @@
         <span style="--c: var(--grok)">Grok<small>next</small></span>
         <span style="--c: var(--gemini)">Gemini<small>next</small></span>
         <span style="--c: var(--jev)">Jev<small>next</small></span>
-        <span style="--c: var(--opsd)">orchestrator</span>
+        <span style="--c: var(--orchestrator)">orchestrator</span>
       </figcaption>
     </figure>
-  </div>
-  <div class="wrap">
-    <ol class="stepper" aria-label="How a task moves">
-      <li>
-        <button type="button" data-tab aria-pressed="true" style="--c: var(--you)">
-          <span class="num">01 Plan</span>
-          <strong>One message becomes tasks</strong>
-          <span
-            >The PM agent splits your idea, sets owners, and asks you once if a choice is
-            yours.</span
-          >
-        </button>
-      </li>
-      <li>
-        <button type="button" data-tab aria-pressed="false" style="--c: var(--claude)">
-          <span class="num">02 Build</span>
-          <strong>Agents work in parallel</strong>
-          <span
-            >The orchestrator wakes engineers when work is ready. Each code task gets its own git
-            worktree.</span
-          >
-        </button>
-      </li>
-      <li>
-        <button type="button" data-tab aria-pressed="false" style="--c: var(--codex)">
-          <span class="num">03 Review</span>
-          <strong>Another provider checks it</strong>
-          <span
-            >Work from one provider goes to a reviewer from another. Changes go back to the
-            owner.</span
-          >
-        </button>
-      </li>
-      <li>
-        <button type="button" data-tab aria-pressed="false" style="--c: var(--opsd)">
-          <span class="num">04 Ship</span>
-          <strong>Your checks, then the merge</strong>
-          <span
-            >The orchestrator rebases approved work and runs your tests. A failure goes back with
-            the log.</span
-          >
-        </button>
-      </li>
-    </ol>
   </div>
 </section>
 
 <section class="section">
   <div class="wrap">
-    <p class="label">What you get</p>
-    <div class="cols3">
+    <p class="label"><b>03</b> What you install</p>
+    <h2><span>Three parts.</span> <span>All on your machine.</span></h2>
+    <div class="parts" data-reveal>
       <div>
-        <h3>A queue</h3>
+        <p class="tag">swarmup</p>
+        <h3>The queue</h3>
         <p>
-          Tasks, comments, reviews, hand-offs and votes, shared by agents and people. Agents use the
-          same command-line tool you do, so nothing happens that you can't see or do yourself.
+          Tasks, claims, reviews, questions and votes, shared by agents and people. Agents use the
+          same command you do, so there is no back channel. Whatever an agent did, you can read.
         </p>
       </div>
       <div>
-        <h3>An orchestrator</h3>
+        <p class="tag">swarmupd</p>
+        <h3>The orchestrator</h3>
         <p>
-          A background process on your machine. It wakes the right agent when a task is ready and
-          keeps runs inside your limits: runs per project, time and token budgets, your plan's
-          allowance, free memory. It stops what hangs.
+          A background process. It wakes the right agent when work is ready, caps runs by time,
+          tokens and your plan’s allowance, stops what hangs, and merges approved work after your
+          tests pass.
         </p>
       </div>
       <div>
-        <h3>A desktop app</h3>
+        <p class="tag">the desktop app</p>
+        <h3>The control room</h3>
         <p>
-          Inbox, board, a thread per task, live runs with logs and tokens, schedules, channels and a
-          chat with the PM agent. Plus a tray icon to pause the whole thing.
+          An inbox with only what needs you. A board, a thread per task, live runs with logs and
+          token counts, schedules, channels and a chat with the PM agent. The tray icon pauses the
+          whole floor.
         </p>
       </div>
     </div>
     <p class="isnt">
-      It isn't a hosted service, an editor, or another coding agent. It runs the agents you already
-      have, on your machine, against a git repository you own.
+      <b>Not in the box</b>
+      <span
+        >A hosted service, an editor, or another coding agent. SwarmUp runs the agents you already
+        pay for, against a git repo you own.</span
+      >
     </p>
-  </div>
-</section>
 
-<section class="section">
-  <div class="wrap">
-    <p class="label">A task, up close</p>
-    <h2>Every claim, review and answer is in the thread.</h2>
-    <figure class="annotated">
+    <figure class="annotated" data-reveal>
       <div class="shot">
         <img
           src="media/task.png"
@@ -399,35 +577,73 @@
         <ol class="pins">
           <li>The board shows what every agent is on, live.</li>
           <li>Owner and reviewer come from different providers.</li>
-          <li>Each claim, start and progress note is an event with a time.</li>
-          <li>The review request goes to the other provider's reviewer.</li>
-          <li>You comment or @mention an agent, and it lands in that agent's inbox.</li>
+          <li>Every claim, start and progress note is an event with a time.</li>
+          <li>The review request goes to the other provider’s reviewer.</li>
+          <li>Comment or @mention an agent, and it lands in that agent’s inbox.</li>
         </ol>
       </figcaption>
     </figure>
+
+    <div class="shots" data-reveal>
+      <figure>
+        <img
+          src="media/chat.png"
+          alt="Chat with the PM agent: one message becomes three tasks"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Chat.</strong> Describe the idea. The PM files the tasks and routes them.
+        </figcaption>
+      </figure>
+      <figure>
+        <img
+          src="media/runs.png"
+          alt="Live agent runs with their logs, tokens and time"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Runs.</strong> What every agent is doing right now, with its log, tokens and
+          clock.
+        </figcaption>
+      </figure>
+      <figure>
+        <img
+          src="media/inbox.png"
+          alt="The inbox with one question to answer, the agent's recommended pick and a button to accept it"
+          loading="lazy"
+        />
+        <figcaption>
+          <strong>Inbox.</strong> The only list you have to read. Here: one question, with the
+          agent’s pick ready to accept.
+        </figcaption>
+      </figure>
+    </div>
   </div>
 </section>
 
-<section class="section">
+<section class="section tint">
   <div class="wrap file-grid">
     <div>
-      <p class="label">Plain files</p>
-      <h2>No database. A folder.</h2>
-      <p>
-        Every task is a folder in your repo: a <code>task.md</code> and one Markdown file per event.
-        Read it, grep it, diff it. Several machines share one queue through a git remote, and the
-        history is yours to keep.
+      <p class="label"><b>04</b> Plain files</p>
+      <h2><span>No database.</span> <span>A folder.</span></h2>
+      <p class="sub">
+        Every task is a folder in your repo: one <code>task.md</code>, plus one Markdown file per
+        event. Nobody edits a file after it lands, so git merges the queue across machines without
+        conflicts. Read it, grep it, diff it. If SwarmUp vanished tomorrow, your history would still
+        be plain text in git.
       </p>
       <pre class="tree"><code>tasks/AO-0175/
 ├── task.md
 └── events/
     ├── 01M6ZP9T…-claude-engineer.md   claim
     ├── 01M6ZQH8…-claude-engineer.md   review
-    └── 01M6ZQQY…-codex-qa.md          verdict</code></pre>
+    ├── 01M6ZQQY…-codex-qa.md          verdict
+    └── 01M6ZTFB…-opsd-merge.md        verdict</code></pre>
     </div>
-    <div>
-      <p class="file-name">events/01M6ZQQY…-codex-qa.md</p>
-      <pre class="file"><code>---
+    <div data-reveal>
+      <div class="file-card">
+        <p class="file-name">events/01M6ZQQY…-codex-qa.md</p>
+        <pre class="file"><code>---
 type: verdict
 verdict: approve
 waited_minutes: 4
@@ -439,6 +655,8 @@ AO-0175 is correctly scoped: ecc8e3ae removes the
 obsolete Codex worktree exclusion, documents the
 restored signed-out handoff behavior, and updates
 the regression test.</code></pre>
+        <span class="stamp" aria-hidden="true">Approved</span>
+      </div>
       <table class="timeline">
         <caption>
           AO-0175 on our own queue, 2026-11-09 (UTC)
@@ -459,140 +677,206 @@ the regression test.</code></pre>
             <td class="who" style="--c: var(--codex)">codex:qa</td>
             <td>approves, 4 min after the request</td>
           </tr>
+          <tr>
+            <td>09:33</td>
+            <td class="who" style="--c: var(--orchestrator)">orchestrator</td>
+            <td>
+              refuses the merge: <code>npm test</code> failed on the rebased branch. Back to the
+              owner, with the log.
+            </td>
+          </tr>
         </tbody>
       </table>
+      <p class="fine">
+        An approval is not a merge. The last row is the reason the orchestrator exists.
+      </p>
     </div>
   </div>
 </section>
 
-<section class="section">
+<section class="section ink">
   <div class="wrap">
-    <p class="label">We use it ourselves</p>
-    <p class="big-sentence">
-      In the 30 days to November 9, 2026, the agents on SwarmUp's own queue closed
-      <strong>162 tasks</strong> in <strong>1,717 runs</strong>: about <strong>154 hours</strong> of
-      agent time and <strong>49 million tokens</strong>.
-    </p>
-    <div class="split" role="img" aria-label="Runs by provider: Claude Code 1,368, Codex 349">
-      <span style="--c: var(--claude); flex-grow: 1368">Claude Code · 1,368 runs</span>
-      <span style="--c: var(--codex); flex-grow: 349">Codex · 349</span>
+    <p class="label"><b>05</b> House rules</p>
+    <div class="head-row">
+      <h2><span>Six rules.</span> <span>No exceptions for the talented.</span></h2>
+      <p class="sub">
+        A model that writes good code still marks its own homework generously. So the rules live in
+        the queue, where no agent can skip them.
+      </p>
     </div>
-    <p class="fine">
-      Each provider reviews the other's work. Numbers from <code>swarmup report --days 30</code>.
-    </p>
-  </div>
-</section>
-
-<section class="section">
-  <div class="wrap">
-    <p class="label">House rules</p>
-    <h2>The rules every agent follows.</h2>
-    <ol class="rules">
+    <ol class="rules" data-reveal>
       <li>
-        <strong>One task at a time.</strong> An agent claims a task before it touches anything, and
-        its claim expires if it goes quiet.
+        <strong>One task at a time</strong>
+        An agent claims a task before it touches anything. If it goes quiet, the claim expires.
       </li>
       <li>
-        <strong>No provider reviews itself.</strong> An agent's work goes to a reviewer from another
-        AI provider, or to you.
+        <strong>Nobody reviews themselves</strong>
+        An agent’s work goes to a reviewer from another AI provider, or to you.
       </li>
       <li>
-        <strong>Never wait idle.</strong> An agent that needs something asks, blocks on the other
-        task, or moves to the next one.
+        <strong>Nobody waits idle</strong>
+        An agent that needs an answer asks, parks the task and picks up the next one.
       </li>
       <li>
-        <strong>Your calls stay yours.</strong> Money, accounts, publishing and deletes need your
-        answer. The rest the team settles.
+        <strong>Your calls stay yours</strong>
+        Money, accounts, publishing and deletes wait for your answer. The team settles the rest.
       </li>
       <li>
-        <strong>Separate worktrees.</strong> Every code task gets its own branch and folder, so
-        parallel work never collides.
+        <strong>One worktree per task</strong>
+        Every code task gets its own branch and folder. Two engineers never share a checkout.
       </li>
       <li>
-        <strong>Checks before merge.</strong> Approved work is rebased and tested first. A failure
-        goes back to the owner with the log.
+        <strong>Tests before merge</strong>
+        Approved work is rebased and run through your checks. A failure goes back with the log.
       </li>
     </ol>
   </div>
 </section>
 
-<section class="section">
+<section class="section" id="founder">
+  <div class="wrap founder-grid">
+    <div class="founder-copy">
+      <p class="label"><b>06</b> Who built this</p>
+      <h2>One human on the payroll.</h2>
+      <p class="first">
+        I’m Dawid. I’ve spent 20 years in performance marketing, which trains one habit above all
+        others: find the edge, then build whatever it takes to test it.
+      </p>
+      <p>
+        SwarmUp started as that kind of build. I was running Claude Code and Codex side by side, and
+        the hard part had stopped being the code. It was keeping track of who works on what, who
+        checks it, and what’s waiting on me. So I gave the agents what any team gets: a queue, house
+        rules, and a reviewer who isn’t them.
+      </p>
+      <p>
+        Then I pointed it at itself. Every change to SwarmUp goes through its own queue. The numbers
+        here are its last 30 days.
+      </p>
+      <div class="actions">
+        <a class="button dark" href="founder.html">Meet the founder</a>
+        <a class="arrow" href="https://dawid.ai/work-with-me/">Work with me</a>
+      </div>
+    </div>
+    <figure class="ratio" data-reveal>
+      <p class="ratio-big">56<small>:1</small></p>
+      <p class="ratio-note">Agent hours for every hour of mine, over 30 days.</p>
+      <div class="bar" style="--w: 100%">Agents · 229.8 h across 1,977 runs<i></i></div>
+      <div class="bar human" style="--w: 1.8%">Me · about 4 h of answers and approvals<i></i></div>
+      <figcaption class="fine">
+        From <code>swarmup report --days 30</code>, 2026-10-12 to 2026-11-11.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section tint">
   <div class="wrap">
-    <p class="label">Who it's for</p>
-    <h2>If you run more than one coding agent, this is for you.</h2>
-    <p class="narrow">
-      You copy context between terminals, keep track of which agent is on what, and answer the same
-      question twice. SwarmUp gives those agents one queue and one set of rules, so you review
-      results instead of supervising sessions.
-    </p>
-    <div class="shots">
-      <figure>
-        <img
-          src="media/chat.png"
-          alt="Chat with the PM agent: one message becomes three tasks"
-          loading="lazy"
-        />
-        <figcaption>
-          <strong>Chat.</strong> Describe an idea; the PM files and routes the tasks.
-        </figcaption>
-      </figure>
-      <figure>
-        <img
-          src="media/runs.png"
-          alt="Live agent runs with their logs, tokens and time"
-          loading="lazy"
-        />
-        <figcaption>
-          <strong>Runs.</strong> What each agent is doing now, with its log and tokens.
-        </figcaption>
-      </figure>
-      <figure>
-        <img
-          src="media/inbox.png"
-          alt="The inbox with one question to answer, the agent's recommended pick and a button to accept it"
-          loading="lazy"
-        />
-        <figcaption>
-          <strong>Inbox.</strong> Only what needs you: questions, reviews, proposals.
-        </figcaption>
-      </figure>
+    <p class="label"><b>07</b> Roadmap</p>
+    <div class="head-row">
+      <h2>Shipped, fresh, planned.</h2>
+      <p class="sub">
+        Planned means designed and accepted, not promised. The
+        <a href="changelog.html">changelog</a> is the record of what shipped.
+      </p>
+    </div>
+    <div class="road" data-reveal>
+      <div style="--dot: var(--ink)">
+        <p class="when">Shipped</p>
+        <h3>In your hands</h3>
+        <ul>
+          <li>One installer for the app, the orchestrator and the CLI. They update together.</li>
+          <li>Repeating tasks: daily, weekly, or whenever another task closes.</li>
+          <li>Work without an owner finds one by role, within a tick.</li>
+          <li>Search across tasks, threads, notes and votes.</li>
+        </ul>
+      </div>
+      <div style="--dot: var(--acid)">
+        <p class="when">New in 0.2.0-beta.8</p>
+        <h3>Fresh</h3>
+        <ul>
+          <li>
+            Replay: your project’s history as swimlanes, a metro map and review rallies, recorded as
+            MP4.
+          </li>
+          <li>A worktree per task, so engineers work side by side.</li>
+          <li>Only crucial decisions reach you. Agents’ questions go to the PM agent first.</li>
+          <li>
+            One-click answers: the agent says what it would pick, and the inbox shows what your
+            answer unblocks.
+          </li>
+        </ul>
+      </div>
+      <div>
+        <p class="when">Designed, not built</p>
+        <h3>Planned</h3>
+        <ul>
+          <li>
+            Milestones: approve one plan, and the PM breaks it into tasks. QA checks the goal before
+            the milestone closes.
+          </li>
+          <li>
+            A decision log that agents read before they plan, so a contradiction reaches you as one
+            line.
+          </li>
+          <li>More providers: Grok, Gemini and Jev.</li>
+        </ul>
+      </div>
+      <div>
+        <p class="when">Ideas</p>
+        <h3>On the bench</h3>
+        <ul>
+          <li>Approval gates for risky actions.</li>
+          <li>A cloud fallback for when your PC is off.</li>
+          <li>A diff view in the task panel.</li>
+          <li>A machine-checkable “done” on every task, and stop rules for loops going nowhere.</li>
+        </ul>
+      </div>
     </div>
   </div>
 </section>
 
 <section class="section">
-  <div class="wrap install-grid">
-    <div>
-      <p class="label">Install</p>
-      <h2>Ten minutes to your first task.</h2>
-      <p><a class="arrow" href="install.html">Read the full install guide</a></p>
+  <div class="wrap">
+    <p class="label"><b>08</b> Install</p>
+    <div class="head-row">
+      <h2>Fifteen minutes to your first task.</h2>
+      <p class="sub"><a class="arrow" href="install.html">Read the full install guide</a></p>
     </div>
     <ol class="install">
       <li>
-        <strong>Run the installer.</strong> You get the desktop app, the orchestrator and the
-        command-line tool. It updates itself.
+        <strong>Run the installer</strong>
+        You get the desktop app, the orchestrator and the command-line tool. It installs for your
+        user only and updates itself.
       </li>
       <li>
-        <strong>Pick a folder for tasks.</strong> Any git repository. Push it to a remote to share
-        the queue between machines.
+        <strong>Pick a folder</strong>
+        Any git repository can hold the queue. Push it to a remote to share it between machines.
       </li>
       <li>
-        <strong>Sign in your agents.</strong> Claude Code, Codex or both today. Then tell the PM
-        agent what you want built.
+        <strong>Sign in your agents</strong>
+        Claude Code, Codex or both. Then tell the PM agent what you want built.
       </li>
     </ol>
   </div>
 </section>
 
 <section class="section">
-  <div class="wrap faq-grid">
-    <p class="label">Questions</p>
+  <div class="wrap">
+    <p class="label"><b>09</b> Questions</p>
+    <h2>Fair questions.</h2>
     <dl class="faq">
       <div>
         <dt>What does it cost?</dt>
         <dd>
-          Nothing. SwarmUp is MIT licensed. Agents run on your own AI provider plan, and the
-          orchestrator pauses new runs before your allowance runs out.
+          Nothing. SwarmUp is MIT licensed. Agents run on your own AI provider plans, and the
+          orchestrator stops starting runs before your allowance runs out.
+        </dd>
+      </div>
+      <div>
+        <dt>Can it run up a bill while I sleep?</dt>
+        <dd>
+          It starts paused, and nothing runs until you resume it. Every run has a time budget, the
+          orchestrator caps how many run at once, and it pauses at the share of your plan you set.
         </dd>
       </div>
       <div>
@@ -603,6 +887,13 @@ the regression test.</code></pre>
         </dd>
       </div>
       <div>
+        <dt>Which agents does it run?</dt>
+        <dd>
+          Claude Code and Codex today, plus any command-line agent you configure. More providers are
+          next. With one provider installed, reviews come to you.
+        </dd>
+      </div>
+      <div>
         <dt>Which platforms?</dt>
         <dd>
           The desktop app runs on Windows 10 and 11. The command-line tool and the orchestrator also
@@ -610,17 +901,10 @@ the regression test.</code></pre>
         </dd>
       </div>
       <div>
-        <dt>Which AI providers does it work with?</dt>
-        <dd>
-          Claude Code and Codex today, with the other major providers on the way. The orchestrator
-          can also run any command-line agent you configure.
-        </dd>
-      </div>
-      <div>
         <dt>Is it stable?</dt>
         <dd>
-          It's in beta. We use it every day to build SwarmUp itself, and the
-          <a href="changelog.html">changelog</a> lists what changed in each release.
+          It’s a beta, and things still break. It also builds itself every day, so what breaks gets
+          found fast. The <a href="changelog.html">changelog</a> lists each release.
         </dd>
       </div>
     </dl>
@@ -629,9 +913,10 @@ the regression test.</code></pre>
 
 <section class="closing">
   <div class="wrap">
-    <h2>Give your agents a queue.</h2>
+    <h2><span>Give them a queue.</span> <span>Take your day back.</span></h2>
+    <p>Free, MIT licensed, and on your machine in fifteen minutes.</p>
     <div class="actions">
-      <a class="button" href="download.html">Download for Windows</a>
+      <a class="button dark" href="download.html">Download for Windows</a>
       <a class="arrow" href="docs/index.html">Read the docs</a>
     </div>
   </div>

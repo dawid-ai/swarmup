@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initRoot, PATCH_KEY_ARGS, patchKey, secretKind, Workspace } from '@swarmup/core';
+import type { UserConfig } from '@swarmup/core';
 import type {
   MergeGitTimeout,
   MergeStatus,
@@ -32,10 +33,13 @@ import {
   MERGE_ACTOR,
   MergeRepo,
   mergeSource,
+  missingOptionalPackages,
   notLiveNotice,
+  npmRegistry,
   opsdCodeChanges,
   opsdConfig,
   pickMergeSource,
+  repairInstallCommand,
   reviewSources,
   startApi,
   Supervisor,
@@ -213,6 +217,10 @@ import { appendFileSync } from 'node:fs';
 const code = readFileSync('code.txt', 'utf8');
 console.log('checking ' + code.trim());
 appendFileSync(process.env.MERGE_COUNT, 'x');
+if (process.env.MERGE_ENV_OUT) {
+  const names = ['SWARMUP_DAEMON_ENTRY', 'OPS_DAEMON_ENTRY', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'MERGE_KEEP'];
+  writeFileSync(process.env.MERGE_ENV_OUT, JSON.stringify(names.filter((n) => process.env[n] !== undefined)));
+}
 if (code.includes('nap') && !existsSync(process.env.MERGE_NAPPED)) {
   writeFileSync(process.env.MERGE_NAPPED, '');
   while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
@@ -231,7 +239,8 @@ if (code.includes('leak')) {
  * Builds `dist/built.txt` from `code.txt`. When it says `hold`, `held.mjs` builds it instead, in
  * a detached process: outside the shell's process group too, so only swarmupd's process ledger finds
  * it, as where `taskkill /T` is refused. When it says `doze`, the first run writes `dozed.txt`,
- * waits for `build-go.txt` and fails.
+ * waits for `build-go.txt` and fails. It fails when it says `broken`, and when it says `deps`
+ * until `install.mjs` ran.
  */
 const BUILD = `
 import { spawn } from 'node:child_process';
@@ -240,6 +249,11 @@ const code = readFileSync('code.txt', 'utf8');
 if (code.includes('doze') && !existsSync(process.env.MERGE_DOZED)) {
   writeFileSync(process.env.MERGE_DOZED, '');
   while (!existsSync(process.env.MERGE_BUILD_GO)) await new Promise((r) => setTimeout(r, 50));
+  process.exit(1);
+}
+if (code.includes('broken')) { console.error('code says broken'); process.exit(1); }
+if (code.includes('deps') && !existsSync(process.env.MERGE_INSTALLED)) {
+  console.error("'tsc' is not recognized as an internal or external command");
   process.exit(1);
 }
 if (code.includes('hold')) {
@@ -288,8 +302,14 @@ function mergeSetup(
     /** Minutes each merge command may take; config allows whole minutes only. */
     timeoutMinutes?: number;
     gitTimeoutMs?: MergeGitTimeout;
-    /** `opsd.merge.test.install`, or a function of the repo that returns it. */
+    /** `swarmupd.merge.test.install`, or a function of the repo that returns it. */
     install?: string[] | ((repo: string) => string[]);
+    /** More of swarmupd's own environment. */
+    env?: Record<string, string>;
+    /** The user config names the merge too, so a task blocked on approved work waits (AO-0228). */
+    userMerge?: boolean;
+    /** When swarmupd first saw the merge setting; default long ago. */
+    since?: string;
   } = {},
 ) {
   const repo = temp();
@@ -318,16 +338,23 @@ function mergeSetup(
     MERGE_DOZED: join(state, 'dozed.txt'),
     MERGE_INSTALLED: join(state, 'installed.txt'),
     RUN_GO: join(state, 'run-go.txt'),
+    ...opts.env,
   } as NodeJS.ProcessEnv;
   delete env.SWARMUP_AGENT;
   delete env.SWARMUP_ROOTS;
-  const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user: {} });
+  const user = (
+    opts.userMerge ? { opsd: { merge: { test: { base: 'main' } } } } : {}
+  ) as UserConfig;
+  const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user });
   as('human:dawid').newTask({ title: 'Change the code', owner: 'fake:engineer' });
   as('human:dawid').newTask({ title: 'Other work', owner: 'fake:engineer' });
   git(repo, 'add', '-A');
   git(repo, 'commit', '-qm', 'start');
   // Every verdict in these tests comes after swarmupd first saw the merge setting.
-  writeFileSync(join(state, 'merge.json'), JSON.stringify({ test: '2000-01-01T00:00:00.000Z' }));
+  writeFileSync(
+    join(state, 'merge.json'),
+    JSON.stringify({ test: opts.since ?? '2000-01-01T00:00:00.000Z' }),
+  );
   const config = opsdConfig({
     opsd: {
       sync: false,
@@ -347,7 +374,7 @@ function mergeSetup(
     const s = new Supervisor({
       env,
       cwd: repo,
-      user: {},
+      user,
       config,
       // Each swarmupd closes its own lister when it stops.
       procs: opts.procs?.(),
@@ -502,6 +529,169 @@ describe('merging approved work', () => {
     expect(text(join(s.repo, 'code.txt'))).toBe('two\nthree\n');
   });
 
+  it('keeps a task blocked on approved work until the merge is recorded (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const commit = s.branch('slow\n');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs the change of T-0001', { on: ['T-0001'] });
+    s.approve(commit);
+    const waiter = () => s.as('human:dawid').view('2');
+    expect(waiter()).toMatchObject({ unblocked: false, mergeWait: ['T-0001'] });
+    // The merge is under way: its check waits for go.txt, and the base has not moved.
+    await s.sup.tick();
+    expect(s.sup.merge?.ref).toBe('test/T-0001');
+    expect(waiter().unblocked).toBe(false);
+    expect(s.as('fake:engineer').next()).toBeUndefined();
+    writeFileSync(join(s.state, 'go.txt'), '');
+    await s.sup.mergeSettled();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR });
+    expect(text(join(s.repo, 'code.txt'))).toBe('slow\n');
+    expect(waiter().unblocked).toBe(true);
+  });
+
+  it('frees a task blocked on approved work that has nothing to merge (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    // Prose that names no branch the repo has.
+    eng.review('1', 'This branch is ready and the tests pass.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    const waiter = () => s.as('human:dawid').view('2');
+    expect(waiter()).toMatchObject({ unblocked: false, mergeWait: ['T-0001'] });
+    // The first tick finds nothing to merge; the next one notes it.
+    await s.merged();
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, no_merge: true });
+    expect(e.body).toContain('swarmupd merges nothing for T-0001: no review request names');
+    expect(waiter().unblocked).toBe(true);
+    // Once only.
+    await s.merged();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+  });
+
+  it('keeps a task blocked on approved work whose merge failed (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    // The review names a commit and a branch the repo lacks, so the merge fails.
+    s.approve('0123abc');
+    const waiter = () => s.as('human:dawid').view('2');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e).not.toHaveProperty('no_merge');
+    expect(e.body).toContain('swarmupd cannot merge 0123abc on branch feature');
+    expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
+    expect(waiter()).toMatchObject({ status: 'blocked', unblocked: false, mergeWait: ['T-0001'] });
+    expect(s.as('fake:engineer').next()).toBeUndefined();
+    // Later ticks add no note that would free it.
+    await s.merged();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(waiter().unblocked).toBe(false);
+  });
+
+  it('keeps the worktree of approved work whose merge failed (AO-0228)', async () => {
+    let now = Date.now();
+    const s = mergeSetup({ userMerge: true, now: () => now });
+    const wt = join(s.repo, 'out', 'wt-T-0001');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'fake/t-0001', wt, 'main');
+    // The review names a commit the repo lacks, so the merge fails with a note.
+    s.approve('0123abc');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR });
+    expect(e.body).toContain('swarmupd cannot merge 0123abc on branch feature');
+    // Closed for longer than `reclaim_after_minutes`, but its work is still not in the base.
+    now += 61 * 60_000;
+    await s.sup.housekeep();
+    expect(existsSync(wt)).toBe(true);
+    expect(s.last().id).toBe(e.id);
+    // A note that nothing is left to merge settles it, and the worktree goes.
+    s.as(MERGE_ACTOR).noMerge('1', 'swarmupd merges nothing for T-0001.');
+    now += 61 * 60_000;
+    await s.sup.housekeep();
+    expect(existsSync(wt)).toBe(false);
+  });
+
+  it('keeps a task blocked on approved work that the repo lacks, and tells the human (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', '0123abc on branch gone: the change', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'one more test');
+    eng.start('1', 'plan');
+    // The newest review names nothing; the earlier one names work the repo does not have.
+    eng.review('1', 'Added the test.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    const waiter = () => s.as('human:dawid').view('2');
+    await s.merged();
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e).not.toHaveProperty('no_merge');
+    expect(e.body).toContain('swarmupd cannot merge T-0001');
+    expect(e.body).toContain('stay blocked');
+    expect(waiter()).toMatchObject({ status: 'blocked', unblocked: false, mergeWait: ['T-0001'] });
+    // Once only.
+    await s.merged();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(waiter().unblocked).toBe(false);
+  });
+
+  it('frees a task blocked on work approved before the merge setting (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true, since: '2999-01-01T00:00:00.000Z' });
+    const commit = s.branch('two\n');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    s.approve(commit);
+    expect(s.as('human:dawid').view('2').unblocked).toBe(false);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR });
+    expect(e.body).toContain('it was approved before swarmupd merged approved work of test');
+    expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+    expect(text(join(s.repo, 'code.txt'))).toBe('one\n');
+  });
+
+  it('frees a task blocked on work approved before the merge setting and commented on after it (AO-0228)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const commit = s.branch('two\n');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    s.approve(commit);
+    // swarmupd first sees the merge setting after the approval, and a comment comes later still.
+    const since = new Date(Date.parse(s.last().at) + 1).toISOString();
+    while (new Date().toISOString() <= since) await new Promise((r) => setTimeout(r, 2));
+    writeFileSync(join(s.state, 'merge.json'), JSON.stringify({ test: since }));
+    s.as('human:dawid').comment('1', 'Thanks, this reads well.');
+    expect(s.last().at > since).toBe(true);
+    expect(s.as('human:dawid').view('2').unblocked).toBe(false);
+    // The first tick finds nothing to merge; no later one may take the named work for missing.
+    await s.merged();
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, no_merge: true });
+    expect(e.body).toContain('it was approved before swarmupd merged approved work of test');
+    expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+    expect(text(join(s.repo, 'code.txt'))).toBe('one\n');
+    // Once only.
+    await s.merged();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+  });
+
   it('rebases onto the base, runs the checks, fast-forwards the base, builds and records it', async () => {
     const s = mergeSetup();
     const commit = s.branch('two\n');
@@ -544,6 +734,26 @@ describe('merging approved work', () => {
         .showEvents('1')
         .events.filter((x) => x.type === 'merge'),
     ).toHaveLength(1);
+  });
+
+  it("runs the checks without the installed app's swarmupd entry and Electron host flags (AO-0235)", async () => {
+    const out = join(temp(), 'env.json');
+    // What swarmupd has in its environment when the installed desktop app hosts it.
+    const s = mergeSetup({
+      env: {
+        SWARMUP_DAEMON_ENTRY: 'C:/app/swarmupd.mjs',
+        OPS_DAEMON_ENTRY: 'C:/app/opsd.mjs',
+        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_NO_ASAR: '1',
+        MERGE_KEEP: 'yes',
+        MERGE_ENV_OUT: out,
+      },
+    });
+    s.approve(s.branch('two\n'));
+    await s.merged();
+    expect(s.as('human:dawid').view('1').status).toBe('done');
+    // A check that starts swarmupd, as this repo's tests do, starts its own checkout's build.
+    expect(JSON.parse(text(out))).toEqual(['MERGE_KEEP']);
   });
 
   it('approves the merged patch for its own repo and base only, for 30 days (AO-0193)', async () => {
@@ -621,6 +831,88 @@ describe('merging approved work', () => {
     expect(s.last().body).toContain('Built with `node build.mjs`.');
   });
 
+  it('installs in the checkout and builds once more when the build fails there (AO-0232)', async () => {
+    const s = mergeSetup({ install: ['node install.mjs'] });
+    // No lockfile change, so no install before the build; the build misses its dependencies.
+    const commit = s.branch('deps\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.as('human:dawid').view('1').status).toBe('done');
+    expect(text(join(s.state, 'installed.txt'))).toBe('deps\n');
+    expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('deps\n');
+    expect(s.last().type).toBe('merge');
+    expect(s.last().body).toContain(
+      'Built with `node install.mjs`, `node build.mjs`, after `node build.mjs` failed (exit 1) before the install.',
+    );
+  });
+
+  it('tells the human, not the author, when the install in the checkout fails (AO-0232)', async () => {
+    const s = mergeSetup({ install: ['node fail.mjs'] });
+    const fail = "console.error('EBUSY: resource busy or locked'); process.exit(3);\n";
+    const commit = s.branch('deps\n', { 'fail.mjs': fail });
+    s.approve(commit);
+    await s.merged();
+    // The merge landed and its code passed the checks: the task stays closed.
+    expect(s.as('human:dawid').view('1').status).toBe('done');
+    const events = s.as('human:dawid').showEvents('1').events;
+    expect(events.filter((e) => e.type === 'verdict')).toHaveLength(1);
+    expect(events.at(-2)!.body).toContain('Build: `node fail.mjs` failed (exit 3).');
+    const e = s.last();
+    expect(e.type).toBe('comment');
+    expect(e.to).toBe('human:dawid');
+    expect(e.body).toMatch(
+      /^\S*T-0001: swarmupd merged .* into `main` as [0-9a-f]{7}, but could not install the dependencies in /,
+    );
+    expect(e.body).toContain('`node fail.mjs` failed (exit 3)');
+    expect(e.body).toContain('EBUSY: resource busy or locked');
+    expect(e.body).toContain('Action: once no other install runs in');
+  });
+
+  it('sends the task back when the build still fails after the install (AO-0232)', async () => {
+    const s = mergeSetup({ install: ['node install.mjs'] });
+    const commit = s.branch('broken\n');
+    s.approve(commit);
+    await s.merged();
+    expect(text(join(s.state, 'installed.txt'))).toBe('broken\n');
+    const e = s.last();
+    expect(e.type).toBe('verdict');
+    expect(e.verdict).toBe('changes');
+    expect(e.body).toContain(
+      ', also after swarmupd installed the dependencies there; fix it in a new commit',
+    );
+    expect(e.body).toContain('code says broken');
+  });
+
+  it('builds once when the checkout has nothing to install (AO-0232)', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('broken\n');
+    s.approve(commit);
+    await s.merged();
+    const e = s.last();
+    expect(e.verdict).toBe('changes');
+    expect(e.body).toContain('`node build.mjs` failed (exit 1) in ');
+    expect(e.body).not.toContain('also after swarmupd installed');
+  });
+
+  it('sends the task back when the build fails after a default install with nothing left out (AO-0229)', async () => {
+    const s = mergeSetup();
+    // The default install runs npm; with no packages it is quick and needs no network. Its
+    // second step has nothing to install and leaves no result, so the failed build is the
+    // second result of three entries: still a build step, not an install.
+    const commit = s.branch('broken\n', {
+      'package.json': '{"name":"t","version":"1.0.0","private":true}\n',
+      'package-lock.json':
+        '{"name":"t","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"t","version":"1.0.0"}}}\n',
+    });
+    s.approve(commit);
+    await s.merged();
+    const e = s.last();
+    expect(e.type).toBe('verdict');
+    expect(e.verdict).toBe('changes');
+    expect(e.body).toContain('`node build.mjs` failed (exit 1) in ');
+    expect(e.body).not.toContain('also after swarmupd installed');
+  });
+
   it('finds lockfile changes and picks the install commands (AO-0185)', () => {
     expect(
       lockfileChanges([
@@ -657,8 +949,10 @@ describe('merging approved work', () => {
     mkdirSync(join(nested, 'site'));
     writeFileSync(join(nested, 'site', 'package-lock.json'), '{}');
     const site = join(nested, 'site');
+    // After the default install comes the step that installs what it left out (AO-0229).
     expect(installSteps(undefined, nested, ['.', 'gone', 'site'])).toEqual([
       { command: DEFAULT_INSTALL, cwd: site, label: `${DEFAULT_INSTALL} (in site)` },
+      expect.any(Function),
     ]);
     // A configured install runs in each of them; in the checkout itself as a bare command.
     expect(installSteps(['node i.mjs'], nested, ['.', 'site'])).toEqual([
@@ -676,7 +970,299 @@ describe('merging approved work', () => {
     expect(merge(['npm ci'])).toEqual(['npm ci']);
     expect(merge([])).toEqual([]);
     expect(merge(undefined)).toBeUndefined();
-    expect(() => merge('npm ci')).toThrow('opsd.merge.x.install: use a list of commands');
+    expect(() => merge('npm ci')).toThrow('swarmupd.merge.x.install: use a list of commands');
+  });
+
+  it('installs by name the optional packages that npm install left out (AO-0229)', async () => {
+    const top = temp();
+    const win = { os: 'win32', cpu: 'x64' };
+    const optional = (more: object = {}) => ({ version: '1.32.0', optional: true, ...more });
+    const lock = {
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'app' },
+        'node_modules/css': { version: '1.32.0' },
+        // The package for this platform, which `npm install` left out.
+        'node_modules/css-win32-x64-msvc': optional({ os: ['win32'], cpu: ['x64'], peer: true }),
+        'node_modules/css-win32-arm64-msvc': optional({ os: ['win32'], cpu: ['arm64'] }),
+        'node_modules/css-linux-x64-gnu': optional({
+          os: ['linux'],
+          cpu: ['x64'],
+          libc: ['glibc'],
+        }),
+        'node_modules/css-linux-x64-musl': optional({
+          os: ['linux'],
+          cpu: ['x64'],
+          libc: ['musl'],
+        }),
+        'node_modules/@scope/here': optional({ os: ['win32'] }),
+        'node_modules/@scope/gone': optional({ version: '2.0.0-beta.1', os: ['win32', 'linux'] }),
+        'node_modules/alias': optional({ name: 'real-name', cpu: ['x64'] }),
+        // No platform list, or exclusions only: npm may leave these out on purpose (a failed or
+        // omitted optional install), so the step must not turn them into a required install.
+        'node_modules/anywhere': optional(),
+        'node_modules/empty-lists': optional({ os: [], cpu: [] }),
+        'node_modules/not-aix': optional({ os: ['!aix'] }),
+        'node_modules/not-arm': optional({ os: ['!aix'], cpu: ['!arm'] }),
+        // Names this cpu, and excludes this os.
+        'node_modules/x64-not-win': optional({ os: ['!win32'], cpu: ['x64'] }),
+        // Not optional, nested, linked, bundled, or not a plain version: left alone.
+        'node_modules/required': { version: '1.0.0' },
+        'node_modules/css/node_modules/nested': optional(),
+        'packages/web/node_modules/nested': optional(),
+        'node_modules/linked': { link: true, optional: true, resolved: 'packages/linked' },
+        'node_modules/bundled': optional({ inBundle: true }),
+        'node_modules/from-git': { optional: true, resolved: 'git+ssh://git@example.com/x.git' },
+        'node_modules/odd': optional({ version: '1.0.0 && echo no' }),
+        // A plain version, and a source that is not the registry: `name@version` would fetch
+        // another package.
+        'node_modules/git-semver': optional({
+          os: ['win32'],
+          resolved: 'git+ssh://git@example.com/x/git-semver.git#0123456789abcdef',
+        }),
+        'node_modules/file-semver': optional({
+          os: ['win32'],
+          resolved: 'file:vendor/f-1.32.0.tgz',
+        }),
+        'node_modules/url-semver': optional({
+          os: ['win32'],
+          resolved: 'https://example.com/downloads/url-semver-1.32.0.tgz',
+        }),
+        'node_modules/other-name': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/evil/-/evil-1.32.0.tgz',
+        }),
+        'node_modules/other-version': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/other-version/-/other-version-1.31.0.tgz',
+        }),
+        'node_modules/odd-resolved': optional({ os: ['win32'], resolved: 7 }),
+        // A tarball with the path of a registry tarball, not in the registry npm installs this
+        // name from: another host, scheme, port or folder, or the registry of another scope.
+        'node_modules/shaped': optional({
+          os: ['win32'],
+          resolved: 'https://example.com/shaped/-/shaped-1.32.0.tgz',
+        }),
+        'node_modules/shaped-http': optional({
+          os: ['win32'],
+          resolved: 'http://registry.npmjs.org/shaped-http/-/shaped-http-1.32.0.tgz',
+        }),
+        'node_modules/shaped-port': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org:8443/shaped-port/-/shaped-port-1.32.0.tgz',
+        }),
+        'node_modules/shaped-folder': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/files/shaped-folder/-/shaped-folder-1.32.0.tgz',
+        }),
+        'node_modules/shaped-user': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org@example.com/shaped-user/-/shaped-user-1.32.0.tgz',
+        }),
+        'node_modules/@scope/shaped': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/@scope/shaped/-/shaped-1.32.0.tgz',
+        }),
+        'node_modules/shaped-scope-host': optional({
+          os: ['win32'],
+          resolved: 'https://npm.example.com/repo/shaped-scope-host/-/shaped-scope-host-1.32.0.tgz',
+        }),
+        'node_modules/@down/shaped': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/@down/shaped/-/shaped-1.32.0.tgz',
+        }),
+        // From the configured registry: the tarball of this name and version there, also scoped
+        // (in the registry of its scope), encoded or aliased.
+        'node_modules/reg': optional({
+          os: ['win32'],
+          resolved: 'https://registry.npmjs.org/reg/-/reg-1.32.0.tgz',
+        }),
+        'node_modules/@scope/reg': optional({
+          os: ['win32'],
+          resolved: 'https://npm.example.com/repo/@scope%2freg/-/reg-1.32.0.tgz',
+        }),
+        'node_modules/reg-alias': optional({
+          name: '@scope/real',
+          os: ['win32'],
+          resolved: 'https://npm.example.com/repo/@scope/real/-/real-1.32.0.tgz',
+        }),
+      },
+    };
+    writeFileSync(join(top, 'package-lock.json'), JSON.stringify(lock));
+    mkdirSync(join(top, 'node_modules', '@scope', 'here'), { recursive: true });
+    writeFileSync(join(top, 'node_modules', '@scope', 'here', 'package.json'), '{}');
+    // The hidden lockfile lists nothing, as after an install from a lockfile without them.
+    writeFileSync(join(top, 'node_modules', '.package-lock.json'), '{"packages":{}}');
+    const registry = ['@scope/reg@1.32.0', 'reg-alias@npm:@scope/real@1.32.0', 'reg@1.32.0'];
+    // npm's configuration: `@scope` has its own registry, and that of `@down` is not known.
+    const asked: (string | undefined)[] = [];
+    const reg = (scope: string | undefined): string | undefined => {
+      asked.push(scope);
+      if (scope === '@down') return undefined;
+      return scope === '@scope' ? 'https://npm.example.com/repo/' : 'https://registry.npmjs.org';
+    };
+    expect(missingOptionalPackages(top, win, reg)).toEqual([
+      '@scope/gone@2.0.0-beta.1',
+      registry[0],
+      'alias@npm:real-name@1.32.0',
+      'css-win32-x64-msvc@1.32.0',
+      registry[1],
+      registry[2],
+    ]);
+    // One lookup a scope, however many packages have it.
+    expect(asked).toHaveLength(3);
+    expect(new Set(asked)).toEqual(new Set(['@down', '@scope', undefined]));
+    // With npm's public registry for every scope, the tarballs on the other host are left alone.
+    expect(missingOptionalPackages(top, win, () => 'https://registry.npmjs.org/')).toEqual([
+      '@down/shaped@1.32.0',
+      '@scope/gone@2.0.0-beta.1',
+      '@scope/shaped@1.32.0',
+      'alias@npm:real-name@1.32.0',
+      'css-win32-x64-msvc@1.32.0',
+      'reg@1.32.0',
+    ]);
+    // No registry known, or a lookup that throws: only packages without `resolved`.
+    const noResolved = [
+      '@scope/gone@2.0.0-beta.1',
+      'alias@npm:real-name@1.32.0',
+      'css-win32-x64-msvc@1.32.0',
+    ];
+    expect(missingOptionalPackages(top, win, () => undefined)).toEqual(noResolved);
+    expect(
+      missingOptionalPackages(top, win, () => {
+        throw new Error('no npm');
+      }),
+    ).toEqual(noResolved);
+    for (const spec of registry) {
+      const name = spec.slice(0, spec.indexOf('@', 1));
+      mkdirSync(join(top, 'node_modules', ...name.split('/')), { recursive: true });
+      writeFileSync(join(top, 'node_modules', ...name.split('/'), 'package.json'), '{}');
+    }
+    expect(missingOptionalPackages(top, { os: 'linux', cpu: 'x64', libc: 'musl' }, reg)).toContain(
+      'css-linux-x64-musl@1.32.0',
+    );
+    expect(missingOptionalPackages(top, { os: 'linux', cpu: 'x64', libc: 'musl' }, reg)).toEqual([
+      '@scope/gone@2.0.0-beta.1',
+      'alias@npm:real-name@1.32.0',
+      'css-linux-x64-musl@1.32.0',
+      'x64-not-win@1.32.0',
+    ]);
+    expect(repairInstallCommand(top, win, reg)).toBe(
+      `${DEFAULT_INSTALL} @scope/gone@2.0.0-beta.1 alias@npm:real-name@1.32.0 css-win32-x64-msvc@1.32.0`,
+    );
+    // The step reads `node_modules` when its turn comes, after the default install ran.
+    const [first, repair] = installSteps(undefined, top, ['.'], win, reg);
+    expect(first).toBe(DEFAULT_INSTALL);
+    for (const name of ['@scope/gone', 'alias']) {
+      mkdirSync(join(top, 'node_modules', ...name.split('/')), { recursive: true });
+      writeFileSync(join(top, 'node_modules', ...name.split('/'), 'package.json'), '{}');
+    }
+    expect((repair as () => unknown)()).toBe(`${DEFAULT_INSTALL} css-win32-x64-msvc@1.32.0`);
+    mkdirSync(join(top, 'node_modules', 'css-win32-x64-msvc'));
+    writeFileSync(join(top, 'node_modules', 'css-win32-x64-msvc', 'package.json'), '{}');
+    expect((repair as () => unknown)()).toBeNull();
+    expect(repairInstallCommand(top, win, reg)).toBeNull();
+    // In another directory the step names it; a configured install gets no such step.
+    mkdirSync(join(top, 'site'));
+    writeFileSync(
+      join(top, 'site', 'package-lock.json'),
+      JSON.stringify({
+        packages: {
+          'node_modules/css-win32-x64-msvc': lock.packages['node_modules/css-win32-x64-msvc'],
+        },
+      }),
+    );
+    const inSite = installSteps(undefined, top, ['site'], win)[1] as () => unknown;
+    const command = `${DEFAULT_INSTALL} css-win32-x64-msvc@1.32.0`;
+    expect(inSite()).toEqual({ command, cwd: join(top, 'site'), label: `${command} (in site)` });
+    expect(installSteps(['node i.mjs'], top, ['.'], win)).toEqual(['node i.mjs']);
+    // No lockfile, an old one without `packages`, or one that does not parse: nothing to do.
+    const bare = temp();
+    expect(missingOptionalPackages(bare, win)).toEqual([]);
+    writeFileSync(join(bare, 'package-lock.json'), '{"lockfileVersion":1,"dependencies":{}}');
+    expect(missingOptionalPackages(bare, win)).toEqual([]);
+    writeFileSync(join(bare, 'package-lock.json'), 'not json');
+    expect(missingOptionalPackages(bare, win)).toEqual([]);
+    // npm reads `npm-shrinkwrap.json` first.
+    writeFileSync(
+      join(bare, 'npm-shrinkwrap.json'),
+      JSON.stringify({
+        packages: {
+          'node_modules/not-aix': optional({ os: ['!aix'] }),
+          'node_modules/win': optional({ os: ['win32'] }),
+        },
+      }),
+    );
+    expect(missingOptionalPackages(bare, win)).toEqual(['win@1.32.0']);
+  });
+
+  it("reads the registry of a scope from npm's configuration (AO-0229)", () => {
+    const dir = temp();
+    writeFileSync(join(dir, 'package.json'), '{"name":"app"}');
+    writeFileSync(
+      join(dir, '.npmrc'),
+      'registry=https://npm.example.com/all/\n@scope:registry=https://npm.example.com/scope/\n',
+    );
+    expect(npmRegistry(dir, undefined)).toBe('https://npm.example.com/all/');
+    expect(npmRegistry(dir, '@scope')).toBe('https://npm.example.com/scope/');
+    expect(npmRegistry(dir, '@other')).toBe('https://npm.example.com/all/');
+    // The default lookup of `missingOptionalPackages` is this one, in the directory it reads.
+    const here = { os: 'win32', cpu: 'x64' };
+    const write = (host: string) =>
+      writeFileSync(
+        join(dir, 'package-lock.json'),
+        JSON.stringify({
+          packages: {
+            'node_modules/pkg': {
+              version: '1.0.0',
+              optional: true,
+              os: ['win32'],
+              resolved: `https://${host}/all/pkg/-/pkg-1.0.0.tgz`,
+            },
+          },
+        }),
+      );
+    write('npm.example.com');
+    expect(missingOptionalPackages(dir, here)).toEqual(['pkg@1.0.0']);
+    write('example.com');
+    expect(missingOptionalPackages(dir, here)).toEqual([]);
+  }, 60_000);
+
+  it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {
+    const dir = temp();
+    writeFileSync(
+      join(dir, 'mark.mjs'),
+      "import { appendFileSync } from 'node:fs';\nappendFileSync('ran.txt', process.argv[2] + '\\n');\n",
+    );
+    const steps: string[] = [];
+    const runner = new CommandRunner(process.env, { killTree: () => {}, job: false });
+    const results = await runner.runAll(
+      [
+        'node mark.mjs one',
+        () => null,
+        // Sees what the first command wrote.
+        () => (existsSync(join(dir, 'ran.txt')) ? 'node mark.mjs two' : 'node mark.mjs early'),
+        'node mark.mjs three',
+      ],
+      dir,
+      60_000,
+      (s) => steps.push(`${s.index + 1}/${s.count} ${s.command}${s.result ? ' done' : ''}`),
+    );
+    expect(text(join(dir, 'ran.txt'))).toBe('one\ntwo\nthree\n');
+    // `entry` is the place in the list given, so a skipped entry does not shift the later ones.
+    expect(results.map((r) => [r.command, r.ok, r.entry])).toEqual([
+      ['node mark.mjs one', true, 0],
+      ['node mark.mjs two', true, 2],
+      ['node mark.mjs three', true, 3],
+    ]);
+    expect(steps).toEqual([
+      '1/4 node mark.mjs one',
+      '1/4 node mark.mjs one done',
+      '2/3 node mark.mjs two',
+      '2/3 node mark.mjs two done',
+      '3/3 node mark.mjs three',
+      '3/3 node mark.mjs three done',
+    ]);
   });
 
   it("finds changes to swarmupd's own code and says what makes them live (AO-0156)", () => {
@@ -917,8 +1503,7 @@ describe('merging approved work', () => {
   });
 
   it('stops a check past its timeout, merges once more, then sends the task back and frees the checkout (AO-0172)', async () => {
-    // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes. The checks.txt
-    // count below needs each check to start before its stop: 600 ms flaked under the full suite.
+    // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
     const s = mergeSetup({ timeoutMinutes: 0.05 });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
@@ -933,7 +1518,12 @@ describe('merging approved work', () => {
 
     await s.merged();
     expect(s.sup.merge).toBeNull();
-    expect(text(join(s.state, 'checks.txt'))).toBe('xx');
+    // One retry and no more. checks.txt counts only the checks that got as far as writing it
+    // before their stop, and under the full suite Node can take longer than the 3 s to start:
+    // an exact count of 2 failed the AO-0247 merge. So bound it instead.
+    expect(warns.filter((w) => w.includes('merges once more'))).toHaveLength(1);
+    const checks = join(s.state, 'checks.txt');
+    expect(existsSync(checks) ? text(checks) : '').toMatch(/^x{0,2}$/);
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
     const e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
@@ -996,8 +1586,11 @@ describe('merging approved work', () => {
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    // Where the stop is refused, the note says the hook may still run instead (AO-0251).
     expect(e.body).toMatch(
-      /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped it \(stage: rebase\)/,
+      treeStops
+        ? /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped it \(stage: rebase\)/
+        : /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: rebase\)/,
     );
     // What it printed before the stop is in the note, and whole in the log.
     expect(e.body).toMatch(/Last output:\n\n```\n[^`]*hook waits for the lock/);
@@ -1052,11 +1645,76 @@ describe('merging approved work', () => {
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     expect(e.body).toMatch(
-      /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped it \(stage: fast-forward\)/,
+      /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: fast-forward\)/,
     );
     expect(warns.join('\n')).not.toMatch(/kept moving|did not move/);
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
   });
+
+  it('says what git started may still run when the stop of a timed-out git is refused (AO-0251)', async () => {
+    const repo = temp();
+    const state = temp();
+    git(repo, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'code.txt'), 'one\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'one');
+    const from = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', '-b', 'work');
+    writeFileSync(join(repo, 'code.txt'), 'two\n');
+    git(repo, 'commit', '-q', '-am', 'two');
+    const to = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    const beat = join(state, 'beat.txt').split(sep).join('/');
+    const go = join(state, 'go.txt').split(sep).join('/');
+    // Hangs while git updates main, and leaves a mark every 100 ms until `go.txt` exists.
+    writeFileSync(
+      join(repo, '.git', 'hooks', 'reference-transaction'),
+      [
+        '#!/bin/sh',
+        '[ "$1" = prepared ] || exit 0',
+        "grep -q 'refs/heads/main' || exit 0",
+        `while [ ! -f '${go}' ]; do printf x >> '${beat}'; sleep 0.1; done`,
+        'exit 1',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const refused = '`taskkill /T` exited 1: Access is denied.';
+    const merge = new MergeRepo(
+      repo,
+      join(state, 'wt'),
+      [],
+      { ...process.env, ...ID },
+      hangOnly('merge', '-q', '--ff-only'),
+      // As where a sandbox refuses `taskkill /T`: nothing under git is stopped.
+      () => Promise.resolve(refused),
+    );
+
+    const err = await merge.fastForward('main', from, to).catch((e: unknown) => e as Error);
+
+    try {
+      expect(err).toBeInstanceOf(Error);
+      const message = (err as Error).message;
+      // No claim that the tree stopped; the reason is in the message.
+      expect(message).toMatch(
+        /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped git, but what git started, such as a hook, may still run: /,
+      );
+      expect(message).toContain(refused);
+      expect(message).not.toContain('swarmupd stopped it');
+      // The hook did outlive the merge's git: its marks go on.
+      const size = statSync(beat).size;
+      await until(() => statSync(beat).size > size, 5_000);
+    } finally {
+      // Ends the hook, so nothing has to kill it; waits for its marks to stop.
+      writeFileSync(go, 'go\n');
+      let size = -1;
+      const end = Date.now() + 10_000;
+      while (Date.now() < end && existsSync(beat) && size !== statSync(beat).size) {
+        size = statSync(beat).size;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }, 60_000);
 
   it('rebases again when the base moves during the checks, and checks again only for code', async () => {
     const s = mergeSetup();

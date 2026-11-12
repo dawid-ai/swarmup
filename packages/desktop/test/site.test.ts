@@ -214,6 +214,65 @@ describe('website', () => {
     expect(check.code, check.out).toBe(0);
   });
 
+  it('builds the founder page and its nav entry only when the root has one', () => {
+    const without = repo();
+    expect(node('../swarmup-web/build.mjs', '--root', without, '--offline').code).toBe(0);
+    expect(existsSync(join(without, 'dist', 'site', 'founder.html'))).toBe(false);
+    expect(page(without, 'index.html')).not.toContain('founder.html');
+
+    const d = repo({
+      'swarmup-web/pages/founder.html':
+        '<h1>Me</h1>\n<a href="download.html">Get it</a> <img src="media/shot.png" alt="">\n',
+      'swarmup-web/pages/home.html': '<h1>Proj</h1>\n<a href="founder.html">Who</a>\n',
+    });
+    const r = node('../swarmup-web/build.mjs', '--root', d, '--offline');
+    expect(r.code, r.out).toBe(0);
+    expect(page(d, 'founder.html')).toContain('<main class="wide">');
+    expect(page(d, 'founder.html')).toContain('<title>Founder · SwarmUp</title>');
+    expect(page(d, 'index.html')).toContain('<a href="founder.html">Founder</a>');
+    expect(page(d, 'docs/protocol.html')).toContain('<a href="../founder.html">Founder</a>');
+    expect(page(d, '404.html')).toContain('href="/founder.html"');
+    expect(existsSync(join(d, 'dist', 'site', 'media', 'shot.png'))).toBe(true);
+    const check = node('check-docs-links.mjs', join(d, 'dist', 'site'));
+    expect(check.code, check.out).toBe(0);
+
+    const broken = repo({ 'swarmup-web/pages/founder.html': '<a href="nowhere.html">x</a>' });
+    const bad = node('../swarmup-web/build.mjs', '--root', broken, '--offline');
+    expect(bad.code).toBe(1);
+    expect(bad.out).toMatch(/swarmup-web\/pages\/founder\.html: broken link nowhere\.html/);
+  });
+
+  it('gives the home page a share card: title, description and image', () => {
+    const d = repo();
+    expect(node('../swarmup-web/build.mjs', '--root', d, '--offline').code).toBe(0);
+    const home = page(d, 'index.html');
+    expect(home).toContain('<meta property="og:url" content="https://swarmup.tech/">');
+    expect(home).toContain('<meta property="og:image" content="https://swarmup.tech/og.png">');
+    expect(home).toContain('<meta name="twitter:card" content="summary_large_image">');
+    expect(existsSync(join(d, 'dist', 'site', 'og.png'))).toBe(true);
+    // A page without a description, and the docs, carry no card.
+    expect(page(d, 'install.html')).not.toContain('og:title');
+    expect(page(d, 'docs/protocol.html')).not.toContain('og:title');
+  });
+
+  it('leaves documents marked export-ignore out of the docs', () => {
+    const d = repo({
+      '.gitattributes': 'docs/internal/** export-ignore\ndocs/notes.md export-ignore\n',
+      'docs/internal/plan.md': '# Internal plan\n',
+      'docs/notes.md': '# Working notes\n',
+    });
+    // The attributes are read through git, so the scratch folder becomes a repository.
+    expect(spawnSync('git', ['init', '-q'], { cwd: d, windowsHide: true }).status).toBe(0);
+    const r = node('../swarmup-web/build.mjs', '--root', d, '--offline');
+    expect(r.code, r.out).toBe(0);
+    expect(existsSync(join(d, 'dist', 'site', 'docs', 'protocol.html'))).toBe(true);
+    expect(existsSync(join(d, 'dist', 'site', 'docs', 'internal', 'plan.html'))).toBe(false);
+    expect(existsSync(join(d, 'dist', 'site', 'docs', 'notes.html'))).toBe(false);
+    expect(page(d, 'docs/protocol.html')).not.toMatch(/Internal plan|Working notes/);
+    const check = node('check-docs-links.mjs', join(d, 'dist', 'site'));
+    expect(check.code, check.out).toBe(0);
+  });
+
   it('stops the SVG packet animation under reduced motion (AO-0216)', () => {
     const d = repo();
     expect(node('../swarmup-web/build.mjs', '--root', d, '--offline').code).toBe(0);
@@ -255,24 +314,12 @@ describe('website', () => {
       expect(existsSync(join(out, 'docs', internal))).toBe(false);
     }
     expect(existsSync(join(out, 'docs', 'swarmup-rename.html'))).toBe(false);
-  });
-
-  it('leaves documents marked export-ignore out of the docs', () => {
-    const d = repo({
-      '.gitattributes': 'docs/internal/** export-ignore\ndocs/notes.md export-ignore\n',
-      'docs/internal/plan.md': '# Internal plan\n',
-      'docs/notes.md': '# Working notes\n',
-    });
-    // The attributes are read through git, so the scratch folder becomes a repository.
-    expect(spawnSync('git', ['init', '-q'], { cwd: d, windowsHide: true }).status).toBe(0);
-    const r = node('../swarmup-web/build.mjs', '--root', d, '--offline');
-    expect(r.code, r.out).toBe(0);
-    expect(existsSync(join(d, 'dist', 'site', 'docs', 'protocol.html'))).toBe(true);
-    expect(existsSync(join(d, 'dist', 'site', 'docs', 'internal', 'plan.html'))).toBe(false);
-    expect(existsSync(join(d, 'dist', 'site', 'docs', 'notes.html'))).toBe(false);
-    expect(page(d, 'docs/protocol.html')).not.toMatch(/Internal plan|Working notes/);
-    const check = node('check-docs-links.mjs', join(d, 'dist', 'site'));
-    expect(check.code, check.out).toBe(0);
+    // The receipt on the home page and the founder page quote the same 30 days.
+    const founder = readFileSync(join(out, 'founder.html'), 'utf8');
+    for (const figure of ['194', '1,977', '229.8']) {
+      expect(home).toContain(figure);
+      expect(founder).toContain(figure);
+    }
   });
 });
 

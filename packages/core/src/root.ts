@@ -22,7 +22,8 @@ import { ulid, ulidAfter } from './ulid.js';
 // 8: an assign with keep_wait keeps the task blocked; older builds folded it to todo.
 // 9: addressed events carry their whole body as `detail` when it is longer than the summary.
 // 10: addressed events and lastReview carry the recommended decision (`recommend`).
-const INDEX_VERSION = 10;
+// 11: task states carry awaitsMerge.
+const INDEX_VERSION = 11;
 
 interface IndexEntry {
   tm: number;

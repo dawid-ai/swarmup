@@ -13,6 +13,8 @@ process.env.SWARMUP_STATE_DIR = join(scratch, 'swarmupd');
 // Tests that copy `process.env` would inherit them: `SWARMUP_ROOTS_ONLY` hides the root found from a
 // test's own folder, and `SWARMUP_AGENT` or `SWARMUP_RUN` make a test act as the live run. Tests set the
 // ones they need themselves.
+// `SWARMUP_DAEMON_ENTRY` names the installed app's swarmupd: a test that starts swarmupd must start
+// this checkout's build, whatever started the test run (AO-0235).
 // Both prefixes: the old OPS_* names are still read when the new ones are unset.
 for (const key of [
   'AGENT',
@@ -22,6 +24,7 @@ for (const key of [
   'RUN_STATE_DIR',
   'ROOTS',
   'ROOTS_ONLY',
+  'DAEMON_ENTRY',
 ]) {
   delete process.env[`SWARMUP_${key}`];
   delete process.env[`OPS_${key}`];
@@ -31,6 +34,9 @@ for (const key of [
 // change no behavior the tests check; they drop work that costs a process or a disk flush per
 // call, which on Windows adds up in the git-heavy tests: background maintenance and `gc --auto`
 // after commits, fetches and pushes, and an fsync of each object.
+// The scratch global config below repeats them: git drops GIT_CONFIG_* from the environment of
+// the `receive-pack` and `upload-pack` it starts for a remote that is a local folder, so without
+// the file every test push still ran `git maintenance` in the remote and flushed there (AO-0221).
 const testGitConfig: Array<[string, string]> = [
   ['maintenance.auto', 'false'],
   ['gc.auto', '0'],
@@ -64,11 +70,15 @@ writeFileSync(
     '\temail = test@example.invalid',
     // Git skips an include whose file does not exist.
     ...realGlobal.map((p) => `[include]\n\tpath = ${JSON.stringify(p.split(sep).join('/'))}`),
+    // After the include, so these win over the developer's own values, as the environment does.
+    ...testGitConfig.map(([key, value]) => {
+      const dot = key.indexOf('.');
+      return `[${key.slice(0, dot)}]\n\t${key.slice(dot + 1)} = ${value}`;
+    }),
     '',
   ].join('\n'),
 );
 process.env.GIT_CONFIG_GLOBAL = testGlobal;
-
 // The runner moves from test to test on microtasks only, so a file of synchronous tests (git via
 // execFileSync) never lets the worker read its IPC replies. Once such a file runs past 60 s, the
 // worker's pending `onTaskUpdate` call times out even though the reply is already waiting, and the

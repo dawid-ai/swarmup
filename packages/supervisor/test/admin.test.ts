@@ -588,7 +588,7 @@ describe('desktop admin api', () => {
       expect(res.data).toEqual([]);
       expect((await call('POST', '/api/repeats/weekly-report/delete')).status).toBe(400);
 
-      // `opsd.repeats: false` keeps this PC from firing them.
+      // `swarmupd.repeats: false` keeps this PC from firing them.
       writeFileSync(userConfig, config('  repeats: false\n'));
       sup.reloadConfig();
       new Workspace({ cwd: repo, env, actor: 'human:dawid', user: {} }).saveRepeat({

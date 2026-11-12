@@ -47,6 +47,31 @@ describe('swarmup doctor', () => {
     expect(byId(checks, 'opsd')?.status).toBe('warn');
   });
 
+  it('fails a root where git has no name and email to commit with (AO-0211)', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'site', human: 'human:dawid' });
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    // A fresh account: an empty home and no system git config.
+    const home = temp();
+    const env = envFor(config, { HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: '1' });
+    const id = `git-identity:${join(repo, '.swarmup')}`;
+    let checks = await doctor({ env, cwd: repo, home });
+    expect(byId(checks, id)).toMatchObject({
+      status: 'fail',
+      fix: expect.stringContaining('git config --global user.email'),
+    });
+
+    execFileSync('git', ['config', 'user.name', 'You'], { cwd: repo, windowsHide: true });
+    execFileSync('git', ['config', 'user.email', 'you@example.com'], {
+      cwd: repo,
+      windowsHide: true,
+    });
+    checks = await doctor({ env, cwd: repo, home });
+    expect(byId(checks, id)).toBeUndefined();
+  });
+
   it('fails a config that does not parse', async () => {
     const cwd = temp();
     const config = join(cwd, 'config.yml');

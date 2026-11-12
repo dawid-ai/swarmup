@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -18,6 +19,9 @@ import { blocksLabel, run } from '../src/cli.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoTop = join(here, '..', '..', '..');
+// Resolved like any import, so a worktree without its own node_modules finds the tsc of the
+// checkout that holds it.
+const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
 const coreDist = join(repoTop, 'packages', 'core', 'dist', 'index.js');
 const dirs: string[] = [];
 
@@ -299,14 +303,10 @@ describe('swarmup', () => {
 describe('two agents on one machine', () => {
   beforeAll(() => {
     if (!existsSync(coreDist)) {
-      execFileSync(
-        process.execPath,
-        [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/core'],
-        {
-          cwd: repoTop,
-          windowsHide: true,
-        },
-      );
+      execFileSync(process.execPath, [tsc, '-b', 'packages/core'], {
+        cwd: repoTop,
+        windowsHide: true,
+      });
     }
   });
 
@@ -1100,6 +1100,9 @@ describe('a review request for code left uncommitted (AO-0136)', () => {
         SWARMUP_RUN_STATE_DIR: state,
       } as NodeJS.ProcessEnv;
       const quiet = () => {};
+      // The run holds the task under its own claim, not the one `started` made without a run.
+      swarmup(cwd, 'claude:engineer', 'release', '1');
+      expect(run(['start', '1', 'plan'], { out: quiet, err: quiet, env, cwd })).toBe(0);
       return run(['review', '1', 'files in the checkout'], { out: quiet, err: quiet, env, cwd });
     };
     const without = started();

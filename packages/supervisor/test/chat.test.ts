@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,6 +24,9 @@ import { until, WAIT_MS } from './until.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoTop = join(here, '..', '..', '..');
+// Resolved like any import, so a worktree without its own node_modules finds the tsc of the
+// checkout that holds it.
+const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
 const coreDist = join(repoTop, 'packages', 'core', 'dist', 'index.js');
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
@@ -31,11 +35,7 @@ const pidFiles: string[] = [];
 
 beforeAll(() => {
   // The fake agent is a separate process, so it needs the built core.
-  execFileSync(
-    process.execPath,
-    [join(repoTop, 'node_modules', 'typescript', 'bin', 'tsc'), '-b', 'packages/core'],
-    { cwd: repoTop, windowsHide: true },
-  );
+  execFileSync(process.execPath, [tsc, '-b', 'packages/core'], { cwd: repoTop, windowsHide: true });
 });
 
 // `close` may wait about a minute for killed runs and their wrap-up (its own limits add up to
@@ -549,7 +549,7 @@ describe('chat runtime', () => {
       );
     }
     expect(() => opsdConfig({ opsd: { chat: { agent: '*:orchestrator' } } } as never)).toThrow(
-      /opsd.chat.agent/,
+      /swarmupd\.chat\.agent/,
     );
     expect(opsdConfig({}).chat).toEqual({
       agent: 'claude:pm',

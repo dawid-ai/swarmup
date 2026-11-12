@@ -527,7 +527,12 @@ function taskRecord(
 }
 
 /** Every task in every root, archived ones included, with leases and dependencies applied. */
-function tasks(roots: Root[], nowMs: number, budget: SearchBudget): SearchTask[] {
+function tasks(
+  roots: Root[],
+  nowMs: number,
+  budget: SearchBudget,
+  mergeRoots: ReadonlySet<string>,
+): SearchTask[] {
   const all = new Map<string, { root: Root; rec: TaskRecord; archived: boolean }>();
   for (const root of roots) {
     budget.begin();
@@ -561,12 +566,27 @@ function tasks(roots: Root[], nowMs: number, budget: SearchBudget): SearchTask[]
     status.set(`${root.name}/${id}`, rec.state.status);
     bare.set(id, bare.has(id) ? null : rec.state.status);
   }
+  // Approved work swarmupd still has to merge, keyed like `status`; and by bare id, as `bare` is.
+  const pending = new Set<string>();
+  const barePending = new Set<string>();
+  for (const { root, rec } of all.values()) {
+    if (!mergeRoots.has(root.name) || !rec.state.awaitsMerge) continue;
+    const { id } = rec.state.meta;
+    pending.add(`${root.name}/${id}`);
+    if (bare.get(id) !== null) barePending.add(id);
+  }
   return [...all.values()].map(({ root, rec, archived }) => {
     const statusOf = (ref: string): Status | undefined =>
       ref.includes('/')
         ? status.get(ref)
         : (status.get(`${root.name}/${ref}`) ?? bare.get(ref) ?? undefined);
-    const view = derive(rec.state, root.name, nowMs, statusOf);
+    const mergePending = (ref: string): boolean =>
+      ref.includes('/')
+        ? pending.has(ref)
+        : status.has(`${root.name}/${ref}`)
+          ? pending.has(`${root.name}/${ref}`)
+          : barePending.has(ref);
+    const view = derive(rec.state, root.name, nowMs, statusOf, mergePending);
     if (archived) view.archived = true;
     return { view, text: rec.text };
   });
@@ -736,11 +756,16 @@ function votes(roots: Root[], nowMs: number, budget: SearchBudget): SearchVote[]
  * have a share for each kind in each root. Without a budget each source gets the whole default
  * one.
  */
-export function searchSources(roots: Root[], nowMs: number, budget?: SearchBudget): SearchSources {
+export function searchSources(
+  roots: Root[],
+  nowMs: number,
+  budget?: SearchBudget,
+  mergeRoots: ReadonlySet<string> = new Set(),
+): SearchSources {
   cache.tick();
   const b = (): SearchBudget => budget ?? searchBudget(1, roots.length);
   return {
-    tasks: () => tasks(roots, nowMs, b()),
+    tasks: () => tasks(roots, nowMs, b(), mergeRoots),
     notes: () => notes(roots, b()),
     posts: () => posts(roots, b()),
     decisions: () => votes(roots, nowMs, b()),

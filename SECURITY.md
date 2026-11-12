@@ -41,7 +41,7 @@ other people, not what a run can do on your machine or to the work of other agen
   `403` for human actions, as [Agent ids are labels, not logins](#agent-ids-are-labels-not-logins)
   describes. swarmupd stores only its SHA-256 hash; the token itself is only in the run's environment.
 - Agent runs can read the full token: they run as you. So the API never lets a caller change which
-  program a run starts. Providers (`opsd.runtimes`) change only in the user config file or through
+  program a run starts. Providers (`swarmupd.runtimes`) change only in the user config file or through
   the desktop app's main process, after a system dialog shows the exact command line.
 - Role files written through the API cannot set `tools`; that field stays hand-edited. Existing
   `mcp` and `model` fields are preserved as metadata but the supervisor does not use them.
@@ -84,7 +84,7 @@ other people, not what a run can do on your machine or to the work of other agen
   `Bash(git *)` can still write there, so it is defense in depth, not a sandbox.
 - Runs inherit swarmupd's environment, so agents act as your accounts; task events record which agent
   did what. Codex's sandbox blocks network access and `.git` writes. To hide variables from a
-  runtime's runs, list them in `opsd.runtimes.<name>.unset_env` (on Windows the names match in any
+  runtime's runs, list them in `swarmupd.runtimes.<name>.unset_env` (on Windows the names match in any
   case). That removes only the variables: credential stores such as the GitHub CLI's keyring login,
   Git Credential Manager and SSH agents stay reachable as you.
 - Each run has a time budget (default 180 minutes, or the agent's `budget` setting), and a token

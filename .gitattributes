@@ -8,6 +8,8 @@
 # Private: the task store never goes into the public export (scripts/export-public.mjs).
 .agent-ops/** export-ignore
 .agent-ops export-ignore
+.swarmup/** export-ignore
+.swarmup export-ignore
 docs/proposals/** export-ignore
 # Launch post drafts: Dawid edits and posts them by hand; they never ship in the export.
 docs/launch/** export-ignore

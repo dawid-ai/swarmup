@@ -202,7 +202,26 @@ export class Checkout {
       const msg = err instanceof Error ? err.message.split('\n')[0]! : String(err);
       changes = new Error(msg);
     }
-    return { changes, head: yield* this.ref('HEAD') };
+    return { changes, head: yield* this.ref('HEAD'), gitDirs: yield* this.gitDirSteps() };
+  }
+
+  /**
+   * The checkout's git dir and the repo's common dir as git names them, or null when git finds
+   * no repo here or refuses it (an unsafe owner, a `.git` that names no git dir).
+   */
+  gitDirs(): GitDirs | null {
+    return this.runSync(this.gitDirSteps());
+  }
+
+  private *gitDirSteps(): Steps<GitDirs | null> {
+    try {
+      const out = yield { args: ['rev-parse', '--git-dir', '--git-common-dir'] };
+      const [own, common] = out.trim().split(/\r?\n/);
+      if (!own || !common) return null;
+      return { own: resolve(this.top, own), common: resolve(this.top, common) };
+    } catch {
+      return null;
+    }
   }
 
   private *changeSteps(): Steps<string[]> {
@@ -457,6 +476,14 @@ export interface CheckoutState {
   changes: string[] | Error;
   /** The commit checked out, or null in a repo without one. */
   head: string | null;
+  /** The checkout's git dirs, or null when git names none. */
+  gitDirs: GitDirs | null;
+}
+
+/** A checkout's own git dir and its repo's common dir; the same folder in a main checkout. */
+export interface GitDirs {
+  own: string;
+  common: string;
 }
 
 export interface LeftoverCommit {

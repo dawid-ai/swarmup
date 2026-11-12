@@ -3,11 +3,13 @@ import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import {
   closeSync,
+  fstatSync,
   linkSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -22,6 +24,7 @@ import {
   localTime,
   OpsError,
   readUserConfig,
+  redactSecrets,
   samePath,
 } from '@swarmup/core';
 import { startApi } from './api.js';
@@ -497,7 +500,9 @@ export async function startDaemon(
       ? join(dirname(here), '..', 'dist', 'main.js')
       : join(dirname(here), 'main.js'));
   const args = [main, 'run', ...(opts.port !== undefined ? ['--port', String(opts.port)] : [])];
-  const fd = openSync(join(stateDir(env), 'opsd.log'), 'a');
+  const logFile = join(stateDir(env), 'opsd.log');
+  const fd = openSync(logFile, 'a');
+  const logStart = fstatSync(fd).size;
   // Inside Electron, execPath is the app; ELECTRON_RUN_AS_NODE makes it a plain Node process, and
   // ELECTRON_NO_ASAR keeps `fs` from taking `.asar` files for folders (AO-0244).
   const childEnv = process.versions.electron
@@ -514,7 +519,36 @@ export async function startDaemon(
   child.unref();
   const info = await awaitDaemon(child, env);
   if (info) return info;
-  throw new OpsError(`swarmupd did not start; see ${join(stateDir(env), 'opsd.log')}`);
+  // With the entry and what the child logged: a caller such as a test deletes the state folder
+  // right after, and the log with it (AO-0235).
+  const said = logTail(logFile, logStart);
+  throw new OpsError(`swarmupd did not start (${main}); see ${logFile}${said ? `\n${said}` : ''}`);
+}
+
+const LOG_TAIL_BYTES = 4096;
+const LOG_TAIL_LINES = 20;
+
+/**
+ * The last lines written to `file` from byte `from` on, without the lines that look like a secret;
+ * empty when it cannot be read. The child may print a token or a webhook URL from its environment,
+ * and the caller puts this text in an error that `main.ts` prints.
+ */
+function logTail(file: string, from: number): string {
+  try {
+    const fd = openSync(file, 'r');
+    try {
+      const start = Math.max(from, fstatSync(fd).size - LOG_TAIL_BYTES);
+      const buf = Buffer.alloc(LOG_TAIL_BYTES);
+      const n = readSync(fd, buf, 0, buf.length, start);
+      const text = buf.subarray(0, n).toString('utf8').trimEnd().replace(/\r\n/g, '\n');
+      // Redact the whole window before the cut, so a key block that starts earlier goes whole.
+      return redactSecrets(text).split('\n').slice(-LOG_TAIL_LINES).join('\n');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -527,9 +561,23 @@ export async function startDaemon(
 export const START_WAIT_MS = 15_000 + 4 * PROC_START_TIMEOUT_MS;
 
 /**
+ * The live PID that `opsd.lock` names, or null when there is no lock, it is unreadable or its
+ * holder is gone. By PID only: a creation-time read would start PowerShell on Windows at each poll.
+ */
+function lockHolderPid(env: NodeJS.ProcessEnv): number | null {
+  try {
+    const c = parseLock(readFileSync(lockFile(env), 'utf8'));
+    return c && isAlive(c.pid) ? c.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Waits until the swarmupd `child` answers, or another swarmupd answers after `child` exited (it lost the
- * lock to that one). An exited child ends the wait at once; a live one gets `waitMs`. Null when
- * no swarmupd answers in time.
+ * lock to that one). A live child gets `waitMs`. So does an exited one while the lock names another
+ * live process: the winner may not have written its address yet (AO-0241). An exited child with
+ * no such lock holder ends the wait at once. Null when no swarmupd answers in time.
  */
 export async function awaitDaemon(
   child: { readonly pid?: number; readonly exitCode: number | null },
@@ -543,7 +591,8 @@ export async function awaitDaemon(
     if (info && info.pid === child.pid && (await healthy(info))) return info;
     if (child.exitCode !== null) {
       if (info && (await healthy(info))) return info;
-      break;
+      const holder = lockHolderPid(env);
+      if (holder === null || holder === child.pid) break;
     }
   }
   const winner = readDaemon(env);

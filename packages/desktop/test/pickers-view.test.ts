@@ -201,7 +201,7 @@ describe('Directory from an older swarmupd without the configured flag (AO-0124)
     expect(configured('claude:orchestrator')).toBe(false);
   });
 
-  it('counts every id when no role file or opsd.agents entry exists, as a write accepts any', () => {
+  it('counts every id when no role file or swarmupd.agents entry exists, as a write accepts any', () => {
     const open = legacy(DIRECTORY).filter((a) => a.source !== 'role' && a.source !== 'config');
     const dir = directoryEntries(open, 'human:dawid');
     expect(dir.map((e) => e.id)).toEqual(

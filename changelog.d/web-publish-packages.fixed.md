@@ -1,0 +1,1 @@
+`swarmup-web/publish.mjs` builds the website from a git worktree and with `TEMP` outside the repository: it copies the `marked` package into its temporary build folder, where it used to link the `node_modules` folder next to the script and failed with `Cannot find package 'marked'` when there was none.

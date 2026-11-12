@@ -114,7 +114,7 @@ describe('pausing swarmupd', () => {
     expect(res.status).toBe(400);
     expect(readFileSync(file, 'utf8')).toBe(before);
     expect(() => opsdConfig({ opsd: { paused: 'yes' as unknown as boolean } })).toThrow(
-      /opsd.paused/,
+      /swarmupd\.paused/,
     );
   });
 
@@ -136,6 +136,19 @@ describe('pausing swarmupd', () => {
     expect(readFileSync(file, 'utf8')).not.toMatch(/paused/);
     sup.reloadConfig();
     expect(sup.blocker('codex:qa', 'test')).toBeNull();
+  });
+
+  it('resumes with a first-start config that has no swarmupd section, or no file yet (AO-0211)', () => {
+    // `swarmup setup` and the desktop's first start write only `me` and `roots`.
+    const { env: e, file } = env('me: human:you\nroots:\n  - C:/my-tasks\n');
+    expect(() => setPaused(e, false)).not.toThrow();
+    expect(readFileSync(file, 'utf8')).toBe('me: human:you\nroots:\n  - C:/my-tasks\n');
+    setPaused(e, true);
+    expect(readFileSync(file, 'utf8')).toMatch(/^swarmupd:\n {2}paused: true/m);
+
+    const fresh = env('');
+    rmSync(fresh.file);
+    expect(() => setPaused(fresh.env, false)).not.toThrow();
   });
 
   it('refuses pause and resume before a run token can edit the config', () => {

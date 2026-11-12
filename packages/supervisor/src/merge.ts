@@ -1,41 +1,13 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { PATCH_KEY_ARGS, patchKey, ROOT_DIR_NAMES } from '@swarmup/core';
-import { type GitFailure, gitAsync } from './git.js';
+import type { MergeSource } from '@swarmup/core';
+import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES } from '@swarmup/core';
+import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
 
-/** Where an approved task's work is, as its last review request names it. */
-export interface MergeSource {
-  /** The commit the reviewer approved, when the review names one. */
-  commit?: string;
-  branch?: string;
-}
-
-/** A name ends at a space, a colon, a comma, a bracket or a full stop that ends a sentence. */
-const NAME = '`?([A-Za-z0-9._/-]+?)`?(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
-
-/** What a review request names as the work to merge. */
-export interface ReviewSources {
-  /** `<commit> on branch <name>`, the form the agent skill and swarmupd's own leftover reviews use. */
-  named?: MergeSource;
-  /**
-   * The word after each other `branch`, in order. Prose gives words that are no branch ("this
-   * branch does not touch it"), so only a name that is a branch in the repo counts.
-   */
-  loose: string[];
-}
-
-/** Reads what a review request names: `<commit> on branch <name>`, and each `branch <word>`. */
-export function reviewSources(text: string): ReviewSources {
-  const both = new RegExp(`\\b([0-9a-f]{7,40})\\s+on\\s+branch\\s+${NAME}`, 'm').exec(text);
-  const named = both ? { commit: both[1], branch: both[2] } : undefined;
-  const loose: string[] = [];
-  for (const m of text.matchAll(new RegExp(`\\bbranch\\s+${NAME}`, 'gm'))) {
-    if (m[1] !== named?.branch && !loose.includes(m[1]!)) loose.push(m[1]!);
-  }
-  return named ? { named, loose } : { loose };
-}
+export { reviewSources };
+export type { MergeSource, ReviewSources } from '@swarmup/core';
 
 /**
  * Reads the branch and commit from a review request: `<commit> on branch <name>`, else the first
@@ -129,21 +101,216 @@ export function installCommands(install: string[] | undefined, dir: string): str
   return LOCKFILES.some((f) => existsSync(join(dir, f))) ? [DEFAULT_INSTALL] : [];
 }
 
+/** The machine npm installs for: `process.platform`, `process.arch` and, on Linux, the C library. */
+export interface InstallPlatform {
+  os: string;
+  cpu: string;
+  libc?: string;
+}
+
+/** The platform swarmupd runs on, as npm's `os`, `cpu` and `libc` fields name it. */
+export function installPlatform(): InstallPlatform {
+  if (process.platform !== 'linux') return { os: process.platform, cpu: process.arch };
+  const header = (process.report?.getReport() as { header?: { glibcVersionRuntime?: string } })
+    ?.header;
+  return {
+    os: process.platform,
+    cpu: process.arch,
+    libc: header?.glibcVersionRuntime ? 'glibc' : 'musl',
+  };
+}
+
+/** Whether `value` passes an `os`, `cpu` or `libc` list of a lockfile entry; `!x` excludes `x`. */
+function platformAllows(list: unknown, value: string | undefined): boolean {
+  if (!Array.isArray(list) || list.length === 0 || value === undefined) return true;
+  const names = list.filter((v): v is string => typeof v === 'string');
+  if (names.includes(`!${value}`)) return false;
+  const wanted = names.filter((v) => !v.startsWith('!'));
+  return wanted.length === 0 || wanted.includes(value);
+}
+
+/** Whether an `os`, `cpu` or `libc` list of a lockfile entry names `value` itself, not only `!x`. */
+function platformNames(list: unknown, value: string | undefined): boolean {
+  return value !== undefined && Array.isArray(list) && list.includes(value);
+}
+
+/** A package name and a version as npm writes them; both go into a shell command. */
+const PACKAGE_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/i;
+const PACKAGE_VERSION = /^[0-9][0-9A-Za-z.+-]*$/;
+
+/** Looks up the registry npm installs a package of `scope` (`@x`, or none) from; see `npmRegistry`. */
+export type RegistryLookup = (scope: string | undefined) => string | undefined;
+
+/**
+ * The registry that `npm install <name>@<version>` in `dir` fetches a package of `scope` from, as
+ * npm's own configuration says (`.npmrc` files, environment): `@scope:registry` when set, or
+ * `registry`. `undefined` when npm does not answer with an http(s) URL.
+ */
+export function npmRegistry(dir: string, scope: string | undefined): string | undefined {
+  const get = (key: string): string | undefined => {
+    // `shell` because npm is `npm.cmd` on Windows; the key is a checked scope name or a constant.
+    const r = spawnSync(`npm config get ${key}`, {
+      cwd: dir,
+      shell: true,
+      encoding: 'utf8',
+      timeout: 60_000,
+      windowsHide: true,
+    });
+    const value = r.status === 0 ? r.stdout.trim() : '';
+    return /^https?:\/\//i.test(value) ? value : undefined;
+  };
+  return (scope !== undefined ? get(`${scope}:registry`) : undefined) ?? get('registry');
+}
+
+/**
+ * Whether a lockfile entry comes from the registry that `name@version` installs from, so that
+ * the install by name fetches the same package. A git, file or tarball dependency also has a
+ * plain `version` (the one in its `package.json`), and only `resolved` tells its source;
+ * installed by name, the registry package of that name would take its place.
+ *
+ * A registry entry has no `resolved` (npm's `omit-lockfile-registry-resolved`), or the URL of
+ * this package's tarball in the configured registry (`registry`, a `RegistryLookup`):
+ * `<registry>/<name>/-/<name without scope>-<version>.tgz`, same scheme, host and port. The
+ * shape of the path alone proves nothing: a tarball on any other host can have it. So another
+ * host counts as not from a registry, also a mirror of the configured one, and so does a
+ * registry with another tarball layout.
+ */
+function fromRegistry(
+  name: string,
+  version: string,
+  resolved: unknown,
+  registry: RegistryLookup,
+): boolean {
+  if (resolved === undefined) return true;
+  if (typeof resolved !== 'string' || !/^https?:\/\//i.test(resolved)) return false;
+  const scope = name.startsWith('@') ? name.slice(0, name.indexOf('/')) : undefined;
+  const base = name.slice(name.indexOf('/') + 1);
+  try {
+    const from = registry(scope);
+    if (from === undefined) return false;
+    const home = new URL(from);
+    const url = new URL(resolved);
+    if (url.origin !== home.origin || url.username !== '' || url.password !== '') return false;
+    const root = decodeURIComponent(home.pathname).replace(/\/+$/, '');
+    return decodeURIComponent(url.pathname) === `${root}/${name}/-/${base}-${version}.tgz`;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The optional packages that the lockfile in `dir` places in `dir/node_modules` for `platform`
+ * and that are not installed, as `name@version` for `npm install`, sorted (AO-0229).
+ *
+ * `npm install` can leave them out and say `up to date`, or even remove them: for some dependency
+ * graphs it builds a tree without the platform packages that the lockfile lists (seen with
+ * `lightningcss-win32-x64-msvc` under a root `lightningcss` that vite and vitest share), and only
+ * `npm ci` installs the lockfile as written. A package installed by name stays.
+ *
+ * Only top-level `node_modules/<name>` entries count: a nested package can't be installed by
+ * name, and `npm install` did restore those. Entries for another platform, links, bundled
+ * packages and anything that does not come from the configured registry (`fromRegistry`) are
+ * left alone. `registry` is asked only for a missing package with a `resolved` URL, once a scope.
+ *
+ * Only a package that names this platform in `os`, `cpu` or `libc` counts. An optional package
+ * with no such list, or with exclusions only (`!aix`), can be missing on purpose: npm leaves it
+ * out when its install fails or `--omit=optional` is set, and the build goes on. Installed by
+ * name, the same failure would stop the merge build.
+ */
+export function missingOptionalPackages(
+  dir: string,
+  platform: InstallPlatform = installPlatform(),
+  registry: RegistryLookup = (scope) => npmRegistry(dir, scope),
+): string[] {
+  const known = new Map<string, string | undefined>();
+  const lookup: RegistryLookup = (scope) => {
+    const key = scope ?? '';
+    if (!known.has(key)) known.set(key, registry(scope));
+    return known.get(key);
+  };
+  const file = ['npm-shrinkwrap.json', 'package-lock.json']
+    .map((f) => join(dir, f))
+    .find((f) => existsSync(f));
+  if (!file) return [];
+  let packages: unknown;
+  try {
+    packages = (JSON.parse(readFileSync(file, 'utf8')) as { packages?: unknown }).packages;
+  } catch {
+    return [];
+  }
+  if (typeof packages !== 'object' || packages === null) return [];
+  const specs: string[] = [];
+  for (const [key, value] of Object.entries(packages as Record<string, unknown>)) {
+    const folder = /^node_modules\/((?:@[^/]+\/)?[^/]+)$/.exec(key)?.[1];
+    if (!folder || typeof value !== 'object' || value === null) continue;
+    const e = value as Record<string, unknown>;
+    if (e.optional !== true || e.link === true || e.inBundle === true) continue;
+    if (typeof e.version !== 'string' || !PACKAGE_VERSION.test(e.version)) continue;
+    if (!PACKAGE_NAME.test(folder)) continue;
+    if (e.name !== undefined && (typeof e.name !== 'string' || !PACKAGE_NAME.test(e.name)))
+      continue;
+    if (
+      !platformAllows(e.os, platform.os) ||
+      !platformAllows(e.cpu, platform.cpu) ||
+      !platformAllows(e.libc, platform.libc)
+    ) {
+      continue;
+    }
+    if (
+      !platformNames(e.os, platform.os) &&
+      !platformNames(e.cpu, platform.cpu) &&
+      !platformNames(e.libc, platform.libc)
+    ) {
+      continue;
+    }
+    if (existsSync(join(dir, 'node_modules', ...folder.split('/'), 'package.json'))) continue;
+    // Last, because it can run npm: only for a package that is missing.
+    const name = typeof e.name === 'string' ? e.name : folder;
+    if (!fromRegistry(name, e.version, e.resolved, lookup)) continue;
+    // An alias keeps its folder name: `<folder>@npm:<name>@<version>`.
+    const alias = typeof e.name === 'string' && e.name !== folder ? `npm:${e.name}@` : '';
+    specs.push(`${folder}@${alias}${e.version}`);
+  }
+  return specs.sort();
+}
+
+/**
+ * The command that installs the optional packages `DEFAULT_INSTALL` left out of `dir`
+ * (`missingOptionalPackages`), or `null` when none is missing.
+ */
+export function repairInstallCommand(
+  dir: string,
+  platform?: InstallPlatform,
+  registry?: RegistryLookup,
+): string | null {
+  const missing = missingOptionalPackages(dir, platform, registry);
+  return missing.length > 0 ? `${DEFAULT_INSTALL} ${missing.join(' ')}` : null;
+}
+
 /**
  * The install steps for a build in `top` after a merge changed the lockfiles in `dirs` (from
  * `lockfileDirs`): `installCommands` in each directory, in order. A step outside `top` names its
- * directory, so the merge event tells which install ran where.
+ * directory, so the merge event tells which install ran where. After the default install comes a
+ * step that looks at `node_modules` then, and installs by name what the install left out.
  */
 export function installSteps(
   install: string[] | undefined,
   top: string,
   dirs: string[],
+  platform?: InstallPlatform,
+  registry?: RegistryLookup,
 ): CommandEntry[] {
   return dirs.flatMap((dir) => {
     const cwd = dir === '.' ? top : join(top, ...dir.split('/'));
-    return installCommands(install, cwd).map((command): CommandEntry =>
-      dir === '.' ? command : { command, cwd, label: `${command} (in ${dir})` },
-    );
+    const entry = (command: string): FixedCommand =>
+      dir === '.' ? command : { command, cwd, label: `${command} (in ${dir})` };
+    const steps = installCommands(install, cwd).map(entry);
+    if (install || steps.length === 0) return steps;
+    const repair: CommandEntry = () => {
+      const command = repairInstallCommand(cwd, platform, registry);
+      return command === null ? null : entry(command);
+    };
+    return [...steps, repair];
   });
 }
 
@@ -232,13 +399,21 @@ export interface CommandResult {
   interrupted?: boolean;
   /** It ran past its timeout and swarmupd stopped it. */
   timedOut?: boolean;
+  /**
+   * Its place, from 0, in the list `CommandRunner.runAll` got. Not its place in the results when
+   * an earlier function entry had nothing to run.
+   */
+  entry?: number;
 }
 
 /**
  * A command for `CommandRunner.runAll`: a bare command runs in the list's directory; else it runs
- * in `cwd`, and its steps and result name it by `label`.
+ * in `cwd`, and its steps and result name it by `label`. A function is asked for its command when
+ * its turn comes, so it can depend on what the earlier commands left; `null` means nothing to
+ * run, and the list is one step shorter.
  */
-export type CommandEntry = string | { command: string; cwd: string; label: string };
+export type FixedCommand = string | { command: string; cwd: string; label: string };
+export type CommandEntry = FixedCommand | (() => FixedCommand | null);
 
 /** One command of a `CommandRunner.runAll` list: as it starts, and with `result` once it ends. */
 export interface CommandStep {
@@ -279,6 +454,16 @@ export class GitTimeout extends Error {
   }
 }
 
+/**
+ * What a git timeout says swarmupd did about the command. With `treeLeft`, why the stop did not
+ * reach what git started, it does not claim the tree stopped: a hook may still run and write in
+ * the checkout (AO-0251).
+ */
+export function gitStopNote(treeLeft?: string): string {
+  if (!treeLeft) return 'swarmupd stopped it';
+  return `swarmupd stopped git, but what git started, such as a hook, may still run: ${treeLeft}`;
+}
+
 /** How long one git command of a merge may take; rebases and fast-forwards take seconds. */
 export const MERGE_GIT_TIMEOUT_MS = 5 * 60_000;
 
@@ -300,6 +485,7 @@ export class MergeRepo {
    * @param gitTimeoutMs How long one git command may take before swarmupd stops it and what it
    *   started, such as a hook; the merge then ends and frees its checkout (AO-0172). A function
    *   gives each command its own limit.
+   * @param stopTree Stops a timed-out git's tree; tests replace it.
    */
   constructor(
     readonly top: string,
@@ -307,6 +493,7 @@ export class MergeRepo {
     stores: string[],
     private readonly env: NodeJS.ProcessEnv,
     private readonly gitTimeoutMs: MergeGitTimeout = MERGE_GIT_TIMEOUT_MS,
+    private readonly stopTree?: TreeStop,
   ) {
     this.excludes = ROOT_DIR_NAMES.map((n) => `:(exclude,glob)**/${n}/**`);
     for (const dir of stores) {
@@ -481,14 +668,19 @@ export class MergeRepo {
     const timeoutMs =
       typeof this.gitTimeoutMs === 'function' ? this.gitTimeoutMs(args) : this.gitTimeoutMs;
     try {
-      return await gitAsync(cwd, args, { env: this.gitEnv(), timeoutMs, tree: true });
+      return await gitAsync(cwd, args, {
+        env: this.gitEnv(),
+        timeoutMs,
+        tree: true,
+        stopTree: this.stopTree,
+      });
     } catch (err) {
       if ((err as GitFailure).code === 'ETIMEDOUT') {
         // Even with allowFail: a git command that hangs once likely hangs again.
         const took = formatTimeout(timeoutMs);
         const e = err as GitFailure;
         throw new GitTimeout(
-          `\`git ${args.join(' ')}\` in ${cwd} timed out after ${took}; swarmupd stopped it`,
+          `\`git ${args.join(' ')}\` in ${cwd} timed out after ${took}; ${gitStopNote(e.treeLeft)}`,
           `${e.stdout ?? ''}${e.stderr ?? ''}`,
         );
       }
@@ -632,11 +824,18 @@ export class CommandRunner {
     onStep?: (step: CommandStep) => void,
   ): Promise<CommandResult[]> {
     const out: CommandResult[] = [];
-    for (const [index, entry] of commands.entries()) {
+    let count = commands.length;
+    for (const [at, given] of commands.entries()) {
+      const entry = typeof given === 'function' ? given() : given;
+      if (entry === null) {
+        count -= 1;
+        continue;
+      }
       const e = typeof entry === 'string' ? { command: entry, cwd, label: entry } : entry;
-      const step = { command: e.label, index, count: commands.length };
+      const step = { command: e.label, index: out.length, count };
       onStep?.(step);
-      const r = { ...(await this.run(e.command, e.cwd, timeoutMs)), command: e.label };
+      const ran = await this.run(e.command, e.cwd, timeoutMs);
+      const r = { ...ran, command: e.label, entry: at };
       onStep?.({ ...step, result: r });
       out.push(r);
       if (!r.ok) break;

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { initRoot, Workspace } from '@swarmup/core';
+import { initRoot, MERGE_ACTOR, Workspace } from '@swarmup/core';
+import type { UserConfig } from '@swarmup/core';
 import type { RunRecord } from '../src/index.js';
 import { buildReport, reportText, reportWindow } from '../src/index.js';
 
@@ -178,5 +179,90 @@ describe('reports', () => {
     );
     // An answer outside the window is left out.
     expect(buildReport(h, [], T0 + 3 * DAY, T0 + 7 * DAY).answers.given).toBe(0);
+  });
+
+  it('counts a task that waits for a merge as unblocked only after the merge (AO-0228)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'swarmupd-report-'));
+    dirs.push(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'test', human: 'human:dawid' });
+    const as = (actor: string) =>
+      new Workspace({
+        cwd: repo,
+        env: { SWARMUP_CONFIG: join(repo, 'none.yml') },
+        actor,
+        user: { opsd: { merge: { test: { base: 'main' } } } } as UserConfig,
+        now: () => T0 + DAY,
+      });
+    const h = as('human:dawid');
+    const e = as('claude:engineer');
+    h.newTask({ title: 'the fix' });
+    h.newTask({ title: 'needs the fix' });
+    h.newTask({ title: 'needs task 2' });
+    e.start('2');
+    e.block('2', 'needs 1', { on: ['1'] });
+    e.start('3');
+    e.block('3', 'needs 2', { on: ['2'] });
+    e.start('1');
+    e.review('1', 'abc1234 on branch feature: the fix', 'human:dawid');
+    h.verdict('1', 'approve', 'ok');
+    const unblocked = () => buildReport(h, [], T0, T0 + 7 * DAY).answers;
+
+    // Approved, not merged: tasks 2 and 3 are still blocked, so the approval unblocked nothing.
+    expect(h.view('2').unblocked).toBe(false);
+    expect(unblocked()).toMatchObject({ given: 1, measured: 1, unblocked: 0, top: [] });
+    expect(reportText(buildReport(h, [], T0, T0 + 7 * DAY))).toContain('0 tasks unblocked');
+
+    // A failed merge changes nothing.
+    as(MERGE_ACTOR).comment('1', 'swarmupd could not merge abc1234', 'human:dawid');
+    expect(unblocked()).toMatchObject({ given: 1, measured: 1, unblocked: 0 });
+
+    // The merge releases them, and they count for the approval that waited for it.
+    as(MERGE_ACTOR).recordMerge('1', { commit: 'abc1234', into: 'main', branch: 'feature' }, 'ok');
+    expect(h.view('2').unblocked).toBe(true);
+    const after = unblocked();
+    expect(after).toMatchObject({ given: 1, measured: 1, unblocked: 2 });
+    expect(after.top.map((a) => [a.task, a.unblocked, a.type, a.actor])).toEqual([
+      ['T-0001', 2, 'verdict', 'human:dawid'],
+    ]);
+  });
+
+  it('adds a merge to its approval only when both are in the window (AO-0228)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'swarmupd-report-'));
+    dirs.push(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'test', human: 'human:dawid' });
+    const as = (actor: string, day: number) =>
+      new Workspace({
+        cwd: repo,
+        env: { SWARMUP_CONFIG: join(repo, 'none.yml') },
+        actor,
+        user: { opsd: { merge: { test: { base: 'main' } } } } as UserConfig,
+        now: () => T0 + day * DAY,
+      });
+    const h = as('human:dawid', 1);
+    const e = as('claude:engineer', 1);
+    h.newTask({ title: 'the fix' });
+    h.newTask({ title: 'needs the fix' });
+    e.start('2');
+    e.block('2', 'needs 1', { on: ['1'] });
+    e.start('1');
+    e.review('1', 'abc1234 on branch feature: the fix', 'human:dawid');
+    h.verdict('1', 'approve', 'ok');
+    // Approved on day 1, merged on day 3.
+    as(MERGE_ACTOR, 3).recordMerge(
+      '1',
+      { commit: 'abc1234', into: 'main', branch: 'feature' },
+      'ok',
+    );
+    const unblocked = (from: number, to: number) =>
+      buildReport(h, [], T0 + from * DAY, T0 + to * DAY).answers;
+
+    // The window ends before the merge: the approval had unblocked nothing by then.
+    expect(unblocked(0, 2)).toMatchObject({ given: 1, measured: 1, unblocked: 0, top: [] });
+    // The window holds both.
+    expect(unblocked(0, 7)).toMatchObject({ given: 1, measured: 1, unblocked: 1 });
+    // The window starts after the approval: the merge alone is no answer.
+    expect(unblocked(2, 7)).toMatchObject({ given: 0, measured: 0, unblocked: 0, top: [] });
   });
 });

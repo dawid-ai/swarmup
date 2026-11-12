@@ -201,7 +201,7 @@ function claudeAbsolutePattern(dir: string): string {
 }
 
 /**
- * The model of a run: the agent's own (`opsd.agents.<id>.model`, merged into `agent` by the
+ * The model of a run: the agent's own (`swarmupd.agents.<id>.model`, merged into `agent` by the
  * caller, or the role file's `model`), else the provider's. Checked here, because a role file's
  * value comes from a synced repo and must never read as a flag.
  */
@@ -329,7 +329,7 @@ export interface PromptInput {
    * The run's folder is the checkout of a data root (AO-0135): its branch carries the task store,
    * so the run makes code branches in worktrees. `branch` is the store branch, when known.
    */
-  storeCheckout?: { top: string; branch?: string | null };
+  storeCheckout?: SharedCheckout;
   /** swarmupd started the run in the task's own worktree, made from the store checkout (AO-0168). */
   taskWorktree?: TaskWorktreePrompt;
   /** The run's scratch folder (`SWARMUP_SCRATCH`), for files that belong in no repo (AO-0230). */
@@ -351,8 +351,21 @@ export interface TaskWorktreePrompt {
   path: string;
   /** The branch checked out there; null on a detached HEAD. */
   branch: string | null;
-  /** The store checkout the worktree belongs to, with its store branch when known. */
-  store: { top: string; branch?: string | null };
+  /**
+   * The checkout the worktree belongs to, with its branch when known: the store checkout, or a
+   * code checkout of `swarmupd.code` that holds no task store (`code`; AO-0252).
+   */
+  store: SharedCheckout;
+}
+
+/**
+ * A checkout runs share: a data root's checkout with its store branch, or a code checkout of
+ * `swarmupd.code` (`code`) with its merge base (AO-0252).
+ */
+export interface SharedCheckout {
+  top: string;
+  branch?: string | null;
+  code?: boolean;
 }
 
 /** A question task, with the tasks and projects its text references. */
@@ -493,11 +506,12 @@ export function chatPrompt(p: ChatPromptInput): string {
  * with it (AO-0133), so code branches live in worktrees inside the checkout, where the run may
  * edit.
  */
-function storeCheckoutLines(co: { top: string; branch?: string | null }, task?: string): string[] {
+function storeCheckoutLines(co: SharedCheckout, task?: string): string[] {
   const top = co.top.replace(/\\/g, '/');
   const keep = co.branch ? `keep \`${co.branch}\` checked out` : 'keep its branch checked out';
+  const what = co.code ? 'is the code checkout swarmupd merges into' : 'holds the task store';
   return [
-    `- ${top} holds the task store: ${keep} and never run \`git checkout\` or`,
+    `- ${top} ${what}: ${keep} and never run \`git checkout\` or`,
     '  `git switch` there. Make code branches in a worktree inside it, such as',
     `  \`git worktree add out/wt-${task ?? '<task id>'} -b <branch> <base>\` (\`--detach <commit>\` to look at`,
     '  one), and work in that folder with `git -C <folder>`; undo a file with `git restore`.',
@@ -515,10 +529,18 @@ function taskWorktreeLines(wt: TaskWorktreePrompt, task?: string): string[] {
   const keep = wt.store.branch
     ? `keep \`${wt.store.branch}\` checked out`
     : 'keep its branch checked out';
+  // The store's own checkout keeps the wording runs had before AO-0252.
+  if (!wt.store.code) {
+    return [
+      `- swarmupd started you in ${path}, the worktree of ${task ?? 'this task'}, ${on}: change, build`,
+      '  and commit the code there; rename the branch if you like. `swarmup` here uses the task store',
+      `  in ${top}: ${keep} there and never run \`git checkout\` or \`git switch\` in it.`,
+    ];
+  }
   return [
     `- swarmupd started you in ${path}, the worktree of ${task ?? 'this task'}, ${on}: change, build`,
-    '  and commit the code there; rename the branch if you like. `swarmup` here uses the task store',
-    `  in ${top}: ${keep} there and never run \`git checkout\` or \`git switch\` in it.`,
+    '  and commit the code there; rename the branch if you like. swarmupd merges into the code',
+    `  checkout ${top}: ${keep} there and never run \`git checkout\` or \`git switch\` in it.`,
   ];
 }
 
@@ -530,7 +552,7 @@ function taskWorktreeLines(wt: TaskWorktreePrompt, task?: string): string[] {
  */
 export function withStoreCheckoutRule(
   prompt: string,
-  storeCheckout?: { top: string; branch?: string | null },
+  storeCheckout?: SharedCheckout,
   task?: string,
   taskWorktree?: TaskWorktreePrompt,
   scratch?: string,
