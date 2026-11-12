@@ -1,6 +1,6 @@
 {
   "name": "@swarmup/cli",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "private": true,
   "description": "The swarmup command",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "ops": "dist/ops.js"
   },
   "dependencies": {
-    "@swarmup/core": "0.3.0-beta.1",
-    "@swarmup/supervisor": "0.3.0-beta.1"
+    "@swarmup/core": "0.3.0-beta.2",
+    "@swarmup/supervisor": "0.3.0-beta.2"
   }
 }

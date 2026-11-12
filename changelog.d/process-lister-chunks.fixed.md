@@ -1,1 +1,0 @@
-swarmupd no longer rescans the whole Windows process listing each time a piece of it arrives: it searches only the new piece for the end marker. The rescans took about 2.4 s of event-loop time per 100 s under load.

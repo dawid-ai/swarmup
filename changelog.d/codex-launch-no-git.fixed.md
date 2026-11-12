@@ -1,1 +1,0 @@
-- swarmupd no longer runs `git rev-parse` on its event loop when it starts a writing Codex run in a checkout it has seen: git names the checkout's git dir and common dir off the event loop, with the checkout's state, before the launch. Before, each such launch held the API for 0.2-1.5 s on a loaded machine.

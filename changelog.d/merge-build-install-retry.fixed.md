@@ -1,1 +1,0 @@
-- After a merge, a build that fails in the checkout no longer reopens the merged task when only the installed dependencies were missing or behind: swarmupd runs the install there and builds once more. When the install itself fails, the human gets a comment on the task and the task stays closed.

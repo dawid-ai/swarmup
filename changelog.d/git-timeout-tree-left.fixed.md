@@ -1,1 +1,0 @@
-- When a git command of a merge times out and swarmupd cannot stop what git started, such as a hook where `taskkill /T` is refused, the merge note no longer says "swarmupd stopped it". It says that what git started may still run, and why the stop failed.

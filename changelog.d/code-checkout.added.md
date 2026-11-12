@@ -1,1 +1,0 @@
-A task store can live in a repo of its own, apart from the code: `swarmupd.code.<root>` in the user config names the code checkout. Runs start there, task worktrees are made there, and swarmupd pushes the merge base to the code repo's remote after each merge.

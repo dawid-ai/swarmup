@@ -1,1 +1,0 @@
-swarmupd's settings in the user config live under the key `swarmupd`. A config that still names the section by its earlier key works as before: swarmupd reads and edits that section in place until you rename the key. Messages and docs name `swarmupd.*`.

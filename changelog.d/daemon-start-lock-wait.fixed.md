@@ -1,1 +1,0 @@
-- Two swarmupd starts at the same moment for one state folder no longer fail with `swarmupd did not start` on a slow machine. The start that loses the lock now waits, up to the usual start timeout, for the swarmupd that holds the lock to come up.

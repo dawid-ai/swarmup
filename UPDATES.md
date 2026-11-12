@@ -3,6 +3,19 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.2 (2026-11-12)
+
+- **Tasks and code in separate repos.** Your task store can live in a private repo of its own
+  while the code lives in another, such as a public one. Name the code checkout under
+  `swarmupd.code` in your user config: runs, task worktrees and merges happen there, and swarmupd
+  pushes the merged branch after each merge.
+- **Settings under `swarmupd`.** swarmupd's section of the user config is now called
+  `swarmupd`. A config with the earlier name keeps working.
+- **Steadier merges and runs.** A task waiting on approved work starts only after that work is
+  merged. A merge whose build lacked installed packages installs them and builds again instead of
+  reopening the task. swarmupd no longer starts a run beside an agent session you started
+  yourself, and two swarmupd starts at the same moment no longer fail.
+
 ## v0.3.0-beta.1 (2026-11-11)
 
 The first public SwarmUp release.

@@ -34,7 +34,7 @@ import { seedOnStart } from './seed.js';
 import { isAlive, PROC_START_TIMEOUT_MS, processStartSync } from './proc.js';
 import { Supervisor } from './supervisor.js';
 
-export const OPSD_VERSION = '0.3.0-beta.1';
+export const OPSD_VERSION = '0.3.0-beta.2';
 
 /**
  * When the code swarmupd runs was built: the newest `.js` file of the supervisor and core packages.
