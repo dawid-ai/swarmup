@@ -15,9 +15,11 @@ import {
   restartNote,
   serviceLine,
   stopEndsRuns,
+  dimmed,
+  TILE_COLORS,
   TOOLTIP_MAX,
   trayBitmap,
-  trayColor,
+  trayLook,
   trayMenu,
   trayTooltip,
 } from '../src/service';
@@ -151,24 +153,137 @@ describe('tray', () => {
       'swarmupd did not restart: pid 1 still runs',
     );
   });
+});
 
-  it('draws a status light in the state colour, with a dot when something waits', () => {
-    expect(trayColor(base)).toEqual([63, 185, 80]);
-    expect(trayColor({ ...base, paused: true })).toEqual([210, 153, 34]);
-    expect(trayColor({ ...base, running: false })).toEqual([139, 148, 158]);
-    const size = 32;
-    const px = (buf: Buffer, x: number, y: number) => {
-      const i = (y * size + x) * 4;
-      return [buf[i + 2], buf[i + 1], buf[i], buf[i + 3]];
-    };
-    const plain = trayBitmap(base, size);
-    expect(plain.length).toBe(size * size * 4);
-    // A corner is transparent; the ring is opaque green.
-    expect(px(plain, 0, 0)[3]).toBe(0);
-    expect(px(plain, 16, 3)).toEqual([63, 185, 80, 255]);
-    // The top-right dot shows only while something waits.
-    expect(px(plain, 29, 3)[3]).toBe(0);
-    expect(px(trayBitmap({ ...base, waiting: 1 }, size), 29, 3)).toEqual([88, 166, 255, 255]);
+describe('tray icon', () => {
+  const PINK = [0xe4, 0x6f, 0xb3];
+  const ORANGE = [0xe8, 0x87, 0x5b];
+  const CYAN = [0x4f, 0xc3, 0xd9];
+  const VIOLET = [0xa3, 0x93, 0xff];
+  const GREY = [139, 148, 158];
+  const BLUE = [0x7d, 0xa8, 0xff];
+  const stopped = { ...base, running: false };
+  const paused = { ...base, paused: true };
+
+  /** One pixel as [r, g, b, a]. */
+  const px = (buf: Buffer, size: number, x: number, y: number): number[] => {
+    const i = (y * size + x) * 4;
+    return [buf[i + 2]!, buf[i + 1]!, buf[i]!, buf[i + 3]!];
+  };
+  /** The middle of each tile at 32 px: top left, top right, bottom left, bottom right. */
+  const centres32: Array<[number, number]> = [
+    [7, 7],
+    [24, 7],
+    [7, 24],
+    [24, 24],
+  ];
+  const centreColors = (buf: Buffer): number[][] => centres32.map(([x, y]) => px(buf, 32, x, y));
+
+  it('uses the colours of the logo and the dimming of the brand kit', () => {
+    expect(TILE_COLORS).toEqual([PINK, ORANGE, CYAN, VIOLET]);
+    // The values `dimmed()` in the brand kit's build_scene.py gives for the four tiles.
+    expect(TILE_COLORS.map(dimmed)).toEqual([
+      [89, 73, 83],
+      [95, 81, 75],
+      [82, 98, 101],
+      [88, 85, 100],
+    ]);
+  });
+
+  it('picks one look per state; stopped wins over starts-paused', () => {
+    expect(trayLook(base)).toBe('running');
+    expect(trayLook(paused)).toBe('paused');
+    expect(trayLook(stopped)).toBe('stopped');
+    expect(trayLook({ ...stopped, paused: true })).toBe('stopped');
+  });
+
+  it('running: four flat tiles in the logo colours, with a clear gap', () => {
+    const buf = trayBitmap(base, 32);
+    expect(buf.length).toBe(32 * 32 * 4);
+    expect(centreColors(buf)).toEqual([PINK, ORANGE, CYAN, VIOLET].map((c) => [...c, 255]));
+    // Tiles are 15 px with a 2 px gap: they reach the corners, and the cross between is clear.
+    expect(px(buf, 32, 0, 0)).toEqual([...PINK, 255]);
+    expect(px(buf, 32, 31, 31)).toEqual([...VIOLET, 255]);
+    expect(px(buf, 32, 14, 14)).toEqual([...PINK, 255]);
+    expect(px(buf, 32, 17, 17)).toEqual([...VIOLET, 255]);
+    for (let k = 0; k < 32; k++) {
+      for (const g of [15, 16]) {
+        expect(px(buf, 32, g, k)[3]).toBe(0);
+        expect(px(buf, 32, k, g)[3]).toBe(0);
+      }
+    }
+    // Flat: every opaque pixel is one of the four colours, fully opaque.
+    const seen = new Set<string>();
+    for (let i = 0; i < buf.length; i += 4) {
+      if (buf[i + 3]) seen.add([buf[i + 2], buf[i + 1], buf[i], buf[i + 3]].join());
+    }
+    expect([...seen].sort()).toEqual(
+      [PINK, ORANGE, CYAN, VIOLET].map((c) => [...c, 255].join()).sort(),
+    );
+  });
+
+  it('paused: the same tiles, dimmed', () => {
+    expect(centreColors(trayBitmap(paused, 32))).toEqual([
+      [89, 73, 83, 255],
+      [95, 81, 75, 255],
+      [82, 98, 101, 255],
+      [88, 85, 100, 255],
+    ]);
+  });
+
+  it('stopped: grey outlines with clear middles, also when it starts paused', () => {
+    for (const s of [stopped, { ...stopped, paused: true }]) {
+      const buf = trayBitmap(s, 32);
+      for (const c of centreColors(buf)) expect(c[3]).toBe(0);
+      // A 2 px outline round each 15 px tile.
+      for (const [x, y] of [
+        [0, 0],
+        [1, 7],
+        [7, 13],
+        [14, 14],
+        [17, 0],
+        [31, 8],
+        [0, 17],
+        [30, 30],
+      ] as Array<[number, number]>) {
+        expect(px(buf, 32, x, y)).toEqual([...GREY, 255]);
+      }
+      expect(px(buf, 32, 2, 2)[3]).toBe(0);
+      expect(px(buf, 32, 12, 12)[3]).toBe(0);
+    }
+  });
+
+  it('draws a blue dot with a clear rim at the top right only while something waits', () => {
+    for (const s of [base, paused, stopped]) {
+      const plain = trayBitmap(s, 32);
+      const waiting = trayBitmap({ ...s, waiting: 3 }, 32);
+      // The dot's middle, and a pixel of the rim between it and the rest of the orange tile.
+      expect(px(waiting, 32, 25, 6)).toEqual([...BLUE, 255]);
+      expect(px(plain, 32, 25, 6)).not.toEqual([...BLUE, 255]);
+      expect(px(waiting, 32, 25, 13)[3]).toBe(0);
+      expect(px(waiting, 32, 18, 6)[3]).toBe(0);
+      // The other three tiles are untouched.
+      for (const [x, y] of [centres32[0]!, centres32[2]!, centres32[3]!]) {
+        expect(px(waiting, 32, x, y)).toEqual(px(plain, 32, x, y));
+      }
+    }
+    // Running, the orange tile still shows next to the dot.
+    expect(px(trayBitmap({ ...base, waiting: 1 }, 32), 32, 17, 14)).toEqual([...ORANGE, 255]);
+  });
+
+  it('draws every state differently, at every tray size', () => {
+    const states = [base, paused, stopped].flatMap((s) => [s, { ...s, waiting: 1 }]);
+    for (const size of [16, 20, 24, 32, 48]) {
+      const drawn = states.map((s) => trayBitmap(s, size));
+      for (const buf of drawn) expect(buf.length).toBe(size * size * 4);
+      expect(new Set(drawn.map((b) => b.toString('hex'))).size).toBe(states.length);
+      // The gap is at least a pixel wide and the tiles are equal.
+      const run = drawn[0]!;
+      const mid = Math.floor(size / 2);
+      expect(px(run, size, mid, 2)[3] === 0 || px(run, size, mid - 1, 2)[3] === 0).toBe(true);
+      expect(px(run, size, 0, 0)).toEqual([...PINK, 255]);
+      expect(px(run, size, size - 1, size - 1)).toEqual([...VIOLET, 255]);
+    }
   });
 });
 

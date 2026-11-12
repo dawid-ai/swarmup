@@ -44,6 +44,11 @@ nsis:
   shortcutName: SwarmUp
   runAfterFinish: true
   include: build/installer.nsh
+  # The four tiles: the sidebar (164 x 314) on the welcome and finish pages of the installer and
+  # the uninstaller, the header (150 x 57) on the pages between.
+  installerSidebar: build/installerSidebar.bmp
+  uninstallerSidebar: build/installerSidebar.bmp
+  installerHeader: build/installerHeader.bmp
   # A fixed name, so the README can link releases/latest/download/SwarmUp-Setup.exe.
   artifactName: SwarmUp-Setup.${ext}
 publish:

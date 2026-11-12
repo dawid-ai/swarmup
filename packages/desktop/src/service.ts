@@ -197,24 +197,57 @@ export function trayMenu(s: ServiceState, notify: boolean, update?: string): Tra
   return items;
 }
 
-/** The status light's colour: green running, amber paused, grey stopped. */
-export function trayColor(s: ServiceState): [number, number, number] {
-  if (!s.running) return [139, 148, 158];
-  return s.paused ? [210, 153, 34] : [63, 185, 80];
+export type Rgb = [number, number, number];
+
+/**
+ * The four tiles of the SwarmUp mark in reading order (top left, top right, bottom left, bottom
+ * right): pink, orange, cyan and violet, the fills of the logo.
+ */
+export const TILE_COLORS: Rgb[] = [
+  [0xe4, 0x6f, 0xb3],
+  [0xe8, 0x87, 0x5b],
+  [0x4f, 0xc3, 0xd9],
+  [0xa3, 0x93, 0xff],
+];
+
+/** The outline of the tiles while swarmupd is stopped, and the dot while something waits. */
+export const TRAY_STOPPED: Rgb = [139, 148, 158];
+export const TRAY_WAITING: Rgb = [0x7d, 0xa8, 0xff];
+
+/**
+ * The muted version of a tile colour, as the brand's status animations dim a tile: mostly grey, a
+ * little of the hue, darker.
+ */
+export function dimmed([r, g, b]: Rgb): Rgb {
+  const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return [r, g, b].map((c) => Math.round((0.25 * c + 0.75 * gray) * 0.55)) as Rgb;
+}
+
+/** How the tray draws the tiles: filled in colour, filled but dimmed, or grey outlines. */
+export type TrayLook = 'running' | 'paused' | 'stopped';
+
+/** A stopped swarmupd reads as stopped whether or not it starts paused. */
+export function trayLook(s: ServiceState): TrayLook {
+  if (!s.running) return 'stopped';
+  return s.paused ? 'paused' : 'running';
 }
 
 /**
- * A `size`-pixel square status light as a BGRA bitmap for `nativeImage.createFromBitmap`: a ring
- * in the state colour, plus a blue dot at the top right while something waits for the human.
+ * The tray icon as a `size`-pixel square BGRA bitmap for `nativeImage.createFromBitmap`: the four
+ * tiles of the mark as flat squares. Running fills them in their colours, paused fills them
+ * dimmed, and stopped leaves grey outlines. A blue dot at the top right, with a clear rim, shows
+ * while something waits for the human.
  */
 export function trayBitmap(s: ServiceState, size = 32): Buffer {
   const buf = Buffer.alloc(size * size * 4);
-  const [r, g, b] = trayColor(s);
-  const c = (size - 1) / 2;
-  const outer = size * 0.44;
-  const inner = size * 0.22;
+  const look = trayLook(s);
+  // The logo's proportions (tiles of 10 with a gap of 2) on whole pixels, so edges stay sharp.
+  const tile = Math.round((size * 10) / 22);
+  const far = size - tile;
+  const line = Math.max(1, Math.round(size / 16));
   const dot = { x: size * 0.8, y: size * 0.2, r: size * 0.2 };
-  const put = (i: number, rgb: [number, number, number], a: number): void => {
+  const rim = size / 16;
+  const put = (i: number, rgb: Rgb, a: number): void => {
     buf[i] = rgb[2];
     buf[i + 1] = rgb[1];
     buf[i + 2] = rgb[0];
@@ -223,16 +256,29 @@ export function trayBitmap(s: ServiceState, size = 32): Buffer {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
-      const d = Math.hypot(x - c, y - c);
-      // A one-pixel soft edge on both sides of the ring; the centre stays solid but dimmer.
-      const ring = Math.min(outer - d + 0.5, 1);
-      if (ring > 0) {
-        put(i, [r, g, b], d < inner ? 0.55 * ring : ring);
+      const col = x < tile ? 0 : x >= far ? 1 : -1;
+      const row = y < tile ? 0 : y >= far ? 1 : -1;
+      let rgb: Rgb | null = null;
+      if (col >= 0 && row >= 0) {
+        const color = TILE_COLORS[row * 2 + col]!;
+        if (look === 'stopped') {
+          const tx = x - col * far;
+          const ty = y - row * far;
+          const edge = Math.min(tx, ty, tile - 1 - tx, tile - 1 - ty);
+          if (edge < line) rgb = TRAY_STOPPED;
+        } else {
+          rgb = look === 'paused' ? dimmed(color) : color;
+        }
       }
-      if (s.waiting > 0) {
-        const dd = Math.hypot(x - dot.x, y - dot.y);
-        const a = Math.min(dot.r - dd + 0.5, 1);
-        if (a > 0) put(i, [88, 166, 255], a);
+      // Pixel centres, so the dot has a one-pixel soft edge.
+      const dd = s.waiting > 0 ? Math.hypot(x + 0.5 - dot.x, y + 0.5 - dot.y) : Infinity;
+      const inDot = Math.min(dot.r - dd + 0.5, 1);
+      if (inDot > 0) {
+        // The dot's edge fades into the clear rim, never into a tile.
+        put(i, TRAY_WAITING, inDot);
+      } else if (rgb) {
+        // The rim: tiles fade out toward the dot, so it reads on every tile colour.
+        put(i, rgb, Math.min(dd - (dot.r + rim) + 0.5, 1));
       }
     }
   }

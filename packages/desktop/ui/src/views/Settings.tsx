@@ -551,13 +551,13 @@ function OpsdCard({
             </div>
           </div>
           <div className="text-xs text-fg-4 sm:col-span-2">
-            The tray icon (bottom right of the taskbar) shows the same status: green running, amber
-            paused, grey stopped, with a blue dot when something needs you. Right-click it to start,
-            stop, pause or restart swarmupd without opening this window; its tooltip shows
-            swarmupd&apos;s pid, start time, version and build. Closing the window keeps the tray
-            icon. <span className="text-fg-3">Quit SwarmUp</span> in its menu closes the app, and
-            swarmupd keeps running agents; <span className="text-fg-3">Quit and stop swarmupd</span>{' '}
-            stops swarmupd too.
+            The tray icon (bottom right of the taskbar) shows the same status: four tiles in colour
+            running, dimmed paused, grey outlines stopped, with a blue dot when something needs you.
+            Right-click it to start, stop, pause or restart swarmupd without opening this window;
+            its tooltip shows swarmupd&apos;s pid, start time, version and build. Closing the window
+            keeps the tray icon. <span className="text-fg-3">Quit SwarmUp</span> in its menu closes
+            the app, and swarmupd keeps running agents;{' '}
+            <span className="text-fg-3">Quit and stop swarmupd</span> stops swarmupd too.
           </div>
         </div>
       )}

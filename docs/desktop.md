@@ -85,9 +85,10 @@ was built), flagged when it is older than the app installed now. It has these co
 - **Notify me when I'm needed**: a Windows notification for each new question, review or vote
   addressed to you; clicking it opens the task. Off is `desktop.notify: false` in the user config.
 
-While the app runs it has a tray icon (the notification area, bottom right of the taskbar). Its
-colour is the state: green running, amber paused, grey stopped, with a blue dot while something
-waits for you. Its tooltip and the top of its menu show `swarmupd`'s pid, start time, version and
+While the app runs it has a tray icon (the notification area, bottom right of the taskbar): the
+four tiles of the SwarmUp mark. They show the state: in colour while `swarmupd` runs, dimmed while
+it is paused, grey outlines while it is stopped, with a blue dot while something waits for you. Its
+tooltip and the top of its menu show `swarmupd`'s pid, start time, version and
 build, and flag a build older than the app. Left-click opens the window; right-click offers the
 same controls as the card (**Restart swarmupd** works like **Restart**, and a notification shows the
 new pid and start time or why it did not restart), the items that need you, the notification

@@ -2,6 +2,7 @@
 * text=auto eol=lf
 *.png binary
 *.ico binary
+*.bmp binary
 *.icns binary
 *.pem binary
 

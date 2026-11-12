@@ -1,0 +1,1 @@
+- The desktop app's icon, its installer and its tray icon show the four tiles of the SwarmUp mark. The tray tiles are in colour while swarmupd runs, dimmed while it is paused and grey outlines while it is stopped; the blue dot still means something waits for you.
