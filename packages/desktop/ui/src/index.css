@@ -225,7 +225,8 @@ input[type='time']::-webkit-calendar-picker-indicator {
   color: var(--color-fg-4);
 }
 
-/* @mentions in rendered Markdown: a colored pill per provider (data-rt). */
+/* @mentions in rendered Markdown: a colored pill per provider (data-rt), in the colors of
+   PROVIDERS in lib/identity.ts. */
 .md .mention {
   --c: #94a3b8;
   font-family: var(--font-mono);
@@ -238,19 +239,28 @@ input[type='time']::-webkit-calendar-picker-indicator {
   white-space: nowrap;
 }
 .md .mention[data-rt='claude'] {
-  --c: #f08a5d;
+  --c: #ff9466;
 }
 .md .mention[data-rt='codex'] {
-  --c: #3ddc97;
+  --c: #55d3ea;
 }
 .md .mention[data-rt='gemini'] {
-  --c: #6aa8ff;
+  --c: #7da8ff;
 }
 .md .mention[data-rt='grok'] {
-  --c: #d4d9e2;
+  --c: #dfe1e6;
+}
+.md .mention[data-rt='jev'] {
+  --c: #f6d04f;
+}
+.md .mention[data-rt='orchestrator'] {
+  --c: #b3a4ff;
+}
+.md .mention[data-rt='cursor'] {
+  --c: #a5a8ff;
 }
 .md .mention[data-rt='human'] {
-  --c: #ffc857;
+  --c: #ff7ac3;
 }
 
 /* Task references in rendered Markdown and plain message text (lib/refs.ts): open the task panel. */

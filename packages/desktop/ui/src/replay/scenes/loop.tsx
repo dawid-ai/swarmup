@@ -7,6 +7,7 @@
 // The counters end on the card's figures: each grows with the share of its total reached so far
 // (run time for agents, human session time for people), so the pace is real and the last frame
 // agrees with the card.
+import { identity } from '../../lib/identity';
 import { playbackAt, playbackOf, realAt, utcStamp } from '../../lib/replay';
 import type { TimeMap, Timeline } from '../../types';
 import type { Scene, Stage } from '../scene';
@@ -31,7 +32,7 @@ const LEGEND: Array<[BeamKind, string]> = [
 ];
 
 const AGENT_COLOR = '#5aa9ff';
-const HUMAN_COLOR = '#ffc857';
+const HUMAN_COLOR = identity('human:x').provider.color;
 
 /** A beam at playback time `at`: up from the agents to a person, or down from a person. */
 export interface Beam {

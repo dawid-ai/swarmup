@@ -8,13 +8,18 @@ export interface Provider {
   color: string;
 }
 
+// Text colors are the brand sheet's "who did the work, on ink" values (blender/brand/tokens.css in
+// the store), so a name reads as the same color as the tile beside it. Cursor has no brand color.
+// The `.mention[data-rt]` rules in index.css repeat them; a test keeps the two in step.
 const PROVIDERS: Record<string, Provider> = {
-  claude: { key: 'claude', label: 'Claude', color: '#f08a5d' },
-  codex: { key: 'codex', label: 'Codex', color: '#3ddc97' },
-  gemini: { key: 'gemini', label: 'Gemini', color: '#6aa8ff' },
-  grok: { key: 'grok', label: 'Grok', color: '#d4d9e2' },
+  claude: { key: 'claude', label: 'Claude', color: '#ff9466' },
+  codex: { key: 'codex', label: 'Codex', color: '#55d3ea' },
+  gemini: { key: 'gemini', label: 'Gemini', color: '#7da8ff' },
+  grok: { key: 'grok', label: 'Grok', color: '#dfe1e6' },
+  jev: { key: 'jev', label: 'Jev', color: '#f6d04f' },
+  orchestrator: { key: 'orchestrator', label: 'Orchestrator', color: '#b3a4ff' },
   cursor: { key: 'cursor', label: 'Cursor', color: '#a5a8ff' },
-  human: { key: 'human', label: 'Human', color: '#ffc857' },
+  human: { key: 'human', label: 'Human', color: '#ff7ac3' },
   '*': { key: '*', label: 'Any provider', color: '#94a3b8' },
 };
 

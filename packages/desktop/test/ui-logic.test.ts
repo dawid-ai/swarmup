@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ACTIVITY_FILTERS, ACTIVITY_KINDS } from '@swarmup/core';
 import {
@@ -21,6 +22,7 @@ import {
   mentionAt,
   priorityInfo,
 } from '../ui/src/lib/identity';
+import { CARD_COLORS } from '../ui/src/replay/scenes/loop-card';
 import { findTaskRefs, markTaskRefs, parseTaskRef, splitTaskRefs } from '../ui/src/lib/refs';
 import {
   findEvent,
@@ -104,6 +106,40 @@ describe('identity and display', () => {
     expect(identity('codex:*')).toMatchObject({ wildcard: true });
     expect(identity('*:qa').roleInfo.label).toBe('QA');
     expect(identity('newcli:poet').provider.color).toBe(identity('newcli:x').provider.color);
+  });
+
+  // The "who did the work, on ink" values of the brand sheet (blender/brand/tokens.css).
+  const ON_INK: Record<string, string> = {
+    human: '#ff7ac3',
+    claude: '#ff9466',
+    codex: '#55d3ea',
+    orchestrator: '#b3a4ff',
+    grok: '#dfe1e6',
+    gemini: '#7da8ff',
+    jev: '#f6d04f',
+  };
+
+  it("colors provider names with the brand sheet's on-ink values", () => {
+    for (const [rt, color] of Object.entries(ON_INK)) {
+      expect(identity(`${rt}:x`).provider.color, rt).toBe(color);
+    }
+    // A person's role part has the person's color too.
+    expect(identity('human:dawid').roleInfo.color).toBe(ON_INK.human);
+  });
+
+  it('colors each mention pill like the provider name', () => {
+    const css = readFileSync(new URL('../ui/src/index.css', import.meta.url), 'utf8');
+    const pills = new Map(
+      [...css.matchAll(/\.mention\[data-rt='([a-z]+)'\]\s*\{\s*--c:\s*(#[0-9a-f]{6});/g)].map(
+        (m) => [m[1]!, m[2]!],
+      ),
+    );
+    for (const rt of Object.keys(ON_INK)) expect(pills.has(rt), rt).toBe(true);
+    for (const [rt, color] of pills) expect(color, rt).toBe(identity(`${rt}:x`).provider.color);
+  });
+
+  it('draws people in the Human loop scene and card in the person color', () => {
+    expect(CARD_COLORS.human).toBe(ON_INK.human);
   });
 
   it('shows p0 to p3 as Urgent, Medium, Standard, Low', () => {

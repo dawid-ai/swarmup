@@ -6,6 +6,7 @@
 // match it. The report counts neither human minutes, asks answered nor review rounds; those come
 // from the timeline totals. Without `wrapped`, every figure comes from the timeline totals.
 import type { ReactElement } from 'react';
+import { identity } from '../../lib/identity';
 import type { Timeline } from '../../types';
 import { BACKDROP } from '../scene';
 import type { Frame } from '../scene';
@@ -30,7 +31,7 @@ export const COUNT_MS = 1500;
 
 export const CARD_COLORS = {
   agent: '#5aa9ff',
-  human: '#ffc857',
+  human: identity('human:x').provider.color,
   asks: '#ffe08a',
   reviews: '#b18cff',
   closed: '#3ddc97',
