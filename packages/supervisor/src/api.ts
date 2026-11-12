@@ -77,6 +77,36 @@ class HttpError extends Error {
  * `warn`); commands
  * go over plain HTTP.
  */
+/**
+ * Runs jobs one per turn of the event loop, in the order they came. Between two jobs the loop
+ * takes what arrived meanwhile, so a request that came after a round of queued reads is not held
+ * until the last of them is answered.
+ */
+export class TurnQueue {
+  private readonly jobs: (() => void)[] = [];
+  private waiting = false;
+
+  push(job: () => void): void {
+    this.jobs.push(job);
+    this.next();
+  }
+
+  private next(): void {
+    if (this.waiting || this.jobs.length === 0) return;
+    this.waiting = true;
+    // An immediate set inside an immediate runs in the next turn, after the loop polled for I/O.
+    setImmediate(() => {
+      this.waiting = false;
+      const job = this.jobs.shift();
+      try {
+        job?.();
+      } finally {
+        this.next();
+      }
+    });
+  }
+}
+
 export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> {
   const streams = new Set<ServerResponse>();
   let port = opts.port;
@@ -125,7 +155,19 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   sup.on('merge-status', onMerge);
   sup.on('tick', checkTasks);
 
+  const reads = new TurnQueue();
   const server = createServer((req, res) => {
+    // The app reads some seven paths at once after each run or task event. Answered back to
+    // back they held a write that arrived then, such as a chat send at the start or end of a
+    // PM turn, for the whole round (AO-0277). Reads wait their turn; a write is answered now.
+    if (req.method === 'GET') {
+      reads.push(() => {
+        // The client gave up while the read waited: nobody reads the answer.
+        if (!res.destroyed) answer(req, res);
+      });
+    } else answer(req, res);
+  });
+  const answer = (req: IncomingMessage, res: ServerResponse): void => {
     handle(req, res).then(
       // A write through the API shows in open windows at once, not at the next poll.
       () => {
@@ -145,7 +187,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         else res.end();
       },
     );
-  });
+  };
 
   // Node closes an idle keep-alive socket after 5 s by default. A client whose event loop stalls
   // past that sends its next request as the server closes the socket, and fetch fails with 'other
