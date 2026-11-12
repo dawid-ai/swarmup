@@ -111,6 +111,47 @@ export function identity(id: string): Identity {
   };
 }
 
+// ---- Tiles ---------------------------------------------------------------------------------------
+
+/** The brand kit's tiles: one per actor it has a render for. */
+export type TileKey = 'you' | 'claude' | 'codex' | 'orchestrator' | 'grok' | 'gemini' | 'jev';
+
+/** Each tile's front-face color, from the brand sheet. The flat tile under 24 px uses it. */
+export const TILE_COLORS: Record<TileKey, string> = {
+  you: '#E46FB3',
+  claude: '#E8875B',
+  codex: '#4FC3D9',
+  orchestrator: '#A393FF',
+  grok: '#DFE1E6',
+  gemini: '#7DA8FF',
+  jev: '#F6D04F',
+};
+
+/** What stands on a tile: the role icon and a provider's initial. */
+export const TILE_INK = '#121211';
+
+export interface Tile {
+  /** The brand tile, or null for a provider the kit has no render for. */
+  key: TileKey | null;
+  color: string;
+}
+
+/**
+ * The tile of an id or a bare runtime: a person is the pink tile, `*:orchestrator` and the
+ * `orchestrator` runtime the violet one, and a provider without a render a flat tile in its own
+ * color.
+ */
+export function tileOf(id: string): Tile {
+  const who = identity(id);
+  let key: TileKey | null = null;
+  if (who.human) key = 'you';
+  else if (who.runtime === 'orchestrator' || (who.runtime === '*' && who.role === 'orchestrator'))
+    key = 'orchestrator';
+  else if (who.runtime !== 'you' && Object.hasOwn(TILE_COLORS, who.runtime))
+    key = who.runtime as TileKey;
+  return { key, color: key ? TILE_COLORS[key] : who.provider.color };
+}
+
 // ---- Priorities ----------------------------------------------------------------------------------
 
 export type PriorityKey = 'p0' | 'p1' | 'p2' | 'p3';

@@ -28,6 +28,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SetupStatus } from './api';
 import { api, bridge, refreshSoon, useData, useUpdate } from './api';
 import { Avatar, Toaster, cx } from './components';
+import { Mark } from './ui/brand';
 import { Lightbox } from './ui/attach';
 import type { SavedView } from './lib/filters';
 import { loadViews, storeViews, VIEWS_CHANGED } from './lib/filters';
@@ -129,42 +130,6 @@ export interface Nav {
   /** Opens a task: `AO-0047`, `root/AO-0047`, or `AO-0014#<event id>` scrolled to that event. */
   openTask: (ref: string) => void;
   go: (view: View, arg?: string) => void;
-}
-
-/** The app's mark: an aperture of four signal arcs. */
-function Mark() {
-  return (
-    <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden>
-      <defs>
-        <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#5ce1e6" />
-          <stop offset="1" stopColor="#3ddc97" />
-        </linearGradient>
-      </defs>
-      <rect
-        x="1"
-        y="1"
-        width="30"
-        height="30"
-        rx="9"
-        fill="#0d1117"
-        stroke="url(#mk)"
-        strokeOpacity="0.5"
-      />
-      {[0, 90, 180, 270].map((a) => (
-        <path
-          key={a}
-          d="M16 6.5a9.5 9.5 0 0 1 8.2 4.7"
-          stroke="url(#mk)"
-          strokeWidth="2.6"
-          strokeLinecap="round"
-          fill="none"
-          transform={`rotate(${a} 16 16)`}
-        />
-      ))}
-      <circle cx="16" cy="16" r="3" fill="#5ce1e6" />
-    </svg>
-  );
 }
 
 export function App() {
@@ -435,7 +400,7 @@ export function App() {
     <div className="flex h-screen">
       <aside className="flex w-60 shrink-0 flex-col border-r border-white/6 bg-ink-950">
         <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
-          <Mark />
+          <Mark size={30} />
           <div>
             <div className="font-display text-[17px] leading-none font-bold tracking-[0.08em] uppercase">
               SwarmUp

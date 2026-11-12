@@ -429,15 +429,7 @@ function Providers({
               style={{ background: c.color }}
             />
             <div className="relative flex items-start gap-3">
-              <span
-                className="inline-flex h-10 w-10 items-center justify-center rounded-xl"
-                style={{
-                  background: `color-mix(in oklab, ${c.color} 12%, #0d1117)`,
-                  boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${c.color} 35%, transparent)`,
-                }}
-              >
-                <ProviderMark runtime={name} size={22} />
-              </span>
+              <Avatar id={name} size={40} />
               <div className="min-w-0 flex-1">
                 <div
                   className="font-display text-lg leading-tight font-semibold tracking-wide"

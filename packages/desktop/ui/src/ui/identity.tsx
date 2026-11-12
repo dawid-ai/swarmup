@@ -18,7 +18,8 @@ import {
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import type { RoleIcon } from '../lib/identity';
-import { identity, priorityInfo, statusInfo } from '../lib/identity';
+import { TILE_INK, identity, priorityInfo, statusInfo, tileOf } from '../lib/identity';
+import { tileImage } from './brand';
 
 export const ROLE_ICONS: Record<RoleIcon, LucideIcon> = {
   engineer: CodeXml,
@@ -39,85 +40,47 @@ export const ROLE_ICONS: Record<RoleIcon, LucideIcon> = {
 };
 
 /**
- * Each provider's mark, drawn for this app (not the vendors' logos): Claude a radial spark, Codex
- * a hexagon with a prompt, Gemini a four-point star, Grok a slash, a person a head and shoulders.
+ * A provider as a small flat tile in its tile color, for sizes under 24 px. A provider the brand
+ * kit has no tile for carries its initial. The tile is never the only cue: it has the provider's
+ * name as its label and tooltip, and callers show the name next to it.
  */
 export function ProviderMark({ runtime, size = 14 }: { runtime: string; size?: number }) {
-  const color = identity(`${runtime}:x`).provider.color;
-  const common = {
-    width: size,
-    height: size,
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: color,
-    strokeWidth: 2,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-  };
-  switch (runtime) {
-    case 'claude':
-      return (
-        <svg {...common}>
-          {[0, 45, 90, 135].map((a) => (
-            <line key={a} x1="12" y1="3" x2="12" y2="21" transform={`rotate(${a} 12 12)`} />
-          ))}
-          <circle cx="12" cy="12" r="2.2" fill={color} stroke="none" />
-        </svg>
-      );
-    case 'codex':
-      return (
-        <svg {...common}>
-          <path d="M12 2.5 20.5 7.25v9.5L12 21.5 3.5 16.75v-9.5Z" />
-          <path d="m8.5 9.5 2.5 2.5-2.5 2.5M12.5 15h3" />
-        </svg>
-      );
-    case 'gemini':
-      return (
-        <svg {...common}>
-          <path d="M12 2c.8 5.4 4.6 9.2 10 10-5.4.8-9.2 4.6-10 10-.8-5.4-4.6-9.2-10-10 5.4-.8 9.2-4.6 10-10Z" />
-        </svg>
-      );
-    case 'grok':
-      return (
-        <svg {...common}>
-          <path d="M5 19 19 5M5 5l5 5M14 14l5 5" />
-        </svg>
-      );
-    case 'human':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="8" r="4" />
-          <path d="M4 21c1.2-4 4.2-6 8-6s6.8 2 8 6" />
-        </svg>
-      );
-    case '*':
-      return (
-        <svg {...common}>
-          <path d="M12 4v16M5 8l14 8M19 8 5 16" />
-        </svg>
-      );
-    default:
-      return (
-        <svg {...common}>
-          <rect x="3.5" y="3.5" width="17" height="17" rx="5" />
-          <text
-            x="12"
-            y="16.2"
-            textAnchor="middle"
-            fontSize="11"
-            fontWeight="700"
-            fill={color}
-            stroke="none"
-            fontFamily="Chakra Petch, sans-serif"
-          >
-            {runtime.charAt(0).toUpperCase()}
-          </text>
-        </svg>
-      );
-  }
+  const tile = tileOf(runtime);
+  const label = identity(`${runtime}:x`).provider.label;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      role="img"
+      aria-label={label}
+      className="shrink-0"
+      data-tile={tile.key ?? 'flat'}
+    >
+      <title>{label}</title>
+      <rect x="2" y="2" width="20" height="20" rx="5" fill={tile.color} />
+      {!tile.key && (
+        <text
+          x="12"
+          y="16.6"
+          textAnchor="middle"
+          fontSize="13"
+          fontWeight="700"
+          fill={TILE_INK}
+          fontFamily="Chakra Petch, sans-serif"
+        >
+          {runtime === '*' ? '*' : runtime.charAt(0).toUpperCase()}
+        </text>
+      )}
+    </svg>
+  );
 }
 
-/** A tile in the provider's color with its mark, and a role badge in the corner. */
+/**
+ * The provider's tile with the role icon on it. From 24 px it is the brand kit's straight-on
+ * render; under 24 px, and for a provider without a render, a flat rounded square in the tile's
+ * color. The id is its label and tooltip, so two providers are never told apart by color alone.
+ */
 export function Avatar({
   id,
   size = 26,
@@ -129,33 +92,52 @@ export function Avatar({
   live?: boolean;
 }) {
   const who = identity(id);
-  const RoleI = ROLE_ICONS[who.roleInfo.icon];
-  const c = who.provider.color;
-  const badge = Math.round(size * 0.52);
+  const tile = tileOf(id);
+  const RoleI = who.human || who.role ? ROLE_ICONS[who.roleInfo.icon] : null;
+  const img = tile.key && size >= 24 ? tileImage(tile.key, size) : null;
   return (
     <span
-      className="relative inline-flex shrink-0 items-center justify-center rounded-[30%]"
-      style={{
-        width: size,
-        height: size,
-        background: `linear-gradient(145deg, color-mix(in oklab, ${c} 26%, #0d1117), color-mix(in oklab, ${c} 9%, #0d1117))`,
-        boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${c} 38%, transparent), 0 0 14px -6px ${c}`,
-      }}
+      className="relative inline-flex shrink-0 items-center justify-center"
+      style={{ width: size, height: size }}
       title={id}
+      role="img"
+      aria-label={id}
+      data-tile={tile.key ?? 'flat'}
     >
-      <ProviderMark runtime={who.runtime} size={Math.round(size * 0.58)} />
-      {!who.human && who.role && (
+      {img ? (
+        <img
+          src={img.src}
+          srcSet={img.srcSet}
+          width={size}
+          height={size}
+          alt=""
+          draggable={false}
+          className="absolute inset-0 h-full w-full"
+        />
+      ) : (
         <span
-          className="absolute -right-1 -bottom-1 inline-flex items-center justify-center rounded-full"
-          style={{
-            width: badge,
-            height: badge,
-            background: '#0b0e14',
-            boxShadow: `0 0 0 1.5px ${who.roleInfo.color}`,
-          }}
-        >
-          <RoleI size={Math.round(badge * 0.62)} color={who.roleInfo.color} strokeWidth={2.4} />
-        </span>
+          className="absolute inset-[4%] rounded-[24%]"
+          style={{ background: tile.color }}
+          data-flat-tile
+        />
+      )}
+      {RoleI ? (
+        <RoleI
+          className="relative"
+          size={Math.round(size * 0.54)}
+          color={TILE_INK}
+          strokeWidth={size < 24 ? 2.6 : 2.2}
+        />
+      ) : (
+        // A bare provider the kit has no tile for: its initial, as on `ProviderMark`.
+        !tile.key && (
+          <span
+            className="relative font-display leading-none font-bold"
+            style={{ color: TILE_INK, fontSize: Math.round(size * 0.5) }}
+          >
+            {who.runtime === '*' ? '*' : who.runtime.charAt(0).toUpperCase()}
+          </span>
+        )
       )}
       {live && (
         <span
