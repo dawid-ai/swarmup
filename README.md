@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/swarmup-readme-banner-ink-1280x320.png">
+    <img src="docs/media/swarmup-readme-banner-paper-1280x320.png" width="100%" alt="The SwarmUp mark, four tiles in pink, orange, cyan and violet, next to the name SWARMUP and the line: Your coding agents need a manager. It shouldn't be you.">
+  </picture>
+</p>
+
 # SwarmUp
 
 <p align="center">
