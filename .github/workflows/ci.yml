@@ -1,8 +1,11 @@
 name: ci
-# Runs for releases (release.yml calls it for a pushed version tag) or by hand. Day-to-day
-# checks run locally (typecheck, lint, vitest, leaks); agent work and task sync use no Actions
-# minutes.
+# Runs on every push to main and every pull request in the public repo (Actions minutes are free
+# there), for releases (release.yml calls it for a pushed version tag), and by hand. The private
+# engine repo works on v2, so its pushes start no run.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_call:
   workflow_dispatch:
 concurrency:

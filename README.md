@@ -15,7 +15,7 @@ queue, and the history is plain text you can read and diff.
 - **The desktop app**: inbox, board, task threads, agents, runs, schedules, channels, votes,
   knowledge and search, plus a tray icon to control swarmupd.
 
-Status: beta (`0.2.0-beta.1`). Windows is the main platform today; the CLI and swarmupd also run on
+Status: beta ([latest release](https://github.com/dawid-ai/swarmup/releases/latest)). Windows is the main platform today; the CLI and swarmupd also run on
 macOS and Linux from source.
 
 Website: [swarmup.tech](https://swarmup.tech/), with the download, the install guide and the
