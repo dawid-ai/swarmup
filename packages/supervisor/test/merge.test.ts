@@ -41,6 +41,7 @@ import {
   pickMergeSource,
   repairInstallCommand,
   reviewSources,
+  staleWorktree,
   startApi,
   Supervisor,
   systemLister,
@@ -570,6 +571,56 @@ describe('merging approved work', () => {
       /belongs to the repo at .* remove it/,
     );
     expect(text(join(inside, 'notes.txt'))).toBe('someone else\n');
+  });
+
+  it('makes its worktree again when its old repo was deleted (AO-0275)', async () => {
+    const s = mergeSetup();
+    const old = temp();
+    git(old, 'init', '-q', '-b', 'main');
+    git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
+    const wt = join(s.state, 'merge', 'test');
+    mkdirSync(dirname(wt), { recursive: true });
+    git(old, 'worktree', 'add', '-q', '--detach', wt);
+    writeFileSync(join(wt, 'left.txt'), 'from an earlier merge\n');
+    rmSync(old, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    const commit = s.branch('two\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(
+      samePath(
+        git(wt, 'rev-parse', '--path-format=absolute', '--git-common-dir'),
+        join(s.repo, '.git'),
+      ),
+    ).toBe(true);
+    expect(existsSync(join(wt, 'left.txt'))).toBe(false);
+  });
+
+  it('keeps a folder whose .git names no missing worktree entry (AO-0275)', async () => {
+    const s = mergeSetup();
+    const at = git(s.repo, 'rev-parse', 'main');
+    const cases: [string, (dir: string) => void][] = [
+      ['no .git', () => undefined],
+      ['a .git folder', (dir) => mkdirSync(join(dir, '.git'))],
+      ['other text', (dir) => writeFileSync(join(dir, '.git'), 'notes\n')],
+      // A submodule of a checkout that is gone: not a worktree swarmupd made.
+      [
+        'a submodule',
+        (dir) =>
+          writeFileSync(join(dir, '.git'), `gitdir: ${join(temp(), 'gone', 'modules', 'x')}\n`),
+      ],
+    ];
+    for (const [name, make] of cases) {
+      const dir = join(temp(), 'merge');
+      mkdirSync(dir);
+      make(dir);
+      writeFileSync(join(dir, 'notes.txt'), 'someone else\n');
+      expect(staleWorktree(dir), name).toBe(false);
+      const repo = new MergeRepo(s.repo, dir, [], { ...process.env, ...ID });
+      await expect(repo.ensureWorktree(at), name).rejects.toThrow(/is no git worktree; remove it/);
+      expect(text(join(dir, 'notes.txt')), name).toBe('someone else\n');
+    }
   });
 
   it('keeps a task blocked on approved work until the merge is recorded (AO-0228)', async () => {

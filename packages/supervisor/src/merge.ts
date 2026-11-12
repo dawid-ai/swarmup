@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MergeSource } from '@swarmup/core';
 import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES, samePath } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
@@ -474,6 +474,29 @@ export const MERGE_GIT_TIMEOUT_MS = 5 * 60_000;
  */
 export type MergeGitTimeout = number | ((args: readonly string[]) => number);
 
+/**
+ * Whether `dir` is a linked worktree whose repo is gone: its `.git` is a file that names a
+ * `worktrees/<name>` folder that no longer exists, as after the old code checkout was deleted
+ * (AO-0275). Only `git worktree add` writes such a file, so the folder is no one's own work; a
+ * folder with anything else in `.git`, or with none, is not stale.
+ */
+export function staleWorktree(dir: string): boolean {
+  const file = join(dir, '.git');
+  let text: string;
+  try {
+    if (!statSync(file).isFile()) return false;
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  const named = /^gitdir: (.+)$/.exec(text.trim())?.[1]?.trim();
+  if (!named) return false;
+  const gitDir = resolve(dir, named);
+  // A submodule's `.git` file names `modules/<name>`; that folder is part of someone's checkout.
+  if (basename(dirname(gitDir)).toLowerCase() !== 'worktrees') return false;
+  return !existsSync(gitDir);
+}
+
 export class MergeRepo {
   private readonly excludes: string[];
 
@@ -519,7 +542,8 @@ export class MergeRepo {
   /**
    * Creates swarmupd's worktree, detached at `at`, unless it is there already. A worktree left
    * from another repo, as after the code checkout moved, is removed there and made again from
-   * `top`: its repo lacks the commits to merge (AO-0273).
+   * `top`: its repo lacks the commits to merge (AO-0273). One whose repo is gone is deleted and
+   * made again (AO-0275).
    */
   async ensureWorktree(at: string): Promise<void> {
     if (existsSync(this.worktree)) {
@@ -528,6 +552,11 @@ export class MergeRepo {
         own = await this.commonDir(this.worktree);
       } catch (err) {
         if (err instanceof GitTimeout) throw err;
+        if (staleWorktree(this.worktree)) {
+          // No repo is left to remove it from, so the folder goes as it is.
+          rmSync(this.worktree, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          return this.addWorktree(at);
+        }
         // A folder that is no worktree may be someone's: it stays for a person to look at.
         throw new Error(`${this.worktree} exists but is no git worktree; remove it`);
       }
@@ -552,6 +581,11 @@ export class MergeRepo {
       await this.git(this.top, [...there, 'remove', '--force', this.worktree]);
       await this.git(this.top, [...there, 'prune'], { allowFail: true });
     }
+    await this.addWorktree(at);
+  }
+
+  /** Adds swarmupd's worktree, detached at `at`, where no folder is in the way. */
+  private async addWorktree(at: string): Promise<void> {
     mkdirSync(dirname(this.worktree), { recursive: true });
     // `-f` takes over swarmupd's own path when git still lists it after the folder was deleted;
     // other worktrees' entries are left alone.
