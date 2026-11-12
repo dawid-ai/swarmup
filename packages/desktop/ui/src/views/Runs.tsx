@@ -39,8 +39,10 @@ import {
 } from '../components';
 import { ago, minutes, readableLog, tokens } from '../lib/format';
 import { identity } from '../lib/identity';
+import { runLoop } from '../lib/statusloop';
 import type { ProcView, RunPage, RunRecord } from '../types';
 import { AgentPicker } from '../ui/pickers';
+import { StatusLoop } from '../ui/statusloop';
 
 type Filter = 'all' | 'live' | 'ended' | 'errors';
 
@@ -546,6 +548,8 @@ function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
   const lines = readableLog(log);
   const live = run.status === 'running';
   const who = identity(run.agent);
+  // The one loop of this view: the picked run's state. The rows of the list keep their pills.
+  const loop = runLoop(run);
   return (
     <div className="flex h-full flex-col">
       <div className="relative border-b border-white/6 px-5 pt-4 pb-3">
@@ -579,6 +583,7 @@ function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {loop && <StatusLoop state={loop} className="mr-1 shrink-0" />}
             {run.task && (
               <Button
                 size="sm"

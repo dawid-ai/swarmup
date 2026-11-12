@@ -37,10 +37,12 @@ import {
   cx,
 } from '../components';
 import { ago } from '../lib/format';
+import { inboxLoop, inboxWaiting } from '../lib/statusloop';
 import type { InboxItem } from '../types';
 import { Markdown } from '../ui/markdown';
 import { MentionArea } from '../ui/pickers';
 import { RefText } from '../ui/refs';
+import { StatusLoop } from '../ui/statusloop';
 import { TriageActions } from '../ui/triage';
 
 interface Group {
@@ -137,6 +139,9 @@ export function Inbox({
     g,
     list: (items ?? []).filter((it) => g.kinds.includes(it.kind)),
   }));
+  // The one loop of this view: knocking while something waits for you, settled at inbox zero.
+  const loop = inboxLoop(items);
+  const waiting = inboxWaiting(items);
   const unread = (items ?? []).some((it) => it.kind === 'mention' || it.kind === 'message');
   return (
     <Section
@@ -172,6 +177,20 @@ export function Inbox({
         <ErrorLine error={markRead.error} />
         {!nav.me && (
           <ErrorLine error="Set `me: human:<name>` in the user config so the app knows who you are." />
+        )}
+
+        {loop === 'needs-you' && (
+          <div className="panel animate-rise flex items-center gap-4 px-4 py-3">
+            <StatusLoop state="needs-you" className="shrink-0" />
+            <div className="min-w-0">
+              <div className="font-display text-lg leading-tight font-semibold tracking-wide">
+                {waiting === 1 ? '1 thing waits for you' : `${waiting} things wait for you`}
+              </div>
+              <div className="mt-0.5 text-sm text-fg-3">
+                Questions, findings, reviews and votes hold work up until you handle them.
+              </div>
+            </div>
+          </div>
         )}
 
         {items && items.length > 0 && (
@@ -218,7 +237,11 @@ export function Inbox({
         )}
 
         {items && items.length === 0 && (
-          <Empty icon={CircleCheckBig} title="Inbox zero">
+          <Empty
+            icon={CircleCheckBig}
+            art={loop === 'done' && <StatusLoop state="done" size={64} />}
+            title="Inbox zero"
+          >
             Nothing waits for you. Questions to you, reviews, votes, tasks delegated to you, and
             mentions land here as they come in. To talk something through, use Chat with the PM.
           </Empty>

@@ -69,13 +69,16 @@ export function Priority({ p }: { p: string }) {
 export function Empty(props: {
   children?: ReactNode;
   icon?: LucideIcon;
+  /** Shown in place of the icon tile, such as a `StatusLoop`. */
+  art?: ReactNode;
   title?: string;
   action?: ReactNode;
 }) {
   const Icon = props.icon;
   return (
     <div className="animate-rise mx-auto flex max-w-md flex-col items-center px-6 py-14 text-center">
-      {Icon && (
+      {props.art && <div className="mb-4">{props.art}</div>}
+      {Icon && !props.art && (
         <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-b from-white/8 to-white/2 ring-1 ring-white/10">
           <Icon size={24} className="text-signal" strokeWidth={1.8} />
         </div>

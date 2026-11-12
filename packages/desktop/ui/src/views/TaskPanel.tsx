@@ -56,6 +56,7 @@ import {
   threadEvents,
   writtenReducer,
 } from '../lib/thread';
+import { taskLoop } from '../lib/statusloop';
 import { moveTo, shownStatus } from '../lib/transitions';
 import type { OpsEvent, Status, Task, TaskDetail } from '../types';
 import { Markdown } from '../ui/markdown';
@@ -64,6 +65,7 @@ import type { Due } from '../ui/pickers';
 import { AgentPicker, DuePicker, dueToApi, MentionArea, Menu, useDirectory } from '../ui/pickers';
 import type { TaskFocus } from '../ui/refs';
 import { RefText } from '../ui/refs';
+import { StatusLoop } from '../ui/statusloop';
 import { TriageActions, waitsOn } from '../ui/triage';
 
 type Panel = 'delegate' | 'launch' | null;
@@ -124,6 +126,8 @@ export function TaskPanel({
   const open = t && !['done', 'parked'].includes(t.status);
   const waitsOnMe = t?.status === 'blocked' && !t.blockedOn && t.waitingOn === nav.me;
   const reviewsMe = t?.status === 'needs-review' && (t.reviewer === nav.me || !t.reviewer);
+  // The one loop of this panel: the task's state, large, next to its title.
+  const loop = t ? taskLoop(t, events) : null;
   const asker = waitsOnMe ? [...events].reverse().find((e) => e.type === 'ask')?.actor : undefined;
 
   return (
@@ -177,9 +181,12 @@ export function TaskPanel({
               <X size={18} />
             </button>
           </div>
-          <h2 className="mt-1.5 font-display text-[22px] leading-tight font-semibold tracking-wide">
-            {t ? <RefText text={t.title} /> : '…'}
-          </h2>
+          <div className="mt-1.5 flex items-start gap-4">
+            <h2 className="min-w-0 flex-1 font-display text-[22px] leading-tight font-semibold tracking-wide">
+              {t ? <RefText text={t.title} /> : '…'}
+            </h2>
+            {loop && <StatusLoop state={loop} className="-mt-1 shrink-0" />}
+          </div>
           {t && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <StatusMenu t={t} onPick={(s) => mover.request(t, s)} />
