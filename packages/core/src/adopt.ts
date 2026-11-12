@@ -1,7 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
-import { OLD_ROOT_DIR_NAME, ROOT_DIR_NAME } from './config.js';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isSeq } from 'yaml';
+import type { UserConfig } from './config.js';
+import {
+  checkRoot,
+  daemonKeyIn,
+  editUserConfig,
+  OLD_ROOT_DIR_NAME,
+  readUserConfig,
+  ROOT_DIR_NAME,
+  rootNameOf,
+  sameRoot,
+  storeDirIn,
+  userConfigPath,
+} from './config.js';
 import { deleteEnvVars, envVar } from './env.js';
 import { assertActor, OpsError } from './ids.js';
 import { initRoot, templateAgentIds } from './init.js';
@@ -56,6 +69,11 @@ export interface ApplyOptions {
   actor?: string;
   env?: NodeJS.ProcessEnv;
   force?: boolean;
+  /**
+   * A folder outside the repo for the store, so a public repo's tasks stay private. Default: the
+   * store is `.swarmup/` inside the repo.
+   */
+  store?: string;
 }
 
 export interface AppliedPlan {
@@ -671,11 +689,13 @@ function checkPlan(dir: string, plan: ProjectPlan, opts: ApplyOptions): void {
 }
 
 /**
- * Creates the project root a plan describes in `dir`: `.swarmup/` with the plan's agent roles,
- * then its tasks in order, each blocked by the earlier tasks it names. Tasks go through
- * `Workspace.addTask`, so an agent's tasks become findings that wait for the human (AO-0107).
+ * Creates the project root a plan describes: `.swarmup/` in `repo`, or in `opts.store` when the
+ * store lives apart from the repo, with the plan's agent roles, then its tasks in order, each
+ * blocked by the earlier tasks it names. Tasks go through `Workspace.addTask`, so an agent's
+ * tasks become findings that wait for the human (AO-0107).
  */
-export function applyPlan(dir: string, plan: ProjectPlan, opts: ApplyOptions = {}): AppliedPlan {
+export function applyPlan(repo: string, plan: ProjectPlan, opts: ApplyOptions = {}): AppliedPlan {
+  const dir = opts.store ? resolve(opts.store) : repo;
   const env = { ...(opts.env ?? process.env) };
   // The new root is the one found from `dir`; a root picked by SWARMUP_ROOT would take the tasks.
   deleteEnvVars(env, ['ROOT']);
@@ -711,7 +731,7 @@ export function applyPlan(dir: string, plan: ProjectPlan, opts: ApplyOptions = {
 }
 
 /** True inside a git work tree. */
-function inGitRepo(dir: string): boolean {
+export function inGitRepo(dir: string): boolean {
   try {
     execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
       cwd: dir,
@@ -722,6 +742,233 @@ function inGitRepo(dir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The branch checked out in `dir`; null outside a git work tree or on a detached HEAD. */
+export function currentBranch(dir: string): string | null {
+  try {
+    const out = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      cwd: dir,
+      windowsHide: true,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when `inner` is `outer` or a folder inside it. */
+function within(outer: string, inner: string): boolean {
+  const rel = relative(resolve(outer), resolve(inner));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** A plan with only the tasks at `keep` (indexes into `plan.tasks`), their `after` renumbered. */
+export function keepTasks(plan: ProjectPlan, keep: number[]): ProjectPlan {
+  const kept = [...new Set(keep)]
+    .filter((i) => Number.isInteger(i) && i >= 0 && i < plan.tasks.length)
+    .sort((a, b) => a - b);
+  const at = new Map(kept.map((old, now) => [old, now]));
+  const tasks = kept.map((i) => {
+    const t = plan.tasks[i]!;
+    const after = (t.after ?? []).flatMap((a) => at.get(a) ?? []);
+    return { ...t, after: after.length ? after : undefined };
+  });
+  return { ...plan, tasks };
+}
+
+/** The code checkout of a root whose store is a folder of its own, for the user config. */
+export interface CodeCheckout {
+  /** The root's name, the key under `swarmupd.code` and `swarmupd.merge`. */
+  name: string;
+  /** The code repo. */
+  checkout: string;
+  /** The branch approved work merges into. */
+  base: string;
+}
+
+export interface AddedRoot {
+  /** The user config file. */
+  path: string;
+  /** The root as `roots` lists it: the folder that holds `.swarmup/`. */
+  root: string;
+  /** The name in the root's config. */
+  name: string | null;
+  /** False when `roots` listed it already. */
+  added: boolean;
+}
+
+/**
+ * Adds a data root to `roots` in the user config, keeping comments and every other key. With
+ * `code`, also names the root's code checkout: `swarmupd.code.<name>`, and `swarmupd.merge.<name>`
+ * with `base` and `checkout`. `check` sees the result before it is written and throws to refuse it.
+ */
+export function addRootToUserConfig(
+  env: NodeJS.ProcessEnv,
+  root: string,
+  code?: CodeCheckout,
+  check?: (next: UserConfig) => void,
+): AddedRoot {
+  const r = checkRoot(root);
+  const path = userConfigPath(env);
+  const name = rootNameOf(storeDirIn(r) ?? r);
+  const listed = (readUserConfig(env).roots ?? []).map(String).some((x) => sameRoot(x, r));
+  if (listed && !code) return { path, root: r, name, added: false };
+  editUserConfig(
+    env,
+    (doc) => {
+      if (!listed) {
+        if (isSeq(doc.get('roots', true))) doc.addIn(['roots'], r);
+        else doc.set('roots', [r]);
+      }
+      if (code) {
+        const key = daemonKeyIn(doc);
+        doc.setIn([key, 'code', code.name], code.checkout);
+        doc.setIn([key, 'merge', code.name, 'base'], code.base);
+        doc.setIn([key, 'merge', code.name, 'checkout'], code.checkout);
+      }
+    },
+    check,
+  );
+  return { path, root: r, name, added: !listed };
+}
+
+/**
+ * Checks a folder for the store of `repo`, apart from it: the repo has a branch checked out (the
+ * one approved work merges into, returned), and the folder is outside the repo and holds no data
+ * root. Throws otherwise; writes nothing.
+ */
+export function checkStoreFolder(repo: string, store: string): string {
+  if (!inGitRepo(repo)) {
+    throw new OpsError(`${repo} is not a git repo: run \`git init\` there first`, 2);
+  }
+  const base = currentBranch(repo);
+  if (!base) {
+    throw new OpsError(
+      `${repo} has no branch checked out: check out the branch approved work merges into`,
+      2,
+    );
+  }
+  if (within(repo, store) || within(store, repo)) {
+    throw new OpsError(`${store}: pick a folder outside the repo for the tasks`, 2);
+  }
+  if (existsSync(store) && !isDir(store)) throw new OpsError(`${store} is a file`, 2);
+  if (storeDirIn(store)) throw new OpsError(`${store} has a data root already`, 2);
+  return base;
+}
+
+export interface AdoptOptions extends ApplyOptions {
+  name?: string;
+  prefix?: string;
+  /** Role templates to use instead of the proposed ones. */
+  agents?: string[];
+  /** Indexes of the proposed tasks to create; default all of them. */
+  tasks?: number[];
+  /**
+   * Add the new root to `roots` in the user config. Always on with `store`, whose code checkout
+   * the user config has to name.
+   */
+  register?: boolean;
+  /** Refuse a folder outside a git repo, as the app does: runs work in git worktrees. */
+  requireGit?: boolean;
+  /** Sees the user config before it is written and throws to refuse it. */
+  checkConfig?: (next: UserConfig) => void;
+}
+
+export interface AdoptedProject extends AppliedPlan {
+  /** The adopted repo. */
+  repo: string;
+  name: string;
+  /** The folder that holds `.swarmup/` when the store lives apart from the repo. */
+  store: string | null;
+  /** With `store`: the branch approved work merges into. */
+  base: string | null;
+  /** True when the store folder was outside any git repo and got `git init`. */
+  gitInit: boolean;
+  /** The user config file, when the root was added to it. */
+  config: string | null;
+}
+
+/** The plan `adoptRepo` applies for a survey: the proposal, with the options' changes. */
+export function adoptProposal(s: RepoSurvey, opts: AdoptOptions = {}): ProjectPlan {
+  const plan = adoptPlan(s, { name: opts.name, prefix: opts.prefix });
+  if (opts.agents?.length) {
+    plan.agents = opts.agents.map((id) => ({ id, why: 'chosen with --agents' }));
+  }
+  return opts.tasks ? keepTasks(plan, opts.tasks) : plan;
+}
+
+/**
+ * Adopts an existing repo, the one code path of `swarmup adopt --apply` and the app's
+ * **Add project**: surveys it, creates the project root with its roles and first tasks, and
+ * with `register` or `store` adds the root to the user config. Everything that can be checked
+ * is checked before the first write.
+ */
+export function adoptRepo(target: string, opts: AdoptOptions = {}): AdoptedProject {
+  const env = opts.env ?? process.env;
+  const survey = surveyRepo(target);
+  const repo = survey.dir;
+  if (survey.hasRoot) {
+    throw new OpsError(`${repo} has a data root already; swarmup adopt starts new ones`, 1);
+  }
+  const plan = adoptProposal(survey, opts);
+  const store = opts.store ? resolve(opts.store) : null;
+  const register = Boolean(opts.register || store);
+  let base: string | null = null;
+  if (opts.requireGit && !inGitRepo(repo)) {
+    throw new OpsError(`${repo} is not a git repo: run \`git init\` there first`, 2);
+  }
+  if (store) base = checkStoreFolder(repo, store);
+  if (register) {
+    // Reading it now refuses a config that does not parse before anything is written.
+    const user = readUserConfig(env);
+    for (const r of [...(user.roots ?? []), ...(user.master ? [user.master] : [])]) {
+      const dir = resolve(String(r));
+      if (rootNameOf(storeDirIn(dir) ?? dir) === plan.name) {
+        throw new OpsError(
+          `a data root named '${plan.name}' is loaded already (${r}): pick another name`,
+          2,
+        );
+      }
+    }
+  }
+  let gitInit = false;
+  let applied: AppliedPlan;
+  try {
+    if (store) {
+      mkdirSync(store, { recursive: true });
+      gitInit = !inGitRepo(store);
+      if (gitInit) {
+        execFileSync('git', ['init', '-q'], { cwd: store, windowsHide: true, stdio: 'ignore' });
+      }
+    }
+    applied = applyPlan(repo, plan, { ...opts, store: store ?? undefined });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+      throw new OpsError(`no write access to ${store ?? repo}: ${(err as Error).message}`, 1);
+    }
+    throw err;
+  }
+  let config: string | null = null;
+  if (register) {
+    try {
+      config = addRootToUserConfig(
+        env,
+        applied.dir,
+        store && base ? { name: plan.name, checkout: repo, base } : undefined,
+        opts.checkConfig,
+      ).path;
+    } catch (err) {
+      throw new OpsError(
+        `created ${applied.dir}, but the user config was not changed: ${(err as Error).message}`,
+        1,
+      );
+    }
+  }
+  return { ...applied, repo, name: plan.name, store, base, gitInit, config };
 }
 
 export interface NewProjectOptions extends ApplyOptions {

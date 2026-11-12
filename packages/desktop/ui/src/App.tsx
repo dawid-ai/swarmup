@@ -8,6 +8,8 @@ import {
   Bot,
   CalendarClock,
   Clapperboard,
+  FolderGit2,
+  FolderPlus,
   Hash,
   Inbox as InboxIcon,
   Kanban,
@@ -27,7 +29,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SetupStatus } from './api';
 import { api, bridge, refreshSoon, useData, useUpdate } from './api';
-import { Avatar, Toaster, cx } from './components';
+import { Avatar, Toaster, cx, toast } from './components';
 import { Mark } from './ui/brand';
 import { Lightbox } from './ui/attach';
 import type { SavedView } from './lib/filters';
@@ -41,7 +43,10 @@ import { Palette, ShortcutHelp } from './ui/palette';
 import { setRefTasks } from './lib/refs';
 import { useRefTasks, useTaskFocus } from './ui/refs';
 import type { Decision, InboxItem, Info, ProviderUsage, RunRecord, SignedOut, Task } from './types';
+import type { Settings as SettingsData } from './types';
 import { Activity as ActivityView } from './views/Activity';
+import type { AddProjectState } from './views/AddProject';
+import { ADD_PROJECT_EVENT, AddProject, pickProject } from './views/AddProject';
 import { AddAgentDialog, Agents } from './views/Agents';
 import { Board } from './views/Board';
 import { Channels } from './views/Channels';
@@ -177,6 +182,28 @@ export function App() {
     window.addEventListener(ADD_AGENT_EVENT, onAdd);
     return () => window.removeEventListener(ADD_AGENT_EVENT, onAdd);
   }, []);
+  // Add project (AO-0274): the folder dialog first, then the proposal for the picked repo. A pick
+  // that fails (not a git repo) shows in the dialog, with a button to pick again.
+  const [adding, setAdding] = useState<AddProjectState | null>(null);
+  /** The screenshot run creates the proposed project without a click. */
+  const [autoCreate, setAutoCreate] = useState(false);
+  const picking = useRef(false);
+  const addProject = useCallback((): void => {
+    if (picking.current) return;
+    picking.current = true;
+    pickProject()
+      .then(
+        (state) => setAdding(state),
+        (e: Error) => setAdding({ error: e.message }),
+      )
+      .finally(() => {
+        picking.current = false;
+      });
+  }, []);
+  useEffect(() => {
+    window.addEventListener(ADD_PROJECT_EVENT, addProject);
+    return () => window.removeEventListener(ADD_PROJECT_EVENT, addProject);
+  }, [addProject]);
   const [info, setInfo] = useState<Info | null>(null);
   const [status, setStatus] = useState<Status>({ connected: false });
   // Paused swarmupd, from the main process: the tray, Settings and `swarmup daemon pause` change it.
@@ -250,7 +277,11 @@ export function App() {
         // The screenshot run opens the palette and the shortcut list this way.
         else if (nav.view === 'palette') setPalette(true);
         else if (nav.view === 'shortcuts') setHelp(true);
-        else if (VIEWS.includes(nav.view as View)) {
+        // And Add project, whose folder the screenshot run names; `create` also creates it.
+        else if (nav.view === 'add-project') {
+          setAutoCreate(nav.id === 'create');
+          addProject();
+        } else if (VIEWS.includes(nav.view as View)) {
           setView(nav.view as View);
           setArg(nav.id);
           setTask(null);
@@ -258,7 +289,7 @@ export function App() {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [loadInfo, setTask]);
+  }, [loadInfo, setTask, addProject]);
 
   // A swarmupd older than the app restarts once no run is live: look again every 30 s.
   useEffect(() => {
@@ -272,6 +303,9 @@ export function App() {
   const live = useData<RunRecord[]>(info ? '/api/runs?live' : null);
   const votes = useData<Decision[]>(info ? '/api/decisions' : null);
   const tasks = useData<Task[]>(info ? '/api/tasks' : null);
+  // The loaded data roots, for the sidebar's project list.
+  const settings = useData<SettingsData>(info ? '/api/settings' : null);
+  const projects = (settings.data?.rootList ?? []).filter((r) => !r.isMaster);
   // Signed-out providers (AO-0154): a banner on every view until each is signed in again.
   const usage = useData<Record<string, ProviderUsage>>(info ? '/api/usage' : null);
   const signedOut = Object.entries(usage.data ?? {}).flatMap(([p, u]) =>
@@ -435,13 +469,29 @@ export function App() {
         </div>
         <SearchBox nav={nav} />
         <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-2 py-2">
+          {/* First, so Add project shows without scrolling in a window of the smallest size. */}
+          <div data-projects>
+            <div className="label-caps px-3 pb-1.5 !text-[10px]">Projects</div>
+            {projects.map((p) => (
+              <NavItem
+                key={p.dir}
+                active={view === 'list' && arg === `project:${p.name}`}
+                icon={FolderGit2}
+                label={p.name}
+                title={p.dir}
+                onClick={() => nav.go('list', `project:${p.name}`)}
+              />
+            ))}
+            <NavItem active={false} icon={FolderPlus} label="Add project" onClick={addProject} />
+          </div>
           {GROUPS.map((g) => (
             <div key={g.title}>
               <div className="label-caps px-3 pb-1.5 !text-[10px]">{g.title}</div>
               {g.items.map(([v, label, Icon]) => (
                 <NavItem
                   key={v}
-                  active={view === v}
+                  // A project from the list above shows the task list; the mark stays on it.
+                  active={view === v && !(v === 'list' && arg?.startsWith('project:'))}
                   icon={Icon}
                   label={label}
                   count={counts[v]}
@@ -618,6 +668,27 @@ export function App() {
           }}
         />
       )}
+      {adding && (
+        <AddProject
+          // A new pick starts the form again from its proposal.
+          key={'proposal' in adding ? adding.proposal.dir : 'error'}
+          state={adding}
+          auto={autoCreate}
+          onPick={addProject}
+          onClose={() => setAdding(null)}
+          onCreated={(p) => {
+            setAdding(null);
+            setAutoCreate(false);
+            settings.reload();
+            toast(
+              p.reloaded
+                ? `Created ${p.name} with ${p.tasks.length} ${p.tasks.length === 1 ? 'task' : 'tasks'}`
+                : `Created ${p.name}. Restart swarmupd in Settings to load it`,
+            );
+            if (p.reloaded) nav.go('list', `project:${p.name}`);
+          }}
+        />
+      )}
       {addAgent && (
         <AddAgentDialog
           key={addAgent.id}
@@ -701,12 +772,14 @@ function NavItem(props: {
   icon: LucideIcon;
   label: string;
   count?: { n: number; tone: string };
+  title?: string;
   onClick: () => void;
 }) {
   const Icon = props.icon;
   return (
     <button
       onClick={props.onClick}
+      title={props.title}
       className={cx(
         'group relative flex w-full items-center gap-2.5 rounded-lg px-3 py-[7px] text-left text-sm transition',
         props.active ? 'bg-white/7 text-fg' : 'text-fg-3 hover:bg-white/4 hover:text-fg-2',
@@ -720,7 +793,7 @@ function NavItem(props: {
         className={props.active ? 'text-signal' : 'text-fg-4 group-hover:text-fg-3'}
         strokeWidth={2}
       />
-      <span className="flex-1">{props.label}</span>
+      <span className="min-w-0 flex-1 truncate">{props.label}</span>
       {props.count && props.count.n > 0 && (
         <span
           className="min-w-5 rounded-full px-1.5 text-center font-mono text-[11px] font-semibold"

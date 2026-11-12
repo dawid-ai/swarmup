@@ -9,6 +9,7 @@ import {
   PenLine,
   Stethoscope,
   FolderGit2,
+  FolderPlus,
   Gauge,
   BellRing,
   Library,
@@ -58,6 +59,7 @@ import type {
 import { ProviderMark } from '../ui/identity';
 import { RoleEditor } from '../ui/roles';
 import { setVoiceView } from '../ui/voice';
+import { openAddProject } from './AddProject';
 
 type Patch = Record<string, unknown>;
 
@@ -794,6 +796,14 @@ function RootsCard({ data, onSaved }: { data: SettingsData; onSaved: () => void 
       </div>
       <div className="mt-2 text-xs text-fg-4">
         swarmupd checks each folder is a data root when you save.
+      </div>
+      <div className="mt-3 flex items-center gap-3 border-t border-white/6 pt-3">
+        <Button icon={FolderPlus} onClick={openAddProject}>
+          Add project
+        </Button>
+        <span className="text-xs text-fg-4">
+          Pick a repo: one without a data root gets a proposal to review first.
+        </span>
       </div>
     </Card>
   );

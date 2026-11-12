@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   defaultHumanId,
@@ -42,6 +42,7 @@ import {
   Tray,
 } from 'electron';
 import electronUpdater from 'electron-updater';
+import { addProjectHandlers } from './add-project.js';
 import { allowedCall, attachmentName, ATTACHMENT_SCHEME } from './allow.js';
 import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
@@ -1282,6 +1283,39 @@ ipcMain.handle('swarmup:save-video', (e, name: unknown, data: unknown) => {
     return { ok: false, error: (err as Error).message };
   }
 });
+
+/**
+ * Screenshot mode has no system dialog: `SWARMUP_SCREENSHOT_PICKS` lists the folders its picks
+ * answer with, in order (path-delimiter separated), so a smoke run can show Add project.
+ */
+const screenshotPicks = (process.env.SWARMUP_SCREENSHOT_PICKS ?? '')
+  .split(delimiter)
+  .filter(Boolean);
+
+/** Add project (AO-0274): pick a repo, review the proposal, create the root. */
+const addProject = addProjectHandlers<Electron.IpcMainInvokeEvent>({
+  env: process.env,
+  fromPage,
+  pickFolder: async (title) => {
+    if (offscreen) {
+      const next = screenshotPicks.shift();
+      if (!next) throw new Error('not in screenshot mode');
+      return next;
+    }
+    const pick = await dialog.showOpenDialog(win!, {
+      title,
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return pick.canceled ? null : (pick.filePaths[0] ?? null);
+  },
+  // An empty settings patch makes swarmupd read the user config again: the new root loads at once.
+  reload: async () => void (await call('POST', '/api/settings', {})),
+  checkConfig: (next) => void opsdConfig(next as Parameters<typeof opsdConfig>[0]),
+});
+ipcMain.handle('swarmup:project-pick', (e) => addProject.pick(e));
+ipcMain.handle('swarmup:project-plan', (e, name: unknown) => addProject.plan(e, name));
+ipcMain.handle('swarmup:project-store', (e) => addProject.pickStore(e));
+ipcMain.handle('swarmup:project-create', (e, input: unknown) => addProject.create(e, input));
 
 ipcMain.handle('swarmup:call', async (e, method: 'GET' | 'POST', path: string, body?: unknown) => {
   // Only the app's own page in its own window may call swarmupd.

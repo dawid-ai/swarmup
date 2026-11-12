@@ -216,10 +216,38 @@ The settings live under `desktop.voice` in the user config: `engine` (`off`, `lo
 
 **Back and Forward in the task panel.** Following a task link inside the open task panel (a thread, a comment, the parent, a blocked-on task, a message) keeps the task you came from. **Back** in the panel header returns to it, and **Forward** goes again after Back. Alt+Left, Alt+Right and the mouse back and forward buttons do the same outside text fields. A link to the task already open adds no step. Closing the panel clears the history, so a task opened from a view with no panel open has no **Back**.
 
+## Add project
+
+**Add project**, at the top of the sidebar's **Projects** list and under **Settings > Data
+roots**, adds an existing repo as a project without a terminal:
+
+1. Pick the repo's folder in the system dialog. The folder has to be a git repo, because agent
+   runs work in git worktrees of it.
+2. Review the proposal. It shows what the survey found (languages, frameworks, tests, build,
+   lint, docs, CI), the project name and id prefix, the roles, and the first tasks. Change the
+   name and the prefix, and clear the tasks you don't want. Nothing is written yet.
+3. Choose where the tasks live:
+   - **In this repo** (default): a `.swarmup/` folder in the repo.
+   - **In a separate folder**: for a public repo whose tasks stay private. Pick or create a
+     folder outside the repo; a folder outside git gets `git init`. The user config then names
+     the repo as the project's code checkout (`swarmupd.code.<name>`) and sets
+     `swarmupd.merge.<name>` with `base` (the branch checked out in the repo) and `checkout`
+     (the repo). See "Code in a checkout of its own" in [supervisor.md](supervisor.md).
+4. Click **Create**. The app writes the store and the first tasks with the same code as
+   `swarmup adopt --apply`, adds the store folder to `roots` in the user config (comments and
+   other keys stay), and tells swarmupd to read the config again. The project shows in the
+   sidebar at once; no restart.
+
+If the folder already has a data root (`.swarmup/` or `.agent-ops/`), **Add project** skips the
+proposal and only adds the folder to `roots`. Errors, such as a folder that is not a git repo or
+has no write access, show in the dialog. A project in the sidebar opens **Tasks** filtered to it.
+
 ## Security
 
 - The page talks to `swarmupd` only through Electron's main process, which holds the API token; the
   page never sees it. The main process accepts only `/api/` paths.
+- The page never names a folder to **Add project**: the main process uses only the folders you
+  pick in the system dialog, and refuses calls that don't come from the app's own page.
 - The window runs with context isolation and the renderer sandbox, without Node, under a content
   security policy that allows only the app's own files.
 - Task text, comments and messages come from agents, so Markdown is sanitized before it is shown.
@@ -232,12 +260,15 @@ The settings live under `desktop.voice` in the user config: `engine` (`off`, `lo
 
 `SWARMUP_SCREENSHOTS=<dir>` renders the app offscreen, saves one PNG per view in
 `SWARMUP_VIEWS` (default every view; `task:<id>` and
-`runs:<id>` open one task or run), and quits. It needs no GPU or visible desktop.
+`runs:<id>` open one task or run), and quits. It needs no GPU or visible desktop. Screenshot mode
+has no system dialogs, so the view `add-project` takes its folders from
+`SWARMUP_SCREENSHOT_PICKS` (in order, separated like `PATH`), and `add-project:create` also
+creates the proposed project.
 
 ## Smoke check
 
-`npm run smoke:desktop` (after `npm run build:desktop`) renders every view offscreen against a
-scratch data root and fails when a view logs an error, a swarmupd call fails, or the allowlist refuses
+`npm run smoke:desktop` (after `npm run build:desktop`) renders every view and the **Add
+project** proposal offscreen against a scratch data root and fails when a view logs an error, a swarmupd call fails, or the allowlist refuses
 a call. It stops the scratch swarmupd it started. The release workflow runs it on Linux under
 `xvfb-run` for every `v*` tag.
 
