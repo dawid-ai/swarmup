@@ -15,12 +15,18 @@ const assets = process.env.PROMO_ASSETS;
 const stills = (process.env.PROMO_STILLS ?? '').split(',').filter(Boolean);
 const mp4 = process.env.PROMO_MP4 ?? '';
 // A second pass for the GIF: fewer frames, a still background (drifting particles change every
-// pixel row, which a GIF pays for in every frame), scaled to 1200 px, nearly lossless.
+// pixel row, which a GIF pays for in every frame), scaled to PROMO_GIF_WIDTH px, nearly lossless.
 const gifSrc = process.env.PROMO_GIF_SRC ?? '';
+const gifWidth = Number(process.env.PROMO_GIF_WIDTH ?? '1120');
 const gifFps = Number(process.env.PROMO_GIF_FPS ?? '20');
 // The GIF is a cut: a full-motion GIF of the whole video would be far too large for a README.
 const gifFrom = Number(process.env.PROMO_GIF_FROM ?? '0');
 const gifTo = Number(process.env.PROMO_GIF_TO ?? '0');
+// The logo sting that opens the video and the GIF, and how many of its seconds each one plays
+// (0 for none). The page shows the sting's last frame itself and fades out of it.
+const sting = process.env.PROMO_STING ?? '';
+const stingSecs = sting ? Number(process.env.PROMO_STING_SECS ?? '0') : 0;
+const gifStingSecs = sting ? Number(process.env.PROMO_GIF_STING_SECS ?? '0') : 0;
 const W = 1920;
 const H = 1080;
 const FPS = 60;
@@ -72,8 +78,38 @@ app.whenReady().then(async () => {
     return buf;
   };
   const png = (buf) => nativeImage.createFromBitmap(buf, { width: W, height: H }).toPNG();
-  /** Streams frames at `fps` to ffmpeg with `args` after the raw input. */
-  const encode = async (fps, args, label, from = 0, to = duration) => {
+  /** Writes the first `secs` seconds of the logo sting to `out` as raw frames at `fps`. */
+  const pipeSting = async (fps, secs, out) => {
+    const dec = spawn(
+      'ffmpeg',
+      [
+        '-loglevel',
+        'error',
+        '-i',
+        sting,
+        '-t',
+        String(secs),
+        '-vf',
+        `fps=${fps},scale=${W}:${H}:flags=lanczos`,
+        '-f',
+        'rawvideo',
+        '-pix_fmt',
+        'bgra',
+        '-',
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true },
+    );
+    const done = new Promise((r) => dec.on('exit', r));
+    for await (const chunk of dec.stdout) {
+      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+    }
+    if ((await done) !== 0) throw new Error('ffmpeg could not read the sting');
+  };
+  /**
+   * Streams frames at `fps` to ffmpeg with `args` after the raw input: `stingSecs` seconds of the
+   * logo sting first, then the composition from `from` to `to`.
+   */
+  const encode = async (fps, args, label, from = 0, to = duration, stingSecs = 0) => {
     const ff = spawn(
       'ffmpeg',
       [
@@ -95,6 +131,9 @@ app.whenReady().then(async () => {
       { stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true },
     );
     const done = new Promise((r) => ff.on('exit', r));
+    // The composition fades out of the sting's last frame from `from` on.
+    await exec(`window.PROMO_STING_AT = ${stingSecs > 0 ? from : -1}`);
+    if (stingSecs > 0) await pipeSting(fps, stingSecs, ff.stdin);
     const total = Math.round((to - from) * fps);
     const started = Date.now();
     for (let i = 0; i < total; i++) {
@@ -135,6 +174,9 @@ app.whenReady().then(async () => {
           mp4,
         ],
         'mp4',
+        0,
+        duration,
+        stingSecs,
       );
     }
     if (gifSrc) {
@@ -143,7 +185,7 @@ app.whenReady().then(async () => {
         gifFps,
         [
           '-vf',
-          'scale=1200:-2:flags=lanczos',
+          `scale=${gifWidth}:-2:flags=lanczos`,
           '-c:v',
           'libx264rgb',
           '-qp',
@@ -155,6 +197,7 @@ app.whenReady().then(async () => {
         'gif',
         gifFrom,
         gifTo || duration,
+        gifStingSecs,
       );
     }
   } catch (e) {

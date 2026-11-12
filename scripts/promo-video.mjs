@@ -17,6 +17,12 @@
 //   node scripts/promo-video.mjs --assets DIR --stills 4.2,9.5   # PNG stills only, for review
 //   --gif-from 7.4 --gif-to 14.9 --gif-fps 20                     # the GIF's cut (README size)
 //   --poster 8.85                                                 # the poster frame, in seconds
+//   --gif-width 1120                                              # the GIF's width in px
+//   --sting-secs 4 --gif-sting-secs 3                             # the logo sting's length; 0 for none
+//
+// The video and the GIF open with the logo sting, scripts/promo/swarmup-sting-1080-on-ink.mp4 from
+// the brand kit: 2.3 seconds of motion, then a hold to 4 seconds, which the GIF trims. Seconds in
+// the other options count from the end of the sting.
 //
 // Needs `npm run build` and `npm run build:desktop`, and ffmpeg on PATH.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -43,6 +49,9 @@ const out = join(top, 'docs', 'media');
 const argv = process.argv.slice(2);
 const opt = (name, def) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : def);
 const keep = argv.includes('--keep');
+const sting = join(promo, 'swarmup-sting-1080-on-ink.mp4');
+const stingSecs = Number(opt('--sting-secs', '4'));
+const gifStingSecs = Number(opt('--gif-sting-secs', '3'));
 const electron = createRequire(import.meta.url)('electron');
 const fwd = (p) => p.replace(/\\/g, '/');
 
@@ -344,6 +353,9 @@ async function capture(w) {
   // QA's e2e suite runs through the whole story.
   setPlan(T.e2e, [
     ['start', T.e2e, 'Playwright: guest checkout with card, PayPal and a declined card'],
+    ['@', 'e2e-ask'],
+    // The run asks: its claim refuses an `ask` from outside it.
+    ['ask', T.e2e, 'Run the PayPal flow against the sandbox in CI, or mock it?', '--human'],
     ['@', 'end'],
   ]);
   swarmup(ME, 'launch', QA, '--task', T.e2e);
@@ -672,13 +684,7 @@ async function capture(w) {
     ]);
     swarmup(ME, 'launch', XE, '--task', T.webhook);
     swarmup(ME, 'launch', CE, '--task', T.badges);
-    swarmup(
-      QA,
-      'ask',
-      T.e2e,
-      'Run the PayPal flow against the sandbox in CI, or mock it?',
-      '--human',
-    );
+    signal('e2e-ask');
     await board(
       'b10',
       [
@@ -758,9 +764,14 @@ function writeData(assets) {
     composer: pixel('chat0', shots.chat0.textarea),
     inbox: pixel('inbox', shots.inbox.textarea),
   };
+  // The sting's last frame: the composition opens on it and fades out of it.
+  const withSting = stingSecs > 0 || gifStingSecs > 0;
+  if (withSting) {
+    ff('-sseof', '-0.2', '-i', sting, '-update', '1', join(assets, 'sting-last.png'));
+  }
   writeFileSync(
     join(assets, 'data.js'),
-    `window.PROMO = ${JSON.stringify({ meta, shots, colors, version: JSON.parse(readFileSync(join(top, 'package.json'), 'utf8')).version })};\n`,
+    `window.PROMO = ${JSON.stringify({ meta, shots, colors, sting: withSting, version: JSON.parse(readFileSync(join(top, 'package.json'), 'utf8')).version })};\n`,
   );
 }
 
@@ -780,6 +791,11 @@ function render(assets, { stills, mp4, gifSrc }) {
         // The board segment: agents wake, runs move cards, a change request, a finding, a question.
         PROMO_GIF_FROM: opt('--gif-from', '7.4'),
         PROMO_GIF_TO: opt('--gif-to', '14.9'),
+        // 1120 px keeps the GIF, sting included, under the 7.7 MB it had without one.
+        PROMO_GIF_WIDTH: opt('--gif-width', '1120'),
+        PROMO_STING: sting,
+        PROMO_STING_SECS: String(stingSecs),
+        PROMO_GIF_STING_SECS: String(gifStingSecs),
       },
       stdio: 'inherit',
       windowsHide: true,

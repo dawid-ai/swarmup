@@ -58,7 +58,12 @@
   };
 
   // ---------- identity ----------
-  const PROV = { claude: '#f08a5d', codex: '#3ddc97', human: '#ffc857' };
+  // The tile colors of the mark: orange is Claude, cyan is Codex, pink is you.
+  const PROV = { claude: '#E8875B', codex: '#4FC3D9', human: '#E46FB3' };
+  const TILE = { claude: 'claude', codex: 'codex', human: 'you' };
+  const TILE_INK = '#121211';
+  // The brand files the desktop app ships.
+  const BRAND = '../../packages/desktop/ui/src/assets/brand';
   const ROLE = {
     engineer: '#5aa9ff',
     qa: '#b18cff',
@@ -76,16 +81,7 @@
   };
   const svg = (inner, color, size, sw = 2) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
-  // The app's provider marks (ui/identity.tsx) and the lucide role icons it uses.
-  const MARK = {
-    claude:
-      [0, 45, 90, 135]
-        .map((a) => `<line x1="12" y1="3" x2="12" y2="21" transform="rotate(${a} 12 12)"/>`)
-        .join('') + `<circle cx="12" cy="12" r="2.2" fill="${PROV.claude}" stroke="none"/>`,
-    codex:
-      '<path d="M12 2.5 20.5 7.25v9.5L12 21.5 3.5 16.75v-9.5Z"/><path d="m8.5 9.5 2.5 2.5-2.5 2.5M12.5 15h3"/>',
-    human: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-  };
+  // The lucide role icons the app puts on an avatar tile (ui/identity.tsx).
   const ROLE_ICON = {
     engineer: '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
     qa: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
@@ -93,7 +89,7 @@
       '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
     pm: '<circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/>',
     docs: '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
-    you: '<path d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10z"/><path d="m9 12 2 2 4-4"/>',
+    you: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   };
   const who = (id) => {
     const [rt, role] = id.split(':');
@@ -148,6 +144,10 @@
   stats.id = 'stats';
   const end = el('div');
   end.id = 'end';
+  // The logo sting plays before t = 0 (render-main.mjs pipes its frames in); the composition
+  // opens on the sting's last frame and fades out of it.
+  const sting = el('div');
+  sting.id = 'sting';
   const sync = el('div');
   css(sync, {
     position: 'absolute',
@@ -171,6 +171,17 @@
     filled.push({ cv, name, r });
     return cv;
   };
+  /** A whole image file on a canvas `w` by `h` CSS px, for the same reason. */
+  const images = [];
+  const imageCanvas = (parent, url, w, h, pw = w * 2, ph = h * 2) => {
+    const cv = el('canvas', null, parent);
+    cv.width = pw;
+    cv.height = ph;
+    css(cv, { position: 'absolute', left: '0', top: '0', width: `${w}px`, height: `${h}px` });
+    images.push({ cv, url });
+    return cv;
+  };
+  if (P.sting) imageCanvas(sting, `${A}/sting-last.png`, W, H, W, H);
 
   // ---------- window content ----------
   const shot = {};
@@ -375,9 +386,11 @@
     const w = who(id);
     const e = el('div', 'node', nodesL);
     css(e, { left: `${x}px`, top: `${y - 39}px` });
-    const ring = el('div', 'ring', e, svg(MARK[w.rt], w.prov, 40));
+    // The app's avatar: the provider's tile with the role icon on it in ink.
+    const ring = el('div', 'ring', e);
+    imageCanvas(ring, `${BRAND}/tiles/swarmup-tile-${TILE[w.rt]}-front-256.png`, 78, 78);
+    el('div', 'role', ring, svg(ROLE_ICON[w.role], TILE_INK, 42, 2.2));
     const pulse = el('div', 'pulse', ring);
-    el('div', 'role', ring, svg(ROLE_ICON[w.role], w.roleC, 17));
     el('div', 'label', e, idHtml(id));
     const state = el('div', 'state', e);
     return { id, x, y, e, ring, pulse, state, w, i };
@@ -746,17 +759,9 @@
   });
 
   // ---------- end card ----------
-  const markSvg = el(
-    'div',
-    'mark',
-    end,
-    `<svg width="150" height="150" viewBox="0 0 32 32"><defs><linearGradient id="mk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5ce1e6"/><stop offset="1" stop-color="#3ddc97"/></linearGradient></defs>
-    <rect id="mrect" x="1" y="1" width="30" height="30" rx="9" fill="#0d1117" stroke="url(#mk)" stroke-opacity="0.5" stroke-width="0.8"/>
-    ${[0, 90, 180, 270].map((a) => `<path class="arc" d="M16 6.5a9.5 9.5 0 0 1 8.2 4.7" stroke="url(#mk)" stroke-width="2.6" stroke-linecap="round" fill="none" transform="rotate(${a} 16 16)" pathLength="1" stroke-dasharray="1" stroke-dashoffset="1"/>`).join('')}
-    <circle id="mdot" cx="16" cy="16" r="3" fill="#5ce1e6"/></svg>`,
-  );
-  const arcs = [...markSvg.querySelectorAll('.arc')];
-  const mdot = markSvg.querySelector('#mdot');
+  // The four-tile mark, as the 3D render the brand sheet asks for from 48 px.
+  const mark = el('div', 'mark', end);
+  imageCanvas(mark, `${BRAND}/swarmup-icon-hero-256.png`, 170, 170, 256, 256);
   const name = el('div', 'name', end, 'SwarmUp');
   const tag1 = el('div', 'tag1', end, 'Your AI team, on your machine.');
   const tag2 = el('div', 'tag2', end, 'Tasks are files in git.');
@@ -797,6 +802,9 @@
     C = cam(t);
     g.clearRect(0, 0, W, H);
     drawBg(t, env(t, 7.2, 8.2, 22, 22.6) + env(t, 29, 30, 40, 41));
+    // PROMO_STING_AT: where the sting hands over (0 for the video, the cut's start for the GIF).
+    const stingAt = P.sting ? (window.PROMO_STING_AT ?? 0) : null;
+    vis(sting, stingAt == null || t < stingAt ? 0 : 1 - seg(t, stingAt, stingAt + 0.3));
 
     // Cold open.
     const coldText = 'You have one idea.';
@@ -879,7 +887,8 @@
       const on = acting.has(n.id) || (n.id === 'human:you' && t > 15.0 && t < 17.6);
       const isLive = liveAgents.has(n.id) && t > 8.3;
       const glowA = on ? 0.9 : isLive ? 0.45 : 0.15;
-      n.ring.style.boxShadow = `inset 0 0 0 2px ${hexA(n.w.prov, on || isLive ? 0.95 : 0.45)}, 0 0 ${on ? 46 : 26}px ${hexA(n.w.prov, glowA)}`;
+      n.ring.style.boxShadow = `0 0 ${on ? 46 : 26}px ${hexA(n.w.prov, glowA)}`;
+      n.ring.style.opacity = on || isLive ? '1' : '0.85';
       const pq = (t * 0.8 + n.i * 0.37) % 1;
       n.pulse.style.boxShadow = `0 0 0 2px ${hexA(n.w.prov, isLive ? 0.7 * (1 - pq) : 0)}`;
       n.pulse.style.transform = `scale(${1 + 0.55 * pq})`;
@@ -1058,14 +1067,9 @@
     // End card.
     const eOn = seg(t, 29.0, 29.3);
     vis(end, eOn);
-    arcs.forEach((a, i) =>
-      a.setAttribute(
-        'stroke-dashoffset',
-        String(1 - E.out3(seg(t, 29.05 + i * 0.07, 29.6 + i * 0.07))),
-      ),
-    );
-    mdot.setAttribute('r', String(3 * E.outBack(seg(t, 29.5, 29.85), 2.5)));
-    markSvg.style.transform = `scale(${0.85 + 0.15 * E.out3(seg(t, 29.0, 29.7))}) rotate(${-30 * (1 - E.out3(seg(t, 29.0, 29.8)))}deg)`;
+    const mq = seg(t, 29.05, 29.7);
+    mark.style.opacity = String(clamp(mq * 2.5));
+    mark.style.transform = `scale(${0.6 + 0.4 * E.outBack(mq, 1.6)})`;
     const nq = E.out3(seg(t, 29.35, 29.95));
     name.style.opacity = String(nq);
     name.style.letterSpacing = `${0.32 - 0.22 * nq}em`;
@@ -1111,6 +1115,12 @@
     document.fonts.load('500 20px "IBM Plex Sans"'),
     document.fonts.load('400 20px "IBM Plex Sans"'),
     document.fonts.load('600 20px "JetBrains Mono"'),
+    ...images.map(async (im) => {
+      const img = new Image();
+      img.src = im.url;
+      await img.decode();
+      im.cv.getContext('2d').drawImage(img, 0, 0, im.cv.width, im.cv.height);
+    }),
   ]).then(() => {
     for (const { cv, name: n, r } of filled) {
       cv.getContext('2d').drawImage(
