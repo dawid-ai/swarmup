@@ -38,6 +38,69 @@ interface IndexFile {
   tasks: Record<string, IndexEntry>;
 }
 
+/** How long after a change a file time may still hide a second change: git's racy-timestamp rule. */
+const RACY_MS = 2000;
+
+/**
+ * A root's index as this process last read or wrote it, so a process that reads the tasks many
+ * times (swarmupd answers each request with a fresh read) parses `index.json` once, not per read
+ * (AO-0276). `stamp` is the file's time and size then: another process's write changes it, and
+ * the next read takes the file again.
+ */
+interface MemIndex {
+  stamp: string;
+  p: string;
+  tasks: Record<string, IndexEntry>;
+  /**
+   * Tasks whose events folder changed inside the racy window, with what was folded: the real
+   * times and the event file names. Event files are never edited, so the same names under an
+   * unchanged `task.md` mean the same fold.
+   */
+  racy: Map<string, RacyFold>;
+}
+
+interface RacyFold {
+  tm: number;
+  em: number;
+  names: string;
+}
+
+const memIndexes = new Map<string, MemIndex>();
+/** Roots kept in {@link memIndexes}; the one remembered longest ago goes first. */
+const MEM_INDEX_ROOTS = 16;
+
+function rememberIndex(file: string, mem: MemIndex): void {
+  memIndexes.delete(file);
+  memIndexes.set(file, mem);
+  if (memIndexes.size > MEM_INDEX_ROOTS) memIndexes.delete(memIndexes.keys().next().value!);
+}
+
+function fileStamp(path: string): string {
+  try {
+    const st = statSync(path);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Freezes a cached state all the way down: every read shares it, so no caller may change it. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value)) deepFreeze(v);
+  }
+  return value;
+}
+
+function eventNames(taskDir: string): string {
+  try {
+    return readdirSync(join(taskDir, 'events')).join('/');
+  } catch {
+    return '';
+  }
+}
+
 function mtime(path: string): number {
   try {
     return statSync(path).mtimeMs;
@@ -286,18 +349,32 @@ export class Root {
 
   /**
    * Returns the folded state of every task. A cache in `.ops/index.json` keeps each task's fold
-   * with the mtimes of its task.md and events folder; only changed tasks are folded again.
+   * with the mtimes of its task.md and events folder; only changed tasks are folded again. The
+   * process keeps the parsed cache while the file stays as it last saw it. The states are frozen
+   * and shared between reads: copy one before changing it.
    */
   states(): TaskState[] {
     const indexFile = join(this.opsDir, 'index.json');
+    const stamp = fileStamp(indexFile);
+    const kept = memIndexes.get(indexFile);
     let index: IndexFile = { v: INDEX_VERSION, tasks: {} };
-    try {
-      const raw = JSON.parse(readFileSync(indexFile, 'utf8')) as IndexFile;
-      // States folded under other project settings name the old projects: refold them all.
-      if (raw.v === INDEX_VERSION && raw.p === this.projectStamp) index = raw;
-    } catch {
-      // No cache yet, or a damaged one: rebuild.
+    let racy: MemIndex['racy'] = new Map();
+    if (kept && stamp !== '' && kept.stamp === stamp && kept.p === this.projectStamp) {
+      index = { v: INDEX_VERSION, p: kept.p, tasks: kept.tasks };
+      racy = kept.racy;
+    } else {
+      try {
+        const raw = JSON.parse(readFileSync(indexFile, 'utf8')) as IndexFile;
+        // States folded under other project settings name the old projects: refold them all.
+        if (raw.v === INDEX_VERSION && raw.p === this.projectStamp) {
+          index = raw;
+          for (const e of Object.values(raw.tasks)) deepFreeze(e.state);
+        }
+      } catch {
+        // No cache yet, or a damaged one: rebuild.
+      }
     }
+    const nextRacy: MemIndex['racy'] = new Map();
     let dirty = false;
     const next: Record<string, IndexEntry> = {};
     const out: TaskState[] = [];
@@ -309,25 +386,53 @@ export class Root {
       const em = mtime(join(dir, 'events'));
       const cached = index.tasks[id];
       let entry: IndexEntry;
+      const was = racy.get(id);
       if (cached && cached.tm === tm && cached.em === em) {
         entry = cached;
+      } else if (cached && was && was.tm === tm && was.em === em && was.names === eventNames(dir)) {
+        // Folded inside the racy window, and neither task.md nor the set of event files changed
+        // since: the fold stands. After the window the entry takes its real times.
+        if (Date.now() - Math.max(tm, em) < RACY_MS) {
+          entry = cached;
+          nextRacy.set(id, was);
+        } else {
+          entry = { tm, em, state: cached.state };
+          dirty = true;
+        }
       } else {
         // Like git's racy-timestamp rule: a folder changed in the last 2 s may change again
         // within the same mtime tick, so its entry is refolded on the next read.
-        const racy = Date.now() - Math.max(tm, em) < 2000;
-        entry = { tm: racy ? -1 : tm, em, state: this.foldTask(id) };
+        const now = Date.now();
+        const fresh = now - Math.max(tm, em) < RACY_MS;
+        // Only a fresh events folder can be checked by its names; a fresh task.md cannot. Read
+        // the names before the files, as with the mtimes.
+        const names = fresh && now - tm >= RACY_MS ? eventNames(dir) : undefined;
+        entry = { tm: fresh ? -1 : tm, em, state: deepFreeze(this.foldTask(id)) };
+        if (names !== undefined) nextRacy.set(id, { tm, em, names });
         dirty = true;
       }
       next[id] = entry;
       out.push(entry.state);
     }
+    let written = stamp;
     if (dirty || Object.keys(index.tasks).length !== Object.keys(next).length) {
       try {
         const file: IndexFile = { v: INDEX_VERSION, p: this.projectStamp, tasks: next };
         this.writeAtomic(indexFile, JSON.stringify(file));
+        written = fileStamp(indexFile);
       } catch {
         // The cache is optional; a failed write costs speed, not correctness.
+        written = '';
       }
+    }
+    if (written === '') memIndexes.delete(indexFile);
+    else {
+      rememberIndex(indexFile, {
+        stamp: written,
+        p: this.projectStamp,
+        tasks: next,
+        racy: nextRacy,
+      });
     }
     return out;
   }

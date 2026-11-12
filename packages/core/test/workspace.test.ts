@@ -1,6 +1,13 @@
-import { existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   discoverRoots,
   initRoot,
@@ -577,6 +584,72 @@ describe('index cache', () => {
     as('human:dawid').list();
     writeFileSync(join(rootDir, '.ops', 'index.json'), '{not json');
     expect(new Root(rootDir).states()).toHaveLength(1);
+  });
+
+  it('reads a task with a fresh event again without folding or writing the cache (AO-0276)', () => {
+    const { as, rootDir } = setup();
+    const h = as('human:dawid');
+    h.newTask({ title: 'x' });
+    // Only the events folder is fresh: task.md is past the racy window.
+    const taskFile = join(rootDir, 'tasks', 'T-0001', 'task.md');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(taskFile, past, past);
+    h.comment('1', 'first');
+    const indexFile = join(rootDir, '.ops', 'index.json');
+    const first = new Root(rootDir).states()[0]!;
+    const written = statSync(indexFile, { bigint: true }).mtimeNs;
+    expect(JSON.parse(readFileSync(indexFile, 'utf8')).tasks['T-0001'].tm).toBe(-1);
+
+    // The same files: the same frozen state object, and the cache file is left alone.
+    const again = new Root(rootDir).states()[0]!;
+    expect(again).toBe(first);
+    expect(Object.isFrozen(again) && Object.isFrozen(again.meta)).toBe(true);
+    expect(statSync(indexFile, { bigint: true }).mtimeNs).toBe(written);
+
+    // A second event inside the window still shows.
+    h.comment('1', 'second');
+    const next = new Root(rootDir).states()[0]!;
+    expect(next.lastEvent).not.toBe(first.lastEvent);
+    // So does a hand edit to task.md, whose fresh time is never trusted.
+    writeFileSync(taskFile, readFileSync(taskFile, 'utf8').replace('title: x', 'title: y'));
+    expect(new Root(rootDir).states()[0]!.meta.title).toBe('y');
+    expect(new Root(rootDir).states()[0]!.meta.title).toBe('y');
+  });
+
+  it('gives a racy entry its real times after the window, without folding again', () => {
+    const { as, rootDir } = setup();
+    const h = as('human:dawid');
+    h.newTask({ title: 'x' });
+    const taskFile = join(rootDir, 'tasks', 'T-0001', 'task.md');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(taskFile, past, past);
+    h.comment('1', 'first');
+    const first = new Root(rootDir).states()[0]!;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5000);
+    try {
+      expect(new Root(rootDir).states()[0]).toBe(first);
+    } finally {
+      clock.mockRestore();
+    }
+    const entry = JSON.parse(readFileSync(join(rootDir, '.ops', 'index.json'), 'utf8')).tasks[
+      'T-0001'
+    ];
+    expect(entry.tm).toBe(statSync(taskFile).mtimeMs);
+    expect(new Root(rootDir).states()[0]).toBe(first);
+  });
+
+  it('takes the cache file again after another process wrote it', () => {
+    const { as, rootDir } = setup();
+    as('human:dawid').newTask({ title: 'x' });
+    const taskDir = join(rootDir, 'tasks', 'T-0001');
+    const past = new Date(Date.now() - 60_000);
+    for (const p of [join(taskDir, 'task.md'), join(taskDir, 'events')]) utimesSync(p, past, past);
+    new Root(rootDir).states();
+    const indexFile = join(rootDir, '.ops', 'index.json');
+    const raw = JSON.parse(readFileSync(indexFile, 'utf8'));
+    raw.tasks['T-0001'].state.meta.title = 'from the file';
+    writeFileSync(indexFile, JSON.stringify(raw));
+    expect(new Root(rootDir).states()[0]!.meta.title).toBe('from the file');
   });
 
   it('refolds a keep_wait assign that a v6 build cached as todo (AO-0111)', () => {
