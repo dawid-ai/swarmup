@@ -159,25 +159,25 @@ describe('the swarmupd section and its old key (AO-0250)', () => {
   });
 
   it('uses swarmupd alone when a file has both, and leaves the opsd section as it is', () => {
-    const env = configAt('opsd:\n  max_runs: 4\n  paused: true\nswarmupd:\n  seeded: 1\n');
+    const env = configAt('opsd:\n  max_runs: 97\n  paused: true\nswarmupd:\n  seeded: 1\n');
     const cfg = opsdConfig(readUserConfig(env));
-    expect(cfg.max_runs).not.toBe(4);
+    expect(cfg.max_runs).not.toBe(97);
     expect(cfg.paused).toBe(false);
     setPaused(env, true);
     expect(readFileSync(env.SWARMUP_CONFIG!, 'utf8')).toBe(
-      'opsd:\n  max_runs: 4\n  paused: true\nswarmupd:\n  seeded: 1\n  paused: true\n',
+      'opsd:\n  max_runs: 97\n  paused: true\nswarmupd:\n  seeded: 1\n  paused: true\n',
     );
   });
 
   it('ignores the opsd section when the file has an empty swarmupd key', () => {
     for (const empty of ['swarmupd:\n', 'swarmupd: {}\n', 'swarmupd: ~\n']) {
-      const env = configAt(`opsd:\n  max_runs: 4\n  paused: true\n${empty}`);
+      const env = configAt(`opsd:\n  max_runs: 97\n  paused: true\n${empty}`);
       const before = opsdConfig(readUserConfig(env));
-      expect(before.max_runs).not.toBe(4);
+      expect(before.max_runs).not.toBe(97);
       expect(before.paused).toBe(false);
       setPaused(env, true);
       const text = readFileSync(env.SWARMUP_CONFIG!, 'utf8');
-      expect(text).toMatch(/^opsd:\n {2}max_runs: 4\n {2}paused: true\n/);
+      expect(text).toMatch(/^opsd:\n {2}max_runs: 97\n {2}paused: true\n/);
       const after = opsdConfig(readUserConfig(env));
       expect(after.paused).toBe(true);
       expect(after.max_runs).toBe(before.max_runs);
