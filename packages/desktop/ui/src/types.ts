@@ -526,6 +526,56 @@ export interface RoleLimits {
   max_children: number;
 }
 
+/** What `swarmup adopt` finds in a repo, for Add project. */
+export interface RepoSurvey {
+  dir: string;
+  name: string;
+  stacks: string[];
+  frameworks: string[];
+  tests: { runner: string | null; command: string | null; files: number };
+  build: string | null;
+  lint: string | null;
+  docs: string[];
+  ci: string[];
+  agentDocs: string[];
+}
+
+/** The root Add project proposes: name, id prefix, roles and first tasks. */
+export interface ProjectPlan {
+  name: string;
+  prefix: string;
+  agents: Array<{ id: string; why: string }>;
+  tasks: Array<{ title: string; body: string; priority: string }>;
+}
+
+export interface ProjectProposal {
+  kind: 'proposal';
+  dir: string;
+  survey: RepoSurvey;
+  plan: ProjectPlan;
+  /** The branch checked out in the repo. */
+  branch: string | null;
+}
+
+/** The picked folder had a data root: it joined `roots` and nothing else changed. */
+export interface ProjectAdded {
+  kind: 'added';
+  dir: string;
+  name: string | null;
+  added: boolean;
+  /** False when swarmupd could not be told to read the config again. */
+  reloaded: boolean;
+}
+
+export interface ProjectCreated {
+  name: string;
+  dir: string;
+  store: string | null;
+  base: string | null;
+  tasks: Array<{ id: string; title: string }>;
+  reloaded: boolean;
+}
+
 /** `GET /api/settings`: effective values, and which keys the file sets. */
 export interface RootInfo {
   name: string;

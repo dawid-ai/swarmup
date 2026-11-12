@@ -129,6 +129,38 @@ swarmup(
   '+48h',
 );
 
+// A repo without a data root, for Add project's proposal (AO-0274).
+const adoptable = join(base, 'shop');
+mkdirSync(adoptable);
+execFileSync('git', ['init', '-q'], { cwd: adoptable, stdio: 'ignore', windowsHide: true });
+writeFileSync(
+  join(adoptable, 'package.json'),
+  JSON.stringify({
+    name: 'shop',
+    scripts: { test: 'vitest run' },
+    devDependencies: { vitest: '4' },
+  }),
+);
+
+const views = [
+  'inbox',
+  'board',
+  'list',
+  'findings',
+  'activity',
+  'reports',
+  'replay',
+  'agents',
+  'runs',
+  'standups',
+  'schedules',
+  'decisions',
+  'chat',
+  'channels',
+  'knowledge',
+  'settings',
+];
+
 // --packaged: the unpacked installer build (npm run dist), with its bundled swarmupd and swarmup command,
 // and a user-data folder of its own so nothing lands in the person's app data.
 const packaged = process.argv.includes('--packaged');
@@ -150,7 +182,15 @@ const appLog = openSync(appLogFile, 'w');
 let stopped = false;
 try {
   const res = spawnSync(electron, electronArgs, {
-    env: { ...env, SWARMUP_SCREENSHOTS: shots, ELECTRON_ENABLE_LOGGING: '1' },
+    env: {
+      ...env,
+      SWARMUP_SCREENSHOTS: shots,
+      // Add project comes last: its dialog stays open. Screenshot mode has no folder dialog, so
+      // the pick is named here.
+      SWARMUP_VIEWS: [...views, 'repeating', 'add-project'].join(','),
+      SWARMUP_SCREENSHOT_PICKS: adoptable,
+      ELECTRON_ENABLE_LOGGING: '1',
+    },
     // No pipes: the scratch swarmupd the app starts would hold them open past the app's exit. A log
     // file keeps what the app printed for a failure report.
     stdio: ['ignore', appLog, appLog],
@@ -172,25 +212,7 @@ try {
     }).status === 0;
 }
 
-const views = [
-  'inbox',
-  'board',
-  'list',
-  'findings',
-  'activity',
-  'reports',
-  'replay',
-  'agents',
-  'runs',
-  'standups',
-  'schedules',
-  'decisions',
-  'chat',
-  'channels',
-  'knowledge',
-  'settings',
-];
-const missing = views.filter((v) => {
+const missing = [...views, 'add-project'].filter((v) => {
   const png = join(shots, `${v}.png`);
   return !existsSync(png) || statSync(png).size < 1024;
 });

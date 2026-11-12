@@ -69,6 +69,8 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
   const [sort, setSort] = useState<Sort>({ key: 'priority', dir: 1 });
   // A saved view from the sidebar arrives as `saved:<name>`.
   useEffect(() => {
+    // A project from the sidebar arrives as `project:<name>`.
+    if (preset?.startsWith('project:')) setFilter({ project: preset.slice(8) });
     if (!preset?.startsWith('saved:')) return;
     const v = loadViews().find((x) => x.name === preset.slice(6));
     if (v) setFilter(v.filter);

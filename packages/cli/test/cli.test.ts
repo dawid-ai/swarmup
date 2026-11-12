@@ -1241,6 +1241,28 @@ describe('swarmup adopt and swarmup new-project', () => {
     expect(swarmup(d, 'human:dawid', 'adopt').code).toBe(1);
   });
 
+  it('adopt --store keeps the tasks apart from the repo and names the code checkout', () => {
+    const d = repo();
+    execFileSync('git', ['checkout', '-q', '-b', 'trunk'], { cwd: d, windowsHide: true });
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'shop' }));
+    const store = mkdtempSync(join(tmpdir(), 'swarmup-cli-store-'));
+    dirs.push(store);
+    // The proposal is the same with or without --store, and writes nothing.
+    expect(swarmup(d, 'human:dawid', 'adopt', '--store', store).out).toMatch(/nothing written/);
+    expect(existsSync(join(store, '.swarmup'))).toBe(false);
+    const res = swarmup(d, 'human:dawid', 'adopt', '--apply', '--store', store);
+    expect(res.code).toBe(0);
+    expect(res.out).toMatch(/git init/);
+    expect(res.out).toMatch(/SHO-0001\s+Record the baseline/);
+    expect(res.out).toMatch(/as the code checkout of shop \(merge base trunk\)/);
+    expect(existsSync(join(d, '.swarmup'))).toBe(false);
+    expect(existsSync(join(store, '.swarmup', 'config.yml'))).toBe(true);
+    const config = readFileSync(join(d, 'none.yml'), 'utf8');
+    expect(config).toMatch(/roots:\n\s+- /);
+    expect(config).toMatch(/code:\n\s+shop: /);
+    expect(config).toMatch(/merge:\n\s+shop:\n\s+base: trunk\n\s+checkout: /);
+  });
+
   it('lists templates and starts a project from one', () => {
     const d = repo();
     expect(swarmup(d, 'human:dawid', 'new-project', '--list').out).toMatch(/^web-app\s+a web app/);

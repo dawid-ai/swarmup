@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DesktopView,
   Info,
+  ProjectAdded,
+  ProjectCreated,
+  ProjectPlan,
+  ProjectProposal,
   ServiceAction,
   ServiceState,
   UpdateState,
@@ -75,6 +79,27 @@ interface Bridge {
     me: string,
     roots: string[],
   ) => Promise<{ ok: boolean; data?: { path: string; restart: boolean }; error?: string }>;
+  /**
+   * Add project: asks for the repo's folder in a system dialog and surveys it. A folder that has
+   * a data root is added to `roots` at once (`kind: 'added'`); any other answers with the
+   * proposal and writes nothing. Resolves `cancelled` when the person closes the dialog.
+   */
+  projectPick: () => Promise<{
+    ok: boolean;
+    data?: ProjectProposal | ProjectAdded;
+    error?: string;
+  }>;
+  /** The proposal's roles and first tasks for another project name. */
+  projectPlan: (name: string) => Promise<{ ok: boolean; data?: ProjectPlan; error?: string }>;
+  /** Asks for the folder the tasks live in, apart from the repo. */
+  projectStore: () => Promise<{ ok: boolean; data?: { dir: string }; error?: string }>;
+  /** Creates the root for the picked repo; `tasks` are indexes into the proposal's tasks. */
+  projectCreate: (input: {
+    name: string;
+    prefix: string;
+    tasks: number[];
+    where: 'repo' | 'store';
+  }) => Promise<{ ok: boolean; data?: ProjectCreated; error?: string }>;
   call: (
     method: 'GET' | 'POST',
     path: string,

@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import type {
   ActResult,
+  AdoptOptions,
   AppliedPlan,
   ApplyOptions,
   BlockedSet,
@@ -20,8 +21,8 @@ import type {
   TaskView,
 } from '@swarmup/core';
 import {
-  adoptPlan,
-  applyPlan,
+  adoptProposal,
+  adoptRepo,
   defaultHumanId,
   newProject,
   PROJECT_TEMPLATES,
@@ -711,28 +712,35 @@ const COMMANDS: Record<string, Command> = {
   },
   adopt: {
     usage:
-      'adopt [DIR] [--apply] [--name NAME] [--prefix P] [--human human:NAME] [--agents ID,...]',
+      'adopt [DIR] [--apply] [--store DIR] [--name NAME] [--prefix P] [--human human:NAME] [--agents ID,...]',
     summary:
-      'survey an existing repo and propose a project root with roles and first tasks; --apply creates it',
+      'survey an existing repo and propose a project root with roles and first tasks; --apply creates it, --store in a folder apart from the repo',
     options: {
       apply: { type: 'boolean' },
+      store: { type: 'string' },
       name: { type: 'string' },
       prefix: { type: 'string' },
       human: { type: 'string' },
       agents: { type: 'string', multiple: true },
     },
     run: (ctx) => {
-      const survey = surveyRepo(resolve(ctx.io.cwd, ctx.args[0] ?? '.'));
-      if (survey.hasRoot) {
-        throw new OpsError(
-          `${survey.dir} has a data root already; swarmup adopt starts new ones`,
-          1,
-        );
-      }
-      const plan = adoptPlan(survey, { name: str(ctx.opts.name), prefix: str(ctx.opts.prefix) });
-      const chosen = list(ctx.opts.agents);
-      if (chosen.length) plan.agents = chosen.map((id) => ({ id, why: 'chosen with --agents' }));
+      const dir = resolve(ctx.io.cwd, ctx.args[0] ?? '.');
+      const store = str(ctx.opts.store);
+      const opts: AdoptOptions = {
+        name: str(ctx.opts.name),
+        prefix: str(ctx.opts.prefix),
+        agents: list(ctx.opts.agents),
+        store: store ? resolve(ctx.io.cwd, store) : undefined,
+      };
       if (!ctx.opts.apply) {
+        const survey = surveyRepo(dir);
+        if (survey.hasRoot) {
+          throw new OpsError(
+            `${survey.dir} has a data root already; swarmup adopt starts new ones`,
+            1,
+          );
+        }
+        const plan = adoptProposal(survey, opts);
         if (ctx.opts.json) return void ctx.io.out(JSON.stringify({ survey, plan }, null, 2));
         printSurvey(ctx, survey);
         printPlan(ctx, plan);
@@ -742,8 +750,17 @@ const COMMANDS: Record<string, Command> = {
         );
         return;
       }
-      const applied = applyPlan(survey.dir, plan, applyOptions(ctx));
-      printApplied(ctx, applied);
+      // The same code as the app's Add project (AO-0274). With --store, the user config gains the
+      // root and its code checkout; without it, nothing outside the repo changes, as before.
+      const res = adoptRepo(dir, { ...opts, ...applyOptions(ctx) });
+      if (ctx.opts.json) return void ctx.io.out(JSON.stringify(res, null, 2));
+      if (res.gitInit) ctx.io.out(`git init ${res.store}`);
+      printApplied(ctx, res);
+      if (res.store) {
+        ctx.io.out(
+          `${res.config}: added ${res.store} to roots and ${res.repo} as the code checkout of ${res.name} (merge base ${res.base})`,
+        );
+      }
     },
   },
   'new-project': {
