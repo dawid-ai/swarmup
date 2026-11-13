@@ -173,6 +173,59 @@ const BARE_COMMAND_RE =
 const KNOWN_PROGRAM_RE =
   /^(?:npm|npx|pnpm|yarn|bun|deno|node|tsx|ts-node|tsc|vitest|jest|mocha|playwright|cypress|eslint|prettier|biome|swarmup|ops|git|gh|python3?|py|pip3?|pipx|uv|poetry|pytest|tox|ruff|mypy|cargo|rustc|go|make|cmake|ctest|ninja|just|dotnet|java|mvn|gradle|gradlew|ruby|bundle|rake|rspec|php|composer|phpunit|docker|podman|kubectl|helm|terraform|curl|wget|bash|sh|zsh|pwsh|powershell|cmd|grep|rg|ls|cat|diff|jq|sed|awk|electron|vite|webpack|rollup|esbuild|turbo|nx)(?:\.(?:exe|cmd|bat))?$/;
 
+/**
+ * Known programs whose name is also an English word. Prose in code font starts with them too
+ * (`make sure it works`, `go to the page`), so an argument alone is no sign of a command: the
+ * arguments must fit the program (see `fitsProgram`).
+ */
+const TARGET_PROGRAM_RE = /^(?:make|just|rake|ninja)$/;
+const FILE_PROGRAM_RE = /^(?:cat|diff|ls|java|ruby)$/;
+const SUBCOMMANDS: Record<string, RegExp> = {
+  go: /^(?:build|test|vet|run|fmt|mod|generate|install|list|get|version|tool|clean|doc|env|work)$/,
+  cargo:
+    /^(?:build|test|check|clippy|fmt|run|doc|bench|install|update|publish|tree|metadata|nextest|audit|\+\w+)$/,
+  bundle: /^(?:exec|install|update|check|outdated|audit)$/,
+  poetry: /^(?:run|install|check|build|lock|show|update)$/,
+  helm: /^(?:lint|template|install|upgrade|test|status|list|dependency|version)$/,
+  composer: /^(?:install|update|test|validate|run|run-script|audit|exec)$/,
+  turbo: /^(?:run|build|test|lint|typecheck|prune)$/,
+};
+
+/** Usual names of a build target or recipe, for `make test` and the like. */
+const TARGET_RE =
+  /^(?:all|test|tests|check|lint|build|clean|install|dist|release|typecheck|format|fmt|docs?|ci|verify|e2e|coverage|run|dev|default|spec|bench)$/;
+
+/** Words of a sentence that no target, subcommand argument or file is named after. */
+const PROSE_WORD_RE =
+  /^(?:a|an|the|it|its|is|are|was|be|to|of|and|or|but|for|with|on|in|at|by|from|that|this|these|those|sure|so|if|when|then|not|no|we|you|i|they|there|here|again|now|still|also)$/i;
+
+/** A word that a sentence does not hold: a flag, `VAR=value`, or a name with a digit or `_=./\:-`. */
+function machineWord(word: string): boolean {
+  return /^--?[A-Za-z]/.test(word) || /[\d_=./\\:-]/.test(word.replace(/[.,;:]$/, ''));
+}
+
+/**
+ * Whether the arguments fit a program whose name is also an English word:
+ *
+ * - `make`, `just`, `rake`, `ninja`: every argument is a usual target name (`test`, `lint`) or
+ *   a machine word (`build-all`, `-j4`, `CC=gcc`);
+ * - `go`, `cargo`, `bundle`, `poetry`, `helm`, `composer`, `turbo`: the first argument that is
+ *   not a flag is one of the program's subcommands;
+ * - `cat`, `diff`, `ls`, `java`, `ruby`: an argument is a flag or a path.
+ *
+ * In every case a sentence word (`the`, `to`, `sure`) among the arguments means prose. Returns
+ * undefined for a program that is not ambiguous.
+ */
+function fitsProgram(name: string, args: string[]): boolean | undefined {
+  const sub = SUBCOMMANDS[name];
+  const targets = TARGET_PROGRAM_RE.test(name);
+  if (!sub && !targets && !FILE_PROGRAM_RE.test(name)) return undefined;
+  if (args.some((arg) => PROSE_WORD_RE.test(arg))) return false;
+  if (targets) return args.every((arg) => TARGET_RE.test(arg) || machineWord(arg));
+  if (sub) return sub.test(args.find((arg) => !arg.startsWith('-')) ?? '');
+  return args.some(machineWord);
+}
+
 /** A program name or a path to one, in lower case. */
 const PROGRAM_RE = /^(?:\.{0,2}[\\/])?[a-z][\w.+-]*(?:[\\/][\w.+-]+)*$/;
 
@@ -186,6 +239,8 @@ const SCRIPT_RE = /\.(?:sh|bash|ps1|py|js|mjs|cjs|ts|rb|pl|cmd|bat|exe)$/;
  *
  * - a shell prompt in front (`$ anything here`);
  * - a known program with at least one argument (`npm test`), or one that runs alone (`pytest`);
+ *   a program whose name is also an English word needs arguments that fit it (`make test`,
+ *   `go test ./...`), so `make sure it works` and `go to the page` are prose;
  * - a script with an argument (`scripts/check.sh --all`), or alone behind `./` (`./check.sh`);
  * - a program name followed by a flag (`mytool --check`).
  *
@@ -204,6 +259,8 @@ function isCommand(span: string): boolean {
     return BARE_COMMAND_RE.test(program) || (script && /^\.{1,2}[\\/]/.test(program));
   }
   const name = program.split(/[\\/]/).pop() ?? '';
+  const fits = fitsProgram(name.replace(/\.(?:exe|cmd|bat)$/, ''), words.slice(1));
+  if (fits !== undefined) return fits;
   if (KNOWN_PROGRAM_RE.test(name) || script) return true;
   return words.slice(1).some((word) => /^--?[A-Za-z]/.test(word));
 }
