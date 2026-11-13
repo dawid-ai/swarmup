@@ -4,6 +4,8 @@
 ;   uninstall removes only the entry install added (path.ps1 records it under
 ;   HKCU\Software\Agent Ops).
 ; Updates (electron-updater runs the installer with --updated) keep PATH as it is.
+; - Install and update delete a dead shortcut that a build under the earlier name left in the
+;   Start menu or on the desktop (shortcuts.ps1).
 
 !include nsDialogs.nsh
 !include LogicLib.nsh
@@ -42,6 +44,19 @@
     nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\path.ps1" -Action add -Dir "$INSTDIR\resources\bin"'
     Pop $0
   ${EndIf}
+
+  ; The earlier name's shortcut can outlive the update, for example when the app was once
+  ; installed both for this user and for all users. Look in both shell contexts, then go back
+  ; to the one this install uses.
+  SetShellVarContext current
+  StrCpy $1 "$SMPROGRAMS|$DESKTOP"
+  SetShellVarContext all
+  StrCpy $1 "$1|$SMPROGRAMS|$DESKTOP"
+  ${If} $installMode != "all"
+    SetShellVarContext current
+  ${EndIf}
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\shortcuts.ps1" -Dirs "$1"'
+  Pop $0
 !macroend
 
 !macro customUnInstall

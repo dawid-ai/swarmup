@@ -22,6 +22,8 @@ extraResources:
     to: bin
   - from: build/path.ps1
     to: path.ps1
+  - from: build/shortcuts.ps1
+    to: shortcuts.ps1
 win:
   target:
     - nsis
@@ -35,6 +37,7 @@ nsis:
   # install record, so every installer sees an earlier install as an older version of itself: it
   # runs the old uninstaller (keeping user data and PATH), installs into the same folder and
   # renames the shortcuts. Without it, an update would leave two installed apps. Never change it.
+  # A shortcut the rename misses (the other shell context) is deleted by build/shortcuts.ps1.
   guid: 0ee0268e-4046-5200-afd1-f92ff0ba7291
   oneClick: false
   perMachine: false
