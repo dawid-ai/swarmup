@@ -714,6 +714,32 @@ export class MergeRepo {
     );
   }
 
+  /**
+   * `git worktree list --porcelain -z` of the repo. A failure throws: the caller decides what an
+   * unread list means.
+   */
+  worktreeList(): Promise<string> {
+    return this.git(this.top, ['worktree', 'list', '--porcelain', '-z']);
+  }
+
+  /**
+   * The tip of the local branch `branch` when its only parent is `parent`, else null (no such
+   * branch too). A git failure throws, so an unread branch never counts as a missing one.
+   */
+  async branchOn(branch: string, parent: string): Promise<string | null> {
+    const ref = `refs/heads/${branch}`;
+    const out = await this.git(this.top, [
+      'for-each-ref',
+      '--format=%(refname) %(objectname) %(parent)',
+      ref,
+    ]);
+    for (const l of lines(out)) {
+      const [name, tip, ...parents] = l.trim().split(' ');
+      if (name === ref && tip) return parents.length === 1 && parents[0] === parent ? tip : null;
+    }
+    return null;
+  }
+
   /** The folder that holds the refs and objects of the repo `cwd` is in. */
   private async commonDir(cwd: string): Promise<string> {
     return (

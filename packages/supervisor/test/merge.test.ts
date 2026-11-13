@@ -616,6 +616,109 @@ describe('merging approved work', () => {
     expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
   });
 
+  /** Makes git fail in the worktree `wt` (a broken index); the returned function repairs it. */
+  const breakIndex = (wt: string): (() => void) => {
+    const index = join(git(wt, 'rev-parse', '--absolute-git-dir'), 'index');
+    const good = readFileSync(index);
+    writeFileSync(index, 'not an index\n');
+    return () => writeFileSync(index, good);
+  };
+
+  it('merges nothing while git cannot read the task worktree, then what the run left (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    const warns: string[] = [];
+    s.sup.on('warn', (m: string) => warns.push(m));
+    const repair = breakIndex(wt);
+    await s.merged();
+    // The reviewed commit lacks `extra.txt`: with the worktree unread, the base stays.
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+    expect(warns.join('\n')).toContain('cannot read the worktree');
+    repair();
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
+    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
+  });
+
+  it('tells the human and merges nothing when the task worktree stays unreadable (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const repair = breakIndex(worktreeOf(s.repo, 'feature'));
+    s.approve(commit);
+    await s.merged();
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('cannot read the worktree');
+    expect(e.body).toContain('Nothing is merged');
+    // Told once: the merge does not start again until the task changes.
+    repair();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+  });
+
+  it('merges nothing while git cannot list the worktrees (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    writeFileSync(join(worktreeOf(s.repo, 'feature'), 'stray.txt'), 'whose?\n');
+    s.approve(commit);
+    const list = vi
+      .spyOn(MergeRepo.prototype, 'worktreeList')
+      .mockRejectedValueOnce(new Error('fatal: cannot list'));
+    try {
+      await s.merged();
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+      // The next look reads the list and finds the changes.
+      await s.merged();
+      expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    } finally {
+      list.mockRestore();
+    }
+  });
+
+  it('merges nothing while git cannot read the branch of an earlier start of the merge (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    // As an earlier start of the merge left it: the changes committed on their branch, the
+    // worktree clean on the reviewed commit.
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    git(wt, 'commit', '-qm', 'What the run left');
+    const left = git(wt, 'rev-parse', 'HEAD');
+    git(wt, 'branch', 'fake/t-0001-r1-merge');
+    git(wt, 'reset', '-q', '--hard', commit);
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    const tip = vi
+      .spyOn(MergeRepo.prototype, 'branchOn')
+      .mockRejectedValueOnce(new Error('fatal: cannot read refs'));
+    try {
+      await s.merged();
+      expect(tip).toHaveBeenCalledTimes(1);
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      await s.merged();
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
+    } finally {
+      tip.mockRestore();
+    }
+  });
+
   it('merges the branch an earlier review names when the approved review names none (AO-0153)', async () => {
     const s = mergeSetup();
     const first = s.branch('two\n');

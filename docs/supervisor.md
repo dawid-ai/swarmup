@@ -731,8 +731,11 @@ swarmupd:
   `merge` event says so. A merge that starts again after that commit (the PC slept, a check
   timed out, swarmupd restarted) finds the branch by its name and merges it, as long as it sits
   on the commit to merge. Any other changes send the task back to its author with a `changes`
-  verdict that names the files, and nothing is merged. A run that asks for review while swarmupd
-  cannot commit what it left gets a comment to the reviewer that says where the changes are.
+  verdict that names the files, and nothing is merged. When git cannot list the worktrees, read
+  one of them or read that branch, swarmupd merges nothing and looks again on the next tick;
+  after 3 failed looks in a row it comments to the human and waits for the task to change. A run
+  that asks for review while swarmupd cannot commit what it left gets a comment to the reviewer
+  that says where the changes are.
 - **How.** One merge at a time, started when no writing run is live in `checkout`. In its
   worktree (`<state>/merge/<root>`, kept between merges so installed packages stay), swarmupd rebases
   the commit onto the base and runs `checks`; writing runs in `checkout` start as usual
