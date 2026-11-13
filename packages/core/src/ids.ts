@@ -161,8 +161,33 @@ export function doneWhenLines(value: unknown): string[] | undefined {
   return lines.length > 0 ? lines : undefined;
 }
 
-/** A command in a message: inline code or a fenced block. */
-const COMMAND_RE = /`[^`\n]+`|```/;
+/** Programs that are a whole command on their own, such as `pytest`. */
+const BARE_COMMAND_RE =
+  /^(?:npx|make|pytest|tox|vitest|jest|mocha|tsc|eslint|prettier|ruff|mypy|rspec|rake|phpunit|ctest|ninja|just)$/;
+
+/** The first word of a command: a program name or a path to one, in lower case. */
+const PROGRAM_RE = /^(?:\.{0,2}[\\/])?[a-z][\w.+-]*(?:[\\/][\w.+-]+)*$/;
+
+/**
+ * Whether a code span reads as a command: a program and at least one argument (`npm test`), or
+ * a program that runs alone (`pytest`). A review request also puts branches, commits, paths and
+ * identifiers in code font, and none of those is evidence, so one bare word is not a command.
+ */
+function isCommand(span: string): boolean {
+  const words = span
+    .trim()
+    .replace(/^\$\s+/, '')
+    .split(/\s+/);
+  const program = words[0] ?? '';
+  if (words.length === 1) return BARE_COMMAND_RE.test(program);
+  return PROGRAM_RE.test(program);
+}
+
+/** A command in a message: a fenced block, or an inline code span that reads as a command. */
+function namesCommand(message: string): boolean {
+  if (message.includes('```')) return true;
+  return [...message.matchAll(/`([^`\n]+)`/g)].some((m) => isCommand(m[1] ?? ''));
+}
 
 /** A result in a message: an outcome word, a count, an exit code, or pasted output. */
 const RESULT_RE =
@@ -176,7 +201,7 @@ const RESULT_RE =
 export function evidenceNotes(message: string, doneWhen: string[] | undefined): string[] {
   if (!doneWhen || doneWhen.length === 0) return [];
   const missing = [
-    COMMAND_RE.test(message) ? null : 'no command (in code font, such as `npm test`)',
+    namesCommand(message) ? null : 'no command (in code font, such as `npm test`)',
     RESULT_RE.test(message) ? null : 'no result (what each command printed, or what you saw)',
   ].filter(Boolean);
   if (missing.length === 0) return [];
