@@ -506,6 +506,91 @@ describe('merging approved work', () => {
     });
   });
 
+  /** The worktree that has `branch` checked out. */
+  const worktreeOf = (repo: string, branch: string): string => {
+    const block = git(repo, 'worktree', 'list', '--porcelain')
+      .split(/\r?\n\r?\n/)
+      .find((b) => b.includes(`branch refs/heads/${branch}`))!;
+    return /^worktree (.+)$/m.exec(block)![1]!.trim();
+  };
+  /** Task 1 approved, with the review naming `commit` and a run-end of its author before the verdict. */
+  const approveAfterRun = (
+    s: ReturnType<typeof mergeSetup>,
+    commit: string,
+    runEnd: string,
+  ): void => {
+    const eng = s.as('fake:engineer');
+    eng.start('1', 'plan');
+    eng.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
+    eng.recordRun('1', 'run-end', { run: 'R1', exit: 0, reason: 'exit', minutes: 1 }, runEnd);
+    s.as('human:dawid').verdict('1', 'approve', 'after swarmupd commits the staged files');
+  };
+
+  it('commits what a run could not commit in the worktree, then merges it (AO-0300)', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    // As the AO-0287 run left it: a staged new file and a changed one on top of its commit.
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
+    approveAfterRun(
+      s,
+      commit,
+      `cannot commit what it left in ${wt}: HEAD moved from 1111111 to ${commit.slice(0, 7)} during the run; the changes stay for a person`,
+    );
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'fake/t-0001-r1-merge' });
+    expect(e.body).toContain('2 file(s) run R1 left uncommitted');
+    expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\nthree\n');
+    expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('two\nthree\n');
+    // The commit holds the reviewed one, and the worktree is back on it with nothing left.
+    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(git(wt, 'status', '--porcelain')).toBe('');
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
+  });
+
+  it('sends the task back when its worktree has changes no run-end accounts for (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'stray.txt'), 'whose?\n');
+    s.approve(commit);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
+    expect(e.body).toContain('no run-end');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(text(join(wt, 'stray.txt'))).toBe('whose?\n');
+    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+  });
+
+  it('sends the task back when the worktree with the changes is not on the commit to merge (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
+    git(wt, 'commit', '-qam', 'One more line');
+    writeFileSync(join(wt, 'code.txt'), 'two\nthree\nfour\n');
+    approveAfterRun(s, commit, 'left changes uncommitted: 1 process(es) of the run still alive');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
+    expect(e.body).toContain('not on the commit to merge');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
+  });
+
   it('merges the branch an earlier review names when the approved review names none (AO-0153)', async () => {
     const s = mergeSetup();
     const first = s.branch('two\n');

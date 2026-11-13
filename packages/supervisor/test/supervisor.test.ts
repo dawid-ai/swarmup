@@ -177,7 +177,7 @@ else if ((mode === 'edit-wait' || mode === 'edit-move') && process.env.SWARMUP_P
     await new Promise((r) => setTimeout(r, 50));
   }
 }
-else if (mode === 'edit' || mode === 'edit-review' || mode === 'edit-wait' || mode === 'edit-move') {
+else if (mode === 'edit' || mode === 'edit-review' || mode === 'edit-wait' || mode === 'edit-move' || mode === 'edit-move-review') {
   // A sandboxed run: changes files, cannot commit them.
   const fs = await import('node:fs');
   fs.writeFileSync('tracked.txt', 'changed by the run\\n');
@@ -188,12 +188,13 @@ else if (mode === 'edit' || mode === 'edit-review' || mode === 'edit-wait' || mo
   if (mode === 'edit-wait') {
     while (!fs.existsSync(process.env.FAKE_GO)) await new Promise((r) => setTimeout(r, 50));
   }
-  if (mode === 'edit-move') {
+  if (mode === 'edit-move' || mode === 'edit-move-review') {
     // Moves HEAD, then leaves a change on top of it.
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['commit', '-qam', 'run commit'], { windowsHide: true });
     fs.writeFileSync('tracked.txt', 'changed after the move\\n');
   }
+  if (mode === 'edit-move-review' && task) ws.review(task, 'committed; one more change is in the checkout');
 }
 else if (mode === 'commit') {
   const fs = await import('node:fs');
@@ -5029,6 +5030,19 @@ describe('what runs leave in the checkout', () => {
       .events.find((e) => e.type === 'run-end');
     expect(end?.body).toMatch(/cannot commit what it left in .+: HEAD moved from /);
     expect(as('human:dawid').view('1').status).toBe('todo');
+  });
+
+  it('tells the reviewer when a run asked for review with changes swarmupd could not commit (AO-0300)', async () => {
+    const { repo, sup, as } = codeSetup('edit-move-review');
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    await ended(sup, run.id);
+    expect(text(join(repo, 'tracked.txt'))).toBe('changed after the move\n');
+    expect(as('human:dawid').view('1').status).toBe('needs-review');
+    const last = as('human:dawid').showEvents('1').events.at(-1)!;
+    expect(last).toMatchObject({ type: 'comment', to: 'human:dawid' });
+    expect(last.body).toContain(`run ${run.id} (fake:engineer) asked for review, and swarmupd`);
+    expect(last.body).toMatch(/cannot commit what it left in .+: HEAD moved from /);
+    expect(last.body).toContain('lacks those changes');
   });
 
   it('commits only after the processes the run left behind are killed', async () => {
