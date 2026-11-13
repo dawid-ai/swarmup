@@ -4929,6 +4929,8 @@ export class Supervisor extends EventEmitter {
    * - Changes there, the last run of the review's author ended with swarmupd unable to commit
    *   what it left ({@link uncommittedRun}), and the worktree is on the commit to merge: swarmupd
    *   commits them on a branch of their own on top of it, and the merge takes that commit.
+   *   When a file changed again during that commit (`kept`), the commit is not all of what the
+   *   run left: `held` too, and nothing is merged.
    * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
    * - A run still works there: `again`, so the next tick looks once more.
    * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt: it
@@ -4988,14 +4990,27 @@ export class Supervisor extends EventEmitter {
             source,
           );
           if (!c) continue;
-          const kept =
-            c.kept.length > 0
-              ? `; ${c.kept.length} file(s) changed again after the commit and stay there`
-              : '';
+          // A kept file changed after the commit's snapshot, or has a staged version the commit
+          // lacks: the commit is not all of what the run left, so it is never merged.
+          if (c.kept.length > 0) {
+            const names = c.kept.slice(0, 5).map((f) => `\`${f}\``);
+            const rest = c.kept.length > 5 ? ` and ${c.kept.length - 5} more` : '';
+            this.safe(() =>
+              this.ws(MERGE_ACTOR).sendBack(
+                ref,
+                `swarmupd did not merge ${job.what}: while it committed what run ${run.id} left uncommitted in ${path}, ${c.kept.length} file(s) there changed again or have a staged version the commit lacks (${names.join(', ')}${rest}). ` +
+                  `They stay in the worktree as they are; the other files the run left are in ${short(c.commit)} on branch \`${c.branch}\`, on top of ${short(source)}. ` +
+                  'Put that commit and what belongs to the task of the files in the worktree on the task branch, then ask for review again. Delete nothing you did not make: ' +
+                  "for changes that are not the task's, ask who made them (`swarmup ask`).",
+                job.author,
+              ),
+            );
+            return 'held';
+          }
           taken = {
             commit: c.commit,
             branch: c.branch,
-            what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path}${kept})`,
+            what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path})`,
           };
           this.mergeLine(
             ref,
