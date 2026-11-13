@@ -11,6 +11,7 @@ import type {
   Workspace,
 } from '@swarmup/core';
 import {
+  doneWhenLines,
   findAttachment,
   MAX_ATTACHMENT_BYTES,
   OpsError,
@@ -437,6 +438,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           priority: (str(body.priority) || undefined) as Priority | undefined,
           project: str(body.project) || undefined,
           parent: str(body.parent) || undefined,
+          // `done_when`: a list of checks, or text with one check per line.
+          doneWhen: doneWhenLines(body.done_when),
         });
         const warnings = ws.reachWarnings([meta.owner]);
         const task = { ...compact(ws.view(meta.id)), proposed };

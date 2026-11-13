@@ -589,6 +589,21 @@ function learnRule(task: string, review: boolean): string[] {
       ];
 }
 
+/**
+ * Where a work run finds the task's `done_when` (AO-0290) and what its review request owes. The
+ * prompt names the field instead of quoting it, so `swarmup show` stays the one place to read it.
+ */
+const DONE_WHEN_WORK = [
+  'If `swarmup show` prints a `done when:` list, the task is done when every line holds: run each',
+  'command, and name the commands you ran and their output in your review request.',
+];
+
+/** The same for a review run: the list is what the reviewer checks the request against. */
+const DONE_WHEN_REVIEW = [
+  'If it prints a `done when:` list, check every line against the commands and output the request',
+  'names; a line with no evidence is a reason for `changes`.',
+];
+
 /** The standard prompt for a supervised run. */
 export function runPrompt(p: PromptInput): string {
   const lines = [
@@ -617,6 +632,7 @@ export function runPrompt(p: PromptInput): string {
     lines.push(
       '',
       `Review ${p.task}: run \`swarmup show ${p.task}\` and check the work its review request names.`,
+      ...DONE_WHEN_REVIEW,
       'Do not edit, build, commit or push. Finish with exactly one verdict:',
       `\`swarmup verdict ${p.task} approve "why"\` or \`swarmup verdict ${p.task} changes "what to fix, file:line"\`.`,
     );
@@ -626,6 +642,7 @@ export function runPrompt(p: PromptInput): string {
     lines.push(
       '',
       `Work on ${p.task}: run \`swarmup show ${p.task}\`, then \`swarmup start ${p.task}\` with a one-line plan.`,
+      ...DONE_WHEN_WORK,
       'Finish it with exactly one finishing command (review, done, handoff, ask, block or release).',
     );
   } else {
