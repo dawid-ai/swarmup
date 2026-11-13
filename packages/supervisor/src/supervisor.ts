@@ -82,7 +82,6 @@ import {
   installSteps,
   isEngineRepo,
   lockfileDirs,
-  MERGE_GIT_TIMEOUT_MS,
   MergeRepo,
   notLiveNotice,
   opsdCodeChanges,
@@ -428,6 +427,8 @@ export function signedOutText(provider: string, out: SignedOut, now = Date.now()
 
 /** Rebase, check and fast-forward rounds before a merge gives up on a base that keeps moving. */
 const MERGE_ATTEMPTS = 5;
+/** How many times in a row a merge may fail to read the task's worktrees before the human hears. */
+const MERGE_LOOKS = 3;
 /** Pause between those rounds. */
 const MERGE_RETRY_MS = 2_000;
 /** How long the task store sync may push a merged commit as approved (AO-0193). */
@@ -744,6 +745,8 @@ export class Supervisor extends EventEmitter {
   private readonly mergeTimedOut = new Set<string>();
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
   private readonly electronDists = new Set<string>();
+  /** Per task, the merges in a row that could not read the task's worktrees (AO-0300). */
+  private readonly mergeLooks = new Map<string, number>();
   private user: UserConfig;
   private readonly now: () => number;
   private readonly live = new Map<string, LiveRun>();
@@ -5312,6 +5315,8 @@ export class Supervisor extends EventEmitter {
    *   commits them on a branch of their own on top of it, and the merge takes that commit.
    * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
    * - A run still works there: `again`, so the next tick looks once more.
+   * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt: it
+   *   throws. An unread worktree is never taken for a clean one; {@link mergeOne} looks again.
    *
    * The commit leaves the worktree clean, and a merge can start again after it (the PC slept, a
    * check timed out, swarmupd restarted). So with nothing to commit, the branch of an earlier
@@ -5327,18 +5332,10 @@ export class Supervisor extends EventEmitter {
     const id = ws.resolve(ref).id;
     let list: WorktreeEntry[];
     try {
-      list = parseWorktreeList(
-        await gitAsync(job.top, ['worktree', 'list', '--porcelain', '-z'], {
-          env: { ...this.commandEnv(), GIT_TERMINAL_PROMPT: '0' },
-          timeoutMs: MERGE_GIT_TIMEOUT_MS,
-        }),
-      );
+      list = parseWorktreeList(await repo.worktreeList());
     } catch (err) {
-      this.emit(
-        'warn',
-        `merge of ${ref}: cannot list the worktrees of ${job.top}: ${gitError(err)}`,
-      );
-      return null;
+      if (err instanceof GitTimeout) throw err;
+      throw new Error(`cannot list the worktrees of ${job.top}: ${gitError(err)}`);
     }
     const bases = new Set(Object.values(this.config.merge).map((m) => m.base));
     const mine = list.filter(
@@ -5356,9 +5353,9 @@ export class Supervisor extends EventEmitter {
         return 'again';
       }
       const { changes } = await this.checkout(path).stateAsync();
+      // An unread worktree may hold part of the approved work: it never counts as a clean one.
       if (changes instanceof Error) {
-        this.emit('warn', `merge of ${ref}: cannot read the worktree ${path}: ${changes.message}`);
-        continue;
+        throw new Error(`cannot read the worktree ${path}: ${changes.message}`);
       }
       if (changes.length === 0) continue;
       const run = uncommittedRun(ws.showEvents(ref).events);
@@ -5410,8 +5407,8 @@ export class Supervisor extends EventEmitter {
     const run = uncommittedRun(ws.showEvents(ref).events);
     if (!run) return null;
     const branch = leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id);
-    const commit = await repo.commit(`refs/heads/${branch}`);
-    if (!commit || (await repo.commit(`${commit}^`)) !== source) return null;
+    const commit = await repo.branchOn(branch, source);
+    if (!commit) return null;
     return {
       commit,
       branch,
@@ -5464,7 +5461,27 @@ export class Supervisor extends EventEmitter {
       return;
     }
     // What a run left uncommitted in the task's worktree is part of the approved work (AO-0300).
-    const left = await this.worktreeLeftovers(ref, job, source, repo);
+    // A look that fails says nothing about what is there, so the merge waits and looks again;
+    // after MERGE_LOOKS failed looks in a row the human hears of it and nothing is merged.
+    let left: Awaited<ReturnType<Supervisor['worktreeLeftovers']>>;
+    try {
+      left = await this.worktreeLeftovers(ref, job, source, repo);
+      this.mergeLooks.delete(ref);
+    } catch (err) {
+      const looks = (this.mergeLooks.get(ref) ?? 0) + 1;
+      if (looks >= MERGE_LOOKS) {
+        this.mergeLooks.delete(ref);
+        if (err instanceof GitTimeout) throw err;
+        const m = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `${firstLines(m)} (${MERGE_LOOKS} times in a row). Nothing is merged: swarmupd cannot tell whether the task's worktree holds changes the commit lacks. Check that git works there`,
+        );
+      }
+      this.mergeLooks.set(ref, looks);
+      const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+      this.emit('warn', `merge of ${ref}: ${firstLines(msg)}; nothing merged, looks again`);
+      return 'again';
+    }
     if (left === 'held') return;
     if (left === 'again') return 'again';
     if (left) {
