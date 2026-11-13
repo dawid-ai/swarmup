@@ -5547,6 +5547,8 @@ describe('task worktrees (AO-0168)', () => {
     // Closed less than `reclaim_after_minutes` ago: every worktree stays.
     await sup.housekeep();
     for (const id of ['T-0001', 'T-0002', 'T-0003']) expect(existsSync(wt(repo, id))).toBe(true);
+    // Inside the grace nothing is held back: the sweep has not asked for those folders yet.
+    expect(sup.keptWorktrees()).toEqual([]);
 
     now += 61 * 60_000;
     await sup.housekeep();
@@ -5562,6 +5564,19 @@ describe('task worktrees (AO-0168)', () => {
     await sup.housekeep();
     expect(warns.filter((w) => w.includes('has uncommitted changes (code.txt)'))).toHaveLength(1);
     expect(warns.filter((w) => w.includes('that no branch holds'))).toHaveLength(1);
+    // Settings lists what each sweep held back, with the reason (AO-0298).
+    expect(sup.keptWorktrees().map((k) => [k.task, k.reason])).toEqual([
+      ['test/T-0002', 'uncommitted changes (code.txt)'],
+      ['test/T-0003', expect.stringMatching(/^its commit [0-9a-f]{8} is on no branch$/)],
+    ]);
+    expect(samePath(sup.keptWorktrees()[0]!.path, wt(repo, 'T-0002'))).toBe(true);
+    // Committed, the change no longer holds the worktree: the next sweep removes it and drops it
+    // from the list.
+    git(wt(repo, 'T-0002'), 'add', '-A');
+    git(wt(repo, 'T-0002'), 'commit', '-qm', 'keep the change');
+    await sup.housekeep();
+    expect(existsSync(wt(repo, 'T-0002'))).toBe(false);
+    expect(sup.keptWorktrees().map((k) => k.task)).toEqual(['test/T-0003']);
 
     // Reopened, the task gets its worktree again on the branch its work is on.
     h.reopen('1');
