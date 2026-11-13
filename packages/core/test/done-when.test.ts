@@ -103,6 +103,11 @@ describe('evidenceNotes', () => {
       '`8f41216` on branch `claude/ao-0290`: all tests pass',
       'Changed `packages/core/src/ids.ts` and `evidenceNotes`; the tests pass',
       '`done_when` is in `TaskMeta`, set by `--done-when CHECK` and `POST /api/tasks`; all green',
+      // Prose in code font, such as a quoted test name, is not a command either.
+      '`has identical copies`; tests pass',
+      'The test `reads old tasks without the field` is green, and so is `round trip of a list`',
+      'Fixed `the note text` and `evidence notes for a review`; all tests pass',
+      '`./docs/protocol.md` describes it; tests pass',
     ]) {
       const [note] = evidenceNotes(bare, lines);
       expect(note, bare).toMatch(/names no command/);
@@ -116,6 +121,11 @@ describe('evidenceNotes', () => {
       '`./scripts/check.sh --all` prints ok',
       '`$ node packages/cli/dist/main.js show AO-1` shows the list',
       'on branch `main`; `npm run typecheck` printed no errors',
+      '`./check.sh` exits 0',
+      '`scripts/check.ps1 all` printed ok',
+      '`CI=1 npx vitest run packages/core` printed 40 passed',
+      '`mytool --check` printed ok',
+      '`node_modules/.bin/vitest run` printed 40 passed',
     ]) {
       expect(evidenceNotes(ok, lines), ok).toEqual([]);
     }

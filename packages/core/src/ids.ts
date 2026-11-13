@@ -165,22 +165,47 @@ export function doneWhenLines(value: unknown): string[] | undefined {
 const BARE_COMMAND_RE =
   /^(?:npx|make|pytest|tox|vitest|jest|mocha|tsc|eslint|prettier|ruff|mypy|rspec|rake|phpunit|ctest|ninja|just)$/;
 
-/** The first word of a command: a program name or a path to one, in lower case. */
+/**
+ * Programs an agent runs to check work. A span that starts with one of these and has an
+ * argument is a command; an unknown first word needs other evidence (see `isCommand`), because
+ * prose in code font (`has identical copies`) starts with a lower-case word too.
+ */
+const KNOWN_PROGRAM_RE =
+  /^(?:npm|npx|pnpm|yarn|bun|deno|node|tsx|ts-node|tsc|vitest|jest|mocha|playwright|cypress|eslint|prettier|biome|swarmup|ops|git|gh|python3?|py|pip3?|pipx|uv|poetry|pytest|tox|ruff|mypy|cargo|rustc|go|make|cmake|ctest|ninja|just|dotnet|java|mvn|gradle|gradlew|ruby|bundle|rake|rspec|php|composer|phpunit|docker|podman|kubectl|helm|terraform|curl|wget|bash|sh|zsh|pwsh|powershell|cmd|grep|rg|ls|cat|diff|jq|sed|awk|electron|vite|webpack|rollup|esbuild|turbo|nx)(?:\.(?:exe|cmd|bat))?$/;
+
+/** A program name or a path to one, in lower case. */
 const PROGRAM_RE = /^(?:\.{0,2}[\\/])?[a-z][\w.+-]*(?:[\\/][\w.+-]+)*$/;
 
+/** A script by its extension, such as `scripts/check.sh`. */
+const SCRIPT_RE = /\.(?:sh|bash|ps1|py|js|mjs|cjs|ts|rb|pl|cmd|bat|exe)$/;
+
 /**
- * Whether a code span reads as a command: a program and at least one argument (`npm test`), or
- * a program that runs alone (`pytest`). A review request also puts branches, commits, paths and
- * identifiers in code font, and none of those is evidence, so one bare word is not a command.
+ * Whether a code span reads as a command. A review request also puts branches, commits, paths,
+ * identifiers and quoted test names in code font, and none of those is evidence, so the span
+ * needs a positive sign of a command, one of:
+ *
+ * - a shell prompt in front (`$ anything here`);
+ * - a known program with at least one argument (`npm test`), or one that runs alone (`pytest`);
+ * - a script with an argument (`scripts/check.sh --all`), or alone behind `./` (`./check.sh`);
+ * - a program name followed by a flag (`mytool --check`).
+ *
+ * `VAR=value` words in front of the program are skipped.
  */
 function isCommand(span: string): boolean {
-  const words = span
-    .trim()
-    .replace(/^\$\s+/, '')
-    .split(/\s+/);
+  const text = span.trim();
+  const prompt = /^\$\s+\S/.test(text);
+  const words = text.replace(/^\$\s+/, '').split(/\s+/);
+  while (words.length > 1 && /^[A-Za-z_]\w*=\S*$/.test(words[0] ?? '')) words.shift();
   const program = words[0] ?? '';
-  if (words.length === 1) return BARE_COMMAND_RE.test(program);
-  return PROGRAM_RE.test(program);
+  if (!PROGRAM_RE.test(program)) return false;
+  if (prompt) return true;
+  const script = SCRIPT_RE.test(program);
+  if (words.length === 1) {
+    return BARE_COMMAND_RE.test(program) || (script && /^\.{1,2}[\\/]/.test(program));
+  }
+  const name = program.split(/[\\/]/).pop() ?? '';
+  if (KNOWN_PROGRAM_RE.test(name) || script) return true;
+  return words.slice(1).some((word) => /^--?[A-Za-z]/.test(word));
 }
 
 /** A command in a message: a fenced block, or an inline code span that reads as a command. */
