@@ -248,6 +248,19 @@ several review rounds.
   checkout, and deletes what the junction points to. A removal is saved before the folder is
   touched, so the next sweep finishes one that a crash or a locked file cut off. Set
   `swarmupd.reclaim_worktrees: false` to keep every worktree.
+- **Cleanup in Settings (AO-0298).** The **Cleanup** section of **Settings** shows and changes the
+  three keys: the **Remove the worktrees of closed tasks** switch (`reclaim_worktrees`, on by
+  default), **Grace period (min)** (`reclaim_after_minutes`) and **Scratch folders (days)**
+  (`scratch_days`). `GET /api/settings` reports them and `POST /api/settings` accepts them; it
+  refuses anything but true or false for the switch and anything but a number of at least 0 for
+  the other two. A change applies from the next sweep, with no restart. Turning the switch on
+  removes the key from the user config, a hand-written `false` included. Under **Held back by the
+  last sweep**, the section lists each closed task's worktree that the last sweep left in place,
+  with the reason: a run works in it, its merge is pending, it has uncommitted changes, its commit
+  is on no branch, it is locked with `git worktree lock`, it is a junction or symlink, or git
+  cannot read it. The list is empty while the switch is off, because no sweep looks at the
+  worktrees then, and it is kept in memory, so it is empty from a swarmupd start until the first
+  sweep ends.
 - **Crash recovery in task worktrees (AO-0230).** swarmupd makes a task worktree locked with the
   reason `swarmupd: making` and unlocks it once git has checked out every file. A worktree that
   still has that lock was cut off mid-checkout by a crash or power cut: no run ever worked in it,

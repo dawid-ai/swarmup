@@ -159,6 +159,8 @@ const views = [
   'channels',
   'knowledge',
   'settings',
+  // The Cleanup section is below the first screen: `settings:cleanup` scrolls to it (AO-0298).
+  'settings:cleanup',
 ];
 
 // --packaged: the unpacked installer build (npm run dist), with its bundled swarmupd and swarmup command,
@@ -213,7 +215,8 @@ try {
 }
 
 const missing = [...views, 'add-project'].filter((v) => {
-  const png = join(shots, `${v}.png`);
+  // The app names the file of `view:id` with a dash.
+  const png = join(shots, `${v.replace(/[:/]/g, '-')}.png`);
   return !existsSync(png) || statSync(png).size < 1024;
 });
 const problems = existsSync(join(shots, 'problems.json'))

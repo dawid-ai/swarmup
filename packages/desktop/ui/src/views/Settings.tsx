@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Gauge,
   BellRing,
+  Brush,
   Library,
   Mic,
   Network,
@@ -77,13 +78,20 @@ export function Settings({
   nav,
   info,
   onRestarted,
+  section,
 }: {
   nav: Nav;
   info: Info | null;
   onRestarted: () => void;
+  /** A section to scroll to once the settings load, such as `cleanup`. */
+  section?: string;
 }) {
   const { data, error, reload } = useData<SettingsData>('/api/settings');
   const agents = useData<Agent[]>('/api/agents');
+  const loaded = Boolean(data);
+  useEffect(() => {
+    if (section && loaded) document.getElementById(`settings-${section}`)?.scrollIntoView();
+  }, [section, loaded]);
   return (
     <Section
       title="Settings"
@@ -102,6 +110,7 @@ export function Settings({
             <MasterCard data={data} onSaved={reload} />
             <NotifyCard data={data} onSaved={reload} />
             <LimitsCard data={data} onSaved={reload} />
+            <CleanupCard data={data} onSaved={reload} />
             <ProvidersCard data={data} onSaved={reload} />
             <RoleFilesCard me={nav.me} />
             <RolesCard data={data} onSaved={reload} />
@@ -119,10 +128,12 @@ function Card(props: {
   hint?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** An element id, for a section that `Settings` can scroll to. */
+  id?: string;
 }) {
   const Icon = props.icon;
   return (
-    <section className="panel animate-rise">
+    <section id={props.id} className="panel animate-rise">
       <header className="flex items-start gap-3 border-b border-white/6 px-5 py-3.5">
         <Icon size={18} className="mt-0.5 text-signal" />
         <div>
@@ -1083,6 +1094,108 @@ function LimitsCard({ data, onSaved }: { data: SettingsData; onSaved: () => void
           <Toggle checked={sync} onChange={setSync} label={sync ? 'On' : 'Off'} />
         </Field>
       </div>
+    </Card>
+  );
+}
+
+const CLEANUP: Array<{
+  key: 'reclaim_after_minutes' | 'scratch_days';
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: 'reclaim_after_minutes',
+    label: 'Grace period (min)',
+    hint: 'How long a task stays closed before its worktree goes, so a quick reopen keeps it',
+  },
+  {
+    key: 'scratch_days',
+    label: 'Scratch folders (days)',
+    hint: "How long a run's scratch folder stays after the run ends",
+  },
+];
+
+/**
+ * What swarmupd removes on its own (AO-0298): the worktree of a closed task, and old scratch
+ * folders. A change applies from the next cleanup sweep. The list names the closed tasks'
+ * worktrees the last sweep left in place, so a folder that stays is no surprise.
+ */
+export function CleanupCard({ data, onSaved }: { data: SettingsData; onSaved: () => void }) {
+  const shown = (key: 'reclaim_after_minutes' | 'scratch_days'): string =>
+    data.set.includes(key) ? String(data.opsd[key]) : '';
+  const initial = (): Record<string, string> =>
+    Object.fromEntries(CLEANUP.map((c) => [c.key, shown(c.key)]));
+  const [vals, setVals] = useState(initial);
+  const [reclaim, setReclaim] = useState(data.opsd.reclaim_worktrees);
+  useEffect(() => {
+    setVals(initial());
+    setReclaim(data.opsd.reclaim_worktrees);
+  }, [data]);
+  const s = useSave(onSaved);
+  const patch: Patch = {};
+  if (reclaim !== data.opsd.reclaim_worktrees) patch.reclaim_worktrees = reclaim;
+  for (const c of CLEANUP) {
+    if (vals[c.key] !== shown(c.key)) patch[c.key] = num(vals[c.key]!);
+  }
+  const kept = data.kept ?? [];
+  return (
+    <Card
+      id="settings-cleanup"
+      icon={Brush}
+      title="Cleanup"
+      hint="What swarmupd removes on its own. A change applies from the next sweep, every 10 minutes."
+      footer={
+        <SaveBar
+          s={s}
+          dirty={Object.keys(patch).length > 0}
+          onSave={() => s.save({ opsd: patch })}
+        />
+      }
+    >
+      <Field
+        label="Remove the worktrees of closed tasks"
+        hint="Only a clean worktree whose commit is on a branch. The branch stays, and a reopened task gets its worktree again."
+      >
+        <Toggle checked={reclaim} onChange={setReclaim} label={reclaim ? 'On' : 'Off'} />
+      </Field>
+      {!reclaim && (
+        <div className="mt-2 text-xs text-warn">
+          Off: every task worktree stays in <span className="font-mono">out/</span> until you remove
+          it yourself.
+        </div>
+      )}
+      <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+        {CLEANUP.map((c) => (
+          <Field key={c.key} label={c.label} hint={c.hint}>
+            <Input
+              type="number"
+              value={vals[c.key] ?? ''}
+              onChange={(v) => setVals({ ...vals, [c.key]: v })}
+              placeholder={String(data.opsd[c.key])}
+            />
+          </Field>
+        ))}
+      </div>
+      {data.opsd.reclaim_worktrees && (
+        <div className="mt-5">
+          <div className="text-xs font-medium text-fg-2">Held back by the last sweep</div>
+          {kept.length === 0 ? (
+            <div className="mt-1 text-xs text-fg-3">
+              Nothing: the sweep left no closed task's worktree in place.
+            </div>
+          ) : (
+            <ul className="mt-1.5 flex flex-col gap-1.5">
+              {kept.map((k) => (
+                <li key={k.path} className="text-xs">
+                  <span className="font-mono text-fg-2">{k.task}</span>
+                  <span className="text-fg-3">: {k.reason}</span>
+                  <div className="break-all font-mono text-fg-3">{k.path}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

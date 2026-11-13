@@ -616,7 +616,9 @@ export function App() {
           {view === 'decisions' && <Decisions key={arg ?? ''} nav={nav} selected={arg} />}
           {view === 'chat' && <Chat nav={nav} />}
           {view === 'channels' && <Channels nav={nav} selected={arg} />}
-          {view === 'settings' && <Settings nav={nav} info={info} onRestarted={loadInfo} />}
+          {view === 'settings' && (
+            <Settings nav={nav} info={info} onRestarted={loadInfo} section={arg} />
+          )}
         </div>
       </main>
       {task && (

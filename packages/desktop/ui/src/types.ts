@@ -605,6 +605,10 @@ export interface Settings {
     sync: boolean;
     port: number;
     tick_seconds: number;
+    /** Remove a closed task's clean worktree; on by default. */
+    reclaim_worktrees: boolean;
+    reclaim_after_minutes: number;
+    scratch_days: number;
     runtimes: Record<string, RuntimeView>;
     roles: Record<string, RoleLimits>;
     agents: Record<string, { wake?: boolean; budget?: string; model?: string }>;
@@ -613,6 +617,8 @@ export interface Settings {
   /** Default providers the config does not list, with whether their program is on PATH. */
   missingDefaults?: Array<{ name: string; command: string; found: string | null }>;
   set: string[];
+  /** Closed tasks' worktrees the last cleanup sweep left in place, each with the reason. */
+  kept?: Array<{ task: string; path: string; reason: string }>;
 }
 
 export interface StandupItem {
