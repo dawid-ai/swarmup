@@ -1,1 +1,0 @@
-- A merge after you move the code checkout to another repo (`merge.<root>.checkout` or `swarmupd.code.<root>`) no longer fails with "unable to read tree": swarmupd removes its merge worktree from the old repo and makes it again from the new one.

@@ -3,6 +3,23 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.3 (2026-11-13)
+
+- **Add project from the app.** **Add project**, in the sidebar's new **Projects** list and under
+  **Settings > Data roots**, adds an existing repo without a terminal: pick the folder, review
+  what SwarmUp proposes, and click **Create**. For a public repo, tasks can live in a separate
+  private folder. The sidebar lists your projects; a project opens **Tasks** filtered to it.
+- **The SwarmUp look.** The app icon, the installer, the tray and the sidebar show the four-tile
+  SwarmUp mark. Avatars are the provider's tile with the role icon on it, and names use the same
+  colors. An animated mark shows whether a task or run is under way, waits for you, finished or
+  failed.
+- **Agents learn from earlier tasks.** A run's prompt lists up to 3 learn notes that match the
+  task, and agents are asked to write one when the next agent should know something.
+- **Faster and steadier.** Chat messages no longer wait behind the app's reads, the Inbox loads in
+  about half the time, and swarmupd no longer stalls after each task change. On Windows, claiming
+  a task and marking Inbox items read no longer fail with `EPERM`. Merges keep working after you
+  move or delete the code checkout.
+
 ## v0.3.0-beta.2 (2026-11-12)
 
 - **Tasks and code in separate repos.** Your task store can live in a private repo of its own

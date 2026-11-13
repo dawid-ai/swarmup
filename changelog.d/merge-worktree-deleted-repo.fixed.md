@@ -1,1 +1,0 @@
-- A merge after you delete the old code checkout no longer stops with "exists but is no git worktree; remove it": swarmupd deletes its merge worktree whose repo is gone and makes it again from the current checkout.
