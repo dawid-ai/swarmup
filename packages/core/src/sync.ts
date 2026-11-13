@@ -6,6 +6,8 @@ import { isStoreDirName, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME, ROOT_DIR_NAMES } from
 import type { GitSteps } from './git-steps.js';
 import { git, gitAsync, gitOk, gitStep, runSteps, runStepsAsync } from './git-steps.js';
 import { OpsError } from './ids.js';
+import type { GitProc } from './index-lock.js';
+import { clearStaleIndexLock } from './index-lock.js';
 import { Root } from './root.js';
 import { scanFiles } from './secrets.js';
 import { isUlid, ulidAfter } from './ulid.js';
@@ -33,6 +35,8 @@ export interface SyncOptions {
    * in one checkout never lets an equal patch out of another.
    */
   approved?: (top: string, branch: string) => ReadonlySet<string>;
+  /** Lists the live git processes for the stale `index.lock` check, for tests. */
+  gitProcs?: () => GitProc[] | null;
   now?: number;
 }
 
@@ -656,6 +660,17 @@ function* syncSteps(
     push = true;
   }
   if (opts.skipPull) pull = false;
+
+  // A lock a dead git left would fail every step that writes the index (AO-0302). The clock is
+  // the real one: `opts.now` is the caller's time for the policy, the lock's time is the disk's.
+  const lock = yield* clearStaleIndexLock(top, Date.now(), { gitProcs: opts.gitProcs });
+  if (lock.lock) {
+    const what = `index.lock in ${dirname(lock.lock)} (${Math.round(lock.ageMs! / 60_000)} min old)`;
+    if (lock.removed) result.notes.push(`removed a stale ${what}: no live git process made it`);
+    else if (lock.heldBy?.length) {
+      result.notes.push(`left the ${what}: git process ${lock.heldBy.join(', ')} may hold it`);
+    }
+  }
 
   // Nothing commits, pulls or pushes while a code branch is checked out in the root's checkout.
   const status = yield* checkoutStatus(top, rel);

@@ -417,6 +417,14 @@ run prompt says so, and Claude runs there cannot run `git checkout` or `git swit
 [supervisor.md](supervisor.md#runtimes)). While the hold lasts, swarmupd retries the sync every tick
 but logs the note only when it changes.
 
+A git process that is killed mid-write leaves `.git/index.lock` in the checkout, and every later
+git command that writes the index fails with "Unable to create index.lock: File exists". Each
+sync first removes that lock when it is at least 2 minutes old and no live git process started
+before the lock was made (the lock's maker is always older than its lock), and says so in a note.
+It leaves the lock, and the sync fails as before, when such a process is alive or when the
+processes cannot be listed (Windows: PowerShell `Get-CimInstance`; elsewhere `ps`). Git's
+`fsmonitor--daemon` and `credential-cache--daemon`, which never write the index, do not count.
+
 Every session pushes when it ends or compacts its context, whatever the policy:
 
 - **Claude Code:** run `swarmup hooks install` in the repo once. It adds `SessionEnd` and `PreCompact`

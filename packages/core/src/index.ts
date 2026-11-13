@@ -13,6 +13,7 @@ export * from './ids.js';
 export * from './init.js';
 export * from './kb.js';
 export * from './kb-reads.js';
+export * from './index-lock.js';
 export * from './lock.js';
 export * from './model.js';
 export * from './repeats.js';

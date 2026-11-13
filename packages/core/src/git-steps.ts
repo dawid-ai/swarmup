@@ -11,9 +11,9 @@ function gitFailed(args: string[], stderr: string | undefined, message: string):
   return new OpsError(`git ${args[0]} failed: ${(stderr || message).trim()}`);
 }
 
-export function git(cwd: string, args: string[]): string {
+export function git(cwd: string, args: string[], cmd = 'git'): string {
   try {
-    return execFileSync('git', args, {
+    return execFileSync(cmd, args, {
       cwd,
       encoding: 'utf8',
       windowsHide: true,
@@ -27,9 +27,9 @@ export function git(cwd: string, args: string[]): string {
 }
 
 /** Runs git from a worker thread, so even starting it never holds the event loop (AO-0171). */
-export async function gitAsync(cwd: string, args: string[]): Promise<string> {
+export async function gitAsync(cwd: string, args: string[], cmd = 'git'): Promise<string> {
   try {
-    return await execOffThread('git', args, { cwd, maxBuffer: GIT_MAX_BUFFER });
+    return await execOffThread(cmd, args, { cwd, maxBuffer: GIT_MAX_BUFFER });
   } catch (err) {
     const e = err as ExecFailure;
     throw gitFailed(args, e.stderr, e.message);
@@ -40,6 +40,8 @@ export async function gitAsync(cwd: string, args: string[]): Promise<string> {
 export interface GitCall {
   cwd: string;
   args: string[];
+  /** The program to run when it is not git, such as the one that lists processes. */
+  cmd?: string;
 }
 
 /** A step of git work: yields each git command, gets its output back, returns `T`. */
@@ -73,7 +75,7 @@ export function runSteps<T>(steps: GitSteps<T>): T {
   while (!next.done) {
     let out: string;
     try {
-      out = git(next.value.cwd, next.value.args);
+      out = git(next.value.cwd, next.value.args, next.value.cmd);
     } catch (err) {
       next = steps.throw(err);
       continue;
@@ -88,7 +90,7 @@ export async function runStepsAsync<T>(steps: GitSteps<T>): Promise<T> {
   while (!next.done) {
     let out: string;
     try {
-      out = await gitAsync(next.value.cwd, next.value.args);
+      out = await gitAsync(next.value.cwd, next.value.args, next.value.cmd);
     } catch (err) {
       next = steps.throw(err);
       continue;
