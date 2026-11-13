@@ -97,6 +97,30 @@ describe('evidenceNotes', () => {
     expect(result).not.toMatch(/no command/);
   });
 
+  it('does not take a branch, commit, path or identifier in code font for a command', () => {
+    for (const bare of [
+      '8f41216 on branch `main`: tests pass',
+      '`8f41216` on branch `claude/ao-0290`: all tests pass',
+      'Changed `packages/core/src/ids.ts` and `evidenceNotes`; the tests pass',
+      '`done_when` is in `TaskMeta`, set by `--done-when CHECK` and `POST /api/tasks`; all green',
+    ]) {
+      const [note] = evidenceNotes(bare, lines);
+      expect(note, bare).toMatch(/names no command/);
+      expect(note, bare).not.toMatch(/no result/);
+    }
+  });
+
+  it('takes a program with arguments, or one that runs alone, for a command', () => {
+    for (const ok of [
+      '`pytest`: 12 passed',
+      '`./scripts/check.sh --all` prints ok',
+      '`$ node packages/cli/dist/main.js show AO-1` shows the list',
+      'on branch `main`; `npm run typecheck` printed no errors',
+    ]) {
+      expect(evidenceNotes(ok, lines), ok).toEqual([]);
+    }
+  });
+
   it('is empty when the request names a command and a result', () => {
     for (const ok of [
       '`npm test`: 412 passed',

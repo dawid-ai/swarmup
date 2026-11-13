@@ -24,7 +24,8 @@ import { ulid, ulidAfter } from './ulid.js';
 // 9: addressed events carry their whole body as `detail` when it is longer than the summary.
 // 10: addressed events and lastReview carry the recommended decision (`recommend`).
 // 11: task states carry awaitsMerge.
-const INDEX_VERSION = 11;
+// 12: task metas carry done_when as a list; an older build kept a hand-written text value as text.
+const INDEX_VERSION = 12;
 
 interface IndexEntry {
   tm: number;
