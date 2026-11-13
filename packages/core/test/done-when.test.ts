@@ -108,6 +108,18 @@ describe('evidenceNotes', () => {
       'The test `reads old tasks without the field` is green, and so is `round trip of a list`',
       'Fixed `the note text` and `evidence notes for a review`; all tests pass',
       '`./docs/protocol.md` describes it; tests pass',
+      // A program whose name is also an English word needs arguments that fit it.
+      '`make sure it works`; tests pass',
+      '`go to the page`; tests pass',
+      '`make changes` and `make progress`; tests pass',
+      '`go run the tests` passed',
+      '`go ahead`; tests pass',
+      '`just works`; tests pass',
+      '`just the tests` passed',
+      '`cat the file`; tests pass',
+      '`diff is clean`; tests pass',
+      '`cargo cult`; tests pass',
+      '`bundle of fixes`; tests pass',
     ]) {
       const [note] = evidenceNotes(bare, lines);
       expect(note, bare).toMatch(/names no command/);
@@ -126,6 +138,21 @@ describe('evidenceNotes', () => {
       '`CI=1 npx vitest run packages/core` printed 40 passed',
       '`mytool --check` printed ok',
       '`node_modules/.bin/vitest run` printed 40 passed',
+      '`make` printed ok',
+      '`make test` printed ok',
+      '`make -j4 build-all CC=gcc` printed ok',
+      '`make test lint` printed ok',
+      '`go test ./...` printed ok',
+      '`go vet ./...` printed no errors',
+      '`go build` exits 0',
+      '`go.exe test -race ./...` printed ok',
+      '`just lint` printed ok',
+      '`cargo test --workspace` printed 12 passed',
+      '`cargo +nightly fmt --check` exits 0',
+      '`bundle exec rspec` printed 12 passed',
+      '`cat out/report.txt` shows the list',
+      '`diff -u a.txt b.txt` printed nothing; ok',
+      '`ls dist/` shows the bundle',
     ]) {
       expect(evidenceNotes(ok, lines), ok).toEqual([]);
     }
