@@ -286,7 +286,10 @@ several review rounds.
     gone, or it is older than 30 s.
 
   The repair runs in each housekeeping sweep (every 10 minutes) and after each Codex run ends,
-  under the root's `git` lock, so no sync commits a half-moved folder. Two Codex runs that overlap
+  under the root's `git` lock, so no sync commits a half-moved folder. No Codex run starts from
+  the moment a Codex run's process ends until the repair after it is over, nor during any other
+  repair: `swarmup waits` names the repair as the reason, and the run starts at the next tick.
+  Helper runs of a live Codex run are not held. Two Codex runs that overlap
   can still meet a file the other made minutes ago, until the next repair. Set
   `swarmupd.repair_stores: false` to turn the repair off. Temp files older than an hour in
   `.ops/tmp` are left in place and named once in the swarmupd log; set

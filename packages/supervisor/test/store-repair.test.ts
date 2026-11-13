@@ -26,6 +26,7 @@ import {
   STALE_TEMP_MS,
   staleTempFiles,
 } from '../src/store-repair.js';
+import { until } from './until.js';
 
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
@@ -345,6 +346,83 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
 
     expect(calls).toBe(2);
   });
+
+  it('no Codex run starts between the end of a Codex run and the end of its repair', async () => {
+    const s = store();
+    // A Codex session that ends at once.
+    const script = join(temp(), 'codex.mjs');
+    writeFileSync(script, '');
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const sup = new Supervisor({
+      env: s.env,
+      cwd: s.repo,
+      user: {},
+      config: opsdConfig({
+        opsd: {
+          sync: false,
+          max_runs: 16,
+          task_worktrees: false,
+          wake_cooldown_minutes: 0,
+          agents: { 'codex:qa': { wake: true } },
+          runtimes: {
+            codex: { command: process.execPath, args: [script] },
+            other: { command: process.execPath, args: [script] },
+          },
+        },
+      }),
+      freeMem: () => 64 * 2 ** 30,
+      sandboxOwned: async () => {
+        calls += 1;
+        await gate;
+        return [];
+      },
+    });
+    sups.push(sup);
+    const held = (): string | null => sup.blocker('codex:qa', 'test');
+    expect(held()).toBeNull();
+
+    sup.launch({ agent: 'codex:qa' });
+    await until(() => sup.runs({ live: true }).length === 0);
+    // From the end of the process: in its wrap-up, then in the repair the wrap-up starts.
+    expect(held()).toMatch(/swarmupd repairs .* Codex runs start after that/);
+    await until(() => calls === 1);
+    expect(held()).toMatch(/swarmupd repairs what Codex sessions left/);
+    expect(() => sup.launch({ agent: 'codex:qa' })).toThrow(/swarmupd repairs what Codex sessions/);
+    // Other providers and the helpers of a live Codex run are not held.
+    expect(sup.blocker('other:qa', 'test')).toBeNull();
+    expect(sup.blocker('codex:qa', 'test', { child: true })).toBeNull();
+
+    // A wake during the repair starts no Codex run on a waiting task.
+    const next = s.ws.newTask({ title: 'Waits for the repair', owner: 'codex:qa' }).id;
+    const started = (): boolean => sup.runs().some((r) => r.task === next);
+    await sup.tick();
+    expect(started()).toBe(false);
+    expect(sup.waits().find((w) => w.task === `test/${next}`)?.reason).toMatch(
+      /codex:qa: swarmupd repairs/,
+    );
+
+    release();
+    await until(() => held() === null);
+    await sup.tick();
+    expect(started()).toBe(true);
+  }, 60_000);
+
+  it('a swarmupd that repairs nothing holds no Codex run', async () => {
+    const s = store();
+    const script = join(temp(), 'codex.mjs');
+    writeFileSync(script, '');
+    const { sup, listed } = supervisor(s, () => [], {
+      repair_stores: false,
+      runtimes: { codex: { command: process.execPath, args: [script] } },
+    });
+
+    sup.launch({ agent: 'codex:qa' });
+    await until(() => sup.runs({ live: true }).length === 0);
+    expect(sup.blocker('codex:qa', 'test')).toBeNull();
+    expect(listed).toEqual([]);
+  }, 60_000);
 
   it.skipIf(process.platform !== 'win32')(
     'the Windows listing reads a store and finds nothing of a sandbox user in a new one',
