@@ -580,6 +580,11 @@ export class Workspace {
     return r;
   }
 
+  /** The one root that commands listing work are limited to (`root` or SWARMUP_ROOT), if any. */
+  get scope(): string | undefined {
+    return this.rootName;
+  }
+
   /** Roots selected for commands that enumerate work; explicit task references stay unscoped. */
   private scopedRoots(): Root[] {
     return this.rootName ? [this.defaultRoot()] : this.roots;

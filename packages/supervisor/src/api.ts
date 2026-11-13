@@ -595,13 +595,15 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (method === 'GET' && area === 'report') {
       const w = reportWindow({ days: q.get('days'), from: q.get('from'), to: q.get('to') });
       const project = q.get('project') || undefined;
-      return send(res, 200, buildReport(wsAs(), sup.runs(), w.from, w.to, { project }));
+      const root = q.get('root') || undefined;
+      return send(res, 200, buildReport(wsAs(), sup.runs(), w.from, w.to, { project, root }));
     }
     if (method === 'GET' && area === 'timeline') {
       // The replay timeline of `project` (or of every project) in `root` (or every root), for
       // the report's window (`days`, or `from` and `to`). `clip` scales playback to that many
       // seconds; `gap` is the minutes an idle stretch plays as (default 30). `wrapped=1` adds
-      // the Wrapped cards of the project and window (AO-0084), from the report of every root.
+      // the Wrapped cards of the project and window (AO-0084), from the report of the same root
+      // and project; the cards of a root without a project carry the root's name (AO-0301).
       // `graph=1` adds task links and the files events name, for the constellation (AO-0080).
       const w = reportWindow(
         { days: q.get('days'), from: q.get('from'), to: q.get('to') },
@@ -611,9 +613,10 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       const clip = wholeParam(q.get('clip'), 'clip', 1, 3600);
       const gap = wholeParam(q.get('gap'), 'gap', 1, 1440);
       const project = q.get('project') || undefined;
+      const root = q.get('root') || undefined;
       const ws = wsAs();
       const timeline = ws.timeline({
-        root: q.get('root') || undefined,
+        root,
         project,
         from: w.from,
         to: w.to,
@@ -622,8 +625,9 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         graph: q.get('graph') === '1',
       });
       if (q.get('wrapped') !== '1') return send(res, 200, timeline);
-      const report = buildReport(ws, sup.runs(), w.from, w.to, { project });
-      return send(res, 200, { ...timeline, wrapped: buildWrapped(report, timeline) });
+      const report = buildReport(ws, sup.runs(), w.from, w.to, { project, root });
+      const named = { ...report, project: report.project ?? root ?? null };
+      return send(res, 200, { ...timeline, wrapped: buildWrapped(named, timeline) });
     }
     if (method === 'GET' && area === 'activity') {
       // One page, newest first: `q` filters (words, `agent:`, `task:`, `kind:`; see

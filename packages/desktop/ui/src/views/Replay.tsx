@@ -14,7 +14,7 @@ import { STAGE_16_9, renderFrame, sceneDuration } from '../replay/scene';
 import { SCENES, sceneById } from '../replay/scenes';
 import type { WrappedData } from '../replay/scenes/wrapped';
 import { cardFileName, cardTime } from '../replay/scenes/wrapped';
-import type { Task, Timeline } from '../types';
+import type { RootInfo, Settings, Task, Timeline } from '../types';
 
 const RANGES: Array<[number, string]> = [
   [1, 'Day'],
@@ -23,8 +23,57 @@ const RANGES: Array<[number, string]> = [
   [90, '90 days'],
 ];
 
-/** The `/api/timeline` path for a project, a window and a clip length; null until it is complete. */
+/** A choice of the **Project** picker: a root of the sidebar, or one project label inside it. */
+export interface ProjectChoice {
+  /** The `Select` value: '' for every project. */
+  value: string;
+  label: string;
+  /** The data root; '' for every root. */
+  root: string;
+  /** The project label inside the root; '' for the whole root. */
+  project: string;
+}
+
+// Splits a root from a label in a `Select` value: no root or label holds a control character.
+const SEP = '\u001f';
+
+/**
+ * The picker's options: `All projects`, then each root by name, each followed by its project
+ * labels when its tasks carry more than one. Roots come from the app's list (the sidebar's
+ * projects, never the Master Repo), since a root may hold no task yet; until that list loads,
+ * the roots of the tasks stand in.
+ */
+export function projectChoices(
+  roots: Array<Pick<RootInfo, 'name' | 'isMaster'>> | undefined,
+  tasks: Array<Pick<Task, 'root' | 'project'>>,
+): ProjectChoice[] {
+  const names = roots
+    ? roots.filter((r) => !r.isMaster).map((r) => r.name)
+    : tasks.flatMap((t) => (t.root ? [t.root] : [])).sort();
+  const out: ProjectChoice[] = [{ value: '', label: 'All projects', root: '', project: '' }];
+  for (const root of new Set(names)) {
+    out.push({ value: root, label: root, root, project: '' });
+    const labels = new Set(tasks.flatMap((t) => (t.root === root && t.project ? [t.project] : [])));
+    if (labels.size < 2) continue;
+    for (const project of [...labels].sort()) {
+      out.push({
+        value: `${root}${SEP}${project}`,
+        label: `${root} / ${project}`,
+        root,
+        project,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * The `/api/timeline` path for a root, a project, a window and a clip length; null until it is
+ * complete.
+ */
 export function timelinePath(opts: {
+  /** The data root, such as `swarmup-web`; '' or absent for every root. */
+  root?: string;
   project: string;
   days: number;
   custom: boolean;
@@ -40,7 +89,8 @@ export function timelinePath(opts: {
       : null
     : `days=${opts.days}`;
   if (!window) return null;
-  return `/api/timeline?${window}&clip=${opts.clip}${opts.project ? `&project=${q(opts.project)}` : ''}${opts.query ? `&${opts.query}` : ''}`;
+  const only = `${opts.root ? `&root=${q(opts.root)}` : ''}${opts.project ? `&project=${q(opts.project)}` : ''}`;
+  return `/api/timeline?${window}&clip=${opts.clip}${only}${opts.query ? `&${opts.query}` : ''}`;
 }
 
 /** The PNG name for the current frame, such as `replay-counters-swarmup-0m12s.png`. */
@@ -118,7 +168,9 @@ export interface ReplayProps {
 
 /** Plays the project's history as a scene: pick a project, a window and a scene, then play. */
 export function Replay({ record = recordScene }: ReplayProps) {
-  const [project, setProject] = useState('');
+  // The picked `ProjectChoice` value. A choice that left the list (a removed root) still filters,
+  // so the error from swarmupd shows instead of a silent switch to every project.
+  const [pickedProject, setPickedProject] = useState('');
   const [days, setDays] = useState(7);
   const [custom, setCustom] = useState(false);
   const [from, setFrom] = useState('');
@@ -126,14 +178,21 @@ export function Replay({ record = recordScene }: ReplayProps) {
   const [clip, setClip] = useState<number>(30);
   const [sceneId, setSceneId] = useState(SCENES[0]!.id);
   const scene = sceneById(sceneId);
-  const path = timelinePath({ project, days, custom, from, to, clip, query: scene.query });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ text: string; error: boolean } | null>(null);
-  const { data: timeline, error } = useData<Timeline>(path);
   const tasks = useData<Task[]>('/api/tasks?all');
-  const projects = [
-    ...new Set((tasks.data ?? []).map((t) => t.project).filter(Boolean)),
-  ].sort() as string[];
+  const settings = useData<Settings>('/api/settings');
+  const projects = useMemo(
+    () => projectChoices(settings.data?.rootList, tasks.data ?? []),
+    [settings.data, tasks.data],
+  );
+  const [pickedRoot = '', pickedLabel = ''] = pickedProject.split(SEP);
+  const { root, project } = projects.find((c) => c.value === pickedProject) ?? {
+    root: pickedRoot,
+    project: pickedLabel,
+  };
+  const path = timelinePath({ root, project, days, custom, from, to, clip, query: scene.query });
+  const { data: timeline, error } = useData<Timeline>(path);
 
   // Scenes about one thing, such as the review rally's task, offer a picker; the first choice
   // shows until the person picks another.
@@ -168,7 +227,8 @@ export function Replay({ record = recordScene }: ReplayProps) {
   const nothingToPick = scene.pick !== undefined && choices.length === 0;
   const empty = timeline !== undefined && (!playable || nothingToPick);
   // Files of a scene about one thing are named after it, such as the rally's task id.
-  const subject = choice || project;
+  // Other files carry the chosen project: the root, then the label when one is picked.
+  const subject = choice || [root, project].filter(Boolean).join('-');
   const cards = scene.id === 'wrapped' && timeline?.wrapped ? (data as WrappedData).cards : [];
 
   const save = (shots: Array<{ name: string; t: number }>): void => {
@@ -257,50 +317,54 @@ export function Replay({ record = recordScene }: ReplayProps) {
       icon={Clapperboard}
       subtitle="Play a project's history: claims, reviews, asks and runs on a time axis"
       actions={
-        <div className="flex rounded-lg bg-white/5 p-0.5">
-          {RANGES.map(([d, label]) => (
+        <>
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-fg-3">Project</span>
+            <Select
+              value={pickedProject}
+              onChange={setPickedProject}
+              options={projects.map((c): [string, string] => [c.value, c.label])}
+              className="w-48"
+            />
+          </label>
+          <div className="flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Range">
+            {RANGES.map(([d, label]) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => {
+                  setDays(d);
+                  setCustom(false);
+                }}
+                aria-pressed={!custom && days === d}
+                className={cx(
+                  'rounded-md px-2.5 py-1 text-xs transition',
+                  !custom && days === d ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
+                )}
+              >
+                {label}
+              </button>
+            ))}
             <button
-              key={d}
               type="button"
-              onClick={() => {
-                setDays(d);
-                setCustom(false);
-              }}
-              aria-pressed={!custom && days === d}
+              onClick={() => setCustom(true)}
+              aria-pressed={custom}
               className={cx(
                 'rounded-md px-2.5 py-1 text-xs transition',
-                !custom && days === d ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
+                custom ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
               )}
             >
-              {label}
+              Custom
             </button>
-          ))}
-          <button
-            type="button"
-            onClick={() => setCustom(true)}
-            aria-pressed={custom}
-            className={cx(
-              'rounded-md px-2.5 py-1 text-xs transition',
-              custom ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
-            )}
-          >
-            Custom
-          </button>
-        </div>
+          </div>
+        </>
       }
     >
       <div className="flex flex-col gap-4 p-6" onKeyDown={onKey}>
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-fg-3">Project</span>
-          <Select
-            value={project}
-            onChange={setProject}
-            options={[['', 'All projects'], ...projects.map((x): [string, string] => [x, x])]}
-            className="w-48"
-          />
           {scene.clipMs === undefined ? (
             <>
-              <span className="ml-2 text-fg-3">Clip</span>
+              <span className="text-fg-3">Clip</span>
               <Select
                 value={String(clip)}
                 onChange={(v) => setClip(Number(v))}
@@ -312,7 +376,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
               )}
             </>
           ) : (
-            <span className="ml-2 text-fg-3">Clip {scene.clipMs / 1000} s</span>
+            <span className="text-fg-3">Clip {scene.clipMs / 1000} s</span>
           )}
           {scene.pick && choices.length > 0 && (
             <>

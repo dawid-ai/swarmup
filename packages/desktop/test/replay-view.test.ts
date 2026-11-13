@@ -22,7 +22,7 @@ import {
 import { STAGE_16_9, renderFrame, sceneDuration } from '../ui/src/replay/scene';
 import { SCENES, sceneById } from '../ui/src/replay/scenes';
 import { valueAt, prepareCounters } from '../ui/src/replay/scenes/counters';
-import { Replay, timelinePath } from '../ui/src/views/Replay';
+import { Replay, frameFileName, projectChoices, timelinePath } from '../ui/src/views/Replay';
 import { H, T0, fixture } from './replay-fixture';
 
 describe('playback clock', () => {
@@ -145,6 +145,12 @@ describe('timeline path and allow list', () => {
     expect(timelinePath({ ...base, project: 'swarm up', clip: 15 })).toBe(
       '/api/timeline?days=7&clip=15&project=swarm%20up',
     );
+    expect(timelinePath({ ...base, root: 'swarmup-web', query: 'wrapped=1' })).toBe(
+      '/api/timeline?days=7&clip=30&root=swarmup-web&wrapped=1',
+    );
+    expect(timelinePath({ ...base, root: 'agent ops', project: 'v2' })).toBe(
+      '/api/timeline?days=7&clip=30&root=agent%20ops&project=v2',
+    );
     expect(timelinePath({ ...base, custom: true })).toBeNull();
     expect(timelinePath({ ...base, custom: true, from: '2026-11-01', to: '2026-11-03' })).toBe(
       '/api/timeline?from=2026-11-01&to=2026-11-03&clip=30',
@@ -159,7 +165,21 @@ describe('timeline path and allow list', () => {
 
 // The view, with swarmupd mocked and requestAnimationFrame driven by hand.
 const paths = vi.hoisted(() => [] as string[]);
-const served = vi.hoisted(() => ({ timeline: null as unknown }));
+const served = vi.hoisted(() => ({
+  timeline: null as unknown,
+  // Two roots as in the sidebar: `agent-ops` with two project labels, and `swarmup-web`, whose
+  // tasks all carry the root's own name. The Master Repo is no project.
+  tasks: [
+    { id: 'AO-1', root: 'agent-ops', project: 'agent-ops' },
+    { id: 'AO-2', root: 'agent-ops', project: 'docs' },
+    { id: 'WEB-1', root: 'swarmup-web', project: 'swarmup-web' },
+  ],
+  roots: [
+    { name: 'agent-ops', isMaster: false },
+    { name: 'swarmup-web', isMaster: false },
+    { name: 'master', isMaster: true },
+  ],
+}));
 
 vi.mock(import('../ui/src/api'), async (original) => ({
   ...(await original()),
@@ -168,8 +188,10 @@ vi.mock(import('../ui/src/api'), async (original) => ({
     const data = path?.startsWith('/api/timeline')
       ? served.timeline
       : path === '/api/tasks?all'
-        ? [{ id: 'AO-1', project: 'swarmup' }]
-        : undefined;
+        ? served.tasks
+        : path === '/api/settings'
+          ? { rootList: served.roots }
+          : undefined;
     return { data: data as T, error: null, reload: () => {}, set: () => {} };
   },
 }));
@@ -222,6 +244,17 @@ function button(text: string): HTMLButtonElement {
   const b = [...box.querySelectorAll('button')].find((x) => x.textContent?.trim() === text);
   if (!b) throw new Error(`no ${text} button`);
   return b;
+}
+
+const projectSelect = (): HTMLSelectElement =>
+  [...box.querySelectorAll('select')].find((s) => s.options[0]?.textContent === 'All projects')!;
+
+function pick(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+  act(() => {
+    setter.call(select, value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 }
 
 const clockText = (): string => box.querySelector('[data-testid="replay-clock"]')!.textContent!;
@@ -336,6 +369,96 @@ describe('Replay view', () => {
     act(() => button('30 days').click());
     expect(paths).toContain(`/api/timeline?days=30&clip=30${query()}`);
     expect(clockText()).toBe(`0:00.0 / ${END}`);
+  });
+
+  it('lists every root and the labels of a root with several, next to the range (AO-0301)', () => {
+    render();
+    const select = projectSelect();
+    expect([...select.options].map((o) => o.textContent)).toEqual([
+      'All projects',
+      'agent-ops',
+      'agent-ops / agent-ops',
+      'agent-ops / docs',
+      'swarmup-web',
+    ]);
+    expect(select.value).toBe('');
+    // One row with the time range: the picker's label and the range share a parent.
+    expect(select.closest('label')!.textContent).toContain('Project');
+    expect(select.closest('label')!.parentElement).toBe(byLabel('Range').parentElement);
+  });
+
+  it('asks swarmupd for the picked root in every scene, and names files after it', async () => {
+    const saved: string[] = [];
+    window.swarmup = {
+      videoFolder: async () => ({ ok: true, data: { dir: 'C:\\clips' } }),
+      saveVideo: async (name: string) => {
+        saved.push(name);
+        return { ok: true, data: { dir: 'C:\\clips', file: name } };
+      },
+    } as unknown as typeof window.swarmup;
+    try {
+      act(() =>
+        root!.render(createElement(Replay, { record: async () => new Uint8Array([1, 2, 3]) })),
+      );
+      pick(projectSelect(), 'swarmup-web');
+      act(() => button('30 days').click());
+      for (const scene of SCENES) {
+        act(() => button(scene.label).click());
+        expect(paths.at(-1), scene.id).toBe(
+          `/api/timeline?days=30&clip=30&root=swarmup-web${query(scene)}`,
+        );
+      }
+      act(() => button(SCENES[0]!.label).click());
+      await act(async () => button('Record MP4').click());
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatch(
+        new RegExp(`^replay-${SCENES[0]!.id}-swarmup-web-16x9-\\d+s\\.mp4$`),
+      );
+
+      // A label inside a root sends both, and the file name carries both.
+      pick(
+        projectSelect(),
+        [...projectSelect().options].find((o) => o.textContent === 'agent-ops / docs')!.value,
+      );
+      expect(paths.at(-1)).toBe(
+        `/api/timeline?days=30&clip=30&root=agent-ops&project=docs${query()}`,
+      );
+      await act(async () => button('Record MP4').click());
+      expect(saved[1]).toContain('-agent-ops-docs-16x9-');
+      pick(projectSelect(), '');
+      expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30${query()}`);
+    } finally {
+      delete window.swarmup;
+    }
+  });
+
+  it('builds the options from the roots the app knows, or from the tasks until they load', () => {
+    const tasks = [
+      { root: 'b', project: 'b' },
+      { root: 'a', project: 'x' },
+      { root: 'a', project: 'y' },
+      { root: 'a', project: 'x' },
+    ];
+    expect(projectChoices(undefined, tasks).map((c) => c.label)).toEqual([
+      'All projects',
+      'a',
+      'a / x',
+      'a / y',
+      'b',
+    ]);
+    // A root without tasks is listed; the Master Repo and a second copy of a name are not.
+    const roots = [
+      { name: 'web', isMaster: false },
+      { name: 'b', isMaster: false },
+      { name: 'b', isMaster: false },
+      { name: 'master', isMaster: true },
+    ];
+    expect(projectChoices(roots, tasks).map((c) => [c.label, c.root, c.project])).toEqual([
+      ['All projects', '', ''],
+      ['web', 'web', ''],
+      ['b', 'b', ''],
+    ]);
+    expect(frameFileName('metro', 'swarmup-web', 3000)).toBe('replay-metro-swarmup-web-0m3s.png');
   });
 
   it('plays and seeks from the keyboard', () => {

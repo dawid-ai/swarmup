@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { initRoot, Workspace } from '@swarmup/core';
 import type { Timeline } from '@swarmup/core';
-import { startApi, Supervisor } from '../src/index.js';
+import { buildReport, buildWrapped, startApi, Supervisor } from '../src/index.js';
+import type { RunRecord } from '../src/index.js';
 
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
@@ -47,7 +48,8 @@ function temp(): string {
   return d;
 }
 
-async function setup() {
+/** A supervisor on the root `test`; `second` adds another root of that name, with prefix `WEB`. */
+async function setup(second?: string) {
   const repo = temp();
   execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
   initRoot(repo, { name: 'test', human: 'human:dawid' });
@@ -60,6 +62,13 @@ async function setup() {
   } as NodeJS.ProcessEnv;
   delete env.SWARMUP_AGENT;
   delete env.SWARMUP_ROOTS;
+  delete env.SWARMUP_ROOT;
+  if (second) {
+    const other = temp();
+    execFileSync('git', ['init', '-q'], { cwd: other, windowsHide: true });
+    initRoot(other, { name: second, prefix: 'WEB', human: 'human:dawid' });
+    env.SWARMUP_ROOTS = other;
+  }
   const sup = new Supervisor({ env, cwd: repo, freeMem: () => 64 * 2 ** 30 });
   sups.push(sup);
   const api = await startApi(sup, { port: 0, token: 'timeline-token', version: 't', build: '1' });
@@ -171,5 +180,69 @@ describe('timeline route', () => {
     expect(w.closed).toBe(report.totals.closed);
     expect(w.opened).toBe(report.totals.opened);
     expect(w.agentMinutes).toBe(report.totals.minutes);
+  });
+
+  it('limits the timeline and the Wrapped cards to root, as swarmup wrapped there (AO-0301)', async () => {
+    const { call, env, repo } = await setup('web');
+    let now = Date.now() - 3 * 3_600_000;
+    const as = (actor: string, root?: string) =>
+      new Workspace({ cwd: repo, env, actor, root, now: () => now });
+    as('human:dawid').newTask({ title: 'Engine', owner: 'claude:engineer' });
+    const h = as('human:dawid', 'web');
+    // A task of `web` names no project, so it carries the root's default one.
+    h.newTask({ title: 'Landing page', owner: 'claude:engineer' });
+    h.newTask({ title: 'Pricing page', owner: 'claude:engineer' });
+    const c = as('claude:engineer', 'web');
+    c.start('WEB-1', 'plan');
+    c.ask('WEB-1', 'Dark or light?');
+    now += 4 * 60_000;
+    h.answer('WEB-1', 'Dark');
+    h.done('WEB-1', 'shipped');
+    as('claude:engineer').start('T-1', 'plan');
+
+    const every = await call('/api/timeline?days=7');
+    expect(new Set(every.data.spans.map((s) => s.task))).toEqual(new Set(['T-0001', 'WEB-0001']));
+    const res = await call('/api/timeline?days=7&root=web&wrapped=1');
+    expect(res.status).toBe(200);
+    expect(res.data.spans.map((s) => [s.root, s.task])).toEqual([['web', 'WEB-0001']]);
+    const w = (res.data as Timeline & { wrapped: Record<string, unknown> }).wrapped;
+    expect(w).toMatchObject({ project: 'web', closed: 1, opened: 2 });
+
+    // The same figures as the report of that root, and as `swarmup wrapped` run in it.
+    const report = (await call('/api/report?days=7&root=web')).data as unknown as {
+      projects: Array<{ project: string }>;
+      totals: { closed: number; opened: number };
+    };
+    expect(report.projects.map((p) => p.project)).toEqual(['web']);
+    expect(report.totals).toMatchObject({ closed: 1, opened: 2 });
+    const scoped = as('human:dawid', 'web');
+    expect(scoped.scope).toBe('web');
+    const local = buildWrapped(
+      buildReport(scoped, [], Date.now() - 7 * 86_400_000, Date.now(), { root: scoped.scope }),
+      scoped.timeline({ from: Date.now() - 7 * 86_400_000, to: Date.now() }),
+    );
+    for (const k of ['closed', 'opened', 'agentMinutes', 'humanMinutes'] as const) {
+      expect(w[k], k).toBe(local[k]);
+    }
+    expect(w.fastest).toEqual(local.fastest);
+    // Runs of another root add no agent time to this root's report.
+    const at = new Date(Date.now() - 3_600_000).toISOString();
+    const run = (root: string, tokens: number) =>
+      ({ agent: 'claude:engineer', root, started_at: at, ended_at: at, tokens }) as RunRecord;
+    const usage = buildReport(
+      scoped,
+      [run('web', 5), run('test', 7)],
+      Date.now() - 7 * 86_400_000,
+      Date.now(),
+      { root: 'web' },
+    ).agents;
+    expect(usage).toMatchObject([{ key: 'claude:engineer', runs: 1, tokens: 5 }]);
+
+    // A label inside the root narrows it further; an unknown root is refused.
+    const label = await call('/api/timeline?days=7&root=web&project=web');
+    expect(label.data.spans.map((s) => s.task)).toEqual(['WEB-0001']);
+    expect((await call('/api/timeline?days=7&root=test&project=web')).data.spans).toEqual([]);
+    expect((await call('/api/timeline?days=7&root=nope&wrapped=1')).status).toBe(400);
+    expect((await call('/api/report?days=7&root=nope')).status).toBe(400);
   });
 });

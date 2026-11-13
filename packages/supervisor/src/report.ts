@@ -102,7 +102,7 @@ export function buildReport(
   runs: RunRecord[],
   from: number,
   to: number,
-  opts: { project?: string } = {},
+  opts: { project?: string; root?: string } = {},
 ): Report {
   if (!(from < to)) throw new OpsError('report: the window must end after it starts', 2);
   const fromIso = new Date(from).toISOString();
@@ -110,6 +110,11 @@ export function buildReport(
   const inWindow = (iso: string | undefined): boolean => !!iso && iso >= fromIso && iso < toIso;
   // A project given by alias matches the name each root resolves it to.
   const only = opts.project;
+  // `root` narrows tasks, runs and decisions to that data root, before any project filter.
+  const root = opts.root;
+  if (root && !ws.roots.some((r) => r.name === root)) {
+    throw new OpsError(`no root named '${root}'`, 2);
+  }
   const names = only ? new Set([only, ...ws.roots.map((r) => r.projectName(only))]) : null;
   const inProject = (name: string | undefined): boolean => !names || (!!name && names.has(name));
   const tasksIn = new Set<string>();
@@ -130,6 +135,7 @@ export function buildReport(
   let recommended = 0;
   let accepted = 0;
   for (const t of ws.list({ all: true })) {
+    if (root && t.root !== root) continue;
     if (!inProject(t.meta.project ?? t.root)) continue;
     tasksIn.add(`${t.root}/${t.meta.id}`);
     // Answers in the window: only tasks with an event since the window opened can have one.
@@ -207,6 +213,7 @@ export function buildReport(
   };
   for (const r of runs) {
     // Records written before `project` existed name only the root, which was the project then.
+    if (root && r.root !== root) continue;
     if (!inWindow(r.started_at) || !inProject(r.project ?? r.root)) continue;
     const end = r.ended_at ? Date.parse(r.ended_at) : Math.min(Date.now(), to);
     const minutes = Math.max(0, Math.round((end - Date.parse(r.started_at)) / 60_000));
@@ -220,6 +227,7 @@ export function buildReport(
       (d) =>
         d.outcome &&
         inWindow(d.outcome.at) &&
+        (!root || d.root === root) &&
         (!names || (d.meta.task !== undefined && tasksIn.has(`${d.root}/${d.meta.task}`))),
     )
     .map((d) => ({

@@ -2059,7 +2059,10 @@ const COMMANDS: Record<string, Command> = {
       });
       const ws = ctx.ws();
       const runs = new RunStore(stateDir(ctx.io.env)).list();
-      const report = buildReport(ws, runs, w.from, w.to, { project: str(ctx.opts.project) });
+      const report = buildReport(ws, runs, w.from, w.to, {
+        project: str(ctx.opts.project),
+        root: ws.scope,
+      });
       const text = reportText(report);
       const channel = str(ctx.opts.post);
       if (channel) {
@@ -2089,7 +2092,7 @@ const COMMANDS: Record<string, Command> = {
       const ws = ctx.ws();
       const project = str(ctx.opts.project);
       const runs = new RunStore(stateDir(ctx.io.env)).list();
-      const report = buildReport(ws, runs, w.from, w.to, { project });
+      const report = buildReport(ws, runs, w.from, w.to, { project, root: ws.scope });
       const wrapped = buildWrapped(report, ws.timeline({ project, from: w.from, to: w.to }));
       ctx.io.out(ctx.opts.json ? JSON.stringify(wrapped) : wrappedText(wrapped));
     },
