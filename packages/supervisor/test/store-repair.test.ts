@@ -502,6 +502,44 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     expect(started()).toBe(true);
   }, 60_000);
 
+  it('a repair between two sweeps does not stand in for the repair of the next due sweep', async () => {
+    const s = store();
+    let now = Date.now();
+    const { sup, listed } = supervisor(
+      s,
+      () => [],
+      {},
+      () => now,
+    );
+    await sup.housekeep();
+    expect(listed.length).toBe(1);
+
+    // A repair a minute after the sweep, as after a Codex run or a config reload.
+    now += 60_000;
+    await sup.repairStores();
+    expect(listed.length).toBe(2);
+
+    // Not due yet: no repair.
+    now += 8 * 60_000;
+    await sup.tick();
+    expect(listed.length).toBe(2);
+
+    // Ten minutes after the sweep, nine after the repair between: the due sweep repairs.
+    now += 60_000;
+    await sup.tick();
+    await sup.housekeep();
+    expect(listed.length).toBe(3);
+
+    // The sweep after it comes ten minutes later, not sooner, with its own repair.
+    now += 9 * 60_000;
+    await sup.tick();
+    expect(listed.length).toBe(3);
+    now += 60_000;
+    await sup.tick();
+    await sup.housekeep();
+    expect(listed.length).toBe(4);
+  }, 60_000);
+
   it('no Codex run starts between the end of a Codex run and the end of its repair', async () => {
     const s = store();
     // A Codex session that ends at once.
