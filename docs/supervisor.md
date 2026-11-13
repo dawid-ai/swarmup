@@ -552,6 +552,17 @@ auth status` and `codex login status` (`runtimes.<name>.sign_in_check`, the argu
   ran 171 times on AO-0173, each run about a minute long and ending with exit 0 while its sandbox
   refused every shell call (AO-0173). Runs a person stopped, and providers paused for a sign-in, a
   usage limit or failed starts, do not trip it.
+- **Review rounds.** When a task gets `review_rounds` `changes` verdicts in a row (default 3; `0`
+  turns it off) with no approval between them, swarmupd does not wake its author for another
+  round. At the next tick it blocks the task, as `opsd:watch`, for a waking, active PM that is
+  not signed out, else for you. The block gives the count and the text of the last
+  `review_rounds` verdicts, each cut to 600 characters. The PM narrows the task, splits it,
+  changes the reviewer or escalates, then answers the block; the count starts again from there,
+  and also after an approval or a reopen. Notes on the task do not reset it, and a task a person
+  owns is left alone. swarmupd logs each stop as a `warn` line that starts with `review-rounds:`
+  and names the task, the count, the limit, the author and the reviewers, so you can tune the
+  limit from the log. Before, nothing acted on repeated change requests: AO-0110, a docs-only
+  proposal, took at least six.
 - Limits are per PC. A provider account spans PCs: with swarmupd on two PCs, set `usage_pause_at` or
   `max_live` on each to share it.
 - `swarmup usage` and `GET /api/usage` show each provider's windows, live runs and whether it is
@@ -583,6 +594,7 @@ swarmupd:
   wake_cooldown_minutes: 10
   outside_session_minutes: 30 # no run on a task a session outside swarmupd just worked on; 0: never
   stuck_runs: 3 # block a task for a PM after this many unfinished runs in a row; 0: never
+  review_rounds: 3 # block a task for a PM after this many changes verdicts in a row; 0: never
   sync: true # commit, pull and push each root when its sync policy says so
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that

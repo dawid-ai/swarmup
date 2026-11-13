@@ -52,6 +52,7 @@ import {
   SyncLog,
   systemLister,
   UsageMeter,
+  WATCH_ACTOR,
   withStoreCheckoutRule,
 } from '../src/index.js';
 import { Checkout } from '../src/checkout.js';
@@ -480,6 +481,91 @@ describe('runs', () => {
       await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
     }
     expect(as('human:dawid').view('1').status).toBe('todo');
+  });
+
+  /** One review round by a session outside swarmupd that ends with a change request. */
+  function changesRound(as: (a: string) => Workspace, id: string, text: string): void {
+    as('fake:engineer').start(id, 'plan');
+    as('fake:engineer').review(id, 'check', 'codex:reviewer');
+    as('codex:reviewer').verdict(id, 'changes', text);
+  }
+
+  it('blocks a task for the PM at review_rounds changes verdicts in a row, not before (AO-0288)', async () => {
+    const { repo, sup, as } = setup({
+      mode: 'hang',
+      opsd: {
+        outside_session_minutes: 0,
+        agents: { 'fake:engineer': { wake: true }, 'fake:pm': { wake: true } },
+      },
+    });
+    roleFiles(repo, ['fake:pm', 'fake:engineer', 'codex:reviewer']);
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    changesRound(as, t.id, 'first gap');
+    changesRound(as, t.id, 'second gap');
+    // Two in a row: the author is woken as before.
+    await sup.tick();
+    expect(h.view(t.id).status).not.toBe('blocked');
+    const woken = sup.runs({ live: true });
+    expect(woken).toMatchObject([{ agent: 'fake:engineer', task: t.id }]);
+    sup.kill(woken[0]!.id);
+    await ended(sup, woken[0]!.id);
+    expect(h.view(t.id).status).toBe('todo');
+    // The third: blocked for the PM with the count and the verdicts, and no run of the author.
+    changesRound(as, t.id, 'third gap');
+    await sup.tick();
+    const v = h.view(t.id);
+    expect(v.status).toBe('blocked');
+    expect(v.waitingOn).toBe('fake:pm');
+    const block = h.showEvents(t.id).events.find((e) => e.type === 'block')!;
+    expect(block).toMatchObject({ actor: WATCH_ACTOR, to: 'fake:pm' });
+    expect(block.body).toContain('3 reviews in a row');
+    for (const text of ['first gap', 'second gap', 'third gap']) {
+      expect(block.body).toContain(`codex:reviewer, ${block.at.slice(0, 10)}: ${text}`);
+    }
+    expect(sup.runs({ live: true }).filter((r) => r.agent === 'fake:engineer')).toEqual([]);
+    expect(warns.filter((m) => m.startsWith('review-rounds:'))).toEqual([
+      expect.stringContaining(`test/${t.id} stopped after 3 changes verdicts in a row (limit 3`),
+    ]);
+    // The PM's answer frees it, and the count starts again: one more change request wakes the
+    // author.
+    for (const r of sup.runs({ live: true })) {
+      sup.kill(r.id);
+      await ended(sup, r.id);
+    }
+    as('fake:pm').answer(t.id, 'narrowed to the first gap');
+    changesRound(as, t.id, 'fourth gap');
+    await sup.tick();
+    expect(h.view(t.id).status).not.toBe('blocked');
+    expect(sup.runs({ live: true }).map((r) => r.agent)).toContain('fake:engineer');
+  });
+
+  it('blocks a task at its review limit for the human when no PM wakes', async () => {
+    const { sup, as } = setup({ opsd: { review_rounds: 1 } });
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    changesRound(as, t.id, 'gap');
+    await sup.tick();
+    expect(h.view(t.id)).toMatchObject({ status: 'blocked', waitingOn: 'human:dawid' });
+  });
+
+  it('keeps waking the author with review_rounds 0', async () => {
+    const { sup, as } = setup({
+      mode: 'hang',
+      opsd: {
+        review_rounds: 0,
+        outside_session_minutes: 0,
+        agents: { 'fake:engineer': { wake: true } },
+      },
+    });
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    for (let i = 0; i < 4; i++) changesRound(as, t.id, `gap ${i}`);
+    await sup.tick();
+    expect(h.view(t.id).status).not.toBe('blocked');
+    expect(sup.runs({ live: true })).toMatchObject([{ agent: 'fake:engineer' }]);
   });
 
   it('kills a run over its time or token budget, and only its own tree', async () => {

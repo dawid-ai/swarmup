@@ -156,6 +156,37 @@ function clean(s: string): string {
   return oneLine(redactSecrets(s));
 }
 
+/** Events that leave a change request waiting for its author as it was: notes on the task. */
+const AFTER_VERDICT = new Set(['comment', 'priority', 'learn', 'finding']);
+
+/**
+ * The `changes` verdicts a task got in a row, oldest first, when the newest of them still waits
+ * for its author (AO-0288): nothing but notes came after it. An approval, a reopen and an earlier
+ * stop by `watch` (swarmupd's block for the PM) end the row, so the count starts again after the
+ * PM's decision. Empty when the task waits for something else.
+ */
+export function changesRounds(events: OpsEvent[], watch: string): OpsEvent[] {
+  let at = events.length - 1;
+  while (at >= 0 && AFTER_VERDICT.has(events[at]!.type)) at--;
+  if (events[at]?.type !== 'verdict' || events[at]!.verdict !== 'changes') return [];
+  const rounds: OpsEvent[] = [];
+  for (; at >= 0; at--) {
+    const e = events[at]!;
+    if (e.type === 'reopen' || (e.type === 'block' && e.actor === watch)) break;
+    if (e.type !== 'verdict') continue;
+    if (e.verdict !== 'changes') break;
+    rounds.unshift(e);
+  }
+  return rounds;
+}
+
+/** One verdict as a bullet of the block for the PM: who gave it, when, and its text, cut short. */
+export function roundNote(e: OpsEvent, n: number): string {
+  const text = (e.body ?? '').replace(/\s+/g, ' ').trim();
+  const cut = text.length > MAX_SAID_CHARS ? `${text.slice(0, MAX_SAID_CHARS)}…` : text;
+  return `- Round ${n}, ${e.actor}, ${e.at.slice(0, 10)}: ${cut || '(no text)'}`;
+}
+
 /** Text safe inside a Markdown bullet: no code spans or fences to break. */
 function plain(s: string): string {
   return s.replace(/`/g, "'");

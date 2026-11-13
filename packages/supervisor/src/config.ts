@@ -208,6 +208,12 @@ export interface OpsdConfig {
    * logs say. 0 turns this off. Default 3.
    */
   stuck_runs: number;
+  /**
+   * `changes` verdicts on a task in a row, with no approval between them, before swarmupd stops
+   * waking its author: it blocks the task for a PM with the count and the text of those verdicts
+   * (AO-0288). 0 turns this off. Default 3.
+   */
+  review_rounds: number;
   /** Commit, pull and push each root when its sync policy says so. */
   sync: boolean;
   /**
@@ -351,6 +357,7 @@ export function opsdConfig(
     wake_cooldown_minutes: raw.wake_cooldown_minutes ?? 10,
     outside_session_minutes: raw.outside_session_minutes ?? 30,
     stuck_runs: raw.stuck_runs ?? 3,
+    review_rounds: raw.review_rounds ?? 3,
     sync: raw.sync ?? true,
     seeded,
     runtimes: mergeRuntimes(raw.runtimes, seeded),
@@ -448,6 +455,7 @@ export function opsdConfig(
   count(cfg.wake_cooldown_minutes, 'wake_cooldown_minutes', 0);
   count(cfg.outside_session_minutes, 'outside_session_minutes', 0);
   count(cfg.stuck_runs, 'stuck_runs', 0);
+  count(cfg.review_rounds, 'review_rounds', 0);
   if (typeof cfg.sync !== 'boolean') throw new OpsError('swarmupd.sync: use true or false', 2);
   for (const [id, a] of Object.entries(cfg.agents)) {
     if (a.wake !== undefined && typeof a.wake !== 'boolean') {

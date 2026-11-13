@@ -120,7 +120,14 @@ import { applyKills, startMs, survivors, systemLister, track, viewLedger } from 
 import type { Leftovers, RunRecord } from './runs.js';
 import { RunStore } from './runs.js';
 import type { RunFailure } from './stuck.js';
-import { failureKey, failureNote, runFailure, unfinishedRuns } from './stuck.js';
+import {
+  changesRounds,
+  failureKey,
+  failureNote,
+  roundNote,
+  runFailure,
+  unfinishedRuns,
+} from './stuck.js';
 import { Chat } from './chat.js';
 import type { ChatInvocation, QuestionPrompt } from './runtimes.js';
 import { CODEX_GIT_DIRS, invocation, runPrompt, withStoreCheckoutRule } from './runtimes.js';
@@ -3298,13 +3305,68 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * Stops the tasks whose reviews keep ending in change requests (AO-0288): one that got
+   * `review_rounds` `changes` verdicts in a row, the newest still waiting for its author, is
+   * blocked for a PM with the count and the text of those verdicts, instead of waking the author
+   * for another round. The PM narrows or splits the task, changes the reviewer or escalates; its
+   * answer frees the task and the count starts again. Each stop is logged, so the limit can be
+   * tuned. A task a person owns wakes no run and is left alone.
+   */
+  private readonly roundsRefused = new Set<string>();
+
+  private stopReviewLoops(): void {
+    const limit = this.config.review_rounds;
+    if (limit <= 0) return;
+    this.safe(() => {
+      const ws = this.ws(WATCH_ACTOR);
+      // A mirror is another clone's store: its own swarmupd writes there.
+      const mirrors = new Set(ws.roots.filter((r) => r.isMirror).map((r) => r.name));
+      for (const v of ws.snapshot()) {
+        if (v.status !== 'todo' || v.claimedBy || !v.owner || isHuman(v.owner)) continue;
+        if (mirrors.has(v.root)) continue;
+        const ref = `${v.root}/${v.meta.id}`;
+        this.safe(() => {
+          const rounds = changesRounds(ws.showEvents(ref).events, WATCH_ACTOR);
+          if (rounds.length < limit) return;
+          // A block that fails warns once per verdict, not every tick.
+          const key = `${ref}:${rounds.at(-1)!.id}`;
+          if (this.roundsRefused.has(key)) return;
+          this.roundsRefused.add(key);
+          const reviewers = [...new Set(rounds.map((e) => e.actor))];
+          // Any provider's PM: no provider is broken here, unlike with a stuck run.
+          const pm = this.pmFor(ws);
+          const shown = rounds.slice(-limit);
+          const first = rounds.length - shown.length;
+          const body = [
+            `${ref}: swarmupd stopped waking ${v.owner} for this task. Its last ${rounds.length} ` +
+              `reviews in a row ended with a \`changes\` verdict and none approved it ` +
+              `(\`review_rounds\`: ${limit}).`,
+            [
+              ...shown.map((e, i) => roundNote(e, first + i + 1)),
+              `- Decision needed: narrow the task, split it, change the reviewer or escalate, ` +
+                `then answer this block; the author is woken again after the answer.`,
+            ].join('\n'),
+          ].join('\n\n');
+          ws.block(ref, body, { to: pm });
+          this.emit(
+            'warn',
+            `review-rounds: ${ref} stopped after ${rounds.length} changes verdicts in a row ` +
+              `(limit ${limit}; author ${v.owner}; reviewer ${reviewers.join(', ')}); ` +
+              `waits for ${pm ?? 'the human'}`,
+          );
+        });
+      }
+    });
+  }
+
+  /**
    * The PM who hears about a stuck task: a waking, active PM of another provider than the stuck
    * run's, and not signed out, in the PM role's provider order. Never one of the stuck run's own
    * provider, since that provider may be the one that is broken: with none left, undefined, and
-   * the block goes to the human.
+   * the block goes to the human. Without `agent`, a PM of any provider.
    */
-  private pmFor(ws: Workspace, agent: string): string | undefined {
-    const mine = runtimeOf(agent);
+  private pmFor(ws: Workspace, agent?: string): string | undefined {
+    const mine = agent === undefined ? undefined : runtimeOf(agent);
     const order = roleLimits(this.config, 'pm').providers;
     const rank = (a: string): number => {
       const i = order.indexOf(runtimeOf(a));
@@ -4014,6 +4076,8 @@ export class Supervisor extends EventEmitter {
         if (!this.stopping) this.safe(() => this.chat.tick());
         // Before wake, so an accepted finding gets its owner and starts in the same tick.
         if (!this.stopping) this.routeOwners();
+        // Before wake, so the author of a task at its review limit is not started again.
+        if (!this.stopping) this.stopReviewLoops();
         this.wake();
       } finally {
         const holds = this.dirtyHolds;
@@ -5422,6 +5486,13 @@ export class Supervisor extends EventEmitter {
     const now = this.now();
     // Every task read once for all agents: each inbox and queue read them all again (AO-0171).
     const views = this.ws().snapshot();
+    // The tasks `stopReviewLoops` blocked for a PM, and the author of each.
+    const roundStops = new Map<string, string>();
+    for (const v of views) {
+      if (v.status === 'blocked' && v.askedBy === WATCH_ACTOR && v.owner) {
+        roundStops.set(`${v.root}/${v.meta.id}`, v.owner);
+      }
+    }
     // The session outside swarmupd that worked on a task last, read once per task.
     const outside = new Map<string, OutsideSession | null>();
     const outsideOf = (ws: Workspace, ref: string, events?: OpsEvent[]): OutsideSession | null => {
@@ -5472,7 +5543,13 @@ export class Supervisor extends EventEmitter {
             key: `${i.task}:${i.event ?? i.kind}`,
             root: i.root,
             id: i.task.split('/').pop() ?? i.task,
-          }));
+          }))
+          // The change request on a task stopped at its review limit wakes its author for no
+          // inbox run either; the item is new again after the PM's answer (AO-0288).
+          .filter((i) => {
+            const owner = roundStops.get(`${i.root}/${i.id}`);
+            return !(owner && ownerMatches(owner, agent));
+          });
         inboxItems.set(agent, items);
         const keys = items.map((i) => i.key);
         const prev = state[agent] ?? { keys: [], at: 0 };
