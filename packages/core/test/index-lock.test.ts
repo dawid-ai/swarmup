@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runSteps, runStepsAsync } from '../src/git-steps.js';
+import { gitProcsCommand } from '../src/index-lock.js';
 import {
   clearStaleIndexLock,
   initRoot,
@@ -112,6 +113,56 @@ describe('a stale index.lock in the store (AO-0302)', { timeout: GIT_TEST_TIMEOU
     expect(existsSync(lock)).toBe(!after.removed);
   });
 });
+
+describe.runIf(process.platform === 'win32')(
+  'the Windows process listing',
+  { timeout: GIT_TEST_TIMEOUT },
+  () => {
+    /** Runs the listing after `prelude` while one git process is alive; its line in the output. */
+    async function listed(prelude: string): Promise<{ pid: number; fields: string[] }> {
+      const repo = gitRepo();
+      const child = spawn('git', ['cat-file', '--batch'], {
+        cwd: repo,
+        windowsHide: true,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      const exited = new Promise((resolve) => child.on('exit', resolve));
+      try {
+        await new Promise((resolve, reject) => {
+          child.on('spawn', resolve);
+          child.on('error', reject);
+        });
+        const { cmd, args } = gitProcsCommand('win32', prelude);
+        const out = execFileSync(cmd, args, { encoding: 'utf8', windowsHide: true });
+        const line = out.split(/\r?\n/).find((l) => l.startsWith(`${child.pid}\t`));
+        return { pid: child.pid!, fields: line?.split('\t') ?? [] };
+      } finally {
+        child.stdin.end();
+        await exited;
+      }
+    }
+
+    // The Codex sandbox, where the stale lock of AO-0302 came from, denies Win32_Process.
+    it('lists git with its start time when CIM answers "Access denied"', async () => {
+      const before = Date.now();
+      const { pid, fields } = await listed("function Get-CimInstance { throw 'Access denied' }; ");
+      expect(fields[0]).toBe(String(pid));
+      expect(Math.abs(Date.parse(fields[1]!) - before)).toBeLessThan(60_000);
+      // No command line without CIM, so a daemon cannot be told apart and counts as a holder.
+      expect(fields[2]).toBe('');
+    });
+
+    it('adds the command line when CIM answers', async () => {
+      const { fields } = await listed('');
+      expect(fields[2]).toMatch(/cat-file/);
+    });
+
+    it('fails when the processes cannot be listed, so the lock stays', () => {
+      const { cmd, args } = gitProcsCommand('win32', "function Get-Process { throw 'denied' }; ");
+      expect(() => execFileSync(cmd, args, { stdio: 'pipe', windowsHide: true })).toThrow();
+    });
+  },
+);
 
 describe('parseGitProcs', () => {
   it('reads the Windows listing and skips the daemons that never write the index', () => {

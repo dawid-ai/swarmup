@@ -52,22 +52,34 @@ function mtimeOf(path: string): number | null {
   }
 }
 
-// Doubled single quotes, not double quotes: the query survives any argument quoting unchanged.
+// `Get-Process` gives the ids and start times: it works in a restricted sandbox (a Codex run),
+// where `Get-CimInstance Win32_Process` answers "Access denied" (AO-0302). The command lines come
+// from CIM when it answers and serve only to skip git's daemons; without them every git process
+// counts. A failing `Get-Process` stops the script with exit 1, so the list is never cut short
+// in silence. Single quotes only: the script survives any argument quoting unchanged.
 const WINDOWS_QUERY =
-  "Get-CimInstance Win32_Process -Filter 'Name=''git.exe''' -Property ProcessId,CreationDate,CommandLine" +
-  " | ForEach-Object { '{0}\t{1}\t{2}' -f $_.ProcessId," +
-  " $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') })," +
-  " ($_.CommandLine -replace '[\\t\\r\\n]', ' ') }";
+  "$ErrorActionPreference = 'Stop'; $cmd = @{};" +
+  " try { Get-CimInstance Win32_Process -Filter 'Name=''git.exe''' -Property ProcessId,CommandLine" +
+  ' | ForEach-Object { $cmd[[int]$_.ProcessId] = [string]$_.CommandLine } } catch { $cmd = @{} };' +
+  " Get-Process | Where-Object { $_.ProcessName -eq 'git' } | ForEach-Object {" +
+  " $s = ''; try { $s = $_.StartTime.ToUniversalTime().ToString('o') } catch { $s = '' };" +
+  " '{0}\t{1}\t{2}' -f $_.Id, $s, ([string]$cmd[[int]$_.Id] -replace '[\\t\\r\\n]', ' ') }";
 
-/** The command that lists processes for {@link parseGitProcs}. */
-export function gitProcsCommand(platform: NodeJS.Platform = process.platform): {
+/**
+ * The command that lists processes for {@link parseGitProcs}. `prelude` is PowerShell run before
+ * the Windows listing, for a test that takes CIM away.
+ */
+export function gitProcsCommand(
+  platform: NodeJS.Platform = process.platform,
+  prelude = '',
+): {
   cmd: string;
   args: string[];
 } {
   return platform === 'win32'
     ? {
         cmd: 'powershell.exe',
-        args: ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_QUERY],
+        args: ['-NoProfile', '-NonInteractive', '-Command', prelude + WINDOWS_QUERY],
       }
     : { cmd: 'ps', args: ['-axo', 'pid=,etime=,args='] };
 }

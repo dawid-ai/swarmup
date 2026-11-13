@@ -422,8 +422,10 @@ git command that writes the index fails with "Unable to create index.lock: File 
 sync first removes that lock when it is at least 2 minutes old and no live git process started
 before the lock was made (the lock's maker is always older than its lock), and says so in a note.
 It leaves the lock, and the sync fails as before, when such a process is alive or when the
-processes cannot be listed (Windows: PowerShell `Get-CimInstance`; elsewhere `ps`). Git's
-`fsmonitor--daemon` and `credential-cache--daemon`, which never write the index, do not count.
+processes cannot be listed (Windows: PowerShell `Get-Process`, which also works in a sandbox
+that denies `Get-CimInstance`; elsewhere `ps`). Git's `fsmonitor--daemon` and
+`credential-cache--daemon`, which never write the index, do not count; on Windows they do count
+when `Get-CimInstance` cannot give the command lines that tell them apart.
 
 Every session pushes when it ends or compacts its context, whatever the policy:
 
