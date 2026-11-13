@@ -146,3 +146,43 @@ export function messageNotes(message: string): string[] {
   }
   return notes;
 }
+
+/**
+ * `done_when` as a list of one-line checks, or undefined when there are none (AO-0290). Accepts
+ * what a hand-written `task.md` can hold: one string or a list. A string with several lines is
+ * one check per line, and a leading list marker is dropped.
+ */
+export function doneWhenLines(value: unknown): string[] | undefined {
+  const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  const lines = items
+    .flatMap((item) => String(item).split(/\r?\n/))
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, '').trim())
+    .filter(Boolean);
+  return lines.length > 0 ? lines : undefined;
+}
+
+/** A command in a message: inline code or a fenced block. */
+const COMMAND_RE = /`[^`\n]+`|```/;
+
+/** A result in a message: an outcome word, a count, an exit code, or pasted output. */
+const RESULT_RE =
+  /```|\b(?:pass(?:es|ed|ing)?|fail(?:s|ed|ing|ures?)?|green|red|clean|ok|succeed(?:s|ed)?|errors?|warnings?|output|prints?|printed|returns?|returned|shows?|showed|exit(?:s|ed)?(?: code)? \d+)\b|\b\d+ (?:tests?|files?|checks?|of \d+)\b/i;
+
+/**
+ * Soft check for a review request on a task with `done_when` (AO-0290): the request should name
+ * the commands that were run and what they printed, so the reviewer can check each line without
+ * taking "tests pass" on trust. Returns notes to print; never refuses.
+ */
+export function evidenceNotes(message: string, doneWhen: string[] | undefined): string[] {
+  if (!doneWhen || doneWhen.length === 0) return [];
+  const missing = [
+    COMMAND_RE.test(message) ? null : 'no command (in code font, such as `npm test`)',
+    RESULT_RE.test(message) ? null : 'no result (what each command printed, or what you saw)',
+  ].filter(Boolean);
+  if (missing.length === 0) return [];
+  const n = doneWhen.length;
+  return [
+    `the task has ${n} done-when line${n === 1 ? '' : 's'} and the request names ${missing.join(' and ')}: ` +
+      'say which commands you ran and their output, so the reviewer can check each line',
+  ];
+}

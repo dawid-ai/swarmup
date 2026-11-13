@@ -79,7 +79,7 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `comment ID MSG [--to ID]`                                                               | A note; `--to` puts it in that inbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `inbox [--mark-read]`                                                                    | Unread messages addressed to you, asks and reviews waiting for you, and, for humans, tasks you own. Findings to triage go to the PM when one is configured, and to a person only when assigned to them; without a PM, to every person. A review item shows the latest request: who asked, its text, and the PR, commit and branch it names. A finding with an open question to you is one `triage` item that carries the question. `--mark-read` clears messages only.                                                                                                                                                                                                                                                                                             |
-| `new TITLE [...]`                                                                        | Creates a task. A human or the orchestrator creates it as asked. An agent creates a task only with `--parent` naming an open, approved task (created by a human or the orchestrator, or accepted, assigned, delegated or reopened by a human, the orchestrator or a PM, or a subtask of one); otherwise `new` files a `finding` that waits for the PM's triage and prints a note. Ideas, findings and questions pass as filed.                                                                                                                                                                                                                                                                                                                                     |
+| `new TITLE [...]`                                                                        | Creates a task. A human or the orchestrator creates it as asked. An agent creates a task only with `--parent` naming an open, approved task (created by a human or the orchestrator, or accepted, assigned, delegated or reopened by a human, the orchestrator or a PM, or a subtask of one); otherwise `new` files a `finding` that waits for the PM's triage and prints a note. Ideas, findings and questions pass as filed. `--done-when CHECK` (repeatable) sets the task's `done_when` list; see [Done when](#done-when).                                                                                                                                                                                                                                     |
 | `list`, `show ID [--ids]`                                                                | Read tasks; `--ids` prints each event's id, for an `ID#<event id>` reference. `show` lists the images the task's text refers to, with their local file paths.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `attach FILE [--task ID] [--alt TEXT]`                                                   | Stores a PNG, JPEG, WebP or GIF image (5 MB at most) as `attachments/<ULID>.<ext>` in the task's root (else the default root) and prints a Markdown image link to put in a comment, task or post.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `retype ID TYPE [MSG] [--to OWNER] [--priority P] [--answer TEXT]`                       | Changes the task type, for example a finding accepted as `bug` or set aside as `idea` (human, orchestrator or PM); `--to` also assigns it, `--priority` sets its priority and `--answer` answers its open question, in the same write. Written as a `retype` event; `task.md` keeps the type it was filed with.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -172,6 +172,35 @@ ISO timestamp.
 
 Global flags: `--as ID`, `--root NAME`, `--force`, `--json`. Exit codes: 0 ok, 1 refused,
 2 bad input, 3 nothing to do.
+
+## Done when
+
+A task says when it is done in `done_when`, a field of its `task.md` front matter: a short list
+where each line is a command or an observable behavior that someone can check.
+
+```yaml
+done_when:
+  - npm test passes
+  - swarmup show prints the list under "done when:"
+```
+
+- **Set it** with `swarmup new TITLE --done-when "CHECK"`, once per line. A value with several
+  lines is one check per line. The HTTP API takes `done_when` on `POST /api/tasks`. Like the rest
+  of `task.md`, the list does not change after the task is created.
+- **Write lines an agent can check**: a command, a file, a test, a screenshot, a URL that
+  responds. "Users like it" is the goal, not the check; it belongs in the body.
+- **Read it** with `swarmup show ID`, which prints the list under `done when:` after the body;
+  `show --json` carries it as `meta.done_when`. The run prompt and the review prompt of swarmupd
+  point at that list.
+- **Old tasks** have no `done_when` and read as before. A `task.md` written by hand with one text
+  value (`done_when: npm test passes`) reads as a list of one.
+- **Review requests name the evidence.** On a task with `done_when`, `swarmup review` prints a
+  `note:` when the request names no command (text in code font, such as `` `npm test` ``) or no
+  result (an outcome such as "passed" or "3 failed", an exit code, or pasted output in a fenced
+  block). The request is still written; the note asks for the commands run and their output next
+  time. The reviewer checks each line against that evidence.
+
+The milestone design (AO-0110) uses the same field for a milestone's check.
 
 ## Messages to a person
 

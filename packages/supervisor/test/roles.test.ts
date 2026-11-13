@@ -158,6 +158,16 @@ describe('role files from the app', () => {
     expect(review).toContain('Finish with exactly one verdict');
     expect(review).not.toContain('finish with `swarmup review`');
     expect(review).not.toContain('Decide technical and process choices yourself');
+    // Both prompts point at the task's done_when list (AO-0290); a question run has none to meet.
+    expect(prompt).toContain('prints a `done when:` list, the task is done when every line holds');
+    expect(prompt).toContain('name the commands you ran and their output in your review request');
+    expect(review).toContain('prints a `done when:` list, check every line against the commands');
+    const question = runPrompt({
+      agent: 'codex:qa',
+      task: 'T-0001',
+      question: { from: 'claude:pm', title: 'Safe to merge?', body: '', tasks: [], projects: [] },
+    });
+    expect(question).not.toContain('done when');
   });
 
   it('tells a reviewer to run the checks and to review against the done-when (AO-0289)', () => {
