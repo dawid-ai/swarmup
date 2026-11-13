@@ -426,6 +426,11 @@ Every session pushes when it ends or compacts its context, whatever the policy:
   prints a note and exits 0.
 - **Codex and other runtimes** have no session-end hook. Run `swarmup sync --session-end` as the last
   step of a run. From phase 2, the supervisor runs it when a run ends.
+- **In a sandboxed run of swarmupd** (Codex keeps every `.git` read-only and has no network),
+  `swarmup sync --session-end` cannot commit or push. When it fails on a refused write or an
+  unreachable remote there, it prints why, says that swarmupd syncs the store when the run ends,
+  and exits 0. A leak check, a conflict or a rejected push still fail, and so does any sync
+  without `--session-end`.
 
 ## Master Repo and project roots
 

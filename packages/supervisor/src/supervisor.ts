@@ -131,6 +131,8 @@ import {
 import { Chat } from './chat.js';
 import type { ChatInvocation, QuestionPrompt } from './runtimes.js';
 import { CODEX_GIT_DIRS, invocation, runPrompt, withStoreCheckoutRule } from './runtimes.js';
+import type { ReviewChecks } from './review-checks.js';
+import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
 import type { TaskWorktree, WorktreeEntry } from './worktree.js';
 import {
@@ -421,6 +423,8 @@ const MERGE_RETRY_MS = 2_000;
 const APPROVED_DAYS = 30;
 /** How often a merge that holds its checkout looks whether the writing run there has ended. */
 const MERGE_HOLD_POLL_MS = 1_000;
+/** How many review requests' check results swarmupd keeps in memory. */
+const REVIEW_CHECKS_KEPT = 50;
 
 /** One approved task to merge, and where. */
 interface MergeJob {
@@ -759,6 +763,18 @@ export class Supervisor extends EventEmitter {
   private readonly makingWorktrees = new Map<string, Promise<void>>();
   /** When swarmupd last failed to make a task worktree, by path: runs use the checkout meanwhile. */
   private readonly worktreeFailed = new Map<string, number>();
+  /**
+   * The checks swarmupd ran for a review request, by the request's key (`<ref>:<event id>`), for
+   * reviewers that cannot run them (AO-0296). Kept in memory: after a restart they run again.
+   */
+  private readonly reviewChecks = new Map<string, ReviewChecks>();
+  /** The review checks under way; one at a time, and no merge beside them. */
+  private reviewChecking: {
+    key: string;
+    ref: string;
+    runner: CommandRunner;
+    done: Promise<void>;
+  } | null = null;
   /** The housekeeping sweep under way: worktree reclaim and scratch cleanup (AO-0230). */
   private housekeeping?: Promise<void>;
   /** When the last housekeeping sweep started, in ms; 0 before the first. */
@@ -2768,7 +2784,24 @@ export class Supervisor extends EventEmitter {
       storeCheckout !== undefined,
       stores,
       gitDirs,
+      scratch,
     );
+    // A reviewer that cannot run the checks reads what swarmupd ran for it (AO-0296); the whole
+    // output goes to a file in the run's scratch folder.
+    let checksNote = '';
+    const checks = req.review && ref && !req.chat ? this.reviewChecksOf(ws, ref) : undefined;
+    if (checks) {
+      let log: string | undefined;
+      if (checks.results.length > 0) {
+        log = join(scratch, 'review-checks.log');
+        try {
+          writeFileSync(log, reviewChecksLog(checks));
+        } catch {
+          log = undefined;
+        }
+      }
+      checksNote = reviewChecksNote(checks, log);
+    }
     // Custom prompts are used as given, so only a standard task prompt lists related notes.
     const notes = req.prompt === undefined && ref ? this.taskNotes(ws, ref) : [];
     // A custom prompt is used as given, plus the store-checkout rule when it applies, plus the
@@ -2794,7 +2827,9 @@ export class Supervisor extends EventEmitter {
             taskWorktree,
             scratch: readOnly || req.chat ? undefined : scratch,
             notes,
-          })) + (inv.note ?? '');
+          })) +
+      (inv.note ?? '') +
+      checksNote;
 
     // Claim before the process starts, so two runs never race for one task.
     let claimedHere = false;
@@ -3978,6 +4013,8 @@ export class Supervisor extends EventEmitter {
     this.stopAbort.abort();
     // A merge stops before the base moves; the next swarmupd starts it again.
     this.merging?.runner.stop();
+    // Review checks stop too; the next swarmupd runs them again before the review starts.
+    this.reviewChecking?.runner.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     if (this.procTimer) clearInterval(this.procTimer);
@@ -4033,6 +4070,7 @@ export class Supervisor extends EventEmitter {
     // A merge plan under way starts nothing once swarmupd stops; it ends at its next git answer.
     await this.mergePlan;
     await this.merging?.done;
+    await this.reviewChecking?.done;
     // A sync or push under way finishes, so no rebase or commit is cut off halfway.
     await this.syncChain;
     await this.procChain;
@@ -4504,6 +4542,8 @@ export class Supervisor extends EventEmitter {
 
   private async planMerge(): Promise<void> {
     if (this.mergeHalted()) return;
+    // Review checks use the machine now; a merge's checks beside them make both time out.
+    if (this.reviewChecking) return;
     // What an earlier merge command left running goes first, so nothing races it.
     if (this.mergeLeftovers().length > 0) {
       this.clearMergeLeftovers();
@@ -4609,6 +4649,140 @@ export class Supervisor extends EventEmitter {
         `swarmupd merges nothing for ${id}: ${why}. The tasks blocked on it go on.`,
       );
     }
+  }
+
+  // ---- Checks for reviewers that cannot run them (AO-0296) -------------------------------------
+
+  /**
+   * The merge setting whose checks swarmupd still has to run before a review run of `agent` on
+   * the review request `key` starts, or null: the reviewer runs its own checks, the root names
+   * none, or they ran already. Reads no file and runs no git, so wake plans may ask.
+   */
+  private reviewChecksDue(
+    agent: string,
+    rootName: string | undefined,
+    key: string | undefined,
+  ): MergeConfig | null {
+    if (!rootName || !key || this.reviewChecks.has(key)) return null;
+    const cfg = this.config.merge[rootName];
+    const writes = roleLimits(this.config, roleOf(agent)).writes;
+    return needsReviewChecks(agent, writes, this.config.review_checks, cfg) ? cfg : null;
+  }
+
+  /**
+   * Starts the checks of the review request `key` on task `ref`, unless checks or a merge are
+   * under way: then a later tick starts them. The review run starts once they are over, whatever
+   * their result; when swarmupd cannot run them, the run's prompt says why.
+   */
+  private startReviewChecks(key: string, ref: string, cfg: MergeConfig): void {
+    if (this.stopping || this.reviewChecking || this.merging || this.mergePlan) return;
+    const runner = new CommandRunner(this.commandEnv(), { now: this.now });
+    const startedAt = this.now();
+    const line = (text: string): void => {
+      this.emit('review-checks', `${ref}: ${text}`);
+    };
+    const keep = (c: ReviewChecks): void => {
+      this.reviewChecks.set(key, c);
+      // Oldest first out: a review request's checks are read once, when its run starts.
+      for (const k of this.reviewChecks.keys()) {
+        if (this.reviewChecks.size <= REVIEW_CHECKS_KEPT) break;
+        this.reviewChecks.delete(k);
+      }
+    };
+    line('starts');
+    const done = this.runReviewChecks(ref, cfg, runner, line)
+      .then((c) => {
+        if (c) keep(c);
+      })
+      .catch((err: unknown) => {
+        const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+        this.emit('warn', `review checks of ${ref}: ${msg}`);
+        // The review is not held for a fault of swarmupd's own: its run starts and is told.
+        if (!this.stopping) {
+          keep({ at: this.now(), commands: cfg.checks ?? [], results: [], note: firstLines(msg) });
+        }
+      })
+      .finally(() => {
+        line(`ends after ${elapsed(this.now() - startedAt)}`);
+        this.reviewChecking = null;
+        this.waitsMemo = null;
+      });
+    this.reviewChecking = { key, ref, runner, done };
+  }
+
+  /**
+   * Checks out the commit the newest review request of `ref` names, in swarmupd's review worktree
+   * (`<state>/review/<root>`, kept between reviews so installed packages stay), and runs the
+   * root's merge checks there. Null when the checks were stopped with swarmupd or broken by the
+   * PC's sleep: a later tick runs them again.
+   */
+  private async runReviewChecks(
+    ref: string,
+    cfg: MergeConfig,
+    runner: CommandRunner,
+    line: (text: string) => void,
+  ): Promise<ReviewChecks | null> {
+    const ws = this.ws();
+    const commands = cfg.checks ?? [];
+    const none = (note: string): ReviewChecks => ({ at: this.now(), commands, results: [], note });
+    const root = ws.resolve(ref).root;
+    const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
+    if (!top) return none(`${root.name} has no code checkout`);
+    const repo = new MergeRepo(
+      top,
+      join(this.store.dir, 'review', root.name.replace(/[^A-Za-z0-9._-]/g, '-')),
+      ws.roots.map((r) => r.dir),
+      this.commandEnv(),
+      this.mergeGitTimeoutMs,
+    );
+    const texts = ws
+      .showEvents(ref)
+      .events.filter((e) => e.type === 'review')
+      .reverse()
+      .map((e) => e.body);
+    const src = await this.pickSource(repo, texts, () => this.stopping);
+    if (src === 'halted') return null;
+    if (!src) return none('no review request names a commit or a branch');
+    const what = src.commit ? `${src.commit} on branch ${src.branch}` : `branch ${src.branch}`;
+    const commit = src.commit
+      ? await repo.commit(src.commit)
+      : ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch!)));
+    if (!commit) {
+      const missing = src.commit ? `commit ${src.commit}` : `branch ${src.branch}`;
+      return none(`${missing} is not in ${top}`);
+    }
+    await repo.ensureWorktree(commit);
+    await repo.checkOut(commit);
+    if (this.stopping) return null;
+    line(`checks ${what} (${short(commit)}) in ${repo.worktree}`);
+    const results = await runner.runAll(commands, repo.worktree, mergeTimeout(cfg), (s) => {
+      const label = `check ${s.index + 1}/${s.count} \`${s.command}\``;
+      if (!s.result) line(`${label} starts`);
+      else line(`${label} ${s.result.ok ? 'passed' : `failed (${s.result.why ?? 'exit ?'})`}`);
+    });
+    const failed = results.find((r) => !r.ok);
+    if (failed?.why === 'stopped') return null;
+    // Tests and timeouts fail when the PC wakes, which says nothing about the code (AO-0151).
+    if (failed?.interrupted) {
+      this.emit(
+        'warn',
+        `review checks of ${ref}: \`${failed.command}\` failed (${failed.why}) after the PC slept or swarmupd stopped responding; running them again`,
+      );
+      return null;
+    }
+    return { commit, what, at: this.now(), commands, results };
+  }
+
+  /** Resolves once the review checks under way, if any, are over. */
+  async reviewChecksSettled(): Promise<void> {
+    await this.reviewChecking?.done;
+  }
+
+  /** The checks swarmupd ran for the newest review request of `ref`, if any. */
+  private reviewChecksOf(ws: Workspace, ref: string): ReviewChecks | undefined {
+    if (this.reviewChecks.size === 0) return undefined;
+    const request = [...ws.showEvents(ref).events].reverse().find((e) => e.type === 'review');
+    return request ? this.reviewChecks.get(`${ref}:${request.id}`) : undefined;
   }
 
   /** Whether a top-level writing run is live in the checkout `top`. */
@@ -4881,9 +5055,31 @@ export class Supervisor extends EventEmitter {
     const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
     if (!top) return null;
     const repo = new MergeRepo(top, '', [], this.commandEnv());
-    const texts = reviews.map((e) => e.body);
-    // A first pass that finds nothing lists every commit the pick may ask about; git answers
-    // them off the event loop, and the second pass picks from the answers.
+    const src = await this.pickSource(
+      repo,
+      reviews.map((e) => e.body),
+      () => this.mergeHalted(),
+    );
+    if (!src || src === 'halted') return null;
+    const what = src.commit
+      ? `${src.commit} on branch ${src.branch}`
+      : `branch ${src.branch ?? '?'}`;
+    const v = ws.view(ref);
+    const author = v.owner && !v.owner.includes('*') ? v.owner : review.actor;
+    return { cfg, top, src, what, author, human: root.config.human, root: root.name };
+  }
+
+  /**
+   * Picks what a task's review requests name (`pickMergeSource`), newest first in `texts`. A
+   * first pass that finds nothing lists every commit the pick may ask about; git answers them off
+   * the event loop, and the second pass picks from the answers. Each git answer may come after a
+   * stop: `halted` ends the pick there, not after every probe.
+   */
+  private async pickSource(
+    repo: MergeRepo,
+    texts: string[],
+    halted: () => boolean,
+  ): Promise<MergeSource | null | 'halted'> {
     const commits = new Set<string>();
     pickMergeSource(texts, {
       branch: () => false,
@@ -4892,25 +5088,17 @@ export class Supervisor extends EventEmitter {
         return false;
       },
     });
-    // Each git answer may come after a stop; planning then ends there, not after every probe.
     const branches = await repo.branches();
-    if (this.mergeHalted()) return null;
+    if (halted()) return 'halted';
     const found = new Set<string>();
     for (const sha of commits) {
       if (await repo.hasCommit(sha)) found.add(sha);
-      if (this.mergeHalted()) return null;
+      if (halted()) return 'halted';
     }
-    const src = pickMergeSource(texts, {
+    return pickMergeSource(texts, {
       branch: (name) => branches.has(name),
       commit: (sha) => found.has(sha),
     });
-    if (!src) return null;
-    const what = src.commit
-      ? `${src.commit} on branch ${src.branch}`
-      : `branch ${src.branch ?? '?'}`;
-    const v = ws.view(ref);
-    const author = v.owner && !v.owner.includes('*') ? v.owner : review.actor;
-    return { cfg, top, src, what, author, human: root.config.human, root: root.name };
   }
 
   /**
@@ -5765,7 +5953,9 @@ export class Supervisor extends EventEmitter {
           agent: chosen,
           reason: chosenWorktree
             ? `starts once swarmupd has made its worktree ${chosenWorktree}`
-            : 'starts at the next tick',
+            : c.kind === 'review' && this.reviewChecksDue(chosen, c.root, c.key)
+              ? 'starts once swarmupd has run the checks of the reviewed commit'
+              : 'starts at the next tick',
         });
       } else {
         steps.push({ c, agent: null, reason: reasons.join('; ') });
@@ -5835,6 +6025,7 @@ export class Supervisor extends EventEmitter {
         .join(','),
       m ? `${m.ref}>${m.base}:${m.step}` : '',
       [...this.makingWorktrees.keys()].sort().join(','),
+      `${this.reviewChecking?.key ?? ''}|${[...this.reviewChecks.keys()].join(',')}`,
       [...this.reclaiming].sort().join(','),
       this.repairHold() ?? '',
       [...this.worktreeFailed].map(([p, at]) => `${p}@${at}`).join(','),
@@ -5944,6 +6135,15 @@ export class Supervisor extends EventEmitter {
         const wt = this.codeWorktree(wakeWs, agent, c.root, c.id, c.type);
         if (wt && !wt.ready) {
           this.makeWorktree(wt, c.ref);
+          continue;
+        }
+      }
+      // A reviewer that cannot run the checks gets them run first, off the event loop (AO-0296);
+      // its run starts at a later tick, with the results in its prompt.
+      if (c.kind === 'review' && c.ref && c.key) {
+        const cfg = this.reviewChecksDue(agent, c.root, c.key);
+        if (cfg) {
+          this.startReviewChecks(c.key, c.ref, cfg);
           continue;
         }
       }

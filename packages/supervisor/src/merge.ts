@@ -593,6 +593,18 @@ export class MergeRepo {
   }
 
   /**
+   * Checks out `commit` as it is in swarmupd's worktree, detached, for checks on what a review
+   * names (AO-0296). Untracked files of an earlier round go; ignored ones (installed packages,
+   * builds) stay.
+   */
+  async checkOut(commit: string): Promise<void> {
+    const wt = this.worktree;
+    await this.git(wt, ['rebase', '--abort'], { allowFail: true });
+    await this.git(wt, ['checkout', '-q', '-f', '--detach', commit]);
+    await this.git(wt, ['clean', '-q', '-f', '-d']);
+  }
+
+  /**
    * Replays `commit` and the commits before it that `onto` lacks onto `onto`, in swarmupd's worktree.
    * Returns the new commit, or the conflict git reported (the rebase is undone).
    */

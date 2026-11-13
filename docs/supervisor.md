@@ -179,9 +179,32 @@ several review rounds.
 - A Codex run of a role that does not write starts in its task store, not in its checkout:
   `-C <store>`, with every other data root's folder as `--add-dir`. Codex's sandbox always lets a
   run write its working folder, so this keeps the checkout and the other repos read-only while
-  the run's `swarmup` commands still write the task store. The prompt names the checkout and tells
-  the run to read it by path and to run `git -C <checkout>`. If the run has no task store, it
-  gets `--sandbox read-only` in its checkout instead.
+  the run's `swarmup` commands still write the task store. The run's scratch folder is one more
+  `--add-dir`, since `TEMP` points there, unless it holds the checkout or a store. The prompt
+  names the checkout and the scratch folder, tells the run to read the checkout by path and to
+  run `git -C <checkout>`, and says that swarmupd syncs the store when the run ends: the sandbox
+  keeps every `.git` read-only and has no network, so the run's `swarmup sync --session-end`
+  only reports that and exits 0. If the run has no task store, it gets `--sandbox read-only` in
+  its checkout instead.
+- **Checks for a reviewer that cannot run them (AO-0296).** A build, a test run and an install
+  all fail in that sandbox. So before a review run of a Codex agent whose role does not write,
+  swarmupd runs the root's merge `checks` (`swarmupd.merge.<root>.checks`) itself: it checks out
+  the commit the newest review request names (`<commit> on branch <name>`, else the branch tip,
+  as a merge picks it), as it is and not rebased, in a worktree of its own
+  (`<state>/review/<root>`, kept between reviews so installed packages stay), and runs the
+  commands there in order until one fails. The review run starts once they are over; `swarmup
+waits` says `starts once swarmupd has run the checks of the reviewed commit` meanwhile. Its
+  prompt ends with each command and its result, the end of a failed command's output, and the
+  commands that did not run after it; the whole output is in `review-checks.log` in the run's
+  scratch folder. The prompt tells the reviewer to name them in its verdict as run by swarmupd.
+  A failed check does not send the task back by itself: the reviewer decides. When swarmupd
+  cannot run the checks (no review request names a commit or branch the repo has, git fails),
+  the run starts anyway and its prompt says why. One set of checks runs at a time, none starts
+  during a merge, and no merge starts during them. Checks stopped with swarmupd or broken by
+  the PC's sleep run again; results are kept in memory, so a review that has not started when
+  swarmupd restarts gets its checks run again. The swarmupd log has a `review-checks` line for
+  each step. Reviewers of other runtimes run their own checks and get none of this; a root
+  without `checks` gets none either. Set `swarmupd.review_checks: false` to turn it off.
 - The working folder is `--cwd`, then the agent's `cwd` in the config, then the top of the task's
   repo.
 - When the working folder is a data root's checkout (the git checkout that holds a `.swarmup/`
@@ -600,6 +623,7 @@ swarmupd:
   reclaim_after_minutes: 60 # how long a task stays closed before that
   scratch_days: 7 # how long a run's scratch folder stays after the run
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
+  review_checks: true # run the merge checks for a Codex reviewer, whose sandbox cannot
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:

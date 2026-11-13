@@ -973,6 +973,40 @@ describe('runtimes', () => {
     expect(codexReader.args).not.toContain('D:/other');
     expect(codexReader.note).toContain('may not change files in C:/w');
     expect(codexReader.note).toContain('git -C C:/w');
+    expect(codexReader.note).not.toContain('scratch folder');
+    // Its scratch folder is writable too, unless it holds the checkout or a store (AO-0296).
+    const scratchReader = (scratch: string) =>
+      invocation(
+        { command: 'codex' },
+        'codex:reviewer',
+        undefined,
+        'C:/w',
+        [],
+        [],
+        undefined,
+        true,
+        false,
+        ['C:/w/.swarmup', 'D:/other/.swarmup'],
+        [],
+        scratch,
+      );
+    const withScratch = scratchReader('C:\\state\\scratch\\r1');
+    expect(withScratch.args.slice(-6)).toEqual([
+      'C:/w/.swarmup',
+      '--add-dir',
+      'D:/other/.swarmup',
+      '--add-dir',
+      'C:\\state\\scratch\\r1',
+      '-',
+    ]);
+    expect(withScratch.note).toContain(
+      'your scratch folder, C:/state/scratch/r1 ($SWARMUP_SCRATCH',
+    );
+    for (const holds of ['C:/', 'c:/W', 'D:/other', 'C:/w/.swarmup/scratch']) {
+      const left = scratchReader(holds);
+      expect(left.args.slice(-4)).toEqual(['C:/w/.swarmup', '--add-dir', 'D:/other/.swarmup', '-']);
+      expect(left.note).not.toContain('scratch folder');
+    }
     // A store inside another one is covered by it, whichever comes first.
     const nested = invocation(
       { command: 'codex' },
@@ -4632,8 +4666,12 @@ describe('what runs leave in the checkout', () => {
     const cd = call.args[call.args.indexOf('-C') + 1]!;
     expect(samePath(cd, store)).toBe(true);
     expect(call.args[call.args.indexOf('--sandbox') + 1]).toBe('workspace-write');
-    expect(call.args).not.toContain('--add-dir');
+    // Its scratch folder, where `TEMP` points, is the one other folder it may write (AO-0296).
+    const scratch = sup.run(run.id).scratch!;
+    expect(call.args.filter((_, i) => call.args[i - 1] === '--add-dir')).toEqual([scratch]);
     expect(call.prompt).toMatch(/may not change files in .+: Codex starts you in the task store/);
+    expect(call.prompt).toContain('You can also write your scratch folder');
+    expect(call.prompt).toContain('swarmupd commits and pushes the task store when this run ends');
     // A writing Codex run still works in its checkout.
     const writer = sup.launch({ agent: 'codex:engineer' });
     await ended(sup, writer.id);

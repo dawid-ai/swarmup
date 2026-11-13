@@ -444,6 +444,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   sup.on('warn', (m: string) => log(`${stamp()} warn ${m}`));
   sup.on('merge', (m: string) => log(`${stamp()} merge ${m}`));
   sup.on('worktree', (m: string) => log(`${stamp()} worktree ${m}`));
+  sup.on('review-checks', (m: string) => log(`${stamp()} review-checks ${m}`));
   sup.on('repair', (m: string) => log(`${stamp()} repair ${m}`));
   const syncLog = new SyncLog();
   sup.on('sync', (s: SyncLogEntry) => {
