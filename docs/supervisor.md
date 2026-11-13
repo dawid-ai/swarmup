@@ -439,6 +439,34 @@ The desktop app can host swarmupd: it starts it with its own executable in Node 
 (checks, install, build), and neither gets the app's `SWARMUP_DAEMON_ENTRY`: a check or a run that
 starts swarmupd from a checkout starts that checkout's build, not the installed app's.
 
+#### One Electron for every worktree
+
+The `electron` package holds no binary: it downloads and unpacks one (about 350 MB) into
+`node_modules/electron/dist` on the first `require('electron')`, which a test or a smoke script
+does. So that each task worktree does not hold its own, swarmupd keeps one unpacked copy per
+version in `electron/<version>-<platform>-<arch>` in the state folder and names it in
+`ELECTRON_OVERRIDE_DIST_PATH`, which the package reads, for agent runs and for merge and review
+checks.
+
+- The version comes from the lockfile of the checkout the command runs in (`pnpm-lock.yaml`,
+  `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`), else from the installed package. A
+  checkout that installs no Electron gets no variable.
+- swarmupd makes the shared copy the first time it needs a version, by copying it from the
+  checkout the command runs in or from the checkout its worktree belongs to, whichever holds that
+  version unpacked. The copy takes about a second and happens once per version.
+- When no checkout holds the version, the command gets no variable and the package downloads into
+  the worktree as before. After the run or the checks end, swarmupd moves that `dist` folder to the
+  shared place with one rename. It moves only out of a linked worktree, never out of the checkout
+  itself, and deletes nothing: a worktree that unpacked a copy while the shared one existed keeps
+  it.
+- A value you set yourself stays: swarmupd never replaces an `ELECTRON_OVERRIDE_DIST_PATH` that is
+  already in its environment.
+- A run that changes the Electron version in its lockfile still has the earlier version's folder
+  in its environment. Unset the variable for the commands that need the new version; the merge
+  and review checks read the lockfile again and use the new one.
+- swarmupd removes no shared copy. Delete a version's folder under `electron/` in the state folder
+  when no checkout uses it any more.
+
 #### Process ledger
 
 Each run keeps a ledger of every process it started, in `procs/<run>.json` in the state folder:

@@ -904,12 +904,15 @@ export class CommandRunner {
   /**
    * Runs `commands` in order, in `cwd` unless an entry names its own, and stops at the first that
    * fails. `onStep` hears of each command as it starts, and again with its result once it ends.
+   * `env` replaces the runner's environment for these commands: what depends on the folder they
+   * run in, such as its shared Electron (AO-0306).
    */
   async runAll(
     commands: CommandEntry[],
     cwd: string,
     timeoutMs: number,
     onStep?: (step: CommandStep) => void,
+    env: NodeJS.ProcessEnv = this.env,
   ): Promise<CommandResult[]> {
     const out: CommandResult[] = [];
     let count = commands.length;
@@ -922,7 +925,7 @@ export class CommandRunner {
       const e = typeof entry === 'string' ? { command: entry, cwd, label: entry } : entry;
       const step = { command: e.label, index: out.length, count };
       onStep?.(step);
-      const ran = await this.run(e.command, e.cwd, timeoutMs);
+      const ran = await this.run(e.command, e.cwd, timeoutMs, env);
       const r = { ...ran, command: e.label, entry: at };
       onStep?.({ ...step, result: r });
       out.push(r);
@@ -937,7 +940,12 @@ export class CommandRunner {
     this.current?.stop();
   }
 
-  private run(command: string, cwd: string, timeoutMs: number): Promise<CommandResult> {
+  private run(
+    command: string,
+    cwd: string,
+    timeoutMs: number,
+    env: NodeJS.ProcessEnv,
+  ): Promise<CommandResult> {
     if (this.stopped) return Promise.resolve({ ok: false, command, output: '', why: 'stopped' });
     return new Promise((res) => {
       const child = this.job
@@ -946,14 +954,14 @@ export class CommandRunner {
             ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', JOB_LAUNCHER_ARG],
             {
               cwd,
-              env: { ...this.env, SWARMUP_JOB_COMMAND: command },
+              env: { ...env, SWARMUP_JOB_COMMAND: command },
               windowsHide: true,
               stdio: ['ignore', 'pipe', 'pipe'],
             },
           )
         : spawn(command, {
             cwd,
-            env: this.env,
+            env,
             shell: true,
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],

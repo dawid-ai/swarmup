@@ -207,6 +207,16 @@ else if (mode === 'stray') {
   const fs = await import('node:fs');
   fs.writeFileSync(process.env.FAKE_STRAY, 'left by the run\\n');
   fs.writeFileSync(process.env.FAKE_ENV_OUT, JSON.stringify({ scratch: process.env.SWARMUP_SCRATCH, temp: process.env.TEMP, tmp: process.env.TMP, tmpdir: process.env.TMPDIR }));
+  // Says which Electron swarmupd named, and unpacks one as the electron package does (AO-0306).
+  if (process.env.FAKE_ELECTRON_OUT) fs.writeFileSync(process.env.FAKE_ELECTRON_OUT, process.env.ELECTRON_OVERRIDE_DIST_PATH ?? '');
+  if (process.env.FAKE_ELECTRON_UNPACK) {
+    const exe = process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron';
+    const path = await import('node:path');
+    const file = path.join('node_modules', 'electron', 'dist', exe);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'binary');
+    fs.writeFileSync(path.join('node_modules', 'electron', 'dist', 'version'), process.env.FAKE_ELECTRON_UNPACK);
+  }
   if (task) ws.done(task, 'left a stray file');
 }
 else if (mode === 'tail') process.stdout.write(JSON.stringify({ type: 'result', usage: { input_tokens: 1000, output_tokens: 1 } }));
@@ -5871,6 +5881,85 @@ describe('task worktrees (AO-0168)', () => {
     now += 8 * 24 * 3_600_000;
     await sup.housekeep();
     expect(existsSync(scratch)).toBe(false);
+  });
+
+  describe('one Electron for every worktree (AO-0306)', () => {
+    const VERSION = '9.9.9';
+    const exe =
+      process.platform === 'win32'
+        ? 'electron.exe'
+        : process.platform === 'darwin'
+          ? join('Electron.app', 'Contents', 'MacOS', 'Electron')
+          : 'electron';
+    const distOf = (dir: string): string => join(dir, 'node_modules', 'electron', 'dist');
+
+    /** A store checkout whose lockfile installs Electron; `node_modules` is ignored. */
+    function electronSetup(env: Record<string, string>) {
+      const s = storeSetup({
+        mode: 'stray',
+        // Empty: a swarmupd that runs these tests may have named its own shared Electron.
+        env: { ELECTRON_OVERRIDE_DIST_PATH: '', ...env },
+      });
+      const shared = join(s.state, 'electron', `${VERSION}-${process.platform}-${process.arch}`);
+      const commitAll = (): void => {
+        s.commit();
+        writeFileSync(join(s.repo, '.gitignore'), 'out/\nnode_modules/\n');
+        writeFileSync(
+          join(s.repo, 'package-lock.json'),
+          JSON.stringify({ packages: { 'node_modules/electron': { version: VERSION } } }),
+        );
+        git(s.repo, 'add', '-A');
+        git(s.repo, 'commit', '-qm', 'electron');
+      };
+      return { ...s, shared, commitAll };
+    }
+
+    it("points a run at one copy made from the checkout's Electron", async () => {
+      const out = temp();
+      const { repo, sup, as, commitAll, shared } = electronSetup({
+        FAKE_STRAY: join(out, 'stray.log'),
+        FAKE_ENV_OUT: join(out, 'env.json'),
+        FAKE_ELECTRON_OUT: join(out, 'electron.txt'),
+      });
+      as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
+      commitAll();
+      mkdirSync(distOf(repo), { recursive: true });
+      mkdirSync(dirname(join(distOf(repo), exe)), { recursive: true });
+      writeFileSync(join(distOf(repo), exe), 'binary');
+      writeFileSync(join(distOf(repo), 'version'), VERSION);
+      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+      await ended(sup, run.id);
+      expect(samePath(readFileSync(join(out, 'electron.txt'), 'utf8'), shared)).toBe(true);
+      expect(readFileSync(join(shared, exe), 'utf8')).toBe('binary');
+      // The checkout keeps its own, and the worktree holds none.
+      expect(existsSync(join(distOf(repo), exe))).toBe(true);
+      expect(existsSync(distOf(wt(repo, 'T-0001')))).toBe(false);
+    });
+
+    it('moves the Electron a run unpacked in its worktree, for the runs after it', async () => {
+      const out = temp();
+      const { repo, sup, as, commitAll, shared } = electronSetup({
+        FAKE_STRAY: join(out, 'stray.log'),
+        FAKE_ENV_OUT: join(out, 'env.json'),
+        FAKE_ELECTRON_OUT: join(out, 'electron.txt'),
+        FAKE_ELECTRON_UNPACK: VERSION,
+      });
+      as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
+      as('human:dawid').newTask({ title: 'b', owner: 'fake:engineer' });
+      commitAll();
+      // No checkout holds it: the first run gets no folder and unpacks its own.
+      const first = sup.launch({ agent: 'fake:engineer', task: '1' });
+      await ended(sup, first.id);
+      expect(readFileSync(join(out, 'electron.txt'), 'utf8')).toBe('');
+      expect(existsSync(distOf(wt(repo, 'T-0001')))).toBe(false);
+      expect(readFileSync(join(shared, 'version'), 'utf8')).toBe(VERSION);
+      const second = sup.launch({ agent: 'fake:engineer', task: '2' });
+      await ended(sup, second.id);
+      expect(samePath(readFileSync(join(out, 'electron.txt'), 'utf8'), shared)).toBe(true);
+      // What the second run unpacked all the same stays: swarmupd deletes nothing of a checkout.
+      expect(existsSync(join(distOf(wt(repo, 'T-0002')), exe))).toBe(true);
+    });
   });
 });
 

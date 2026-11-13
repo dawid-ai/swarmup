@@ -6,7 +6,11 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type DeleteHost, deleteWorktree, removeTree } from '../src/worktree.js';
 
-/** The Electron executable the desktop package installs, and its default app's asar, if any. */
+/**
+ * The Electron executable the desktop package installs, and its default app's asar, if any. In a
+ * run swarmupd started, both are in the shared folder `ELECTRON_OVERRIDE_DIST_PATH` names
+ * (AO-0306); the test still copies the asar into a worktree of its own.
+ */
 function electron(): { host: DeleteHost; asar: string } | null {
   try {
     const exe = createRequire(import.meta.url)('electron') as unknown;

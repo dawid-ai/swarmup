@@ -1341,6 +1341,29 @@ describe('merging approved work', () => {
     expect(missingOptionalPackages(dir, here)).toEqual([]);
   }, 60_000);
 
+  it('runs commands with the environment given for them, with and without the job launcher (AO-0306)', async () => {
+    const dir = temp();
+    writeFileSync(
+      join(dir, 'env.mjs'),
+      "import { appendFileSync } from 'node:fs';\nappendFileSync('env.txt', (process.env.ELECTRON_OVERRIDE_DIST_PATH ?? 'none') + '\\n');\n",
+    );
+    const base = { ...process.env };
+    delete base.ELECTRON_OVERRIDE_DIST_PATH;
+    for (const job of process.platform === 'win32' ? [false, true] : [false]) {
+      const runner = new CommandRunner(base, { killTree: () => {}, job });
+      const own = { ...base, ELECTRON_OVERRIDE_DIST_PATH: 'shared-electron' };
+      const first = await runner.runAll(['node env.mjs'], dir, 60_000, undefined, own);
+      // The next commands get the runner's own environment again.
+      const second = await runner.runAll(['node env.mjs'], dir, 60_000);
+      expect([...first, ...second].map((r) => r.ok)).toEqual([true, true]);
+    }
+    expect(text(join(dir, 'env.txt'))).toBe(
+      process.platform === 'win32'
+        ? 'shared-electron\nnone\nshared-electron\nnone\n'
+        : 'shared-electron\nnone\n',
+    );
+  }, 60_000);
+
   it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {
     const dir = temp();
     writeFileSync(

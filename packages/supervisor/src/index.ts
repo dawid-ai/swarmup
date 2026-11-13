@@ -20,6 +20,7 @@ export * from './supervisor.js';
 export * from './usage.js';
 export * from './procs.js';
 export * from './quota.js';
+export * from './electron-dist.js';
 export * from './runenv.js';
 export * from './seed.js';
 export * from './signin.js';

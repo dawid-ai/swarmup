@@ -90,6 +90,7 @@ import {
 } from './merge.js';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
+import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electron-dist.js';
 import { dropEnv, runEnv } from './runenv.js';
 import { deleteEnvVars, envPairs, OLD_ENV_PREFIX, ROOTS_ONLY_NAME } from '@swarmup/core';
 import { Notifier } from './notify.js';
@@ -740,6 +741,8 @@ export class Supervisor extends EventEmitter {
   private readonly mergeGitTimeoutMs?: MergeGitTimeout;
   /** Tasks whose merge check timed out once; the next timeout sends the task back (AO-0172). */
   private readonly mergeTimedOut = new Set<string>();
+  /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
+  private readonly electronDists = new Set<string>();
   private user: UserConfig;
   private readonly now: () => number;
   private readonly live = new Map<string, LiveRun>();
@@ -2947,7 +2950,7 @@ export class Supervisor extends EventEmitter {
     const runToken = randomBytes(24).toString('hex');
     try {
       // Each variable under both prefixes: a `swarmup` built before the rename reads `OPS_*`.
-      const env = runEnv(
+      const own = runEnv(
         this.env,
         envPairs({
           AGENT: agent,
@@ -2961,6 +2964,8 @@ export class Supervisor extends EventEmitter {
           ...(copied ? { [ROOTS_ONLY_NAME]: '1' } : {}),
         }),
       );
+      // A chat turn runs no tests; it skips the lockfile read (AO-0171).
+      const env = req.chat ? own : this.electronEnv(own, checkoutTop, worktree?.top);
       // Temp files of the run and the tools it starts land in its scratch folder too. Windows
       // names are case-insensitive, so other spellings go first.
       for (const k of Object.keys(env)) if (/^(temp|tmp|tmpdir)$/i.test(k)) delete env[k];
@@ -3564,6 +3569,12 @@ export class Supervisor extends EventEmitter {
     // between; a wrap-up that failed gets its repair too.
     const r = this.ending.get(id);
     if (r && runtimeOf(r.agent) === 'codex') void this.repairStores();
+    // An Electron the run downloaded into its worktree becomes the shared copy (AO-0306). Not
+    // from a checkout that is no linked worktree: a person may run the app from that one.
+    if (r && !r.parent && !r.chat) {
+      const top = this.gitTopOf(resolve(r.cwd));
+      if (top && worktreeAt(top) === 'worktree') this.shareElectron(top);
+    }
     this.ending.delete(id);
     const waiters = this.endWaiters.get(id) ?? [];
     this.endWaiters.delete(id);
@@ -4858,11 +4869,18 @@ export class Supervisor extends EventEmitter {
     await repo.checkOut(commit);
     if (this.stopping) return null;
     line(`checks ${what} (${short(commit)}) in ${repo.worktree}`);
-    const results = await runner.runAll(commands, repo.worktree, mergeTimeout(cfg), (s) => {
-      const label = `check ${s.index + 1}/${s.count} \`${s.command}\``;
-      if (!s.result) line(`${label} starts`);
-      else line(`${label} ${s.result.ok ? 'passed' : `failed (${s.result.why ?? 'exit ?'})`}`);
-    });
+    const results = await runner.runAll(
+      commands,
+      repo.worktree,
+      mergeTimeout(cfg),
+      (s) => {
+        const label = `check ${s.index + 1}/${s.count} \`${s.command}\``;
+        if (!s.result) line(`${label} starts`);
+        else line(`${label} ${s.result.ok ? 'passed' : `failed (${s.result.why ?? 'exit ?'})`}`);
+      },
+      this.electronEnv(this.commandEnv(), repo.worktree, top),
+    );
+    this.shareElectron(repo.worktree);
     const failed = results.find((r) => !r.ok);
     if (failed?.why === 'stopped') return null;
     // Tests and timeouts fail when the PC wakes, which says nothing about the code (AO-0151).
@@ -5371,9 +5389,14 @@ export class Supervisor extends EventEmitter {
         // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
         if (this.merging) this.merging.holds = false;
         this.mergeStep('checks');
-        checks = await runner.runAll(cfg.checks ?? [], repo.worktree, timeout, (s) =>
-          this.mergeCommand('check', s),
+        checks = await runner.runAll(
+          cfg.checks ?? [],
+          repo.worktree,
+          timeout,
+          (s) => this.mergeCommand('check', s),
+          this.electronEnv(this.commandEnv(), repo.worktree, top),
         );
+        this.shareElectron(repo.worktree);
         const failed = checks.find((c) => !c.ok);
         // Stopped with swarmupd: the next swarmupd merges it from the start.
         if (failed?.why === 'stopped') return;
@@ -5718,6 +5741,37 @@ export class Supervisor extends EventEmitter {
       return file;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * `env` for commands in the checkout `dir`: with `ELECTRON_OVERRIDE_DIST_PATH` naming the one
+   * unpacked Electron of the version `dir` installs, so that tests and smoke scripts there
+   * download none into its `node_modules` (AO-0306). `from` is another checkout of the repo that
+   * may hold that version already. Never throws; `env` as given when there is nothing to name.
+   */
+  private electronEnv(env: NodeJS.ProcessEnv, dir: string, from?: string): NodeJS.ProcessEnv {
+    try {
+      const out = withElectronDist(env, this.store.dir, dir, from ? [from] : []);
+      const dist = out[ELECTRON_DIST_ENV];
+      if (out !== env && dist && !this.electronDists.has(dist)) {
+        this.electronDists.add(dist);
+        this.emit('electron', `commands in checkouts use the Electron in ${dist}`);
+      }
+      return out;
+    } catch (err) {
+      this.emit('warn', `no shared Electron for ${dir}: ${String(err)}`);
+      return env;
+    }
+  }
+
+  /** Moves an Electron unpacked in swarmupd's worktree `dir` to the shared folder, if that has none. */
+  private shareElectron(dir: string): void {
+    try {
+      const dist = shareElectronDist(this.store.dir, dir);
+      if (dist) this.emit('electron', `moved the Electron unpacked in ${dir} to ${dist}`);
+    } catch (err) {
+      this.emit('warn', `cannot share the Electron in ${dir}: ${String(err)}`);
     }
   }
 
