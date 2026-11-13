@@ -105,6 +105,27 @@ function leftBehind(root: Root, dir: string): string[] {
   ];
 }
 
+/** User config for a waking Codex agent, with store repair on or off. */
+function codexConfig(script: string, repair: boolean): string {
+  return [
+    'swarmupd:',
+    '  sync: false',
+    '  max_runs: 16',
+    '  task_worktrees: false',
+    '  reclaim_worktrees: false',
+    '  wake_cooldown_minutes: 0',
+    `  repair_stores: ${repair}`,
+    '  agents:',
+    '    codex:qa:',
+    '      wake: true',
+    '  runtimes:',
+    '    codex:',
+    `      command: ${JSON.stringify(process.execPath)}`,
+    `      args: [${JSON.stringify(script)}]`,
+    '',
+  ].join('\n');
+}
+
 describe('store repair after Codex sandbox sessions (AO-0287)', () => {
   it('reads the kinds and paths of a listing', () => {
     const out =
@@ -393,6 +414,91 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     release();
     await until(() => held() === null);
     await sup.tick();
+    expect(started()).toBe(true);
+  }, 60_000);
+
+  it('starts a repair enabled by config reload before the next Codex wake', async () => {
+    const s = store();
+    const script = join(temp(), 'codex.mjs');
+    writeFileSync(script, 'setTimeout(() => {}, 1_000);');
+    writeFileSync(s.env.SWARMUP_CONFIG!, codexConfig(script, false));
+    const next = s.ws.newTask({ title: 'Waits for the enabled repair', owner: 'codex:qa' }).id;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const sup = new Supervisor({
+      env: s.env,
+      cwd: s.repo,
+      freeMem: () => 64 * 2 ** 30,
+      sandboxOwned: async () => {
+        calls += 1;
+        await gate;
+        return [];
+      },
+    });
+    sups.push(sup);
+    const held = (): string | null => sup.blocker('codex:qa', 'test');
+    const started = (): boolean => sup.runs().some((r) => r.task === next);
+    // Establish a recent sweep while repair is disabled: reload must not wait for the next one.
+    await sup.housekeep();
+    expect(calls).toBe(0);
+
+    writeFileSync(s.env.SWARMUP_CONFIG!, codexConfig(script, true));
+    sup.reloadConfig();
+    expect(held()).toMatch(/swarmupd repairs what Codex sessions left/);
+    await sup.tick();
+    expect(calls).toBe(1);
+    expect(started()).toBe(false);
+
+    release();
+    await until(() => held() === null);
+    await sup.tick();
+    expect(started()).toBe(true);
+  }, 60_000);
+
+  it('starts a due repair during a merge and defers only the rest of housekeeping', async () => {
+    const s = store();
+    const script = join(temp(), 'codex.mjs');
+    writeFileSync(script, 'setTimeout(() => {}, 1_000);');
+    writeFileSync(s.env.SWARMUP_CONFIG!, codexConfig(script, true));
+    const next = s.ws.newTask({ title: 'Waits for the due repair', owner: 'codex:qa' }).id;
+    let now = Date.now();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const sup = new Supervisor({
+      env: s.env,
+      cwd: s.repo,
+      now: () => now,
+      freeMem: () => 64 * 2 ** 30,
+      sandboxOwned: async () => {
+        calls += 1;
+        if (calls === 2) await gate;
+        return [];
+      },
+    });
+    sups.push(sup);
+    const held = (): string | null => sup.blocker('codex:qa', 'test');
+    const started = (): boolean => sup.runs().some((r) => r.task === next);
+    await sup.housekeep();
+    expect(calls).toBe(1);
+
+    now += 11 * 60_000;
+    const state = sup as unknown as {
+      merging: { runner: { stop(): void }; done: Promise<void>; holds: boolean } | null;
+    };
+    // Enough merge state for `mergeTick` and housekeeping to see active git work. The sweep may
+    // not reclaim worktrees yet, but the independent store repair must start on this tick.
+    state.merging = { runner: { stop() {} }, done: Promise.resolve(), holds: false };
+    await sup.tick();
+    state.merging = null;
+    expect(calls).toBe(2);
+    expect(started()).toBe(false);
+
+    release();
+    await until(() => held() === null);
+    await sup.tick();
+    expect(calls).toBe(2);
     expect(started()).toBe(true);
   }, 60_000);
 

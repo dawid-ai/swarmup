@@ -793,6 +793,8 @@ export class Supervisor extends EventEmitter {
   private repairPending = false;
   private repairing?: Promise<void>;
   private repairAgain = false;
+  /** When a repair was last requested; a deferred housekeeping sweep must not request it again. */
+  private repairRequestedAt = 0;
   /** Process work runs one step at a time, so two snapshots never write one ledger at once. */
   private procChain: Promise<void> = Promise.resolve();
   /**
@@ -1398,27 +1400,43 @@ export class Supervisor extends EventEmitter {
   /** Starts a housekeeping sweep when one is due, off the event loop (AO-0230). */
   private housekeepingTick(): void {
     if (this.stopping || this.housekeeping) return;
-    if (this.housekeptAt && this.now() - this.housekeptAt < HOUSEKEEPING_MS) return;
+    const now = this.now();
+    const due = !this.housekeptAt || now - this.housekeptAt >= HOUSEKEEPING_MS;
     // Mark the repair before checking whether git work delays the sweep. `blocker` then holds
-    // Codex launches until a later tick can start and finish it.
-    if (this.sandboxOwned && this.config.repair_stores) this.repairPending = true;
+    // Codex launches until it finishes, while worktree reclaim still waits for git work.
+    if (
+      due &&
+      this.sandboxOwned &&
+      this.config.repair_stores &&
+      (!this.repairRequestedAt || now - this.repairRequestedAt >= HOUSEKEEPING_MS)
+    ) {
+      this.repairPending = true;
+    }
+    // A reload can make repair pending before the next sweep is due, and a due sweep can be
+    // deferred by a merge. Neither may leave Codex held until that broader sweep starts.
+    if (this.repairPending && !this.repairing) void this.repairStores();
+    if (!due) return;
     // Git work of a merge or a new worktree comes first: on Windows each extra git process slows
     // theirs, and a merge step has a timeout. The sweep waits for a tick with neither.
     if (this.merging || this.mergePlan || this.makingWorktrees.size > 0) return;
-    void this.housekeep();
+    // `housekeepingTick` already requested the repair above. Wait for that one instead of asking
+    // for the repair loop's extra pass; a repair completed while git work delayed this sweep also
+    // remains recent, while worktree reclaim and scratch cleanup still run now.
+    void this.housekeep(false);
   }
 
   /**
    * Reclaims the worktrees of closed tasks and removes old run scratch folders now, or joins the
    * sweep under way. Each step only logs what fails, and the next sweep tries again.
    */
-  housekeep(): Promise<void> {
+  housekeep(repair = true): Promise<void> {
     if (this.housekeeping) return this.housekeeping;
     this.housekeptAt = this.now();
     const sweep = (async () => {
       // Repair first: a due sweep is marked before launch planning, and this starts its hold
       // synchronously before the rest of housekeeping yields.
-      await this.repairStores();
+      if (repair) await this.repairStores();
+      else await this.repairing;
       if (this.config.reclaim_worktrees) await this.reclaimWorktrees();
       this.safe(() => this.pruneScratch());
     })()
@@ -1868,6 +1886,7 @@ export class Supervisor extends EventEmitter {
       return Promise.resolve();
     }
     this.repairPending = false;
+    this.repairRequestedAt = this.now();
     if (this.repairing) {
       this.repairAgain = true;
       return this.repairing;
