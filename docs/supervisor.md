@@ -737,8 +737,10 @@ swarmupd:
   after a commit that found nothing to commit (a staged version of a file that was changed back,
   a change inside a submodule): changes still there send the task back the same way, and only a
   clean worktree lets the merge go on. Any other changes send the task back to its author with a `changes`
-  verdict that names the files, and nothing is merged. When git cannot list the worktrees, read
-  one of them or read that branch, swarmupd merges nothing and looks again on the next tick;
+  verdict that names the files, and nothing is merged. A listed worktree whose folder is deleted
+  holds nothing and is skipped. When git cannot list the worktrees, read
+  one of them or read that branch, or swarmupd cannot look at the folder of one (no access, a
+  drive that does not answer), swarmupd merges nothing and looks again on the next tick;
   after 3 failed looks in a row it comments to the human and waits for the task to change. A run
   that asks for review while swarmupd cannot commit what it left gets a comment to the reviewer
   that says where the changes are.
