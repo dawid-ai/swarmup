@@ -552,6 +552,32 @@ describe('merging approved work', () => {
     expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
   });
 
+  it('merges the commit of what a run left when the merge starts again after it (AO-0300)', async () => {
+    let slept = 0;
+    const s = mergeSetup({ now: () => Date.now() + slept });
+    const commit = s.branch('nap\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    await s.sup.tick();
+    await until(() => existsSync(join(s.state, 'napped.txt')), STAGE_MS);
+    // The PC sleeps during the check: the merge ends with the worktree clean and starts again.
+    slept = 60 * 60_000;
+    writeFileSync(join(s.state, 'go.txt'), 'go\n');
+    await s.sup.mergeSettled();
+    expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+    expect(git(wt, 'status', '--porcelain')).toBe('');
+    const left = git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'fake/t-0001-r1-merge' });
+    expect(e.body).toContain('what run R1 left uncommitted');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
+    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
+  });
+
   it('sends the task back when its worktree has changes no run-end accounts for (AO-0300)', async () => {
     const s = mergeSetup();
     const start = git(s.repo, 'rev-parse', 'main');
