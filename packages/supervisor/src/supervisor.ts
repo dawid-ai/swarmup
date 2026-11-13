@@ -4928,11 +4928,16 @@ export class Supervisor extends EventEmitter {
    *   commits them on a branch of their own on top of it, and the merge takes that commit.
    * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
    * - A run still works there: `again`, so the next tick looks once more.
+   *
+   * The commit leaves the worktree clean, and a merge can start again after it (the PC slept, a
+   * check timed out, swarmupd restarted). So with nothing to commit, the branch of an earlier
+   * attempt is looked up by its name and taken when it sits on the commit to merge.
    */
   private async worktreeLeftovers(
     ref: string,
     job: MergeJob,
     source: string,
+    repo: MergeRepo,
   ): Promise<{ commit: string; branch: string; what: string } | 'held' | 'again' | null> {
     const ws = this.ws();
     const id = ws.resolve(ref).id;
@@ -5017,7 +5022,17 @@ export class Supervisor extends EventEmitter {
       );
       return 'held';
     }
-    return taken;
+    if (taken) return taken;
+    const run = uncommittedRun(ws.showEvents(ref).events);
+    if (!run) return null;
+    const branch = leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id);
+    const commit = await repo.commit(`refs/heads/${branch}`);
+    if (!commit || (await repo.commit(`${commit}^`)) !== source) return null;
+    return {
+      commit,
+      branch,
+      what: `${short(commit)} on branch ${branch} (${job.what}, and what run ${run.id} left uncommitted, committed by an earlier start of this merge)`,
+    };
   }
 
   /**
@@ -5065,7 +5080,7 @@ export class Supervisor extends EventEmitter {
       return;
     }
     // What a run left uncommitted in the task's worktree is part of the approved work (AO-0300).
-    const left = await this.worktreeLeftovers(ref, job, source);
+    const left = await this.worktreeLeftovers(ref, job, source, repo);
     if (left === 'held') return;
     if (left === 'again') return 'again';
     if (left) {

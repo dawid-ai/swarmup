@@ -728,7 +728,9 @@ swarmupd:
   the review's author ended with a `run-end` that says swarmupd could not commit what it left,
   and the worktree is still on the commit to merge, swarmupd commits the changes on a branch of
   their own (`<runtime>/<task>-<run>-merge`), restores the worktree and merges that commit; the
-  `merge` event says so. Any other changes send the task back to its author with a `changes`
+  `merge` event says so. A merge that starts again after that commit (the PC slept, a check
+  timed out, swarmupd restarted) finds the branch by its name and merges it, as long as it sits
+  on the commit to merge. Any other changes send the task back to its author with a `changes`
   verdict that names the files, and nothing is merged. A run that asks for review while swarmupd
   cannot commit what it left gets a comment to the reviewer that says where the changes are.
 - **How.** One merge at a time, started when no writing run is live in `checkout`. In its
