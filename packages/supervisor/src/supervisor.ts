@@ -1056,6 +1056,9 @@ export class Supervisor extends EventEmitter {
     if (backoff) return backoff;
     // A helper works under its parent's claim and scope: role limits count the parent only.
     if (opts.child) return null;
+    // A Codex session starts on a store the last one's leftovers are repaired in (AO-0287).
+    const repair = provider === 'codex' ? this.repairHold() : null;
+    if (repair) return repair;
     // A question run answers and writes nothing: project and checkout limits are for work.
     if (opts.question) return null;
     const role = roleOf(agent);
@@ -1844,6 +1847,27 @@ export class Supervisor extends EventEmitter {
       });
     this.repairing = repair;
     return repair;
+  }
+
+  /**
+   * Why a Codex run cannot start now, or null: a Codex run is in its wrap-up, which ends by
+   * starting the repair of what its sandbox session left, or a repair is under way. Without the
+   * hold, the next session starts on files and folders it cannot replace, and on folders the
+   * repair moves. Two Codex runs that overlap are not repaired between. Helpers are not held:
+   * their parent's session already runs.
+   */
+  private repairHold(): string | null {
+    if (!this.sandboxOwned || !this.config.repair_stores) return null;
+    const ending = [...this.ending.values()].find((r) => runtimeOf(r.agent) === 'codex');
+    if (ending) {
+      return (
+        `swarmupd repairs the task stores once the Codex run ${ending.id} has ended; ` +
+        'Codex runs start after that'
+      );
+    }
+    return this.repairing
+      ? 'swarmupd repairs what Codex sessions left in the task stores; Codex runs start after that'
+      : null;
   }
 
   private async repairStoresOnce(list: SandboxLister): Promise<void> {
@@ -3092,8 +3116,6 @@ export class Supervisor extends EventEmitter {
     // A run ends like a session: commit and push what it changed. Sandboxed runtimes (Codex)
     // cannot write .git themselves.
     if (this.config.sync) void this.syncAfterRun(r);
-    // What a Codex sandbox session made, the next session cannot replace (AO-0287).
-    if (runtimeOf(r.agent) === 'codex') void this.repairStores();
     this.wrapStep(r, { wrap_up: 'done' });
     this.ended(id);
     this.emit('run', r);
@@ -3323,6 +3345,11 @@ export class Supervisor extends EventEmitter {
 
   /** A run's wrap-up is over: it no longer counts as live, and who waited for it goes on. */
   private ended(id: string): void {
+    // What a Codex sandbox session made, the next session cannot replace (AO-0287). The repair
+    // starts before the run leaves `ending`, so `repairHold` holds Codex runs with no gap
+    // between; a wrap-up that failed gets its repair too.
+    const r = this.ending.get(id);
+    if (r && runtimeOf(r.agent) === 'codex') void this.repairStores();
     this.ending.delete(id);
     const waiters = this.endWaiters.get(id) ?? [];
     this.endWaiters.delete(id);
@@ -5699,6 +5726,7 @@ export class Supervisor extends EventEmitter {
       m ? `${m.ref}>${m.base}:${m.step}` : '',
       [...this.makingWorktrees.keys()].sort().join(','),
       [...this.reclaiming].sort().join(','),
+      this.repairHold() ?? '',
       [...this.worktreeFailed].map(([p, at]) => `${p}@${at}`).join(','),
     ];
     for (const root of ws.roots) {
