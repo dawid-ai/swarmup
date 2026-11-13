@@ -208,6 +208,12 @@ export interface OpsdConfig {
    * logs say. 0 turns this off. Default 3.
    */
   stuck_runs: number;
+  /**
+   * `changes` verdicts on a task in a row, with no approval between them, before swarmupd stops
+   * waking its author: it blocks the task for a PM with the count and the text of those verdicts
+   * (AO-0288). 0 turns this off. Default 3.
+   */
+  review_rounds: number;
   /** Commit, pull and push each root when its sync policy says so. */
   sync: boolean;
   /**
@@ -262,6 +268,12 @@ export interface OpsdConfig {
    * them (AO-0287). On unless set to false.
    */
   repair_stores: boolean;
+  /**
+   * Run the root's merge `checks` on the reviewed commit before a review run that cannot run them
+   * itself (a Codex run of a role that does not write), and put the results in its prompt
+   * (AO-0296). On unless set to false.
+   */
+  review_checks: boolean;
   /**
    * Delete temp files older than an hour from each root's `.ops/tmp`. Off unless set to true:
    * swarmupd then only names them in its log.
@@ -351,6 +363,7 @@ export function opsdConfig(
     wake_cooldown_minutes: raw.wake_cooldown_minutes ?? 10,
     outside_session_minutes: raw.outside_session_minutes ?? 30,
     stuck_runs: raw.stuck_runs ?? 3,
+    review_rounds: raw.review_rounds ?? 3,
     sync: raw.sync ?? true,
     seeded,
     runtimes: mergeRuntimes(raw.runtimes, seeded),
@@ -372,6 +385,7 @@ export function opsdConfig(
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
     scratch_days: raw.scratch_days ?? 7,
     repair_stores: raw.repair_stores ?? true,
+    review_checks: raw.review_checks ?? true,
     remove_stale_temp: raw.remove_stale_temp ?? false,
   };
   const count = (v: unknown, name: string, min: number): void => {
@@ -396,6 +410,9 @@ export function opsdConfig(
   }
   if (typeof cfg.repair_stores !== 'boolean') {
     throw new OpsError('swarmupd.repair_stores: use true or false', 2);
+  }
+  if (typeof cfg.review_checks !== 'boolean') {
+    throw new OpsError('swarmupd.review_checks: use true or false', 2);
   }
   if (typeof cfg.remove_stale_temp !== 'boolean') {
     throw new OpsError('swarmupd.remove_stale_temp: use true or false', 2);
@@ -448,6 +465,7 @@ export function opsdConfig(
   count(cfg.wake_cooldown_minutes, 'wake_cooldown_minutes', 0);
   count(cfg.outside_session_minutes, 'outside_session_minutes', 0);
   count(cfg.stuck_runs, 'stuck_runs', 0);
+  count(cfg.review_rounds, 'review_rounds', 0);
   if (typeof cfg.sync !== 'boolean') throw new OpsError('swarmupd.sync: use true or false', 2);
   for (const [id, a] of Object.entries(cfg.agents)) {
     if (a.wake !== undefined && typeof a.wake !== 'boolean') {

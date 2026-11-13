@@ -221,6 +221,34 @@ export interface WaitItem {
   merge?: true;
 }
 
+/** One file of a task's diff; see `DiffFile` in the supervisor. */
+export interface DiffFile {
+  path: string;
+  /** The path before a rename or copy. */
+  old?: string;
+  status: 'added' | 'deleted' | 'modified' | 'renamed' | 'copied' | 'type';
+  added: number;
+  deleted: number;
+  binary?: boolean;
+  /** The file's hunks in unified format; unset for a binary file or a patch left out. */
+  patch?: string;
+  /** The patch is left out: this file's is too large, or the whole diff is. */
+  omitted?: 'file' | 'total';
+}
+
+/** The diff of the work a task's review names, from `GET /api/tasks/<id>/diff` (AO-0106). */
+export interface TaskDiff {
+  source: { commit?: string; branch?: string };
+  base: string;
+  from: string;
+  to: string;
+  /** swarmupd merged the work: the diff is what the base got. */
+  merged: boolean;
+  note?: string;
+  commits: { sha: string; subject: string; author: string; at: string }[];
+  files: DiffFile[];
+}
+
 /** The merge swarmupd runs now, from `GET /api/waits` (AO-0161); see `MergeStatus` in the supervisor. */
 export interface MergeStatus {
   task: string;

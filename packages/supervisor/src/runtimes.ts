@@ -108,14 +108,29 @@ export interface Invocation {
  * sandbox always lets Codex write its working folder, so the run starts in its task store, not in
  * the checkout: `swarmup` writes there, and the checkout stays read-only. The other stores are added
  * as writable folders. `stores` lists the run's own store first; stores inside another one are
- * dropped, since the outer one covers them.
+ * dropped, since the outer one covers them. The run's scratch folder is writable too (AO-0296):
+ * `TEMP` points there, and it is in no repo, so logs and temp files of the run's commands have a
+ * place. A scratch folder that holds the checkout or a store is left out: it would make them
+ * writable.
  */
-function codexReadOnlyDirs(stores: string[]): { cd: string; add: string[] } | null {
+function codexReadOnlyDirs(
+  stores: string[],
+  checkout: string,
+  scratch?: string,
+): { cd: string; add: string[] } | null {
   const outer = stores.filter(
     (s, i) => !stores.some((o, j) => j !== i && containsPath(o, s) && (!sameDir(o, s) || j < i)),
   );
   if (outer.length === 0) return null;
-  return { cd: outer[0]!, add: outer.slice(1) };
+  const add = outer.slice(1);
+  if (
+    scratch &&
+    !outer.some((o) => containsPath(o, scratch)) &&
+    ![checkout, ...outer].some((d) => containsPath(scratch, d))
+  ) {
+    add.push(scratch);
+  }
+  return { cd: outer[0]!, add };
 }
 
 /**
@@ -131,14 +146,25 @@ function codexReadOnlyDirs(stores: string[]): { cd: string; add: string[] } | nu
 export const CODEX_GIT_DIRS = ['objects', 'refs', 'logs'] as const;
 
 /** The prompt lines of a read-only Codex run that starts in its task store. */
-export function readOnlyCodexNote(checkout: string, store: string): string {
-  return [
+export function readOnlyCodexNote(checkout: string, store: string, scratch?: string): string {
+  const lines = [
     '',
     `This run may not change files in ${checkout}: Codex starts you in the task store (${store}),`,
     'the only place you can write, and `swarmup` works there. Read the code by path and run git with',
     `\`git -C ${checkout} ...\`.`,
+  ];
+  if (scratch) {
+    lines.push(
+      `You can also write your scratch folder, ${scratch.replace(/\\/g, '/')} ($SWARMUP_SCRATCH; TEMP`,
+      'points there): put logs and other files that belong in no repo there, never in the task store.',
+    );
+  }
+  lines.push(
+    'Your sandbox keeps every `.git` read-only and has no network, so `swarmup sync` cannot commit',
+    'or push here: swarmupd commits and pushes the task store when this run ends.',
     '',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function normalDir(p: string): string {
@@ -222,6 +248,8 @@ export function runModel(rc: RuntimeConfig, agent: Pick<AgentDef, 'model' | 'fil
  * `storeCheckout` marks a run whose folder is a data root's checkout: a Claude run there gets
  * {@link STORE_CHECKOUT_DENY} (AO-0135). `gitDirs` are git metadata folders a writing Codex run
  * may write besides `cwd` and `addDirs` (see {@link CODEX_GIT_DIRS}); other runs ignore them.
+ * `scratch` is the run's scratch folder, which a read-only Codex run may write too (AO-0296);
+ * other runs get it through `addDirs`.
  */
 export function invocation(
   rc: RuntimeConfig,
@@ -235,6 +263,7 @@ export function invocation(
   storeCheckout = false,
   stores: string[] = [],
   gitDirs: string[] = [],
+  scratch?: string,
 ): Invocation {
   const runtime = runtimeOf(agentId);
   const base = rc.args ?? [];
@@ -298,14 +327,14 @@ export function invocation(
         unsetEnv,
       };
     }
-    const dirs = codexReadOnlyDirs(stores);
+    const dirs = codexReadOnlyDirs(stores, cwd, scratch);
     // With no task store to write, the run gets a read-only sandbox: its `swarmup` writes fail, but
     // the checkout stays as it was.
     if (!dirs) return { args: exec('read-only', cwd, []), unsetEnv };
     return {
       args: exec('workspace-write', dirs.cd, dirs.add),
       unsetEnv,
-      note: readOnlyCodexNote(cwd, dirs.cd),
+      note: readOnlyCodexNote(cwd, dirs.cd, dirs.add.includes(scratch ?? '') ? scratch : undefined),
     };
   }
   // Other runtimes: the config's args are the whole command line.

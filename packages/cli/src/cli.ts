@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
@@ -209,6 +209,30 @@ function opsdCommitsLeftovers(env: NodeJS.ProcessEnv): boolean {
   } catch {
     return false;
   }
+}
+
+/** True inside a run that swarmupd started and still has a record of: swarmupd syncs after it. */
+function inSupervisedRun(env: NodeJS.ProcessEnv): boolean {
+  const run = envVar(env, 'RUN');
+  const dir = envVar(env, 'RUN_STATE_DIR');
+  if (!run || !dir || !/^[A-Za-z0-9_-]+$/.test(run)) return false;
+  return existsSync(join(dir, 'runs', `${run}.json`));
+}
+
+/**
+ * Whether a sync failed on something a sandboxed run cannot do, as git or Node names it: a write
+ * the sandbox refuses (`.git/index.lock`, a ref, a lock file) or a remote it cannot reach. A leak
+ * check, a conflict or a rejected push are not among them: the run hears of those.
+ */
+export function sandboxSyncFailure(message: string): boolean {
+  return (
+    /Permission denied|Operation not permitted|Access is denied|Read-only file system|\bEPERM\b|\bEACCES\b|\bEROFS\b/i.test(
+      message,
+    ) ||
+    /Could not resolve host|unable to access|Could not read from remote repository|Failed to connect/i.test(
+      message,
+    )
+  );
 }
 
 export interface Io {
@@ -1940,13 +1964,34 @@ const COMMANDS: Record<string, Command> = {
         usageError('no data root found');
       }
       const targets = ctx.opts.root ? mirrorPartners(roots[0]!, ws.roots, ws.user) : roots;
-      const results = syncAll(targets, ws.user, {
-        pull: ctx.opts.pull ? true : undefined,
-        push: ctx.opts.push ? true : undefined,
-        auto: Boolean(ctx.opts.auto),
-        sessionEnd: Boolean(ctx.opts['session-end']),
-        allPaths: Boolean(ctx.opts['all-paths']),
-      });
+      let results: ReturnType<typeof syncAll>;
+      try {
+        results = syncAll(targets, ws.user, {
+          pull: ctx.opts.pull ? true : undefined,
+          push: ctx.opts.push ? true : undefined,
+          auto: Boolean(ctx.opts.auto),
+          sessionEnd: Boolean(ctx.opts['session-end']),
+          allPaths: Boolean(ctx.opts['all-paths']),
+        });
+      } catch (err) {
+        // A run in a sandbox (Codex keeps `.git` read-only and has no network) cannot commit or
+        // push, and swarmupd syncs the store when the run ends: the closing sync of such a run is
+        // not a failure the run could fix (AO-0296).
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!ctx.opts['session-end'] || !inSupervisedRun(ctx.io.env) || !sandboxSyncFailure(msg)) {
+          throw err;
+        }
+        const why = msg.trim().split('\n').slice(0, 2).join(' ');
+        if (ctx.opts.json) {
+          ctx.io.out(JSON.stringify({ deferred: true, reason: why }));
+        } else {
+          ctx.io.out(`not synced from this run: ${why}`);
+          ctx.io.out(
+            'swarmupd commits and pushes the task store when this run ends (unless `swarmupd.sync` is off); nothing more to do here',
+          );
+        }
+        return 0;
+      }
       for (const { root: r, result: res, mirror } of results) {
         if (ctx.opts.json) {
           ctx.io.out(JSON.stringify({ root: r.name, ...res, ...(mirror ? { mirror } : {}) }));

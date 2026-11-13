@@ -363,3 +363,90 @@ a.task-ref[data-status='parked'] .ref-title {
   position: relative;
   z-index: 1;
 }
+
+/* The diff view (AO-0106): one table per file, unified or side by side. */
+table.diff {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+table.diff col.diff-n {
+  width: 3.4rem;
+}
+table.diff td {
+  padding: 0 0.5rem;
+  vertical-align: top;
+}
+table.diff .diff-num {
+  color: var(--color-fg-4);
+  text-align: right;
+  user-select: none;
+}
+/* Long lines wrap, so both sides of a row stay in view without a sideways scroll. */
+table.diff .diff-code {
+  color: var(--color-fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+table.diff .diff-code[data-sign] {
+  position: relative;
+  padding-left: 1.4rem;
+}
+table.diff .diff-code[data-sign]::before {
+  content: attr(data-sign);
+  position: absolute;
+  left: 0.5rem;
+  color: var(--color-fg-4);
+  user-select: none;
+}
+table.diff .diff-add,
+table.diff tr.diff-add > td {
+  background: color-mix(in oklab, var(--color-ok) 11%, transparent);
+}
+table.diff .diff-del,
+table.diff tr.diff-del > td {
+  background: color-mix(in oklab, var(--color-bad) 11%, transparent);
+}
+table.diff .diff-add.diff-num,
+table.diff tr.diff-add > .diff-num {
+  color: color-mix(in oklab, var(--color-ok) 70%, var(--color-fg-4));
+}
+table.diff .diff-del.diff-num,
+table.diff tr.diff-del > .diff-num {
+  color: color-mix(in oklab, var(--color-bad) 70%, var(--color-fg-4));
+}
+table.diff .diff-none {
+  background: rgb(255 255 255 / 0.02);
+}
+table.diff-split td:nth-child(3) {
+  border-left: 1px solid rgb(255 255 255 / 0.07);
+}
+table.diff tr.diff-hunk > td {
+  padding: 0.15rem 0.75rem;
+  background: color-mix(in oklab, var(--color-info) 8%, transparent);
+  color: var(--color-fg-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+table.diff .diff-noeol::after {
+  content: ' (no line break)';
+  color: var(--color-warn);
+  user-select: none;
+}
+table.diff .tok-comment {
+  color: var(--color-fg-4);
+  font-style: italic;
+}
+table.diff .tok-string {
+  color: #9ad7b0;
+}
+table.diff .tok-keyword {
+  color: #c4a8ff;
+}
+table.diff .tok-number {
+  color: #ffc978;
+}

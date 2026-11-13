@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import type { OpsEvent } from '@swarmup/core';
 import { secretKind } from '@swarmup/core';
 import { afterAll, describe, expect, it } from 'vitest';
-import { failureKey, failureNote, runFailure, unfinishedRuns } from '../src/index.js';
+import {
+  changesRounds,
+  failureKey,
+  failureNote,
+  runFailure,
+  unfinishedRuns,
+} from '../src/index.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'swarmupd-stuck-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -51,6 +57,48 @@ describe('unfinishedRuns (AO-0173)', () => {
       ev('release', `run R${i} ended (budget, exit -) without finishing`),
     ];
     expect(unfinishedRuns([...renewed(0), ...renewed(1), ...renewed(2)])).toBe(3);
+  });
+});
+
+describe('changesRounds (AO-0288)', () => {
+  const verdict = (v: 'approve' | 'changes', body = 'fix it'): OpsEvent => ({
+    ...ev('verdict', body),
+    actor: 'codex:reviewer',
+    verdict: v,
+  });
+  const round = (v: 'approve' | 'changes', body?: string): OpsEvent[] => [
+    ev('claim'),
+    ev('start', 'plan'),
+    ev('review', 'check'),
+    verdict(v, body),
+  ];
+  const WATCH = 'opsd:watch';
+
+  it('counts the changes verdicts in a row while the newest waits for the author', () => {
+    expect(changesRounds([], WATCH)).toEqual([]);
+    const three = [...round('changes', 'a'), ...round('changes', 'b'), ...round('changes', 'c')];
+    expect(changesRounds(three, WATCH).map((e) => e.body)).toEqual(['a', 'b', 'c']);
+    // Notes after the verdict leave it waiting.
+    expect(changesRounds([...three, ev('comment', 'note')], WATCH)).toHaveLength(3);
+    // The author took it up, or it waits for a review: not a verdict waiting for the author.
+    expect(changesRounds([...three, ev('claim')], WATCH)).toEqual([]);
+    expect(changesRounds([...three, ...round('changes').slice(0, 3)], WATCH)).toEqual([]);
+  });
+
+  it('starts again after an approval, a reopen and its own earlier stop', () => {
+    const two = [...round('changes'), ...round('changes')];
+    expect(changesRounds([...two, ...round('approve'), ev('reopen'), ...two], WATCH)).toHaveLength(
+      2,
+    );
+    expect(changesRounds([...two, ev('reopen'), ...round('changes')], WATCH)).toHaveLength(1);
+    const stop: OpsEvent = { ...ev('block', 'stopped'), actor: WATCH };
+    const after = [...two, ...round('changes'), stop, ev('answer', 'narrowed')];
+    expect(changesRounds(after, WATCH)).toEqual([]);
+    expect(changesRounds([...after, ...round('changes')], WATCH)).toHaveLength(1);
+    // Another block, such as the author's own question, does not end the row.
+    expect(
+      changesRounds([...two, ev('block', 'q'), ev('answer', 'a'), ...round('changes')], WATCH),
+    ).toHaveLength(3);
   });
 });
 

@@ -228,6 +228,8 @@ export function App() {
   const [restartNote, setRestartNote] = useState(false);
   const [restarting, setRestarting] = useState<string | null>(null);
   const [palette, setPalette] = useState(false);
+  /** The task whose panel opens with its diff shown. */
+  const [diffOf, setDiffOf] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
   const pendingG = useRef(false);
@@ -274,6 +276,11 @@ export function App() {
       b.onNavigate((m) => {
         const nav = m as { view: string; id?: string };
         if (nav.view === 'task' && nav.id) setTask(nav.id);
+        // The screenshot run opens a task with its diff this way (AO-0106).
+        else if (nav.view === 'diff' && nav.id) {
+          setDiffOf(nav.id);
+          setTask(nav.id);
+        }
         // The screenshot run opens the palette and the shortcut list this way.
         else if (nav.view === 'palette') setPalette(true);
         else if (nav.view === 'shortcuts') setHelp(true);
@@ -626,6 +633,7 @@ export function App() {
           key={task}
           id={task}
           focus={focus ?? undefined}
+          showDiff={diffOf === task}
           nav={nav}
           onClose={() => setTask(null)}
           onBack={back ?? undefined}

@@ -1852,7 +1852,10 @@ export class Workspace {
     const on = opts.on?.map((d) => this.depRef(root, d));
     return this.act(ref, (v, ctx) => {
       ctx.requireOpen('block');
-      ctx.needOwnerOrHolder();
+      // swarmupd blocks a task nobody holds for the PM, such as one whose reviews keep ending in
+      // change requests (AO-0288).
+      const byOpsd = !!this.actor && runtimeOf(this.actor) === 'opsd';
+      if (!(byOpsd && !v.claimedBy)) ctx.needOwnerOrHolder();
       // depRef keeps a same-root ref bare, so the task itself shows up as its bare id.
       if (on?.includes(v.meta.id)) throw new OpsError('a task cannot wait on itself', 2);
       if (on && on.length > 0) return [{ type: 'block', on, body: message }];

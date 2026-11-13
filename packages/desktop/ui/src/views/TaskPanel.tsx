@@ -10,6 +10,7 @@ import {
   ChevronDown,
   CircleDot,
   Eye,
+  FileDiff,
   FileText,
   GitMerge,
   GitPullRequestArrow,
@@ -59,6 +60,7 @@ import {
 import { taskLoop } from '../lib/statusloop';
 import { moveTo, shownStatus } from '../lib/transitions';
 import type { OpsEvent, Status, Task, TaskDetail } from '../types';
+import { DiffDialog } from '../ui/diff';
 import { Markdown } from '../ui/markdown';
 import { useMover } from '../ui/move';
 import type { Due } from '../ui/pickers';
@@ -76,12 +78,15 @@ const TRIAGED = new Set(['finding', 'idea']);
 export function TaskPanel({
   id,
   focus,
+  showDiff,
   nav,
   onClose,
   onBack,
   onForward,
 }: {
   id: string;
+  /** Opens with the diff of the task's work shown, as the screenshot run asks. */
+  showDiff?: boolean;
   /** An event to scroll to and highlight, from an `AO-0014#<event id>` reference. */
   focus?: TaskFocus;
   nav: Nav;
@@ -129,6 +134,9 @@ export function TaskPanel({
   // The one loop of this panel: the task's state, large, next to its title.
   const loop = t ? taskLoop(t, events) : null;
   const asker = waitsOnMe ? [...events].reverse().find((e) => e.type === 'ask')?.actor : undefined;
+  // A review request names the commits to look at; swarmupd reads their diff (AO-0106).
+  const hasWork = events.some((e) => e.type === 'review' && !e.pending);
+  const [diff, setDiff] = useState(Boolean(showDiff));
 
   return (
     <div
@@ -335,6 +343,15 @@ export function TaskPanel({
                   </Button>
                 </>
               )}
+              {hasWork && (
+                <Button
+                  icon={FileDiff}
+                  onClick={() => setDiff(true)}
+                  title="The diff of the commits the review names, from the local repo"
+                >
+                  View changes
+                </Button>
+              )}
               {open && (
                 <Button
                   icon={ArrowRightLeft}
@@ -413,6 +430,8 @@ export function TaskPanel({
         )}
       </div>
       {mover.dialog}
+      {/* Next to the panel, not in it: it covers the window. */}
+      {diff && <DiffDialog task={id} onClose={() => setDiff(false)} />}
     </div>
   );
 }

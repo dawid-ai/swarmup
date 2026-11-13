@@ -179,9 +179,32 @@ several review rounds.
 - A Codex run of a role that does not write starts in its task store, not in its checkout:
   `-C <store>`, with every other data root's folder as `--add-dir`. Codex's sandbox always lets a
   run write its working folder, so this keeps the checkout and the other repos read-only while
-  the run's `swarmup` commands still write the task store. The prompt names the checkout and tells
-  the run to read it by path and to run `git -C <checkout>`. If the run has no task store, it
-  gets `--sandbox read-only` in its checkout instead.
+  the run's `swarmup` commands still write the task store. The run's scratch folder is one more
+  `--add-dir`, since `TEMP` points there, unless it holds the checkout or a store. The prompt
+  names the checkout and the scratch folder, tells the run to read the checkout by path and to
+  run `git -C <checkout>`, and says that swarmupd syncs the store when the run ends: the sandbox
+  keeps every `.git` read-only and has no network, so the run's `swarmup sync --session-end`
+  only reports that and exits 0. If the run has no task store, it gets `--sandbox read-only` in
+  its checkout instead.
+- **Checks for a reviewer that cannot run them (AO-0296).** A build, a test run and an install
+  all fail in that sandbox. So before a review run of a Codex agent whose role does not write,
+  swarmupd runs the root's merge `checks` (`swarmupd.merge.<root>.checks`) itself: it checks out
+  the commit the newest review request names (`<commit> on branch <name>`, else the branch tip,
+  as a merge picks it), as it is and not rebased, in a worktree of its own
+  (`<state>/review/<root>`, kept between reviews so installed packages stay), and runs the
+  commands there in order until one fails. The review run starts once they are over; `swarmup
+waits` says `starts once swarmupd has run the checks of the reviewed commit` meanwhile. Its
+  prompt ends with each command and its result, the end of a failed command's output, and the
+  commands that did not run after it; the whole output is in `review-checks.log` in the run's
+  scratch folder. The prompt tells the reviewer to name them in its verdict as run by swarmupd.
+  A failed check does not send the task back by itself: the reviewer decides. When swarmupd
+  cannot run the checks (no review request names a commit or branch the repo has, git fails),
+  the run starts anyway and its prompt says why. One set of checks runs at a time, none starts
+  during a merge, and no merge starts during them. Checks stopped with swarmupd or broken by
+  the PC's sleep run again; results are kept in memory, so a review that has not started when
+  swarmupd restarts gets its checks run again. The swarmupd log has a `review-checks` line for
+  each step. Reviewers of other runtimes run their own checks and get none of this; a root
+  without `checks` gets none either. Set `swarmupd.review_checks: false` to turn it off.
 - The working folder is `--cwd`, then the agent's `cwd` in the config, then the top of the task's
   repo.
 - When the working folder is a data root's checkout (the git checkout that holds a `.swarmup/`
@@ -565,6 +588,17 @@ auth status` and `codex login status` (`runtimes.<name>.sign_in_check`, the argu
   ran 171 times on AO-0173, each run about a minute long and ending with exit 0 while its sandbox
   refused every shell call (AO-0173). Runs a person stopped, and providers paused for a sign-in, a
   usage limit or failed starts, do not trip it.
+- **Review rounds.** When a task gets `review_rounds` `changes` verdicts in a row (default 3; `0`
+  turns it off) with no approval between them, swarmupd does not wake its author for another
+  round. At the next tick it blocks the task, as `opsd:watch`, for a waking, active PM that is
+  not signed out, else for you. The block gives the count and the text of the last
+  `review_rounds` verdicts, each cut to 600 characters. The PM narrows the task, splits it,
+  changes the reviewer or escalates, then answers the block; the count starts again from there,
+  and also after an approval or a reopen. Notes on the task do not reset it, and a task a person
+  owns is left alone. swarmupd logs each stop as a `warn` line that starts with `review-rounds:`
+  and names the task, the count, the limit, the author and the reviewers, so you can tune the
+  limit from the log. Before, nothing acted on repeated change requests: AO-0110, a docs-only
+  proposal, took at least six.
 - Limits are per PC. A provider account spans PCs: with swarmupd on two PCs, set `usage_pause_at` or
   `max_live` on each to share it.
 - `swarmup usage` and `GET /api/usage` show each provider's windows, live runs and whether it is
@@ -596,11 +630,13 @@ swarmupd:
   wake_cooldown_minutes: 10
   outside_session_minutes: 30 # no run on a task a session outside swarmupd just worked on; 0: never
   stuck_runs: 3 # block a task for a PM after this many unfinished runs in a row; 0: never
+  review_rounds: 3 # block a task for a PM after this many changes verdicts in a row; 0: never
   sync: true # commit, pull and push each root when its sync policy says so
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that
   scratch_days: 7 # how long a run's scratch folder stays after the run
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
+  review_checks: true # run the merge checks for a Codex reviewer, whose sandbox cannot
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
@@ -938,6 +974,7 @@ restart or another human-only action, use `swarmup ask`.
 | `POST /api/runs/:id/kill`                                    | stop a run                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `GET /api/runs/:id/procs`, `POST /api/runs/:id/procs`        | the run's process ledger with `alive` for each; `POST` kills what an ended run left, or `pid` alone                                                                                                                                                                                                                                                                                                                                                 |
 | `GET /api/tasks`, `GET /api/tasks/:id`                       | tasks (`?all` includes closed and archived), one task with its events                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET /api/tasks/:id/diff`                                    | the diff of the commits the task's newest review names, read from the root's code checkout: `source`, `base`, `from`, `to`, `merged`, `commits` and `files` (path, status, counts and each file's hunks). Against where the work left the base branch; after swarmupd merged it, what the base got. Read-only. 404 with the reason when no review names work the repo has                                                                           |
 | `POST /api/tasks`                                            | create a task: `title`, `body`, `to`, `type`, `priority`, `project`                                                                                                                                                                                                                                                                                                                                                                                 |
 | `POST /api/tasks/:id/:action`                                | `comment`, `answer`, `start`, `block`, `review`, `unblock`, `done`, `release`, `reopen`, `park`, `assign`, `priority`, `retype` (`type`; optional `to`, `priority` and `answer` land in the same write), `verdict`, `delegate`                                                                                                                                                                                                                      |
 | `GET /api/agents`, `GET /api/inbox`                          | agents (role files and the swarmupd config) with `wake` and a live run, the actor's inbox                                                                                                                                                                                                                                                                                                                                                           |

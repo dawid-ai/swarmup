@@ -3,6 +3,7 @@ export * from './api.js';
 export * from './chat.js';
 export * from './config.js';
 export * from './daemon.js';
+export * from './diff.js';
 export * from './merge.js';
 export * from './migrate.js';
 export * from './push.js';
