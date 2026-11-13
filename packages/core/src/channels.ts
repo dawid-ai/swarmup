@@ -101,12 +101,30 @@ export function messageFiles(root: Root, name: string, after = ''): string[] {
     .sort();
 }
 
+/**
+ * Parsed message files by path. A message file is never edited after it is written and its name
+ * holds a ULID, so a path always means the same message; an inbox read with an old read marker
+ * parses every message of every channel otherwise (AO-0278). The oldest entry goes first.
+ */
+const parsedMessages = new Map<string, ChannelMessage>();
+const PARSED_MESSAGES_MAX = 4000;
+
 /** Reads one message file of a channel. Message files are never edited after they are written. */
 export function readMessage(root: Root, name: string, file: string): ChannelMessage {
-  const doc = parseDoc<Omit<ChannelMessage, 'id' | 'channel' | 'body'>>(
-    readFileSync(join(root.dir, 'channels', name, file), 'utf8'),
-  );
-  return { ...doc.data, id: file.slice(0, 26), channel: name, body: doc.body.trim() };
+  const path = join(root.dir, 'channels', name, file);
+  let msg = parsedMessages.get(path);
+  if (!msg) {
+    const doc = parseDoc<Omit<ChannelMessage, 'id' | 'channel' | 'body'>>(
+      readFileSync(path, 'utf8'),
+    );
+    msg = { ...doc.data, id: file.slice(0, 26), channel: name, body: doc.body.trim() };
+    parsedMessages.set(path, msg);
+    if (parsedMessages.size > PARSED_MESSAGES_MAX) {
+      parsedMessages.delete(parsedMessages.keys().next().value!);
+    }
+  }
+  // A copy, so a caller that changes its message leaves the kept one as it was read.
+  return structuredClone(msg);
 }
 
 /** Messages in a channel, oldest first; `after` skips messages up to that ULID. */

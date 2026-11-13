@@ -630,17 +630,27 @@ export class Workspace {
     return new Set(merge && typeof merge === 'object' ? Object.keys(merge) : []);
   }
 
-  /** The task a dependency stored on a task in `from` points at, if it still exists. */
-  private depTarget(from: Root, ref: string): { root: Root; id: string } | undefined {
+  /**
+   * The task a dependency stored on a task in `from` points at, if it still exists. `known` holds
+   * the `root/id` keys of tasks the caller has just read: those need no look at the disk, which
+   * costs two or three file checks per dependency (AO-0278).
+   */
+  private depTarget(
+    from: Root,
+    ref: string,
+    known?: { has(key: string): boolean },
+  ): { root: Root; id: string } | undefined {
+    const has = (r: Root, id: string): boolean =>
+      known?.has(`${r.name}/${id}`) === true || r.hasTask(id);
     const slash = ref.indexOf('/');
     if (slash > 0) {
       const root = this.roots.find((r) => r.name === ref.slice(0, slash));
       const id = ref.slice(slash + 1);
-      return root?.hasTask(id) ? { root, id } : undefined;
+      return root && has(root, id) ? { root, id } : undefined;
     }
-    if (from.hasTask(ref)) return { root: from, id: ref };
+    if (has(from, ref)) return { root: from, id: ref };
     // Stores written before root-qualified refs hold a bare id for a task in another root.
-    const others = this.roots.filter((r) => r !== from && r.hasTask(ref));
+    const others = this.roots.filter((r) => r !== from && has(r, ref));
     return others.length === 1 ? { root: others[0]!, id: ref } : undefined;
   }
 
@@ -976,9 +986,10 @@ export class Workspace {
   /**
    * Open tasks that wait on an id no configured agent answers to: a review requested from one, an
    * ask addressed to one, or work no live claim holds whose owner is one, including work still
-   * blocked on other tasks, which nobody picks up once they close. Nothing wakes for them.
+   * blocked on other tasks, which nobody picks up once they close. Nothing wakes for them. `views`
+   * are tasks the caller has just read (`snapshot()`), so they are not read again (AO-0278).
    */
-  stranded(): StrandedTask[] {
+  stranded(views?: TaskView[]): StrandedTask[] {
     if (this.knownAgents().length === 0) return [];
     const out: StrandedTask[] = [];
     const add = (view: TaskView, role: StrandedTask['role'], who: string | null): boolean => {
@@ -986,8 +997,9 @@ export class Workspace {
       if (who && why) out.push({ view, role, who, reason: `${role} ${why}` });
       return Boolean(why);
     };
-    for (const v of this.views()) {
-      if (!OPEN_STATUSES.has(v.status)) continue;
+    const scoped = views ? this.inScope(views) : this.views();
+    for (const v of scoped) {
+      if (v.archived || !OPEN_STATUSES.has(v.status)) continue;
       if (v.status === 'needs-review') {
         add(v, 'reviewer', v.reviewer);
         continue;
@@ -1032,8 +1044,13 @@ export class Workspace {
 
   /** Tasks in every root, or the selected root, with cross-root dependencies applied. */
   views(opts: { archived?: boolean } = {}): TaskView[] {
+    return this.inScope(this.allViews(opts));
+  }
+
+  /** The views of every root, or of the selected root. */
+  private inScope(views: TaskView[]): TaskView[] {
     const roots = new Set(this.scopedRoots().map((r) => r.name));
-    return this.allViews(opts).filter((v) => roots.has(v.root));
+    return views.filter((v) => roots.has(v.root));
   }
 
   /**
@@ -1058,12 +1075,12 @@ export class Workspace {
     const merges = this.mergeRoots();
     return all.map(({ root, s, archived }) => {
       const statusOf = (ref: string): Status | undefined => {
-        const dep = this.depTarget(root, ref);
+        const dep = this.depTarget(root, ref, status);
         if (!dep) return undefined;
         return status.get(`${dep.root.name}/${dep.id}`) ?? dep.root.foldTask(dep.id).status;
       };
       const mergePending = (ref: string): boolean => {
-        const dep = this.depTarget(root, ref);
+        const dep = this.depTarget(root, ref, status);
         return !!dep && merges.has(dep.root.name) && dep.root.foldTask(dep.id).awaitsMerge;
       };
       const v = derive(s, root.name, nowMs, statusOf, mergePending);
@@ -1092,6 +1109,7 @@ export class Workspace {
   private waitersIndex(views: TaskView[]): Map<string, string[]> {
     const out = new Map<string, string[]>();
     const rootOf = new Map(this.roots.map((r) => [r.name, r] as const));
+    const known = new Set(views.map((v) => `${v.root}/${v.meta.id}`));
     const add = (target: { root: Root; id: string } | undefined, waiter: string): void => {
       if (!target) return;
       const key = `${target.root.name}/${target.id}`;
@@ -1106,9 +1124,9 @@ export class Workspace {
       if (!root) continue;
       const key = `${v.root}/${v.meta.id}`;
       if (v.status === 'blocked' && !v.unblocked) {
-        for (const d of v.blockedOn) add(this.depTarget(root, d), key);
+        for (const d of v.blockedOn) add(this.depTarget(root, d, known), key);
       }
-      if (v.meta.parent) add(this.depTarget(root, v.meta.parent), key);
+      if (v.meta.parent) add(this.depTarget(root, v.meta.parent, known), key);
     }
     return out;
   }
@@ -3183,7 +3201,7 @@ export class Workspace {
     }
     // Work that waits on an id no agent answers to hangs silently; a person reassigns it.
     if (human) {
-      for (const s of this.stranded()) {
+      for (const s of this.stranded(views)) {
         items.push({
           kind: 'stranded',
           task: ref(s.view.root, s.view.meta.id),
