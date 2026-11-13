@@ -4,6 +4,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -196,17 +197,27 @@ export class Root {
   }
 
   /** Writes a file by renaming a finished temp file into place, so readers never see half of it. */
-  writeAtomic(path: string, content: string | Uint8Array): void {
+  writeAtomic(path: string, content: string | Uint8Array, retries = RENAME_RETRIES): void {
     const tmpDir = join(this.opsDir, 'tmp');
     mkdirSync(tmpDir, { recursive: true });
     const tmp = join(tmpDir, `${ulid()}.tmp`);
     if (typeof content === 'string') writeFileSync(tmp, content, 'utf8');
     else writeFileSync(tmp, content);
-    this.renameRetry(tmp, path);
+    try {
+      this.renameRetry(tmp, path, retries);
+    } catch (err) {
+      // A rename that never happened leaves the temp file, and nothing else removes it.
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        // The error of the rename is the one to report.
+      }
+      throw err;
+    }
   }
 
   /** Renames, retrying while Windows holds the source or target open. */
-  renameRetry(from: string, to: string): void {
+  renameRetry(from: string, to: string, retries = RENAME_RETRIES): void {
     for (let attempt = 0; ; attempt++) {
       try {
         renameSync(from, to);
@@ -214,7 +225,7 @@ export class Root {
       } catch (err) {
         // Windows reports EPERM or EBUSY while a scanner or editor holds the target open.
         const code = (err as NodeJS.ErrnoException).code;
-        if (attempt >= 20 || (code !== 'EPERM' && code !== 'EBUSY')) throw err;
+        if (attempt >= retries || (code !== 'EPERM' && code !== 'EBUSY')) throw err;
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       }
     }
@@ -470,24 +481,93 @@ export class Root {
     return join(this.opsDir, 'claims', `${task}.json`);
   }
 
+  /**
+   * The newest event the actor has read: the highest `last` of its marker files. There is more
+   * than one file only after a write could not replace `<actor>.json`; see {@link writeMarker}.
+   */
   readMarker(actor: string): string {
+    let last = '';
+    for (const file of this.markerFiles(actor)) {
+      try {
+        const raw = JSON.parse(readFileSync(file, 'utf8')) as { last?: unknown };
+        if (typeof raw.last === 'string' && raw.last > last) last = raw.last;
+      } catch {
+        // A missing or unreadable file marks nothing as read.
+      }
+    }
+    return last;
+  }
+
+  /**
+   * Records `last` as read. Callers only move the marker forward.
+   *
+   * Windows can refuse to replace `<actor>.json` for good: a sandboxed agent (the Codex sandbox
+   * user) made the file, so a later sandbox session has no right to delete or overwrite it,
+   * while it may still add files to the folder (AO-0280). The marker then goes to a spare file,
+   * `<actor>.<ulid>.json`, and {@link readMarker} takes the highest of them all.
+   */
+  writeMarker(actor: string, last: string): void {
+    const dir = join(this.opsDir, 'read');
+    mkdirSync(dir, { recursive: true });
+    const [main, ...spares] = this.markerFiles(actor) as [string, ...string[]];
+    const content = JSON.stringify({ last });
+    let written = main;
     try {
-      const raw = JSON.parse(
-        readFileSync(join(this.opsDir, 'read', `${actorSlug(actor)}.json`), 'utf8'),
-      ) as { last?: string };
-      return raw.last ?? '';
-    } catch {
-      return '';
+      this.writeAtomic(main, content);
+    } catch (err) {
+      if (!replaceRefused(err)) throw err;
+      // The first rename has waited for a scanner already, so the spares get one try each.
+      const spare = spares.find((file) => {
+        try {
+          this.writeAtomic(file, content, 0);
+          return true;
+        } catch (e) {
+          if (!replaceRefused(e)) throw e;
+          return false;
+        }
+      });
+      written = spare ?? join(dir, `${actorSlug(actor)}.${ulid()}.json`);
+      if (!spare) this.writeAtomic(written, content);
+    }
+    // The other spares hold older markers. One that cannot be removed changes nothing.
+    for (const file of spares) {
+      if (file === written) continue;
+      try {
+        rmSync(file, { force: true });
+      } catch {
+        // Not ours to delete.
+      }
     }
   }
 
-  writeMarker(actor: string, last: string): void {
-    mkdirSync(join(this.opsDir, 'read'), { recursive: true });
-    this.writeAtomic(
-      join(this.opsDir, 'read', `${actorSlug(actor)}.json`),
-      JSON.stringify({ last }),
-    );
+  /** The actor's marker files: `<actor>.json` first, then the spares that exist, oldest first. */
+  private markerFiles(actor: string): string[] {
+    const dir = join(this.opsDir, 'read');
+    const slug = actorSlug(actor);
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      // No marker yet.
+    }
+    const spares = names.filter((name) => {
+      if (!name.startsWith(`${slug}.`) || !name.endsWith('.json')) return false;
+      return SPARE_ID.test(name.slice(slug.length + 1, -'.json'.length));
+    });
+    return [`${slug}.json`, ...spares.sort()].map((name) => join(dir, name));
   }
+}
+
+/** How often a rename is tried again while Windows holds the source or target open. */
+const RENAME_RETRIES = 20;
+
+/** The ULID in the name of a spare marker file, `<actor>.<ulid>.json`. */
+const SPARE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** Whether the system refused to replace a file: it is held open, or the rights are missing. */
+function replaceRefused(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
 }
 
 /** The newest event id in a task's events folder, from the file names. */
