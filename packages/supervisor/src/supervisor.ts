@@ -5314,7 +5314,8 @@ export class Supervisor extends EventEmitter {
    *   what it left ({@link uncommittedRun}), and the worktree is on the commit to merge: swarmupd
    *   commits them on a branch of their own on top of it, and the merge takes that commit.
    *   When a file changed again during that commit (`kept`), the commit is not all of what the
-   *   run left: `held` too, and nothing is merged.
+   *   run left: `held` too, and nothing is merged. The worktree is read again after the commit,
+   *   and after a commit that found nothing to commit: changes still there mean `held` as well.
    * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
    * - A run still works there: `again`, so the next tick looks once more.
    * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt: it
@@ -5362,28 +5363,47 @@ export class Supervisor extends EventEmitter {
       if (changes.length === 0) continue;
       const run = uncommittedRun(ws.showEvents(ref).events);
       let why = "no run-end of the review's author says that swarmupd could not commit them";
+      let left = changes;
       if (run && taken) {
         why = 'swarmupd committed the changes of another worktree of the task already';
       } else if (run && w.head !== source) {
         why = `the worktree is on ${short(w.head)}, not on the commit to merge (${short(source)})`;
       } else if (run) {
+        let c: Awaited<ReturnType<Checkout['commitLeftovers']>> | undefined;
         try {
-          const c = await this.checkout(path).commitLeftovers(
+          c = await this.checkout(path).commitLeftovers(
             leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id),
             `${ws.view(ref).meta.title}\n\nChanges run ${run.id} (${run.agent}) left uncommitted in ${path}; committed before the merge.\n`,
             source,
           );
-          if (!c) continue;
+        } catch (err) {
+          why = `swarmupd could not commit them: ${firstLines(err instanceof Error ? err.message : String(err))}`;
+        }
+        if (c !== undefined) {
+          // Neither answer of the commit says that the worktree is clean now: null also comes
+          // when its tree equals the commit to merge while git still reports changes (a staged
+          // version of a file that was changed back, a change inside a submodule). So the
+          // worktree is read again, and only a clean one lets the merge go on.
+          const after = (await this.checkout(path).stateAsync()).changes;
+          if (after instanceof Error) {
+            throw new Error(`cannot read the worktree ${path}: ${after.message}`);
+          }
           // A kept file changed after the commit's snapshot, or has a staged version the commit
           // lacks: the commit is not all of what the run left, so it is never merged.
-          if (c.kept.length > 0) {
-            const names = c.kept.slice(0, 5).map((f) => `\`${f}\``);
-            const rest = c.kept.length > 5 ? ` and ${c.kept.length - 5} more` : '';
+          if (c && (c.kept.length > 0 || after.length > 0)) {
+            const { commit, branch } = c;
+            const still = [...new Set([...c.kept, ...after])];
+            const names = still.slice(0, 5).map((f) => `\`${f}\``);
+            const rest = still.length > 5 ? ` and ${still.length - 5} more` : '';
+            const how =
+              c.kept.length > 0
+                ? 'changed again or have a staged version the commit lacks'
+                : 'still show as changed after the commit';
             this.safe(() =>
               this.ws(MERGE_ACTOR).sendBack(
                 ref,
-                `swarmupd did not merge ${job.what}: while it committed what run ${run.id} left uncommitted in ${path}, ${c.kept.length} file(s) there changed again or have a staged version the commit lacks (${names.join(', ')}${rest}). ` +
-                  `They stay in the worktree as they are; the other files the run left are in ${short(c.commit)} on branch \`${c.branch}\`, on top of ${short(source)}. ` +
+                `swarmupd did not merge ${job.what}: while it committed what run ${run.id} left uncommitted in ${path}, ${still.length} file(s) there ${how} (${names.join(', ')}${rest}). ` +
+                  `They stay in the worktree as they are; the other files the run left are in ${short(commit)} on branch \`${branch}\`, on top of ${short(source)}. ` +
                   'Put that commit and what belongs to the task of the files in the worktree on the task branch, then ask for review again. Delete nothing you did not make: ' +
                   "for changes that are not the task's, ask who made them (`swarmup ask`).",
                 job.author,
@@ -5391,26 +5411,32 @@ export class Supervisor extends EventEmitter {
             );
             return 'held';
           }
-          taken = {
-            commit: c.commit,
-            branch: c.branch,
-            what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path})`,
-          };
-          this.mergeLine(
-            ref,
-            `committed ${c.files.length} file(s) run ${run.id} left in ${path} as ${short(c.commit)} on branch ${c.branch}`,
-          );
-          continue;
-        } catch (err) {
-          why = `swarmupd could not commit them: ${firstLines(err instanceof Error ? err.message : String(err))}`;
+          if (c) {
+            taken = {
+              commit: c.commit,
+              branch: c.branch,
+              what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path})`,
+            };
+            this.mergeLine(
+              ref,
+              `committed ${c.files.length} file(s) run ${run.id} left in ${path} as ${short(c.commit)} on branch ${c.branch}`,
+            );
+            continue;
+          }
+          // Nothing to commit and nothing left: the changes went away in between.
+          if (after.length === 0) continue;
+          left = after;
+          why =
+            'swarmupd found nothing in them to commit: the files there equal the commit to merge ' +
+            '(a staged version of a file that was changed back, or a change inside a submodule)';
         }
       }
-      const shown = changes.slice(0, 5).map((f) => `\`${f}\``);
-      const more = changes.length > 5 ? ` and ${changes.length - 5} more` : '';
+      const shown = left.slice(0, 5).map((f) => `\`${f}\``);
+      const more = left.length > 5 ? ` and ${left.length - 5} more` : '';
       this.safe(() =>
         this.ws(MERGE_ACTOR).sendBack(
           ref,
-          `swarmupd did not merge ${job.what}: the worktree ${path} has ${changes.length} uncommitted change(s) (${shown.join(', ')}${more}) that the commit lacks, and ${why}. ` +
+          `swarmupd did not merge ${job.what}: the worktree ${path} has ${left.length} uncommitted change(s) (${shown.join(', ')}${more}) that the commit lacks, and ${why}. ` +
             'Commit what belongs to the task on the branch and ask for review again. Delete nothing you did not make: ' +
             "for changes that are not the task's, ask who made them (`swarmup ask`).",
           job.author,

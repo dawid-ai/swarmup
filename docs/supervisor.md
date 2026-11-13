@@ -884,7 +884,10 @@ swarmupd:
   on the commit to merge. When a file changes again while swarmupd commits (or has a staged
   version the commit lacks), the commit is not all of what the run left: the file stays in the
   worktree, nothing is merged, and the task goes back to its author with a `changes` verdict
-  that names the file and the branch. Any other changes send the task back to its author with a `changes`
+  that names the file and the branch. swarmupd reads the worktree again after the commit, and
+  after a commit that found nothing to commit (a staged version of a file that was changed back,
+  a change inside a submodule): changes still there send the task back the same way, and only a
+  clean worktree lets the merge go on. Any other changes send the task back to its author with a `changes`
   verdict that names the files, and nothing is merged. When git cannot list the worktrees, read
   one of them or read that branch, swarmupd merges nothing and looks again on the next tick;
   after 3 failed looks in a row it comments to the human and waits for the task to change. A run
