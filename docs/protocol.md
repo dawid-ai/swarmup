@@ -195,9 +195,10 @@ done_when:
 - **Old tasks** have no `done_when` and read as before. A `task.md` written by hand with one text
   value (`done_when: npm test passes`) reads as a list of one.
 - **Review requests name the evidence.** On a task with `done_when`, `swarmup review` prints a
-  `note:` when the request names no command (a program with its arguments in code font, such as
-  `` `npm test` ``, or a fenced block; a branch, commit, path or identifier in code font is not a
-  command) or no result (an outcome such as "passed" or "3 failed", an exit code, or pasted
+  `note:` when the request names no command (in code font: a known program with its arguments such as
+  `` `npm test` ``, a script such as `` `./check.sh` ``, any program with a flag, a line that
+  starts with `$`, or a fenced block; a branch, commit, path, identifier or quoted test name in
+  code font is not a command) or no result (an outcome such as "passed" or "3 failed", an exit code, or pasted
   output in a fenced block). The request is still written; the note asks for the commands run and
   their output next time. The reviewer checks each line against that evidence.
 
