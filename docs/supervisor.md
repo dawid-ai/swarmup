@@ -142,6 +142,27 @@ reads. A work run's prompt also asks the agent to write a learn note before it f
 agent should know something; a review run's prompt asks the reviewer to write one when the work took
 several review rounds.
 
+### The review prompt
+
+A review run's prompt tells the reviewer what to review against and what it may run:
+
+- **Scope.** The reviewer reviews against the task text and its "Done when". It approves work
+  that meets them and asks for changes only where the work does not. Style and matters outside
+  the task stay out of the verdict; the reviewer files them with `swarmup finding`.
+- **Checks.** The reviewer builds the reviewed commit and runs its tests and checks itself, in a
+  worktree and never in the checkout swarmupd merges into: the task's own worktree
+  (`out/wt-<ID>`) when it is clean and at that commit, else a detached one it adds in its
+  scratch folder (`$SWARMUP_SCRATCH`). The verdict names each command and its result, and each
+  check the reviewer could not run, with the reason.
+- **No changes.** The reviewer never edits files, commits or pushes. Logs and test output go in
+  the scratch folder.
+
+A reviewer's role file should say the same and, for Claude, list the tools the checks need (such
+as `Bash(npm test*)`, `Bash(npm run *)` and `Bash(git worktree *)`): a Claude run is allowed only
+its role file's `tools`. A Codex run of a role that does not write can write only its task store
+(see [Runtimes](#runtimes)), so a check that writes build output in the worktree fails there; the
+verdict then names it as not run.
+
 ### Runtimes
 
 | Runtime  | Command line                                                                                                                                       |
