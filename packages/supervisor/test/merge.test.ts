@@ -21,6 +21,7 @@ import type {
   ProcLister,
   RunRecord,
 } from '../src/index.js';
+import { Checkout } from '../src/checkout.js';
 import {
   CommandRunner,
   DEFAULT_INSTALL,
@@ -615,6 +616,45 @@ describe('merging approved work', () => {
     expect(e.body).toContain('not on the commit to merge');
     expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
+  });
+
+  it('merges nothing when a file changes while swarmupd commits what the run left (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    // `code.txt` changes between the commit and the look that follows it (the `check` index).
+    type Stage = (index: string, head: string, excludes: string[]) => Generator;
+    const proto = Checkout.prototype as unknown as { stage: Stage };
+    const real = proto.stage;
+    const stage = vi.spyOn(proto, 'stage').mockImplementation(function (this: Checkout, ...a) {
+      if (a[0].endsWith('check')) writeFileSync(join(wt, 'code.txt'), 'two\nthree\nfour\n');
+      return real.apply(this, a);
+    });
+    try {
+      await s.merged();
+    } finally {
+      stage.mockRestore();
+    }
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 file(s) there changed again');
+    expect(e.body).toContain('`code.txt`');
+    expect(e.body).toContain('on branch `fake/t-0001-r1-merge`');
+    // The commit holds the older `code.txt`: the base stays, and the newer content stays in the file.
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(git(s.repo, 'show', 'fake/t-0001-r1-merge:code.txt')).toBe('two\nthree');
+    expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
+    expect(git(s.repo, 'show', 'fake/t-0001-r1-merge:extra.txt')).toBe('staged');
   });
 
   /** Makes git fail in the worktree `wt` (a broken index); the returned function repairs it. */
