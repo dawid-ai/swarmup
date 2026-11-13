@@ -11,6 +11,23 @@ export { reviewSources };
 export type { MergeSource, ReviewSources } from '@swarmup/core';
 
 /**
+ * Whether nothing is at `path`: true only when the file system says so (`ENOENT`, or `ENOTDIR`
+ * for a parent that is a file). Any other failure to look (no access, a busy or unplugged
+ * drive) throws, because a path that cannot be looked at is not proven missing; `existsSync`
+ * answers false for both (AO-0300).
+ */
+export function pathGone(path: string, stat: (p: string) => unknown = statSync): boolean {
+  try {
+    stat(path);
+    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return true;
+    throw err;
+  }
+}
+
+/**
  * Reads the branch and commit from a review request: `<commit> on branch <name>`, else the first
  * `branch <word>` (its tip). Without a repo to check the word against; see `pickMergeSource`.
  */
@@ -743,6 +760,15 @@ export class MergeRepo {
    */
   worktreeList(): Promise<string> {
     return this.git(this.top, ['worktree', 'list', '--porcelain', '-z']);
+  }
+
+  /**
+   * Whether the folder of a worktree that git lists is gone ({@link pathGone}). Anything else
+   * that keeps swarmupd from looking at it throws: the caller decides what an unread worktree
+   * means.
+   */
+  worktreeGone(path: string): boolean {
+    return pathGone(path);
   }
 
   /**

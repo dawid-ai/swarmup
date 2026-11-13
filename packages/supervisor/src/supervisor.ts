@@ -5318,7 +5318,8 @@ export class Supervisor extends EventEmitter {
    *   and after a commit that found nothing to commit: changes still there mean `held` as well.
    * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
    * - A run still works there: `again`, so the next tick looks once more.
-   * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt: it
+   * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt, or the
+   *   folder of a listed worktree cannot be looked at (only one that is gone is skipped): it
    *   throws. An unread worktree is never taken for a clean one; {@link mergeOne} looks again.
    *
    * The commit leaves the worktree clean, and a merge can start again after it (the PC slept, a
@@ -5341,13 +5342,25 @@ export class Supervisor extends EventEmitter {
       throw new Error(`cannot list the worktrees of ${job.top}: ${gitError(err)}`);
     }
     const bases = new Set(Object.values(this.config.merge).map((m) => m.base));
-    const mine = list.filter(
-      (w) =>
-        !samePath(w.path, job.top) &&
-        existsSync(w.path) &&
-        ((w.branch !== null && w.branch === job.src.branch && !bases.has(w.branch)) ||
-          taskIdOfWorktree(job.top, w.path)?.toLowerCase() === id.toLowerCase()),
-    );
+    const mine: WorktreeEntry[] = [];
+    for (const w of list) {
+      if (samePath(w.path, job.top)) continue;
+      if (
+        !(w.branch !== null && w.branch === job.src.branch && !bases.has(w.branch)) &&
+        taskIdOfWorktree(job.top, w.path)?.toLowerCase() !== id.toLowerCase()
+      ) {
+        continue;
+      }
+      // Git also lists a worktree whose folder was deleted, and that one holds no files. A
+      // folder swarmupd cannot look at (no access, a busy drive) is not a deleted one.
+      let gone: boolean;
+      try {
+        gone = repo.worktreeGone(w.path);
+      } catch (err) {
+        throw new Error(`cannot read the worktree ${resolve(w.path)}: ${gitError(err)}`);
+      }
+      if (!gone) mine.push(w);
+    }
     let taken: { commit: string; branch: string; what: string } | null = null;
     for (const w of mine) {
       const path = resolve(w.path);

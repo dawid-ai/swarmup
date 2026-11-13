@@ -34,6 +34,7 @@ import {
   MERGE_ACTOR,
   MergeRepo,
   mergeSource,
+  pathGone,
   missingOptionalPackages,
   notLiveNotice,
   npmRegistry,
@@ -787,6 +788,72 @@ describe('merging approved work', () => {
       expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
     } finally {
       list.mockRestore();
+    }
+  });
+
+  it('merges nothing while the folder of the task worktree cannot be looked at (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    const warns: string[] = [];
+    s.sup.on('warn', (m: string) => warns.push(m));
+    // What `statSync` throws for a folder on a drive that does not answer: not `ENOENT`.
+    const denied = Object.assign(new Error(`EACCES: permission denied, stat '${wt}'`), {
+      code: 'EACCES',
+    });
+    const gone = vi.spyOn(MergeRepo.prototype, 'worktreeGone').mockImplementationOnce(() => {
+      throw denied;
+    });
+    try {
+      await s.merged();
+      expect(gone).toHaveBeenCalledTimes(1);
+      expect(samePath(gone.mock.calls[0]![0], wt)).toBe(true);
+      // The reviewed commit lacks `extra.txt`: with the folder unseen, the base stays.
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+      expect(warns.join('\n')).toContain('cannot read the worktree');
+      await s.merged();
+      expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
+      expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+      expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
+    } finally {
+      gone.mockRestore();
+    }
+  });
+
+  it('merges the reviewed commit when the folder of the task worktree is deleted (AO-0300)', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    // Git still lists the worktree (prunable); nothing is left in it to miss.
+    rmSync(wt, { recursive: true, force: true });
+    s.approve(commit);
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge' });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+  });
+
+  it('pathGone says gone only for a path the file system reports missing (AO-0300)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gone-'));
+    try {
+      expect(pathGone(dir)).toBe(false);
+      expect(pathGone(join(dir, 'none'))).toBe(true);
+      writeFileSync(join(dir, 'file'), '');
+      expect(pathGone(join(dir, 'file', 'under'))).toBe(true);
+      for (const code of ['EACCES', 'EPERM', 'EBUSY', 'EIO']) {
+        const err = Object.assign(new Error(code), { code });
+        expect(() =>
+          pathGone(dir, () => {
+            throw err;
+          }),
+        ).toThrow(err);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
