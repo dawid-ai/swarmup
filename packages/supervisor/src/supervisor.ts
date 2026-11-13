@@ -82,6 +82,7 @@ import {
   installSteps,
   isEngineRepo,
   lockfileDirs,
+  MERGE_GIT_TIMEOUT_MS,
   MergeRepo,
   notLiveNotice,
   opsdCodeChanges,
@@ -3232,6 +3233,9 @@ export class Supervisor extends EventEmitter {
         // The run asked for review naming files it could not commit: tell the reviewer where
         // they are now.
         ws.comment(ref, leftoverReview(r, left, true), v.reviewer ?? undefined);
+      } else if (!left && r.not_committed && !r.review && v.status === 'needs-review') {
+        // The review reads as if the work were committed; the reviewer hears that it is not.
+        ws.comment(ref, notCommittedReview(r, r.not_committed), v.reviewer ?? undefined);
       }
     });
     this.wrapStep(r, { wrap_up: 'settled' });
@@ -4914,6 +4918,109 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * Looks, before a merge, at the worktrees that hold the task's work: the one with the review's
+   * branch checked out and the task's own (`out/wt-<id>`). An approval covers what the review
+   * describes, and a run that could not commit leaves part of that as files there (AO-0300).
+   *
+   * - Clean, or no such worktree: null, and the merge takes the commit the review names.
+   * - Changes there, the last run of the review's author ended with swarmupd unable to commit
+   *   what it left ({@link uncommittedRun}), and the worktree is on the commit to merge: swarmupd
+   *   commits them on a branch of their own on top of it, and the merge takes that commit.
+   * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
+   * - A run still works there: `again`, so the next tick looks once more.
+   */
+  private async worktreeLeftovers(
+    ref: string,
+    job: MergeJob,
+    source: string,
+  ): Promise<{ commit: string; branch: string; what: string } | 'held' | 'again' | null> {
+    const ws = this.ws();
+    const id = ws.resolve(ref).id;
+    let list: WorktreeEntry[];
+    try {
+      list = parseWorktreeList(
+        await gitAsync(job.top, ['worktree', 'list', '--porcelain', '-z'], {
+          env: { ...this.commandEnv(), GIT_TERMINAL_PROMPT: '0' },
+          timeoutMs: MERGE_GIT_TIMEOUT_MS,
+        }),
+      );
+    } catch (err) {
+      this.emit(
+        'warn',
+        `merge of ${ref}: cannot list the worktrees of ${job.top}: ${gitError(err)}`,
+      );
+      return null;
+    }
+    const bases = new Set(Object.values(this.config.merge).map((m) => m.base));
+    const mine = list.filter(
+      (w) =>
+        !samePath(w.path, job.top) &&
+        existsSync(w.path) &&
+        ((w.branch !== null && w.branch === job.src.branch && !bases.has(w.branch)) ||
+          taskIdOfWorktree(job.top, w.path)?.toLowerCase() === id.toLowerCase()),
+    );
+    let taken: { commit: string; branch: string; what: string } | null = null;
+    for (const w of mine) {
+      const path = resolve(w.path);
+      if (this.runsIn(path)) {
+        this.emit('warn', `merge of ${ref}: waits for the run in ${path} to end`);
+        return 'again';
+      }
+      const { changes } = await this.checkout(path).stateAsync();
+      if (changes instanceof Error) {
+        this.emit('warn', `merge of ${ref}: cannot read the worktree ${path}: ${changes.message}`);
+        continue;
+      }
+      if (changes.length === 0) continue;
+      const run = uncommittedRun(ws.showEvents(ref).events);
+      let why = "no run-end of the review's author says that swarmupd could not commit them";
+      if (run && taken) {
+        why = 'swarmupd committed the changes of another worktree of the task already';
+      } else if (run && w.head !== source) {
+        why = `the worktree is on ${short(w.head)}, not on the commit to merge (${short(source)})`;
+      } else if (run) {
+        try {
+          const c = await this.checkout(path).commitLeftovers(
+            leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id),
+            `${ws.view(ref).meta.title}\n\nChanges run ${run.id} (${run.agent}) left uncommitted in ${path}; committed before the merge.\n`,
+            source,
+          );
+          if (!c) continue;
+          const kept =
+            c.kept.length > 0
+              ? `; ${c.kept.length} file(s) changed again after the commit and stay there`
+              : '';
+          taken = {
+            commit: c.commit,
+            branch: c.branch,
+            what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path}${kept})`,
+          };
+          this.mergeLine(
+            ref,
+            `committed ${c.files.length} file(s) run ${run.id} left in ${path} as ${short(c.commit)} on branch ${c.branch}`,
+          );
+          continue;
+        } catch (err) {
+          why = `swarmupd could not commit them: ${firstLines(err instanceof Error ? err.message : String(err))}`;
+        }
+      }
+      const shown = changes.slice(0, 5).map((f) => `\`${f}\``);
+      const more = changes.length > 5 ? ` and ${changes.length - 5} more` : '';
+      this.safe(() =>
+        this.ws(MERGE_ACTOR).sendBack(
+          ref,
+          `swarmupd did not merge ${job.what}: the worktree ${path} has ${changes.length} uncommitted change(s) (${shown.join(', ')}${more}) that the commit lacks, and ${why}. ` +
+            'Commit what belongs to the task on the branch and ask for review again. Delete nothing you did not make: ' +
+            "for changes that are not the task's, ask who made them (`swarmup ask`).",
+          job.author,
+        ),
+      );
+      return 'held';
+    }
+    return taken;
+  }
+
+  /**
    * Rebases the approved commit onto the base in swarmupd's worktree, runs the checks there, moves
    * the base forward, and builds it in its checkout. A conflict or a failed check sends the
    * task back to its author; nothing is ever forced. When the base moved in the meantime (a
@@ -4922,10 +5029,12 @@ export class Supervisor extends EventEmitter {
    */
   private async mergeOne(
     ref: string,
-    job: MergeJob,
+    planned: MergeJob,
     runner: CommandRunner,
   ): Promise<void | 'again'> {
-    const { cfg, top, src } = job;
+    let job = planned;
+    const { cfg, top } = job;
+    let src = job.src;
     const repo = new MergeRepo(
       top,
       join(this.store.dir, 'merge', job.root.replace(/[^A-Za-z0-9._-]/g, '-')),
@@ -4933,7 +5042,7 @@ export class Supervisor extends EventEmitter {
       this.commandEnv(),
       this.mergeGitTimeoutMs,
     );
-    const source = src.commit
+    let source = src.commit
       ? await repo.commit(src.commit)
       : src.branch
         ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
@@ -4955,6 +5064,17 @@ export class Supervisor extends EventEmitter {
       );
       return;
     }
+    // What a run left uncommitted in the task's worktree is part of the approved work (AO-0300).
+    const left = await this.worktreeLeftovers(ref, job, source);
+    if (left === 'held') return;
+    if (left === 'again') return 'again';
+    if (left) {
+      source = left.commit;
+      src = { commit: left.commit, branch: left.branch };
+      job = { ...job, src, what: left.what };
+      if (this.merging) this.merging.what = left.what;
+    }
+    const approved = source;
     const timeout = mergeTimeout(cfg);
     let checked: string | null = null;
     let checks: CommandResult[] = [];
@@ -4967,7 +5087,7 @@ export class Supervisor extends EventEmitter {
       const onto = (await repo.commit(`refs/heads/${cfg.base}`))!;
       this.mergeStep('rebase', `rebases onto ${cfg.base} (${short(onto)}) again`);
       await repo.ensureWorktree(onto);
-      const r = await repo.rebase(source, onto);
+      const r = await repo.rebase(approved, onto);
       if ('conflict' in r) {
         this.mergeBack(
           ref,
@@ -4984,7 +5104,8 @@ export class Supervisor extends EventEmitter {
           `${job.what} is already in ${cfg.base}; nothing to merge.`,
         );
         if (src.branch) {
-          this.safe(() => this.branchMerged(ref, job.root, src.branch!, source, cfg.base, onto));
+          const { branch } = src;
+          this.safe(() => this.branchMerged(ref, job.root, branch, approved, cfg.base, onto));
         }
         return;
       }
@@ -5076,7 +5197,7 @@ export class Supervisor extends EventEmitter {
     if (src.branch) {
       const { branch } = src;
       const { head } = merged;
-      this.safe(() => this.branchMerged(ref, job.root, branch, source, cfg.base, head));
+      this.safe(() => this.branchMerged(ref, job.root, branch, approved, cfg.base, head));
     }
     // A code checkout with no task store (`swarmupd.code`) has no store sync to push its base, so the
     // merged commit is pushed here (AO-0252). A `merge.checkout` without `swarmupd.code` is left as
@@ -6109,6 +6230,38 @@ export function straysNote(paths: string[]): string {
   return (
     `new next to the checkout while the run worked (it, another run or a person made them): ` +
     `${shown.join(', ')}${more}. Scratch belongs in the run's scratch folder.`
+  );
+}
+
+/** How a run-end note starts when swarmupd left what the run changed uncommitted (`commitStep`). */
+const NOT_COMMITTED = /^(cannot commit what it left in |left changes uncommitted: )/m;
+
+/**
+ * The last run of the author of the approved review, when its `run-end` says that swarmupd could
+ * not commit what it left; else null. Only that run's changes are swarmupd's to commit before a
+ * merge: the review asked for them to be checked, and the approval covers them (AO-0300).
+ */
+export function uncommittedRun(events: OpsEvent[]): { id: string; agent: string } | null {
+  let at = events.length - 1;
+  while (at >= 0 && events[at]!.type !== 'verdict') at--;
+  const before = events.slice(0, Math.max(at, 0)).reverse();
+  const author = before.find((e) => e.type === 'review')?.actor;
+  if (!author) return null;
+  const end = before.find((e) => e.type === 'run-end' && e.actor === author);
+  if (!end?.run || !NOT_COMMITTED.test(end.body ?? '')) return null;
+  return { id: end.run, agent: author };
+}
+
+/**
+ * The comment for the reviewer when a run asked for review and swarmupd could not commit what it
+ * left: the commit the review names lacks those changes (AO-0300).
+ */
+function notCommittedReview(r: RunRecord, why: string): string {
+  return (
+    `run ${r.id} (${r.agent}) asked for review, and swarmupd ${why}. The commit or branch the review ` +
+    `names lacks those changes: review them in ${r.cwd} too. After an approval, swarmupd commits ` +
+    'them before the merge when that folder is still on the reviewed commit; else the task comes ' +
+    'back to its author.'
   );
 }
 
