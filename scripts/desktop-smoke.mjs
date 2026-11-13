@@ -66,7 +66,31 @@ swarmup('human:smoke', 'new', 'Fix the pricing page', '--to', '*:engineer', '--p
 swarmup('human:smoke', 'new', 'Write the docs', '--to', 'claude:engineer', '--label', 'docs');
 swarmup('human:smoke', 'new', 'Idea: dark mode', '--type', 'idea');
 swarmup('claude:engineer', 'start', 'SMK-0002', 'plan');
-swarmup('claude:engineer', 'review', 'SMK-0002', 'please check', '--to', 'codex:qa');
+// Work on a branch, named by the review, for the diff view in the task panel (AO-0106).
+const commit = (message) => {
+  git('add', '-A');
+  git('-c', 'user.name=Smoke', '-c', 'user.email=smoke@example.com', 'commit', '-q', '-m', message);
+};
+writeFileSync(join(repo, 'docs.ts'), 'export const pages = 1;\n');
+commit('Start');
+git('checkout', '-q', '-b', 'claude/docs');
+writeFileSync(join(repo, 'docs.ts'), 'export const pages = 2; // one more\n');
+writeFileSync(join(repo, 'guide.md'), '# Guide\n');
+commit('Write the docs');
+const docsCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+  cwd: repo,
+  encoding: 'utf8',
+  windowsHide: true,
+}).trim();
+git('checkout', '-q', '-');
+swarmup(
+  'claude:engineer',
+  'review',
+  'SMK-0002',
+  `${docsCommit} on branch claude/docs: please check`,
+  '--to',
+  'codex:qa',
+);
 swarmup('codex:qa', 'finding', 'Images have no size', '--task', 'SMK-0002', '-m', 'Layout shifts.');
 swarmup('claude:engineer', 'learn', 'css', 'Grid gaps', '-m', 'Use gap.');
 swarmup('claude:engineer', 'channel', 'post', 'general', 'hello @codex:qa');
@@ -187,7 +211,8 @@ try {
       SWARMUP_SCREENSHOTS: shots,
       // Add project comes last: its dialog stays open. Screenshot mode has no folder dialog, so
       // the pick is named here.
-      SWARMUP_VIEWS: [...views, 'repeating', 'add-project'].join(','),
+      // The diff of SMK-0002 comes first: it covers the window until the next view closes its task.
+      SWARMUP_VIEWS: ['diff:SMK-0002', ...views, 'repeating', 'add-project'].join(','),
       SWARMUP_SCREENSHOT_PICKS: adoptable,
       ELECTRON_ENABLE_LOGGING: '1',
     },
@@ -212,7 +237,7 @@ try {
     }).status === 0;
 }
 
-const missing = [...views, 'add-project'].filter((v) => {
+const missing = [...views, 'diff-SMK-0002', 'add-project'].filter((v) => {
   const png = join(shots, `${v}.png`);
   return !existsSync(png) || statSync(png).size < 1024;
 });

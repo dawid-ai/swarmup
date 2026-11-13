@@ -143,6 +143,8 @@ import {
 } from './worktree.js';
 import { repairRoot, type SandboxLister, staleTempFiles } from './store-repair.js';
 import { gitAsync } from './git.js';
+import { NoDiff, taskDiff } from './diff.js';
+import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
 
@@ -4670,6 +4672,20 @@ export class Supervisor extends EventEmitter {
         : {}),
       timeout_minutes: Math.round(m.timeoutMs / 60_000),
     };
+  }
+
+  /**
+   * The diff of the work the reviews of `ref` name, read from the root's code checkout (AO-0106).
+   * Read-only. Rejects with {@link NoDiff} when no review names work the repo has.
+   */
+  async taskDiff(ref: string): Promise<TaskDiff> {
+    const ws = this.ws();
+    const root = ws.resolve(ref).root;
+    const cfg = this.config.merge[root.name];
+    const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+    if (!top) throw new NoDiff(`The code of ${root.name} is in no git checkout on this PC.`);
+    const { events } = ws.showEvents(ref);
+    return taskDiff({ top, env: this.commandEnv(), events, base: cfg?.base });
   }
 
   /** Why a writing run in the checkout `top` waits for the merge under way. */

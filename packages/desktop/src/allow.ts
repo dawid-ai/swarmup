@@ -9,6 +9,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'inbox',
     'tasks',
     `tasks/${SEG}`,
+    `tasks/${SEG}/diff`,
     'agents',
     'directory',
     `roles/${SEG}`,

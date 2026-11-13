@@ -19,6 +19,9 @@ describe('IPC allowlist', () => {
     expect(allowedCall('GET', '/api/runs/01ABC/log?tail=262144')).toBe(true);
     expect(allowedCall('POST', '/api/tasks')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/AO-0001/verdict')).toBe(true);
+    // The diff of a task's work is read-only (AO-0106).
+    expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/diff')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/AO-0001/diff')).toBe(false);
     expect(allowedCall('POST', '/api/runs/01ABC/kill')).toBe(true);
     expect(allowedCall('POST', '/api/decisions/D-0001/vote')).toBe(true);
     expect(allowedCall('POST', '/api/channels/dev')).toBe(true);

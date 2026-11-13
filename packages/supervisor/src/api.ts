@@ -27,6 +27,7 @@ import {
   settingsView,
   standup,
 } from './admin.js';
+import { NoDiff } from './diff.js';
 import { doctor } from './doctor.js';
 import { buildReport, reportWindow } from './report.js';
 import { buildWrapped } from './wrapped.js';
@@ -443,6 +444,15 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, 201, warnings.length > 0 ? { ...task, warnings } : task);
       }
       const ref = need(id, 'task id');
+      if (method === 'GET' && action === 'diff') {
+        // The diff of the commits the task's review names, from the local repo (AO-0106).
+        try {
+          return send(res, 200, await sup.taskDiff(ref));
+        } catch (err) {
+          if (err instanceof NoDiff) throw new HttpError(404, err.message);
+          throw err;
+        }
+      }
       if (method === 'GET' && !action) {
         const { body: text, events } = ws.showEvents(ref);
         return send(res, 200, { task: compact(ws.view(ref)), body: text, events });
