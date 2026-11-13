@@ -618,6 +618,34 @@ function learnRule(task: string, review: boolean): string[] {
       ];
 }
 
+/**
+ * What a review run does (AO-0289). The reviewer runs the build, tests and checks of the reviewed
+ * commit itself, in a worktree, so the checkout swarmupd merges into stays as it was; it still
+ * never edits, commits or pushes. It reviews against the task text and its "Done when", so each
+ * round checks the same thing: style and matters outside the task become findings, not change
+ * requests. The role files of the reviewers say the same.
+ */
+function reviewLines(task: string): string[] {
+  return [
+    '',
+    `Review ${task}: run \`swarmup show ${task}\` and check the work its review request names.`,
+    '- Review against the task text and its "Done when": approve work that meets them, and ask for',
+    '  changes only where it does not. Leave style and matters outside the task out of the verdict;',
+    `  file those with \`swarmup finding "<title>" --task ${task} -m "where, evidence, suggested fix"\`.`,
+    '- Build the reviewed commit and run its tests and checks (the ones the task, the review request',
+    "  and the repo's AGENTS.md name) in a worktree, never in the checkout swarmupd merges into: the",
+    `  task's own worktree (\`git worktree list\`, usually \`out/wt-${task}\`) when it is clean and at that`,
+    '  commit, else one you add with `git worktree add --detach "$SWARMUP_SCRATCH/review" <commit>`',
+    '  and install. Leave a worktree as clean as you found it (`git status`).',
+    '- Name each command you ran and its result in the verdict. For a check you could not run (a',
+    '  read-only sandbox, no network), say which one and why, and judge that part from the diff.',
+    '- Never edit files, commit or push. Logs and test output go in `$SWARMUP_SCRATCH`, never in a',
+    '  repo.',
+    'Finish with exactly one verdict:',
+    `\`swarmup verdict ${task} approve "why"\` or \`swarmup verdict ${task} changes "what to fix, file:line"\`.`,
+  ];
+}
+
 /** The standard prompt for a supervised run. */
 export function runPrompt(p: PromptInput): string {
   const lines = [
@@ -643,12 +671,7 @@ export function runPrompt(p: PromptInput): string {
   if (p.extra) {
     lines.push('', p.extra.trim());
   } else if (p.task && p.review) {
-    lines.push(
-      '',
-      `Review ${p.task}: run \`swarmup show ${p.task}\` and check the work its review request names.`,
-      'Do not edit, build, commit or push. Finish with exactly one verdict:',
-      `\`swarmup verdict ${p.task} approve "why"\` or \`swarmup verdict ${p.task} changes "what to fix, file:line"\`.`,
-    );
+    lines.push(...reviewLines(p.task));
   } else if (p.task && p.question) {
     lines.push(...questionLines(p.task, p.question));
   } else if (p.task) {

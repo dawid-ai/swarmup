@@ -160,6 +160,35 @@ describe('role files from the app', () => {
     expect(review).not.toContain('Decide technical and process choices yourself');
   });
 
+  it('tells a reviewer to run the checks and to review against the done-when (AO-0289)', () => {
+    const review = runPrompt({ agent: 'codex:reviewer', task: 'AO-0001', review: true });
+    // The reviewer builds and runs the checks itself, in a worktree, and says what it ran.
+    expect(review).not.toContain('Do not edit, build');
+    expect(review).toContain('- Build the reviewed commit and run its tests and checks');
+    expect(review).toContain('in a worktree, never in the checkout swarmupd merges into');
+    expect(review).toContain('usually `out/wt-AO-0001`');
+    expect(review).toContain('git worktree add --detach "$SWARMUP_SCRATCH/review" <commit>');
+    expect(review).toContain('- Name each command you ran and its result in the verdict.');
+    expect(review).toContain('For a check you could not run');
+    // It still changes nothing.
+    expect(review).toContain('- Never edit files, commit or push.');
+    // The task and its "Done when" are what it reviews against; the rest is a finding.
+    expect(review).toContain('- Review against the task text and its "Done when"');
+    expect(review).toContain('Leave style and matters outside the task out of the verdict');
+    expect(review).toContain('`swarmup finding "<title>" --task AO-0001 -m');
+    // The rules come before the verdict commands, which end the review block.
+    expect(review.indexOf('- Never edit files')).toBeLessThan(
+      review.indexOf('Finish with exactly one verdict:'),
+    );
+    expect(review).toContain(
+      '`swarmup verdict AO-0001 approve "why"` or `swarmup verdict AO-0001 changes "what to fix, file:line"`.',
+    );
+    // A work run and a question run get none of it.
+    const work = runPrompt({ agent: 'claude:engineer', task: 'AO-0001' });
+    expect(work).not.toContain('Review against the task text');
+    expect(work).not.toContain('Build the reviewed commit');
+  });
+
   it('refuses bad ids, secrets, and an agents folder that is a link', async () => {
     const { rootDir, call } = await setup();
     for (const id of ['human:dawid', 'claude', 'claude:*', 'Claude:Writer']) {
