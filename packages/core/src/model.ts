@@ -67,6 +67,11 @@ export interface TaskMeta {
   labels?: string[];
   /** Tasks that must be done before this one can start. */
   blocked_by?: string[];
+  /**
+   * What must hold before the task is done (AO-0290): a short list where each line is a command
+   * or an observable behavior someone can check. Tasks filed before the field have none.
+   */
+  done_when?: string[];
   /** The repeat (`repeats/<name>.md`) that created this task. */
   repeat?: string;
   /** The slot the repeat fired for: local time `YYYY-MM-DDTHH:MM`, or a condition key. */
