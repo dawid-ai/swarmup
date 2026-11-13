@@ -285,10 +285,11 @@ several review rounds.
   - A lock file in `.ops/locks` is removed when it is stale by the lock's own rule: its process is
     gone, or it is older than 30 s.
 
-  The repair runs in each housekeeping sweep (every 10 minutes) and after each Codex run ends,
-  under the root's `git` lock, so no sync commits a half-moved folder. No Codex run starts from
-  the moment a Codex run's process ends until the repair after it is over, nor during any other
-  repair: `swarmup waits` names the repair as the reason, and the run starts at the next tick.
+  The repair runs before the first Codex launch after swarmupd starts, in each housekeeping sweep
+  (every 10 minutes) and after each Codex run ends, under the root's `git` lock, so no sync commits
+  a half-moved folder. No Codex run starts while one of those repairs is due or under way, including
+  from the moment a Codex run's process ends until the repair after it is over: `swarmup waits`
+  names the repair as the reason, and the run starts at the next tick.
   Helper runs of a live Codex run are not held. Two Codex runs that overlap
   can still meet a file the other made minutes ago, until the next repair. Set
   `swarmupd.repair_stores: false` to turn the repair off. Temp files older than an hour in

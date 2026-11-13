@@ -347,6 +347,55 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     expect(calls).toBe(2);
   });
 
+  it('repairs before the first tick can launch a Codex run', async () => {
+    const s = store();
+    const script = join(temp(), 'codex.mjs');
+    writeFileSync(script, 'setTimeout(() => {}, 1_000);');
+    const next = s.ws.newTask({ title: 'Waits for the initial repair', owner: 'codex:qa' }).id;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const sup = new Supervisor({
+      env: s.env,
+      cwd: s.repo,
+      user: {},
+      config: opsdConfig({
+        opsd: {
+          sync: false,
+          max_runs: 16,
+          task_worktrees: false,
+          wake_cooldown_minutes: 0,
+          agents: { 'codex:qa': { wake: true } },
+          runtimes: { codex: { command: process.execPath, args: [script] } },
+        },
+      }),
+      freeMem: () => 64 * 2 ** 30,
+      sandboxOwned: async () => {
+        calls += 1;
+        await gate;
+        return [];
+      },
+    });
+    sups.push(sup);
+    const held = (): string | null => sup.blocker('codex:qa', 'test');
+    const started = (): boolean => sup.runs().some((r) => r.task === next);
+
+    // The hold exists as soon as swarmupd is constructed, before its timed first tick.
+    expect(held()).toMatch(/swarmupd repairs what Codex sessions left/);
+    expect(() => sup.launch({ agent: 'codex:qa' })).toThrow(/swarmupd repairs what Codex sessions/);
+    await sup.tick();
+    expect(calls).toBe(1);
+    expect(started()).toBe(false);
+    expect(sup.waits().find((w) => w.task === `test/${next}`)?.reason).toMatch(
+      /codex:qa: swarmupd repairs/,
+    );
+
+    release();
+    await until(() => held() === null);
+    await sup.tick();
+    expect(started()).toBe(true);
+  }, 60_000);
+
   it('no Codex run starts between the end of a Codex run and the end of its repair', async () => {
     const s = store();
     // A Codex session that ends at once.
@@ -375,19 +424,21 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
       freeMem: () => 64 * 2 ** 30,
       sandboxOwned: async () => {
         calls += 1;
-        await gate;
+        if (calls > 1) await gate;
         return [];
       },
     });
     sups.push(sup);
     const held = (): string | null => sup.blocker('codex:qa', 'test');
+    await sup.repairStores();
+    expect(calls).toBe(1);
     expect(held()).toBeNull();
 
     sup.launch({ agent: 'codex:qa' });
     await until(() => sup.runs({ live: true }).length === 0);
     // From the end of the process: in its wrap-up, then in the repair the wrap-up starts.
     expect(held()).toMatch(/swarmupd repairs .* Codex runs start after that/);
-    await until(() => calls === 1);
+    await until(() => calls === 2);
     expect(held()).toMatch(/swarmupd repairs what Codex sessions left/);
     expect(() => sup.launch({ agent: 'codex:qa' })).toThrow(/swarmupd repairs what Codex sessions/);
     // Other providers and the helpers of a live Codex run are not held.

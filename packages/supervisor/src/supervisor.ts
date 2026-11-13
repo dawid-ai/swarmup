@@ -764,7 +764,8 @@ export class Supervisor extends EventEmitter {
   private lister?: ProcLister;
   private readonly listerOpt?: ProcLister;
   private readonly sandboxOwned?: SandboxLister;
-  /** The store repair under way, and whether a run asked for another one meanwhile. */
+  /** A due store repair not started yet, the repair under way, and a request for another one. */
+  private repairPending = false;
   private repairing?: Promise<void>;
   private repairAgain = false;
   /** Process work runs one step at a time, so two snapshots never write one ledger at once. */
@@ -842,6 +843,9 @@ export class Supervisor extends EventEmitter {
     this.now = opts.now ?? Date.now;
     this.listerOpt = opts.procs;
     this.sandboxOwned = opts.sandboxOwned;
+    // The API accepts launches before the first timed tick. Hold Codex from construction until
+    // that tick has repaired pre-existing sandbox-owned entries (AO-0287).
+    this.repairPending = Boolean(this.sandboxOwned && this.cfg.repair_stores);
     this.freeMem = opts.freeMem ?? freemem;
     this.build = opts.build;
     this.version = opts.version;
@@ -865,6 +869,7 @@ export class Supervisor extends EventEmitter {
   reloadConfig(): void {
     const user = readUserConfig(this.env);
     const cfg = opsdConfig(user);
+    const repairWasOn = this.cfg.repair_stores;
     // Resuming swarmupd or a runtime in Settings tries a stopped or signed-out runtime again at once
     // (AO-0150, AO-0154).
     for (const p of new Set([...this.backoff.keys(), ...Object.keys(this.signIn)])) {
@@ -878,6 +883,10 @@ export class Supervisor extends EventEmitter {
     }
     this.user = user;
     this.cfg = { ...cfg, port: this.cfg.port, tick_seconds: this.cfg.tick_seconds };
+    // Turning the repair back on needs a pass before another Codex launch, just like startup.
+    if (this.sandboxOwned && this.cfg.repair_stores && !repairWasOn && !this.repairing) {
+      this.repairPending = true;
+    }
   }
 
   /** Where swarmupd reads its user config. */
@@ -1365,6 +1374,9 @@ export class Supervisor extends EventEmitter {
   private housekeepingTick(): void {
     if (this.stopping || this.housekeeping) return;
     if (this.housekeptAt && this.now() - this.housekeptAt < HOUSEKEEPING_MS) return;
+    // Mark the repair before checking whether git work delays the sweep. `blocker` then holds
+    // Codex launches until a later tick can start and finish it.
+    if (this.sandboxOwned && this.config.repair_stores) this.repairPending = true;
     // Git work of a merge or a new worktree comes first: on Windows each extra git process slows
     // theirs, and a merge step has a timeout. The sweep waits for a tick with neither.
     if (this.merging || this.mergePlan || this.makingWorktrees.size > 0) return;
@@ -1379,9 +1391,11 @@ export class Supervisor extends EventEmitter {
     if (this.housekeeping) return this.housekeeping;
     this.housekeptAt = this.now();
     const sweep = (async () => {
+      // Repair first: a due sweep is marked before launch planning, and this starts its hold
+      // synchronously before the rest of housekeeping yields.
+      await this.repairStores();
       if (this.config.reclaim_worktrees) await this.reclaimWorktrees();
       this.safe(() => this.pruneScratch());
-      await this.repairStores();
     })()
       .catch((err: unknown) => {
         this.emit('warn', `housekeeping failed: ${String(err)}`);
@@ -1828,6 +1842,7 @@ export class Supervisor extends EventEmitter {
     if (!this.sandboxOwned || !this.config.repair_stores || this.stopping) {
       return Promise.resolve();
     }
+    this.repairPending = false;
     if (this.repairing) {
       this.repairAgain = true;
       return this.repairing;
@@ -1865,7 +1880,7 @@ export class Supervisor extends EventEmitter {
         'Codex runs start after that'
       );
     }
-    return this.repairing
+    return this.repairPending || this.repairing
       ? 'swarmupd repairs what Codex sessions left in the task stores; Codex runs start after that'
       : null;
   }
@@ -3978,6 +3993,9 @@ export class Supervisor extends EventEmitter {
       if (this.config.sync) await this.syncRoots();
       // Before the wake plan, so a build swarmupd starts again holds its checkout from this tick.
       await this.mergeTick();
+      // Before every launch-producing path. It marks a due repair even when git work delays the
+      // sweep, and starts the repair hold before schedules, chat, wake or API work can race it.
+      this.housekeepingTick();
       // After the merge step, which may move a checkout; the rest of the tick runs no await, so
       // the states hold for its launches.
       const states = await this.readCheckouts();
@@ -4002,7 +4020,6 @@ export class Supervisor extends EventEmitter {
         this.tickStates = null;
       }
       this.safe(() => this.notifyTick());
-      this.housekeepingTick();
       this.emit('tick');
     } finally {
       this.ticks++;
