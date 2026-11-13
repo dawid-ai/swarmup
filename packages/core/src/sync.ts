@@ -1,12 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { UserConfig } from './config.js';
 import { isStoreDirName, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME, ROOT_DIR_NAMES } from './config.js';
@@ -116,7 +109,7 @@ const PUSH_ATTEMPTS = 3;
 
 function readStamp(root: Root): SyncStamp {
   try {
-    return JSON.parse(readFileSync(join(root.opsDir, 'sync.json'), 'utf8')) as SyncStamp;
+    return JSON.parse(root.readLocal(join(root.opsDir, 'sync.json'))) as SyncStamp;
   } catch {
     return {};
   }
@@ -341,7 +334,7 @@ const MIRRORED = 'mirrored.json';
 
 export function readMirrored(root: Root): Set<string> {
   try {
-    const raw = JSON.parse(readFileSync(join(root.opsDir, MIRRORED), 'utf8')) as unknown;
+    const raw = JSON.parse(root.readLocal(join(root.opsDir, MIRRORED))) as unknown;
     return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []);
   } catch {
     return new Set();
@@ -349,7 +342,7 @@ export function readMirrored(root: Root): Set<string> {
 }
 
 export function writeMirrored(root: Root, paths: Set<string>): void {
-  root.writeAtomic(join(root.opsDir, MIRRORED), JSON.stringify([...paths].sort()));
+  root.writeLocal(join(root.opsDir, MIRRORED), JSON.stringify([...paths].sort()));
 }
 
 /**
@@ -768,7 +761,7 @@ function* syncSteps(
   result.lost = lostClaims(touched.values());
   // Copied-in files stay pinned until the upstream has them.
   if (upstream) yield* pruneMirrored(root, top);
-  root.writeAtomic(join(root.opsDir, 'sync.json'), JSON.stringify(stamp));
+  root.writeLocal(join(root.opsDir, 'sync.json'), JSON.stringify(stamp));
   return result;
 }
 

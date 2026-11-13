@@ -377,6 +377,8 @@ claim. Across machines, **the claim pushed first wins**:
    records the owner's notes without renewing the claim, and `--force` overrides the check. A
    claim made without a run belongs to no run until swarmupd binds it to the run it launches on
    it. swarmupd renews and releases as the run, so it never touches a claim another run took over.
+   When Windows refuses to replace a file in `.ops` (one made by an earlier sandboxed session), the
+   new content goes to a spare file next to it, `<name>.<ulid>.json`, and the newest of them counts.
 4. `swarmup sync` prints each lost claim. Under `coordinated` sync, `swarmup claim` reports it at once:
    "lost the claim on X to Y; pick other work". Do not release a lost claim; the task belongs to
    the winner. swarmupd stops a live run whose claim lost (reason `lost-claim`) and writes no release.

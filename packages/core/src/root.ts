@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import type { RootConfig } from './config.js';
 import { ID_BLOCK_SIZE, isMirrorDir, readRootConfig } from './config.js';
 import { fold } from './fold.js';
@@ -100,6 +100,12 @@ function eventNames(taskDir: string): string {
   } catch {
     return '';
   }
+}
+
+/** {@link fileStamp} with the file's name, for a file that {@link Root.localFile} picks. */
+function localStamp(path: string): string {
+  const stamp = fileStamp(path);
+  return stamp === '' ? '' : `${basename(path)}:${stamp}`;
 }
 
 function mtime(path: string): number {
@@ -366,7 +372,8 @@ export class Root {
    */
   states(): TaskState[] {
     const indexFile = join(this.opsDir, 'index.json');
-    const stamp = fileStamp(indexFile);
+    // The cache file is `index.json`, or its spare after a refused replacement.
+    const stamp = localStamp(this.localFile(indexFile));
     const kept = memIndexes.get(indexFile);
     let index: IndexFile = { v: INDEX_VERSION, tasks: {} };
     let racy: MemIndex['racy'] = new Map();
@@ -375,7 +382,7 @@ export class Root {
       racy = kept.racy;
     } else {
       try {
-        const raw = JSON.parse(readFileSync(indexFile, 'utf8')) as IndexFile;
+        const raw = JSON.parse(this.readLocal(indexFile)) as IndexFile;
         // States folded under other project settings name the old projects: refold them all.
         if (raw.v === INDEX_VERSION && raw.p === this.projectStamp) {
           index = raw;
@@ -429,8 +436,7 @@ export class Root {
     if (dirty || Object.keys(index.tasks).length !== Object.keys(next).length) {
       try {
         const file: IndexFile = { v: INDEX_VERSION, p: this.projectStamp, tasks: next };
-        this.writeAtomic(indexFile, JSON.stringify(file));
-        written = fileStamp(indexFile);
+        written = localStamp(this.writeLocal(indexFile, JSON.stringify(file)));
       } catch {
         // The cache is optional; a failed write costs speed, not correctness.
         written = '';
@@ -459,7 +465,7 @@ export class Root {
   /** This clone's record of its claim on the task: the claim token and the run that took it. */
   claimRecord(task: string): { token?: string; run?: string } {
     try {
-      return JSON.parse(readFileSync(this.claimFile(task), 'utf8')) as {
+      return JSON.parse(this.readLocal(this.claimFile(task))) as {
         token?: string;
         run?: string;
       };
@@ -473,8 +479,7 @@ export class Root {
    * the supervised run that claimed, so two live runs with one agent id stay apart.
    */
   rememberClaim(task: string, token: string, run?: string): void {
-    mkdirSync(join(this.opsDir, 'claims'), { recursive: true });
-    this.writeAtomic(this.claimFile(task), JSON.stringify(run ? { token, run } : { token }));
+    this.writeLocal(this.claimFile(task), JSON.stringify(run ? { token, run } : { token }));
   }
 
   private claimFile(task: string): string {
@@ -483,11 +488,11 @@ export class Root {
 
   /**
    * The newest event the actor has read: the highest `last` of its marker files. There is more
-   * than one file only after a write could not replace `<actor>.json`; see {@link writeMarker}.
+   * than one file only after a write could not replace `<actor>.json`; see {@link writeLocal}.
    */
   readMarker(actor: string): string {
     let last = '';
-    for (const file of this.markerFiles(actor)) {
+    for (const file of this.localFiles(this.markerFile(actor))) {
       try {
         const raw = JSON.parse(readFileSync(file, 'utf8')) as { last?: unknown };
         if (typeof raw.last === 'string' && raw.last > last) last = raw.last;
@@ -498,22 +503,32 @@ export class Root {
     return last;
   }
 
-  /**
-   * Records `last` as read. Callers only move the marker forward.
-   *
-   * Windows can refuse to replace `<actor>.json` for good: a sandboxed agent (the Codex sandbox
-   * user) made the file, so a later sandbox session has no right to delete or overwrite it,
-   * while it may still add files to the folder (AO-0280). The marker then goes to a spare file,
-   * `<actor>.<ulid>.json`, and {@link readMarker} takes the highest of them all.
-   */
+  /** Records `last` as read. Callers only move the marker forward. */
   writeMarker(actor: string, last: string): void {
-    const dir = join(this.opsDir, 'read');
-    mkdirSync(dir, { recursive: true });
-    const [main, ...spares] = this.markerFiles(actor) as [string, ...string[]];
-    const content = JSON.stringify({ last });
+    this.writeLocal(this.markerFile(actor), JSON.stringify({ last }));
+  }
+
+  private markerFile(actor: string): string {
+    return join(this.opsDir, 'read', `${actorSlug(actor)}.json`);
+  }
+
+  /**
+   * Writes a file of this clone's own state (under `.ops`, never committed) that each write
+   * replaces, and returns the file that took the content.
+   *
+   * Windows can refuse to replace such a file for good: a sandboxed agent (the Codex sandbox
+   * user) made it, so a later sandbox session has no right to delete or overwrite it, while it
+   * may still add files to the folder (AO-0280, AO-0283). The content then goes to a spare file
+   * next to it, `<name>.<ulid>.<ext>`, and {@link localFile} names the newest of them all. A
+   * later write that can replace the file removes the spares.
+   */
+  writeLocal(path: string, content: string): string {
+    mkdirSync(dirname(path), { recursive: true });
+    const [main, ...spares] = this.localFiles(path) as [string, ...string[]];
     let written = main;
     try {
-      this.writeAtomic(main, content);
+      // A spare says the replacement was refused before, so this try does not wait again.
+      this.writeAtomic(main, content, spares.length > 0 ? 0 : RENAME_RETRIES);
     } catch (err) {
       if (!replaceRefused(err)) throw err;
       // The first rename has waited for a scanner already, so the spares get one try each.
@@ -526,10 +541,11 @@ export class Root {
           return false;
         }
       });
-      written = spare ?? join(dir, `${actorSlug(actor)}.${ulid()}.json`);
+      written = spare ?? sparePath(path);
       if (!spare) this.writeAtomic(written, content);
     }
-    // The other spares hold older markers. One that cannot be removed changes nothing.
+    // The other spares hold older content. One that cannot be removed is older than the file
+    // just written, so it changes nothing.
     for (const file of spares) {
       if (file === written) continue;
       try {
@@ -538,31 +554,69 @@ export class Root {
         // Not ours to delete.
       }
     }
+    return written;
   }
 
-  /** The actor's marker files: `<actor>.json` first, then the spares that exist, oldest first. */
-  private markerFiles(actor: string): string[] {
-    const dir = join(this.opsDir, 'read');
-    const slug = actorSlug(actor);
+  /**
+   * The file that holds what {@link writeLocal} wrote last for `path`: `path` itself, or its
+   * spare when that one was written later.
+   */
+  localFile(path: string): string {
+    const files = this.localFiles(path);
+    if (files.length === 1) return path;
+    let newest = path;
+    let at = -1;
+    // A spare is written after the file it stands in for, so it wins when the times are equal.
+    for (const file of files) {
+      const m = mtime(file);
+      if (m > 0 && m >= at) [newest, at] = [file, m];
+    }
+    return newest;
+  }
+
+  /** The text {@link writeLocal} wrote last for `path`. Throws when there is none. */
+  readLocal(path: string): string {
+    for (let attempt = 0; ; attempt++) {
+      const file = this.localFile(path);
+      try {
+        return readFileSync(file, 'utf8');
+      } catch (err) {
+        // A writer that could replace `path` again has just removed this spare: look again.
+        const gone = (err as NodeJS.ErrnoException).code === 'ENOENT' && file !== path;
+        if (!gone || attempt >= 2) throw err;
+      }
+    }
+  }
+
+  /** `path` first, then its spare files that exist, oldest first. */
+  private localFiles(path: string): string[] {
+    const dir = dirname(path);
+    const ext = extname(path);
+    const stem = basename(path, ext);
     let names: string[] = [];
     try {
       names = readdirSync(dir);
     } catch {
-      // No marker yet.
+      // Nothing written yet.
     }
     const spares = names.filter((name) => {
-      if (!name.startsWith(`${slug}.`) || !name.endsWith('.json')) return false;
-      return SPARE_ID.test(name.slice(slug.length + 1, -'.json'.length));
+      if (!name.startsWith(`${stem}.`) || !name.endsWith(ext)) return false;
+      return SPARE_ID.test(name.slice(stem.length + 1, name.length - ext.length));
     });
-    return [`${slug}.json`, ...spares.sort()].map((name) => join(dir, name));
+    return [path, ...spares.sort().map((name) => join(dir, name))];
   }
 }
 
 /** How often a rename is tried again while Windows holds the source or target open. */
 const RENAME_RETRIES = 20;
 
-/** The ULID in the name of a spare marker file, `<actor>.<ulid>.json`. */
+/** The ULID in the name of a spare file, `<name>.<ulid>.<ext>`; see {@link Root.writeLocal}. */
 const SPARE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+function sparePath(path: string): string {
+  const ext = extname(path);
+  return join(dirname(path), `${basename(path, ext)}.${ulid()}${ext}`);
+}
 
 /** Whether the system refused to replace a file: it is held open, or the rights are missing. */
 function replaceRefused(err: unknown): boolean {

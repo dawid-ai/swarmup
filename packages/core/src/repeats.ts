@@ -388,7 +388,7 @@ export interface RepeatTask {
  */
 export function readRepeatCache(root: Root): Record<string, RepeatTask[]> {
   try {
-    return JSON.parse(readFileSync(join(root.opsDir, 'repeats.json'), 'utf8')) as Record<
+    return JSON.parse(root.readLocal(join(root.opsDir, 'repeats.json'))) as Record<
       string,
       RepeatTask[]
     >;
@@ -399,7 +399,7 @@ export function readRepeatCache(root: Root): Record<string, RepeatTask[]> {
 
 export function writeRepeatCache(root: Root, cache: Record<string, RepeatTask[]>): void {
   try {
-    root.writeAtomic(join(root.opsDir, 'repeats.json'), JSON.stringify(cache));
+    root.writeLocal(join(root.opsDir, 'repeats.json'), JSON.stringify(cache));
   } catch {
     // The cache is optional; without it the next check reads the archive again.
   }

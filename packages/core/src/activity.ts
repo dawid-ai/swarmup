@@ -276,10 +276,11 @@ function load(root: Root): RootIndex {
   let data: IndexFile = { v: INDEX_VERSION, tasks: {}, channels: {} };
   let written = 0;
   try {
-    const raw = JSON.parse(readFileSync(file, 'utf8')) as IndexFile;
+    const current = root.localFile(file);
+    const raw = JSON.parse(readFileSync(current, 'utf8')) as IndexFile;
     if (raw.v === INDEX_VERSION && raw.tasks && raw.channels) {
       data = raw;
-      written = mtime(file);
+      written = mtime(current);
     }
   } catch {
     // No index yet, or a damaged one: rebuild from the files.
@@ -478,7 +479,7 @@ function refresh(root: Root): RootIndex {
   }
   if (idx.dirty && now - idx.written >= PERSIST_MS) {
     try {
-      root.writeAtomic(indexFile(root), JSON.stringify(idx.data));
+      root.writeLocal(indexFile(root), JSON.stringify(idx.data));
       idx.dirty = false;
       idx.written = now;
     } catch {

@@ -522,7 +522,7 @@ function* mirrorFenced(
   const baseFile = join(project.opsDir, `mirror-base.json`);
   let bases: Record<string, Base> = {};
   try {
-    bases = JSON.parse(readFileSync(baseFile, 'utf8')) as Record<string, Base>;
+    bases = JSON.parse(project.readLocal(baseFile)) as Record<string, Base>;
   } catch {
     // First mirror on this machine.
   }
@@ -533,7 +533,7 @@ function* mirrorFenced(
     ...copy.listArchivedIds(),
   ]);
   for (const id of [...ids].sort()) yield* mirrorTask(id, p, m, bases, now, notes);
-  project.writeAtomic(baseFile, JSON.stringify(bases));
+  project.writeLocal(baseFile, JSON.stringify(bases));
 
   unionDir(p, m, 'channels');
   unionDir(p, m, 'kb');
@@ -544,12 +544,12 @@ function* mirrorFenced(
   const repeatBaseFile = join(project.opsDir, 'mirror-repeats.json');
   let repeatBase: Record<string, string> = {};
   try {
-    repeatBase = JSON.parse(readFileSync(repeatBaseFile, 'utf8')) as Record<string, string>;
+    repeatBase = JSON.parse(project.readLocal(repeatBaseFile)) as Record<string, string>;
   } catch {
     // First mirror of repeats on this machine.
   }
   mirrorRepeats(p, m, repeatBase, notes);
-  project.writeAtomic(repeatBaseFile, JSON.stringify(repeatBase));
+  project.writeLocal(repeatBaseFile, JSON.stringify(repeatBase));
 
   for (const s of [p, m]) {
     if (s.keptChanged) writeMirrored(s.owner, s.kept);
