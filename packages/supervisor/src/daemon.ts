@@ -32,6 +32,7 @@ import { opsdConfig, stateDir } from './config.js';
 import { migrateStateDir } from './migrate.js';
 import { seedOnStart } from './seed.js';
 import { isAlive, PROC_START_TIMEOUT_MS, processStartSync } from './proc.js';
+import { listSandboxOwned } from './store-repair.js';
 import { Supervisor } from './supervisor.js';
 
 export const OPSD_VERSION = '0.3.0-beta.3';
@@ -401,6 +402,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
     build: buildStamp(),
     version: OPSD_VERSION,
     self: { dir: dirname(fileURLToPath(import.meta.url)), stamp: buildStamp },
+    sandboxOwned: listSandboxOwned,
   });
   const token = randomBytes(24).toString('hex');
   let stopping = false;
@@ -442,6 +444,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   sup.on('warn', (m: string) => log(`${stamp()} warn ${m}`));
   sup.on('merge', (m: string) => log(`${stamp()} merge ${m}`));
   sup.on('worktree', (m: string) => log(`${stamp()} worktree ${m}`));
+  sup.on('repair', (m: string) => log(`${stamp()} repair ${m}`));
   const syncLog = new SyncLog();
   sup.on('sync', (s: SyncLogEntry) => {
     const line = syncLog.line(s);

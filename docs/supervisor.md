@@ -266,6 +266,31 @@ several review rounds.
   worktree. It lists them when the run starts and again when it ends. The `run-end` event names
   each new file or folder; swarmupd changes nothing there, since another run or a person may have
   made them.
+- **Store repair after Codex sandbox sessions (AO-0287, Windows).** A sandboxed Codex run works
+  as the user `CodexSandboxOffline`, under a token limited to SIDs of its own session. Codex adds
+  those SIDs to the store folder for each session, and Windows passes them down only to the files
+  and folders you own. What a sandbox session made keeps the ACL it was made with, so a later
+  session can read it but cannot replace it, delete it or add a file to it: `swarmup` in that
+  session fails with `EPERM` on an edited `task.md`, a new event in a task folder an earlier
+  session made, a `git pull` that changes such a file, or a lock a crashed session left. You are
+  not the owner either and cannot change that ACL, but you may delete and rename the entry. So
+  swarmupd, which runs as you, lists what a `CodexSandbox*` account owns in each task store (one
+  PowerShell process, about 1 s for 11,000 entries, never inside `.git` or through a link) and
+  makes each entry again under its own name:
+  - A file is copied to `.ops/tmp` and renamed over the original, with the same content and
+    times, under the task's lock when it belongs to a task.
+  - A folder gets a new folder next to it, `.<name>.<ulid>.repair`, which takes everything the old
+    one holds and then its name. For two system calls the folder does not exist. If swarmupd
+    stops mid-move, the next repair finds the `.repair` folder and ends the move.
+  - A lock file in `.ops/locks` is removed when it is stale by the lock's own rule: its process is
+    gone, or it is older than 30 s.
+
+  The repair runs in each housekeeping sweep (every 10 minutes) and after each Codex run ends,
+  under the root's `git` lock, so no sync commits a half-moved folder. Two Codex runs that overlap
+  can still meet a file the other made minutes ago, until the next repair. Set
+  `swarmupd.repair_stores: false` to turn the repair off. Temp files older than an hour in
+  `.ops/tmp` are left in place and named once in the swarmupd log; set
+  `swarmupd.remove_stale_temp: true` to have swarmupd delete them.
 
 ### Processes
 
@@ -558,6 +583,8 @@ swarmupd:
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that
   scratch_days: 7 # how long a run's scratch folder stays after the run
+  repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
+  remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
     claude: { command: claude, model: opus }

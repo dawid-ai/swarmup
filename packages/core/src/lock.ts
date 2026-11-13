@@ -18,6 +18,14 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Whether a lock file may be taken over: its process is gone, or it is older than 30 s. False
+ * for a file that cannot be read.
+ */
+export function lockIsStale(path: string): boolean {
+  return isStale(path);
+}
+
 function isStale(path: string): boolean {
   try {
     const age = Date.now() - statSync(path).mtimeMs;
