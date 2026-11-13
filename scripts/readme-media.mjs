@@ -9,7 +9,7 @@
 //   node scripts/readme-media.mjs --keep          # keep the scratch folders and raw frames
 //   node scripts/readme-media.mjs --size 1600x960 # window size (default 1600x960)
 //
-// Needs `npm run build` and `npm run build:desktop`, and ffmpeg on PATH for the animation.
+// Needs `pnpm run build` and `pnpm run build:desktop`, and ffmpeg on PATH for the animation.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync,

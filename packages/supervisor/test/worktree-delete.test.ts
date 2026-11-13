@@ -1,5 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -52,7 +63,7 @@ function repoWithWorktree(): { top: string; path: string } {
   return { top, path };
 }
 
-/** Puts Electron's `default_app.asar` where `npm ci` puts it in a checkout. */
+/** Puts Electron's `default_app.asar` where the electron package keeps it in a checkout. */
 function addElectronModule(dir: string, asar: string): string {
   const resources = join(dir, 'node_modules', 'electron', 'dist', 'resources');
   mkdirSync(resources, { recursive: true });
@@ -60,6 +71,67 @@ function addElectronModule(dir: string, asar: string): string {
   copyFileSync(asar, copy);
   return copy;
 }
+
+/**
+ * Installs `pkg` in `dir` the way pnpm does with `node-linker=hoisted`: the file in
+ * `node_modules` is a hard link to the one in the store, and a workspace package is a junction
+ * to its folder in the same checkout.
+ */
+function addPnpmInstall(dir: string, storeFile: string): void {
+  mkdirSync(join(dir, 'node_modules', 'pkg'), { recursive: true });
+  linkSync(storeFile, join(dir, 'node_modules', 'pkg', 'index.js'));
+  mkdirSync(join(dir, 'packages', 'core'), { recursive: true });
+  writeFileSync(join(dir, 'packages', 'core', 'package.json'), '{}\n');
+  mkdirSync(join(dir, 'packages', 'cli', 'node_modules', '@swarmup'), { recursive: true });
+  symlinkSync(
+    join(dir, 'packages', 'core'),
+    join(dir, 'packages', 'cli', 'node_modules', '@swarmup', 'core'),
+    'junction',
+  );
+}
+
+/** A store, and a main checkout and a worktree that both install from it. */
+function pnpmCheckouts(): { top: string; path: string; storeFile: string } {
+  const { top, path } = repoWithWorktree();
+  const store = temp();
+  const storeFile = join(store, 'files', '00', 'abc');
+  mkdirSync(dirname(storeFile), { recursive: true });
+  writeFileSync(storeFile, 'module.exports = 1;\n');
+  addPnpmInstall(top, storeFile);
+  addPnpmInstall(path, storeFile);
+  expect(statSync(storeFile).nlink).toBe(3);
+  return { top, path, storeFile };
+}
+
+/** After the worktree went: the store and the main checkout's install are whole. */
+function expectStoreAndCheckoutIntact(top: string, path: string, storeFile: string): void {
+  expect(existsSync(path)).toBe(false);
+  expect(git(top, 'worktree', 'list')).not.toContain('wt-T-0001');
+  expect(readFileSync(storeFile, 'utf8')).toBe('module.exports = 1;\n');
+  expect(statSync(storeFile).nlink).toBe(2);
+  expect(readFileSync(join(top, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe(
+    'module.exports = 1;\n',
+  );
+  expect(existsSync(join(top, 'packages', 'core', 'package.json'))).toBe(true);
+  expect(
+    existsSync(join(top, 'packages', 'cli', 'node_modules', '@swarmup', 'core', 'package.json')),
+  ).toBe(true);
+}
+
+describe('worktree deletion with a pnpm install (AO-0299)', () => {
+  it('leaves the pnpm store and the main checkout intact', async () => {
+    const { top, path, storeFile } = pnpmCheckouts();
+    await deleteWorktree(top, path);
+    expectStoreAndCheckoutIntact(top, path, storeFile);
+  });
+
+  it.skipIf(!ELECTRON)('leaves them intact when swarmupd runs under Electron', async () => {
+    const { top, path, storeFile } = pnpmCheckouts();
+    addElectronModule(path, ELECTRON!.asar);
+    await deleteWorktree(top, path, { host: ELECTRON!.host, timeoutMs: 60_000 });
+    expectStoreAndCheckoutIntact(top, path, storeFile);
+  });
+});
 
 describe('worktree deletion (AO-0244)', () => {
   it.skipIf(!ELECTRON)(

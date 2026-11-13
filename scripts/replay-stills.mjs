@@ -11,7 +11,7 @@
 // `--at` takes fractions of the clip, outro card included. Files are named
 // `<scene>-<source>-<aspect>-<pct>.png`. With `--store`, a scene that asks for `wrapped=1` gets the
 // Wrapped figures from the report of the same window, as in the app. `--to` ends the window
-// (default now). Needs `npm ci` and, for `--store`, `npm run build`.
+// (default now). Needs `pnpm install --frozen-lockfile` and, for `--store`, `pnpm run build`.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

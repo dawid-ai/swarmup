@@ -15,7 +15,7 @@
     "ops": "dist/ops.js"
   },
   "dependencies": {
-    "@swarmup/core": "0.3.0-beta.3",
-    "@swarmup/supervisor": "0.3.0-beta.3"
+    "@swarmup/core": "workspace:*",
+    "@swarmup/supervisor": "workspace:*"
   }
 }

@@ -24,6 +24,7 @@ import type {
 import {
   CommandRunner,
   DEFAULT_INSTALL,
+  DEFAULT_PNPM_INSTALL,
   insideDir,
   installCommands,
   installSteps,
@@ -1027,6 +1028,12 @@ describe('merging approved work', () => {
       ]),
     ).toEqual(['.', 'app/web', 'site']);
     expect(lockfileDirs(['src/main.ts'])).toEqual([]);
+    // A pnpm lockfile counts like npm's (AO-0299).
+    expect(lockfileChanges(['pnpm-lock.yaml', 'pnpm-workspace.yaml', 'a/pnpm-lock.yaml'])).toEqual([
+      'pnpm-lock.yaml',
+      'a/pnpm-lock.yaml',
+    ]);
+    expect(lockfileDirs(['pnpm-lock.yaml', 'package-lock.json'])).toEqual(['.']);
     const top = temp();
     // No lockfile in the checkout: nothing to install unless the config says so.
     expect(installCommands(undefined, top)).toEqual([]);
@@ -1054,6 +1061,16 @@ describe('merging approved work', () => {
       { command: 'node i.mjs', cwd: site, label: 'node i.mjs (in site)' },
     ]);
     expect(installSteps([], nested, ['.', 'site'])).toEqual([]);
+    // A directory with a pnpm lockfile gets pnpm's install, also beside an old npm lockfile,
+    // and no step that installs optional packages by name (AO-0299).
+    writeFileSync(join(site, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+    expect(installCommands(undefined, site)).toEqual([DEFAULT_PNPM_INSTALL]);
+    expect(installSteps(undefined, nested, ['site'])).toEqual([
+      { command: DEFAULT_PNPM_INSTALL, cwd: site, label: `${DEFAULT_PNPM_INSTALL} (in site)` },
+    ]);
+    expect(installCommands(['node i.mjs'], site)).toEqual(['node i.mjs']);
+    // It installs the lockfile as written and never rewrites it in the checkout.
+    expect(DEFAULT_PNPM_INSTALL).toContain('--frozen-lockfile');
     // Never `npm ci`, which deletes node_modules under a running swarmupd or app first.
     expect(DEFAULT_INSTALL).not.toMatch(/\bnpm ci\b/);
     expect(DEFAULT_INSTALL).toContain('--no-save');
@@ -1292,6 +1309,8 @@ describe('merging approved work', () => {
 
   it("reads the registry of a scope from npm's configuration (AO-0229)", () => {
     const dir = temp();
+    // `pnpm run` gives its scripts `npm_config_registry`, and npm takes that over an `.npmrc`.
+    vi.stubEnv('npm_config_registry', undefined);
     writeFileSync(join(dir, 'package.json'), '{"name":"app"}');
     writeFileSync(
       join(dir, '.npmrc'),
@@ -1320,6 +1339,7 @@ describe('merging approved work', () => {
     expect(missingOptionalPackages(dir, here)).toEqual(['pkg@1.0.0']);
     write('example.com');
     expect(missingOptionalPackages(dir, here)).toEqual([]);
+    vi.unstubAllEnvs();
   }, 60_000);
 
   it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {

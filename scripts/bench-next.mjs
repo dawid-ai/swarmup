@@ -1,6 +1,6 @@
 // Times `swarmup next` as a fresh process against a root with many tasks (phase 1 target: < 200 ms).
 //   node scripts/bench-next.mjs [TASKS] [RUNS]
-// Needs a build (`npm run build`). Uses a temp folder and removes it afterwards.
+// Needs a build (`pnpm run build`). Uses a temp folder and removes it afterwards.
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

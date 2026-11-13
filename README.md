@@ -60,16 +60,17 @@ To run agents you need their CLIs installed and signed in, such as
 
 ## Run from source
 
-Requirements: Node.js 22 or later, git.
+Requirements: Node.js 22 or later, git, and [pnpm](https://pnpm.io/installation) 9 or later
+(`corepack enable pnpm` turns on the copy that ships with Node.js).
 
 ```sh
-npm install
-npm run build
-npm run desktop     # builds the UI and opens the app
-npm run swarmup -- help # the CLI
+pnpm install
+pnpm run build
+pnpm run desktop    # builds the UI and opens the app
+pnpm swarmup help   # the CLI
 ```
 
-`npm run dist` builds the Windows installer into `packages/desktop/release/dist/`.
+`pnpm run dist` builds the Windows installer into `packages/desktop/release/dist/`.
 
 ## Quick start with the CLI
 
@@ -161,12 +162,12 @@ same way.
 ## Development
 
 ```sh
-npm run build          # tsc -b
-npm test               # vitest
-npm run lint           # eslint and prettier --check
-npm run typecheck
-npm run smoke:desktop  # renders every desktop view offscreen against a scratch root
-npm run leaks          # scans for tokens, keys and webhook URLs
+pnpm run build          # tsc -b
+pnpm test               # vitest
+pnpm run lint           # eslint and prettier --check
+pnpm run typecheck
+pnpm run smoke:desktop  # renders every desktop view offscreen against a scratch root
+pnpm run leaks          # scans for tokens, keys and webhook URLs
 ```
 
 The website, swarmup.tech, lives in [dawid-ai/swarmup-web](https://github.com/dawid-ai/swarmup-web).

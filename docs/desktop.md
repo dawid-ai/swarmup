@@ -31,8 +31,8 @@ build run from a checkout never updates itself.
 From the engine checkout:
 
 ```bash
-npm install
-npm run desktop   # builds the core, swarmupd and the UI, then opens the app
+pnpm install
+pnpm run desktop   # builds the core, swarmupd and the UI, then opens the app
 ```
 
 On the first start, when the user config has no `me`, the app asks for your id (default
@@ -267,14 +267,14 @@ creates the proposed project.
 
 ## Smoke check
 
-`npm run smoke:desktop` (after `npm run build:desktop`) renders every view and the **Add
+`pnpm run smoke:desktop` (after `pnpm run build:desktop`) renders every view and the **Add
 project** proposal offscreen against a scratch data root and fails when a view logs an error, a swarmupd call fails, or the allowlist refuses
 a call. It stops the scratch swarmupd it started. The release workflow runs it on Linux under
 `xvfb-run` for every `v*` tag.
 
 ## Record check
 
-`npm run check:record` records 30 s clips of the **Events** scene in 16:9, 1:1 and 9:16 with
+`pnpm run check:record` records 30 s clips of the **Events** scene in 16:9, 1:1 and 9:16 with
 Electron's own H.264 encoder, under the app's page CSP. It fails unless each MP4 has 1800 frames
 at 60 fps, the right size and a 30 s duration, plays to the end in Chromium's video player, and
 shows a drawn, moving picture; when `ffprobe` is on `PATH`, it counts the frames too. Pass

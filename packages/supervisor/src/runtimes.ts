@@ -13,6 +13,7 @@ export const DEFAULT_CLAUDE_TOOLS = [
   'Bash(git *)',
   'Bash(npm *)',
   'Bash(npx *)',
+  'Bash(pnpm *)',
   'Bash(node *)',
   'Bash(gh pr *)',
   'Bash(gh issue view *)',

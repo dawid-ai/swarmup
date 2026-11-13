@@ -1,5 +1,5 @@
 // Renders every desktop view offscreen against a scratch data root and fails when a view logs an
-// error, a swarmupd call fails, or the allowlist refuses a call. Run after `npm run build:desktop`.
+// error, a swarmupd call fails, or the allowlist refuses a call. Run after `pnpm run build:desktop`.
 // The release workflow runs it under xvfb-run; locally: `node scripts/desktop-smoke.mjs`.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -187,12 +187,12 @@ const views = [
   'settings:cleanup',
 ];
 
-// --packaged: the unpacked installer build (npm run dist), with its bundled swarmupd and swarmup command,
+// --packaged: the unpacked installer build (pnpm run dist), with its bundled swarmupd and swarmup command,
 // and a user-data folder of its own so nothing lands in the person's app data.
 const packaged = process.argv.includes('--packaged');
 const exe = join(top, 'packages', 'desktop', 'release', 'dist', 'win-unpacked', 'SwarmUp.exe');
 if (packaged && !existsSync(exe)) {
-  console.error(`no packaged build at ${exe}: run npm run dist first`);
+  console.error(`no packaged build at ${exe}: run pnpm run dist first`);
   process.exit(1);
 }
 const electronArgs = packaged

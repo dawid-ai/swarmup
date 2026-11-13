@@ -24,7 +24,7 @@
 // the brand kit: 2.3 seconds of motion, then a hold to 4 seconds, which the GIF trims. Seconds in
 // the other options count from the end of the sting.
 //
-// Needs `npm run build` and `npm run build:desktop`, and ffmpeg on PATH.
+// Needs `pnpm run build` and `pnpm run build:desktop`, and ffmpeg on PATH.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
