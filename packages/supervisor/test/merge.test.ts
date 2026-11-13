@@ -656,6 +656,64 @@ describe('merging approved work', () => {
     expect(git(s.repo, 'show', 'fake/t-0001-r1-merge:extra.txt')).toBe('staged');
   });
 
+  it('merges nothing when the worktree stays changed with nothing in it to commit (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    // A staged version of `code.txt`, and the file changed back: the files equal the commit, so
+    // the commit of what the run left has nothing to hold, and git still reports the change.
+    writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
+    git(wt, 'add', 'code.txt');
+    writeFileSync(join(wt, 'code.txt'), 'two\n');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 uncommitted change(s) (`code.txt`)');
+    expect(e.body).toContain('found nothing in them to commit');
+    // The base stays, no branch is made, and the staged version stays in the index.
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(git(wt, 'show', ':code.txt')).toBe('two\nthree');
+  });
+
+  it('merges nothing when the worktree is still changed after the commit of what the run left (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
+    // A file appears after the commit and its restore, before the worktree is read again.
+    const real = Checkout.prototype.commitLeftovers;
+    const spy = vi.spyOn(Checkout.prototype, 'commitLeftovers').mockImplementation(async function (
+      this: Checkout,
+      ...a
+    ) {
+      const c = await real.apply(this, a);
+      writeFileSync(join(wt, 'late.txt'), 'late\n');
+      return c;
+    });
+    try {
+      await s.merged();
+    } finally {
+      spy.mockRestore();
+    }
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
+    expect(e.body).toContain('1 file(s) there still show as changed after the commit (`late.txt`)');
+    expect(e.body).toContain('on branch `fake/t-0001-r1-merge`');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(text(join(wt, 'late.txt'))).toBe('late\n');
+  });
+
   /** Makes git fail in the worktree `wt` (a broken index); the returned function repairs it. */
   const breakIndex = (wt: string): (() => void) => {
     const index = join(git(wt, 'rev-parse', '--absolute-git-dir'), 'index');
