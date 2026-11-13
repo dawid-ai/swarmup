@@ -256,6 +256,17 @@ export interface OpsdConfig {
   reclaim_after_minutes: number;
   /** Days a run's scratch folder is kept after the run ends. */
   scratch_days: number;
+  /**
+   * On Windows, make the files and folders a Codex sandbox session left in a task store again
+   * under the signed-in user, and remove the stale locks it left, so the next session can write
+   * them (AO-0287). On unless set to false.
+   */
+  repair_stores: boolean;
+  /**
+   * Delete temp files older than an hour from each root's `.ops/tmp`. Off unless set to true:
+   * swarmupd then only names them in its log.
+   */
+  remove_stale_temp: boolean;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -360,6 +371,8 @@ export function opsdConfig(
     reclaim_worktrees: raw.reclaim_worktrees ?? true,
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
     scratch_days: raw.scratch_days ?? 7,
+    repair_stores: raw.repair_stores ?? true,
+    remove_stale_temp: raw.remove_stale_temp ?? false,
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -380,6 +393,12 @@ export function opsdConfig(
   }
   if (typeof cfg.reclaim_worktrees !== 'boolean') {
     throw new OpsError('swarmupd.reclaim_worktrees: use true or false', 2);
+  }
+  if (typeof cfg.repair_stores !== 'boolean') {
+    throw new OpsError('swarmupd.repair_stores: use true or false', 2);
+  }
+  if (typeof cfg.remove_stale_temp !== 'boolean') {
+    throw new OpsError('swarmupd.remove_stale_temp: use true or false', 2);
   }
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');
   amount(cfg.scratch_days, 'scratch_days');

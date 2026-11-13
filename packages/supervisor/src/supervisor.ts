@@ -141,6 +141,7 @@ import {
   worktreeAt,
   worktreeBranch,
 } from './worktree.js';
+import { repairRoot, type SandboxLister, staleTempFiles } from './store-repair.js';
 import { gitAsync } from './git.js';
 import type { SignInAnswer } from './signin.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
@@ -235,6 +236,11 @@ export interface SupervisorOptions {
    * defaults to `MERGE_GIT_TIMEOUT_MS`.
    */
   mergeGitTimeoutMs?: MergeGitTimeout;
+  /**
+   * Lists what a Codex sandbox user owns in the task stores, for the store repair (AO-0287).
+   * Without it swarmupd repairs nothing; `startDaemon` passes `listSandboxOwned`.
+   */
+  sandboxOwned?: SandboxLister;
 }
 
 /** Kill rounds for what an ended run left behind before swarmupd gives up and warns. */
@@ -757,6 +763,10 @@ export class Supervisor extends EventEmitter {
   private ticking = false;
   private lister?: ProcLister;
   private readonly listerOpt?: ProcLister;
+  private readonly sandboxOwned?: SandboxLister;
+  /** The store repair under way, and whether a run asked for another one meanwhile. */
+  private repairing?: Promise<void>;
+  private repairAgain = false;
   /** Process work runs one step at a time, so two snapshots never write one ledger at once. */
   private procChain: Promise<void> = Promise.resolve();
   /**
@@ -831,6 +841,7 @@ export class Supervisor extends EventEmitter {
     this.store = new RunStore(opts.stateDir ?? stateDir(this.env));
     this.now = opts.now ?? Date.now;
     this.listerOpt = opts.procs;
+    this.sandboxOwned = opts.sandboxOwned;
     this.freeMem = opts.freeMem ?? freemem;
     this.build = opts.build;
     this.version = opts.version;
@@ -1367,6 +1378,7 @@ export class Supervisor extends EventEmitter {
     const sweep = (async () => {
       if (this.config.reclaim_worktrees) await this.reclaimWorktrees();
       this.safe(() => this.pruneScratch());
+      await this.repairStores();
     })()
       .catch((err: unknown) => {
         this.emit('warn', `housekeeping failed: ${String(err)}`);
@@ -1796,6 +1808,94 @@ export class Supervisor extends EventEmitter {
       } catch (err) {
         this.emit('warn', `cannot remove the scratch folder ${path}: ${String(err)}`);
       }
+    }
+  }
+
+  /**
+   * Repairs each task store after Codex sandbox sessions (AO-0287, see `store-repair.ts`): makes
+   * the files and folders the sandbox user owns again under the signed-in user, and removes the
+   * stale locks a crashed session left, so the next session can write them. Runs in each
+   * housekeeping sweep and after each Codex run ends; a call during a repair gets one more
+   * repair after it, since the listing under way may have passed what the caller's run left.
+   *
+   * Stale temp files in `.ops/tmp` are named in the log, and deleted only when
+   * `swarmupd.remove_stale_temp` is on. Each failure is logged once; the next repair tries again.
+   */
+  repairStores(): Promise<void> {
+    if (!this.sandboxOwned || !this.config.repair_stores || this.stopping) {
+      return Promise.resolve();
+    }
+    if (this.repairing) {
+      this.repairAgain = true;
+      return this.repairing;
+    }
+    const list = this.sandboxOwned;
+    const repair = (async () => {
+      do {
+        this.repairAgain = false;
+        await this.repairStoresOnce(list);
+      } while (this.repairAgain && !this.stopping);
+    })()
+      .catch((err: unknown) => {
+        this.warnOnce('store-repair', `cannot repair the task stores: ${String(err)}`);
+      })
+      .finally(() => {
+        this.repairing = undefined;
+      });
+    this.repairing = repair;
+    return repair;
+  }
+
+  private async repairStoresOnce(list: SandboxLister): Promise<void> {
+    const roots = this.ws().roots;
+    const owned = await list(
+      roots.map((r) => r.dir),
+      this.env,
+    );
+    for (const root of roots) {
+      if (this.stopping) return;
+      // A root inside another, such as a mirror in the Master Repo, takes its own entries.
+      const mine = owned.filter((o) => {
+        const at = roots
+          .filter((r) => inside(o.path, r.dir))
+          .sort((a, b) => b.dir.length - a.dir.length)[0];
+        return at === root;
+      });
+      if (mine.length > 0) {
+        // Under the git lock: a sync that ran meanwhile could commit a folder half moved.
+        const res = await root.lockAsync('git', () => repairRoot(root, mine));
+        if (res.files + res.dirs + res.locks > 0) {
+          this.emit(
+            'repair',
+            `${root.name}: made ${res.files} file(s) and ${res.dirs} folder(s) of the Codex ` +
+              `sandbox user again, removed ${res.locks} stale lock(s)`,
+          );
+        }
+        for (const f of res.failed) {
+          this.warnOnce(f.path, `cannot repair ${f.path} for the next Codex session: ${f.why}`);
+        }
+      }
+      const stale = staleTempFiles(root, this.now());
+      if (stale.length === 0) continue;
+      const dir = join(root.opsDir, 'tmp');
+      if (!this.config.remove_stale_temp) {
+        this.warnOnce(
+          dir,
+          `${stale.length} temp file(s) older than an hour in ${dir}; nothing reads them. ` +
+            'Set swarmupd.remove_stale_temp: true to have swarmupd delete such files',
+        );
+        continue;
+      }
+      let removed = 0;
+      for (const path of stale) {
+        try {
+          rmSync(path, { force: true });
+          removed += 1;
+        } catch (err) {
+          this.warnOnce(path, `cannot remove the stale temp file ${path}: ${String(err)}`);
+        }
+      }
+      if (removed > 0) this.emit('repair', `${root.name}: removed ${removed} stale temp file(s)`);
     }
   }
 
@@ -2992,6 +3092,8 @@ export class Supervisor extends EventEmitter {
     // A run ends like a session: commit and push what it changed. Sandboxed runtimes (Codex)
     // cannot write .git themselves.
     if (this.config.sync) void this.syncAfterRun(r);
+    // What a Codex sandbox session made, the next session cannot replace (AO-0287).
+    if (runtimeOf(r.agent) === 'codex') void this.repairStores();
     this.wrapStep(r, { wrap_up: 'done' });
     this.ended(id);
     this.emit('run', r);
