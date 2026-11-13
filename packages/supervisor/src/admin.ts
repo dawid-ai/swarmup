@@ -19,7 +19,7 @@ import { envVar } from '@swarmup/core';
 import { checkNotify, checkWebhook } from './notify.js';
 import { resolveCommand } from './proc.js';
 import { seedDoc } from './seed.js';
-import type { Supervisor } from './supervisor.js';
+import type { KeptWorktree, Supervisor } from './supervisor.js';
 
 type Document = Parameters<Parameters<typeof editUserConfig>[1]>[0];
 import { scheduleDue } from './supervisor.js';
@@ -38,7 +38,7 @@ const COUNTS: Record<string, number> = {
   wake_cooldown_minutes: 0,
   usage_cooldown_minutes: 1,
 };
-const AMOUNTS = ['min_free_gb'];
+const AMOUNTS = ['min_free_gb', 'reclaim_after_minutes', 'scratch_days'];
 const ROLE_COUNTS = ['per_project', 'max_live', 'burst', 'max_children'] as const;
 /** Provider keys the API sets: limits and the model, never what program starts. */
 const RUNTIME_KEYS = ['max_live', 'pause_at', 'paused', 'model'];
@@ -67,6 +67,9 @@ export interface SettingsView {
     | 'sync'
     | 'port'
     | 'tick_seconds'
+    | 'reclaim_worktrees'
+    | 'reclaim_after_minutes'
+    | 'scratch_days'
   > & {
     runtimes: Record<string, RuntimeView>;
     roles: Record<string, ReturnType<typeof roleLimits>>;
@@ -78,6 +81,8 @@ export interface SettingsView {
   missingDefaults: Array<{ name: string; command: string; found: string | null }>;
   /** Keys the file sets, so the page can tell a default from a chosen value. */
   set: string[];
+  /** Closed tasks' worktrees the last housekeeping sweep left in place, each with the reason. */
+  kept: KeptWorktree[];
 }
 
 /**
@@ -151,6 +156,9 @@ export function settingsView(sup: Supervisor): SettingsView {
       sync: cfg.sync,
       port: cfg.port,
       tick_seconds: cfg.tick_seconds,
+      reclaim_worktrees: cfg.reclaim_worktrees,
+      reclaim_after_minutes: cfg.reclaim_after_minutes,
+      scratch_days: cfg.scratch_days,
       runtimes: Object.fromEntries(
         Object.entries(cfg.runtimes).map(([n, r]): [string, RuntimeView] => [
           n,
@@ -181,6 +189,7 @@ export function settingsView(sup: Supervisor): SettingsView {
       .filter(([n]) => !Object.hasOwn(cfg.runtimes, n))
       .map(([name, rc]) => ({ name, command: rc.command, found: resolveCommand(rc.command, env) })),
     set: Object.keys(raw),
+    kept: sup.keptWorktrees(),
   };
 }
 
@@ -277,6 +286,10 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
           k === 'sync'
         ) {
           setOrDelete(doc, [daemonKeyIn(doc), k], v);
+        } else if (k === 'reclaim_worktrees') {
+          // On is the default, so turning it on removes the key: a `false` someone wrote by
+          // hand goes too, and the file keeps only what differs from the default.
+          setOrDelete(doc, [daemonKeyIn(doc), k], v === true ? null : v);
         } else if (k === 'paused') {
           // Resuming removes the key, so the file keeps only what differs from the default.
           setOrDelete(doc, [daemonKeyIn(doc), 'paused'], v === false ? null : v);

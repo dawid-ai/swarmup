@@ -398,6 +398,80 @@ describe('desktop admin api', () => {
     }
   });
 
+  it('reads and writes the cleanup settings, and refuses bad values (AO-0298)', async () => {
+    const { sup, api, call, userConfig } = await setup();
+    try {
+      type Cleanup = {
+        opsd: { reclaim_worktrees: boolean; reclaim_after_minutes: number; scratch_days: number };
+        set: string[];
+        kept: unknown[];
+      };
+      const read = async () => (await call('GET', '/api/settings')).data as unknown as Cleanup;
+      // The defaults: cleanup is on.
+      const before = await read();
+      expect(before.opsd).toMatchObject({
+        reclaim_worktrees: true,
+        reclaim_after_minutes: 60,
+        scratch_days: 7,
+      });
+      expect(before.kept).toEqual([]);
+
+      const res = await call('POST', '/api/settings', {
+        patch: { opsd: { reclaim_worktrees: false, reclaim_after_minutes: 15, scratch_days: 2.5 } },
+      });
+      expect(res.status).toBe(200);
+      // Reloaded at once: the next housekeeping sweep reads these, with no restart.
+      expect(sup.config).toMatchObject({
+        reclaim_worktrees: false,
+        reclaim_after_minutes: 15,
+        scratch_days: 2.5,
+      });
+      const after = await read();
+      expect(after.opsd).toMatchObject({
+        reclaim_worktrees: false,
+        reclaim_after_minutes: 15,
+        scratch_days: 2.5,
+      });
+      expect(after.set).toEqual(
+        expect.arrayContaining(['reclaim_worktrees', 'reclaim_after_minutes', 'scratch_days']),
+      );
+      const saved = readFileSync(userConfig, 'utf8');
+      expect(saved).toContain('reclaim_worktrees: false');
+      expect(saved).toContain('# my notes stay');
+
+      const refused = [
+        { opsd: { reclaim_worktrees: 'no' } },
+        { opsd: { reclaim_worktrees: 0 } },
+        { opsd: { reclaim_after_minutes: -1 } },
+        { opsd: { reclaim_after_minutes: '15' } },
+        { opsd: { scratch_days: -0.5 } },
+        { opsd: { scratch_days: 'week' } },
+      ];
+      for (const patch of refused) {
+        const bad = await call('POST', '/api/settings', { patch });
+        expect(bad.status, JSON.stringify(patch)).toBe(400);
+      }
+      expect(readFileSync(userConfig, 'utf8')).toBe(saved);
+      expect(sup.config.reclaim_worktrees).toBe(false);
+
+      // Turning it on again removes the key, a hand-written `false` included; null puts a
+      // default back.
+      await call('POST', '/api/settings', {
+        patch: { opsd: { reclaim_worktrees: true, reclaim_after_minutes: null, scratch_days: 0 } },
+      });
+      const text = readFileSync(userConfig, 'utf8');
+      expect(text).not.toContain('reclaim_worktrees');
+      expect(text).not.toContain('reclaim_after_minutes');
+      expect(sup.config).toMatchObject({
+        reclaim_worktrees: true,
+        reclaim_after_minutes: 60,
+        scratch_days: 0,
+      });
+    } finally {
+      await api.close();
+    }
+  });
+
   it('refuses runtime commands, unknown keys and bad values, and writes nothing then', async () => {
     const { sup, api, call, userConfig } = await setup();
     try {

@@ -339,6 +339,13 @@ interface ReclaimedWorktree {
   /** The checks passed and the folder is being deleted; the next sweep finishes it. */
   removing?: boolean;
 }
+/** A closed task's worktree that the last housekeeping sweep left in place, and why (AO-0298). */
+export interface KeptWorktree {
+  /** The task, as `root/ID`. */
+  task: string;
+  path: string;
+  reason: string;
+}
 /** The file in the state folder that keeps each provider's `SignInState`. */
 export const SIGN_IN_FILE = 'signin.json';
 
@@ -781,6 +788,10 @@ export class Supervisor extends EventEmitter {
   private housekeptAt = 0;
   /** What swarmupd last warned about each worktree it leaves in place, so it warns once. */
   private readonly reclaimWarned = new Map<string, string>();
+  /** Worktrees of closed tasks the last finished sweep left in place, by path (AO-0298). */
+  private kept = new Map<string, KeptWorktree>();
+  /** The same, for the sweep under way; it replaces {@link kept} when the sweep ends. */
+  private keptNow = new Map<string, KeptWorktree>();
   /** Task worktrees swarmupd is checking or deleting, by path: no run starts there meanwhile. */
   private readonly reclaiming = new Set<string>();
   private timer?: NodeJS.Timeout;
@@ -1419,7 +1430,9 @@ export class Supervisor extends EventEmitter {
       // Repair first: a due sweep is marked before launch planning, and this starts its hold
       // synchronously before the rest of housekeeping yields.
       await this.repairStores();
+      // Read at each sweep: a change from Settings applies from the next one, with no restart.
       if (this.config.reclaim_worktrees) await this.reclaimWorktrees();
+      else this.kept = new Map();
       this.safe(() => this.pruneScratch());
     })()
       .catch((err: unknown) => {
@@ -1440,6 +1453,20 @@ export class Supervisor extends EventEmitter {
    * stays, with one warning per reason.
    */
   private async reclaimWorktrees(): Promise<void> {
+    this.keptNow = new Map();
+    if (await this.reclaimEach()) this.kept = this.keptNow;
+  }
+
+  /**
+   * Closed tasks' worktrees the last housekeeping sweep left in place, each with the reason, for
+   * Settings (AO-0298). Empty while `reclaim_worktrees` is off: no sweep looks at them then.
+   */
+  keptWorktrees(): KeptWorktree[] {
+    return [...this.kept.values()].sort((a, b) => a.task.localeCompare(b.task));
+  }
+
+  /** The sweep of {@link reclaimWorktrees}; false when a stop cut it short. */
+  private async reclaimEach(): Promise<boolean> {
     const ws = this.ws(WORKTREE_ACTOR);
     const tops = new Map<string, Root[]>();
     for (const root of ws.roots) {
@@ -1450,11 +1477,11 @@ export class Supervisor extends EventEmitter {
       tops.set(key, [...(tops.get(key) ?? []), root]);
     }
     for (const [top, roots] of tops) {
-      if (this.stopping) return;
+      if (this.stopping) return false;
       // A removal a crash or a locked file cut off goes on first, checks done (see `reclaimOne`).
       const records = this.store.readJson<Record<string, ReclaimedWorktree>>(RECLAIMED_FILE, {});
       for (const [ref, rec] of Object.entries(records)) {
-        if (this.stopping) return;
+        if (this.stopping) return false;
         if (rec.removing && taskIdOfWorktree(top, rec.path)) await this.finishReclaim(ws, top, ref);
       }
       let list: WorktreeEntry[];
@@ -1465,11 +1492,12 @@ export class Supervisor extends EventEmitter {
         continue;
       }
       for (const wt of list) {
-        if (this.stopping) return;
+        if (this.stopping) return false;
         const id = taskIdOfWorktree(top, wt.path);
         if (id) await this.reclaimOne(ws, top, roots, wt, id);
       }
     }
+    return true;
   }
 
   /**
@@ -1517,8 +1545,30 @@ export class Supervisor extends EventEmitter {
     id: string,
   ): Promise<void> {
     const path = resolve(wt.path);
-    if (this.makingWorktrees.has(path) || this.reclaimHolds(path) || this.runsIn(path)) return;
+    if (this.makingWorktrees.has(path) || this.reclaimHolds(path)) return;
+    const ref = roots
+      .map((r) => `${r.name}/${id}`)
+      .find((r) => {
+        try {
+          ws.view(r);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    const wait = ref ? this.notDue(ws, ref) : 'open';
+    // Settings lists what cleanup holds back: only a worktree whose task is closed for good.
+    const keep = (reason: string): void => {
+      if (ref && wait !== 'open' && wait !== 'recent') {
+        this.keptNow.set(path, { task: ref, path, reason });
+      }
+    };
+    if (this.runsIn(path)) {
+      keep('a run works in it');
+      return;
+    }
     if (isLink(path)) {
+      keep('it is a junction or symlink');
       this.warnOnce(
         path,
         `the worktree ${path} is a junction or symlink; swarmupd leaves it alone`,
@@ -1543,18 +1593,12 @@ export class Supervisor extends EventEmitter {
       }
       return;
     }
-    if (wt.locked !== null) return; // Someone locked it on purpose.
-    const ref = roots
-      .map((r) => `${r.name}/${id}`)
-      .find((r) => {
-        try {
-          ws.view(r);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-    if (!ref || !this.closedLongEnough(ws, ref)) return;
+    if (wt.locked !== null) {
+      keep('it is locked with `git worktree lock`'); // Someone locked it on purpose.
+      return;
+    }
+    if (wait === 'merge') keep('its merge is pending');
+    if (!ref || wait !== null) return;
     // Reserved in the same step as the checks above: no launch can slip in between.
     this.reclaiming.add(path);
     this.emit('worktree', `${ref}: checking ${path} for removal`);
@@ -1563,11 +1607,13 @@ export class Supervisor extends EventEmitter {
       try {
         changes = (await gitAsync(path, ['status', '--porcelain'])).split(/\r?\n/).filter(Boolean);
       } catch (err) {
+        keep('git cannot read it');
         this.warnOnce(path, `cannot read the worktree ${path}: ${gitError(err)}; left in place`);
         return;
       }
       if (changes.length > 0) {
         const more = changes.length > 1 ? ` and ${changes.length - 1} more` : '';
+        keep(`uncommitted changes (${changes[0]!.slice(3)}${more})`);
         this.warnOnce(
           path,
           `${ref} is closed, but its worktree ${path} has uncommitted changes ` +
@@ -1589,6 +1635,7 @@ export class Supervisor extends EventEmitter {
           ).trim()
         : '';
       if (!held || !wt.branch) {
+        keep(`its commit ${wt.head.slice(0, 8)} is on no branch`);
         this.warnOnce(
           path,
           `${ref} is closed, but its worktree ${path} is on ${wt.branch ? 'a commit' : 'a detached HEAD'} ` +
@@ -1598,7 +1645,11 @@ export class Supervisor extends EventEmitter {
       }
       // Again after the git calls: the task may have been reopened meanwhile, or a run that was
       // ending may still hold the folder.
-      if (!this.closedLongEnough(ws, ref) || this.runsIn(path)) return;
+      if (!this.closedLongEnough(ws, ref)) return;
+      if (this.runsIn(path)) {
+        keep('a run works in it');
+        return;
+      }
       const all = this.store.readJson<Record<string, ReclaimedWorktree>>(RECLAIMED_FILE, {});
       all[ref] = {
         path,
@@ -1616,17 +1667,25 @@ export class Supervisor extends EventEmitter {
 
   /** The task is done or parked, has been for `reclaim_after_minutes`, and no merge waits. */
   private closedLongEnough(ws: Workspace, ref: string): boolean {
+    return this.notDue(ws, ref) === null;
+  }
+
+  /**
+   * Why the task's worktree is not due for removal: the task is open, it closed less than
+   * `reclaim_after_minutes` ago, or its merge waits. Null when it is due.
+   */
+  private notDue(ws: Workspace, ref: string): 'open' | 'recent' | 'merge' | null {
     let v: TaskView;
     try {
       v = ws.view(ref);
     } catch {
-      return false;
+      return 'open';
     }
-    if (v.status !== 'done' && v.status !== 'parked') return false;
+    if (v.status !== 'done' && v.status !== 'parked') return 'open';
     if (this.now() - Date.parse(v.updatedAt) < this.config.reclaim_after_minutes * 60_000) {
-      return false;
+      return 'recent';
     }
-    return !this.mergeWaits(ws, ref);
+    return this.mergeWaits(ws, ref) ? 'merge' : null;
   }
 
   /**
