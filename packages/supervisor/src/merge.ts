@@ -81,8 +81,14 @@ export function opsdCodeChanges(files: string[]): string[] {
   );
 }
 
+/** The lockfiles npm installs from; when a directory has both, npm takes the first. */
+const NPM_LOCKFILES = ['npm-shrinkwrap.json', 'package-lock.json'];
+
+/** The lockfile pnpm installs from, at the top of a pnpm workspace. */
+const PNPM_LOCKFILE = 'pnpm-lock.yaml';
+
 /** Lockfiles whose change in a merge leaves the build checkout's installed dependencies behind. */
-const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
+const LOCKFILES = [...NPM_LOCKFILES, PNPM_LOCKFILE];
 
 /**
  * The install swarmupd runs in the build checkout when a merge changed a lockfile and the config
@@ -92,6 +98,14 @@ const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
  * rewriting `package-lock.json`, which would leave the checkout with changes of its own.
  */
 export const DEFAULT_INSTALL = 'npm install --no-save --no-audit --no-fund';
+
+/**
+ * The install swarmupd runs instead of `DEFAULT_INSTALL` in a directory with a `pnpm-lock.yaml`
+ * (AO-0299). pnpm changes only the packages that differ from the lockfile and leaves the rest of
+ * `node_modules` in place, and `--frozen-lockfile` installs the lockfile as written or fails, so
+ * the checkout gets no changes of its own. It needs `pnpm` on swarmupd's PATH.
+ */
+export const DEFAULT_PNPM_INSTALL = 'pnpm install --frozen-lockfile';
 
 /** Which of `files` are lockfiles, at any depth. */
 export function lockfileChanges(files: string[]): string[] {
@@ -112,11 +126,14 @@ export function lockfileDirs(files: string[]): string[] {
 
 /**
  * The commands that install dependencies in `dir` before the build: the configured `install`,
- * or `DEFAULT_INSTALL` when `dir` has an npm lockfile.
+ * `DEFAULT_PNPM_INSTALL` when `dir` has a `pnpm-lock.yaml`, or `DEFAULT_INSTALL` when it has an
+ * npm lockfile. pnpm wins when a directory has both: a repo that moved to pnpm may still carry
+ * its old npm lockfile.
  */
 export function installCommands(install: string[] | undefined, dir: string): string[] {
   if (install) return install;
-  return LOCKFILES.some((f) => existsSync(join(dir, f))) ? [DEFAULT_INSTALL] : [];
+  if (existsSync(join(dir, PNPM_LOCKFILE))) return [DEFAULT_PNPM_INSTALL];
+  return NPM_LOCKFILES.some((f) => existsSync(join(dir, f))) ? [DEFAULT_INSTALL] : [];
 }
 
 /** The machine npm installs for: `process.platform`, `process.arch` and, on Linux, the C library. */
@@ -256,9 +273,7 @@ export function missingOptionalPackages(
     if (!known.has(key)) known.set(key, registry(scope));
     return known.get(key);
   };
-  const file = ['npm-shrinkwrap.json', 'package-lock.json']
-    .map((f) => join(dir, f))
-    .find((f) => existsSync(f));
+  const file = NPM_LOCKFILES.map((f) => join(dir, f)).find((f) => existsSync(f));
   if (!file) return [];
   let packages: unknown;
   try {
@@ -319,7 +334,8 @@ export function repairInstallCommand(
  * The install steps for a build in `top` after a merge changed the lockfiles in `dirs` (from
  * `lockfileDirs`): `installCommands` in each directory, in order. A step outside `top` names its
  * directory, so the merge event tells which install ran where. After the default install comes a
- * step that looks at `node_modules` then, and installs by name what the install left out.
+ * step that looks at `node_modules` then, and installs by name what the install left out. The
+ * pnpm install gets no such step: pnpm installs the optional packages its lockfile lists.
  */
 export function installSteps(
   install: string[] | undefined,
@@ -332,8 +348,9 @@ export function installSteps(
     const cwd = dir === '.' ? top : join(top, ...dir.split('/'));
     const entry = (command: string): FixedCommand =>
       dir === '.' ? command : { command, cwd, label: `${command} (in ${dir})` };
-    const steps = installCommands(install, cwd).map(entry);
-    if (install || steps.length === 0) return steps;
+    const commands = installCommands(install, cwd);
+    const steps = commands.map(entry);
+    if (install || !commands.includes(DEFAULT_INSTALL)) return steps;
     const repair: CommandEntry = () => {
       const command = repairInstallCommand(cwd, platform, registry);
       return command === null ? null : entry(command);

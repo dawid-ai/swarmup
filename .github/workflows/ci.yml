@@ -19,14 +19,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # The pnpm version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm test
       - run: node scripts/check-leaks.mjs
   desktop-smoke:
     # Renders every desktop view offscreen against a scratch root; fails on a page error, a failed
@@ -35,11 +37,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # The pnpm version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1
-      - run: npm ci
-      - run: npm run build:desktop
-      - run: xvfb-run -a npm run smoke:desktop
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:desktop
+      - run: xvfb-run -a pnpm run smoke:desktop

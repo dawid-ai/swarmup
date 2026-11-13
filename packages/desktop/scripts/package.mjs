@@ -2,7 +2,7 @@
 // process, swarmupd and the `swarmup` CLI, plus the preload script, the UI and the command shims.
 // The staged folder has no node_modules: everything the app runs is in the bundles.
 //
-// Usage: node packages/desktop/scripts/package.mjs   (after `npm run build:desktop`)
+// Usage: node packages/desktop/scripts/package.mjs   (after `pnpm run build:desktop`)
 
 import {
   cpSync,
@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -102,38 +103,43 @@ const UI_LIBS = [
   '@fontsource/chakra-petch',
   '@fontsource/ibm-plex-sans',
 ];
-const lock = JSON.parse(readFileSync(join(top, 'package-lock.json'), 'utf8'));
-const found = new Map();
-const walk = (name, from) => {
-  for (const base of [from, '']) {
-    const key = `${base ? `${base}/` : ''}node_modules/${name}`;
-    const entry = lock.packages[key];
-    if (!entry) continue;
-    if (found.has(key)) return;
-    found.set(key, entry);
-    for (const dep of Object.keys(entry.dependencies ?? {})) walk(dep, key);
-    return;
+// Read from the installed packages, as Node finds them: in `node_modules` of the folder that
+// needs the package or of a folder further up. That holds for any lockfile and linker.
+const installed = (name, from) => {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const at = join(dir, 'node_modules', ...name.split('/'));
+    if (existsSync(join(at, 'package.json'))) return realpathSync(at);
+    if (dir === top || dirname(dir) === dir) return undefined;
   }
 };
+const found = new Map();
+const walk = (name, from) => {
+  const dir = installed(name, from);
+  if (!dir) throw new Error(`${name} (needed in ${from}) is not installed: run pnpm install`);
+  if (found.has(dir)) return;
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  found.set(dir, manifest);
+  for (const dep of Object.keys(manifest.dependencies ?? {})) walk(dep, dir);
+};
 for (const ws of ['core', 'supervisor', 'cli', 'desktop']) {
-  const entry = lock.packages[`packages/${ws}`] ?? {};
-  for (const dep of Object.keys(entry.dependencies ?? {})) {
-    if (!dep.startsWith('@swarmup/')) walk(dep, '');
+  const dir = join(top, 'packages', ws);
+  const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+  for (const dep of Object.keys(manifest.dependencies ?? {})) {
+    if (!dep.startsWith('@swarmup/')) walk(dep, dir);
   }
 }
-for (const lib of UI_LIBS) walk(lib, '');
+for (const lib of UI_LIBS) walk(lib, desktop);
 const notices = [
   'SwarmUp includes the following third-party software. Electron and Chromium licences are in',
   'LICENSE.electron.txt and LICENSES.chromium.html next to the application.',
   '',
 ];
-for (const [key, entry] of [...found].sort((a, b) => a[0].localeCompare(b[0]))) {
-  const name = key.split('node_modules/').pop();
-  const dir = join(top, key);
-  const file = existsSync(dir)
-    ? readdirSync(dir).find((f) => /^(licen[cs]e|copying)(\.|$)/i.test(f))
-    : undefined;
-  notices.push(`${'-'.repeat(78)}\n${name} ${entry.version} (${entry.license ?? 'see below'})\n`);
+const byName = (a, b) =>
+  a[1].name.localeCompare(b[1].name) || a[1].version.localeCompare(b[1].version);
+for (const [dir, manifest] of [...found].sort(byName)) {
+  const file = readdirSync(dir).find((f) => /^(licen[cs]e|copying)(\.|$)/i.test(f));
+  const licence = typeof manifest.license === 'string' ? manifest.license : 'see below';
+  notices.push(`${'-'.repeat(78)}\n${manifest.name} ${manifest.version} (${licence})\n`);
   notices.push(file ? readFileSync(join(dir, file), 'utf8').trim() : '(no licence file shipped)');
   notices.push('');
 }

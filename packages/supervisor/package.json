@@ -11,7 +11,7 @@
     ".": "./dist/index.js"
   },
   "dependencies": {
-    "@swarmup/core": "0.3.0-beta.3"
+    "@swarmup/core": "workspace:*"
   },
   "bin": {
     "swarmupd": "dist/main.js",

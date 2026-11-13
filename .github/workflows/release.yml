@@ -35,15 +35,17 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      # The pnpm version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build:desktop
-      - run: npm run package -w @swarmup/desktop
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:desktop
+      - run: pnpm --filter @swarmup/desktop run package
       # The installed build must start its own swarmupd and render every view before it ships.
-      - run: npx electron-builder --win --dir --config electron-builder.yml --publish never
+      - run: pnpm exec electron-builder --win --dir --config electron-builder.yml --publish never
         working-directory: packages/desktop
       - run: node scripts/desktop-smoke.mjs --packaged
       # Create the release with notes from UPDATES.md before electron-builder uploads into it:
@@ -66,7 +68,7 @@ jobs:
             exit 1
           fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "SwarmUp $tag" --notes "$notes"
-      - run: npx electron-builder --win --config electron-builder.yml --publish always
+      - run: pnpm exec electron-builder --win --config electron-builder.yml --publish always
         working-directory: packages/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

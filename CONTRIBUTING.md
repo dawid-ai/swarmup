@@ -3,12 +3,15 @@
 ## Setup
 
 ```sh
-npm install        # also points git hooks at .githooks (pre-commit leak check)
-npm run build
-npm test
+pnpm install       # also points git hooks at .githooks (pre-commit leak check)
+pnpm run build
+pnpm test
 ```
 
-Node.js 22 or later. On Windows, use Git Bash or PowerShell; the repo keeps LF line endings
+Node.js 22 or later and [pnpm](https://pnpm.io/installation) 9 or later. The repo has one
+lockfile, `pnpm-lock.yaml`; `npm install` does not work here, because the packages depend on each
+other as `workspace:*`. pnpm keeps every package once in its store and hard-links it into
+`node_modules`, so a second checkout or worktree costs little disk. On Windows, use Git Bash or PowerShell; the repo keeps LF line endings
 (`.gitattributes`).
 
 ## Layout
@@ -24,7 +27,7 @@ Node.js 22 or later. On Windows, use Git Bash or PowerShell; the repo keeps LF l
 
 ## Before you push
 
-1. `npm run lint`, `npm run typecheck` and `npm test` pass.
+1. `pnpm run lint`, `pnpm run typecheck` and `pnpm test` pass.
 2. Add a changelog fragment in `changelog.d/` for any change users notice (see
    [changelog.d/README.md](changelog.d/README.md)). Don't edit `CHANGELOG.md` directly.
 3. Keep commits free of tokens, keys and webhook URLs; the pre-commit hook checks staged files.

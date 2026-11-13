@@ -7,8 +7,8 @@
   "type": "module",
   "main": "dist/main.js",
   "dependencies": {
-    "@swarmup/core": "0.3.0-beta.3",
-    "@swarmup/supervisor": "0.3.0-beta.3",
+    "@swarmup/core": "workspace:*",
+    "@swarmup/supervisor": "workspace:*",
     "electron-updater": "^6.8.11"
   },
   "scripts": {

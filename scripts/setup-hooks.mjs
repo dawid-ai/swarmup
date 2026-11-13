@@ -1,4 +1,4 @@
-// Points this clone's git hooks at .githooks (repo-local config only). Runs on `npm install`.
+// Points this clone's git hooks at .githooks (repo-local config only). Runs on `pnpm install`.
 import { execFileSync } from 'node:child_process';
 
 if (process.env.CI) process.exit(0);

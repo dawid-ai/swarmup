@@ -1,9 +1,9 @@
 # Windows installer and update feed for the SwarmUp desktop app, swarmupd and the swarmup command.
-# Build: npm run dist (stages release/app with scripts/package.mjs, then runs electron-builder).
+# Build: pnpm run dist (stages release/app with scripts/package.mjs, then runs electron-builder).
 appId: tech.swarmup.app
 productName: SwarmUp
 # electron is a devDependency with a range; pin the version actually installed so the build
-# does not depend on electron-builder's probe in an npm workspace.
+# does not depend on electron-builder's probe in a workspace.
 electronVersion: 45.2.1
 directories:
   # The staged app: bundles only, no node_modules.

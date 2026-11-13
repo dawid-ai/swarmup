@@ -80,8 +80,8 @@ other people, not what a run can do on your machine or to the work of other agen
   `Bash(git *)`, and each of them runs any code (`node -e`, a git alias or pager), which no deny
   entry sees.
 - `Edit` and `Write` are also denied for every data root's `agents/` directory. This path deny
-  covers only those two tools: allowed Bash commands such as `Bash(node *)`, `Bash(npm *)` and
-  `Bash(git *)` can still write there, so it is defense in depth, not a sandbox.
+  covers only those two tools: allowed Bash commands such as `Bash(node *)`, `Bash(npm *)`,
+  `Bash(pnpm *)` and `Bash(git *)` can still write there, so it is defense in depth, not a sandbox.
 - Runs inherit swarmupd's environment, so agents act as your accounts; task events record which agent
   did what. Codex's sandbox blocks network access and `.git` writes. To hide variables from a
   runtime's runs, list them in `swarmupd.runtimes.<name>.unset_env` (on Windows the names match in any

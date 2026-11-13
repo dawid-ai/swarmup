@@ -146,12 +146,14 @@ export interface MergeConfig {
   /** Commands run in `checkout` after the base moved, such as `npm run build`. */
   build?: string[];
   /**
-   * Commands run before `build` in each directory of `checkout` whose `package-lock.json` or
-   * `npm-shrinkwrap.json` the merge changed, so the build sees new dependencies (AO-0185).
-   * Defaults to `npm install --no-save --no-audit --no-fund` in each of those directories that
-   * still has an npm lockfile, followed by an install by name of the optional packages it left
-   * out (AO-0229); `[]` turns it off. Also run in `checkout` itself, once, when a `build`
-   * command fails without it, before one more build (AO-0232).
+   * Commands run before `build` in each directory of `checkout` whose `package-lock.json`,
+   * `npm-shrinkwrap.json` or `pnpm-lock.yaml` the merge changed, so the build sees new
+   * dependencies (AO-0185). Defaults, in each of those directories, to
+   * `pnpm install --frozen-lockfile` when it has a `pnpm-lock.yaml` (AO-0299), else to
+   * `npm install --no-save --no-audit --no-fund` when it still has an npm lockfile, followed by
+   * an install by name of the optional packages npm left out (AO-0229); `[]` turns it off. Also
+   * run in `checkout` itself, once, when a `build` command fails without it, before one more
+   * build (AO-0232).
    */
   install?: string[];
   /** Minutes each command may take; default 30. */

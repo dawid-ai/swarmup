@@ -9,16 +9,22 @@ This repo is the SwarmUp engine, v2. Read [README.md](README.md) and
   PRs, docs or comments. Commits are authored by the repo owner's git identity.
 - No secrets: never print, commit or log tokens, keys, `.pem` files or webhook URLs.
 - Kill only processes you started, by the PID your own command printed.
-- Don't install global tools or change global config. `npm install` inside the repo is fine.
+- Don't install global tools or change global config. `pnpm install` inside the repo is fine.
 - Commit locally as you go; push only when asked or at session end.
 - Scratch files (logs, test output, experiments, bundles) go in `$SWARMUP_SCRATCH` when it is set,
   else in the OS temp folder; never in the repo, `out/` or the folder that holds the repo.
 - Never link a worktree's `node_modules` (or anything else) to another checkout with a junction or
-  symlink: deleting the worktree can delete what the link points to. Run `npm ci` in the worktree.
+  symlink: deleting the worktree can delete what the link points to. Run
+  `pnpm install --frozen-lockfile` in the worktree instead: pnpm hard-links the files from its
+  store, so the install is fast and takes little disk, and deleting the worktree leaves the store
+  alone. Never edit a file under `node_modules` in place: it is the store's copy, shared with
+  every checkout.
+- The repo installs with pnpm only (`pnpm-lock.yaml`, `node-linker=hoisted` in `.npmrc`). Don't
+  run `npm install` or `npm ci`, and don't commit a `package-lock.json`.
 
 ## Working a task
 
-1. `npm run build`, then use `npm run swarmup -- <command>` or `node packages/cli/dist/main.js`.
+1. `pnpm run build`, then use `pnpm swarmup <command>` or `node packages/cli/dist/main.js`.
 2. Set `SWARMUP_AGENT` to your id (`claude:engineer`, `codex:engineer`).
 3. `swarmup next`, `swarmup start ID "plan"`, `swarmup progress ID "..."` at least every 2 hours.
 4. Commit on a task branch, then finish with
@@ -60,4 +66,4 @@ This repo is the SwarmUp engine, v2. Read [README.md](README.md) and
 - TypeScript, strict, ES modules, Node 22+. Core is synchronous file I/O; keep it that way unless a
   caller needs async.
 - Every child process sets `windowsHide: true`.
-- Tests next to the package in `test/`, run with `npm test`; add one for each behavior change.
+- Tests next to the package in `test/`, run with `pnpm test`; add one for each behavior change.

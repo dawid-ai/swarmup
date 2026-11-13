@@ -24,8 +24,8 @@ installer, smoke-tests the packaged app, and publishes `SwarmUp-Setup.exe`, its 
 
    ```sh
    node scripts/check-release.mjs 0.2.0-beta.2   # version, CHANGELOG heading, no fragments left, UPDATES entry
-   npm run typecheck && npm run lint && npm test && npm run leaks
-   npm run dist                                # builds the installer
+   pnpm run typecheck && pnpm run lint && pnpm test && pnpm run leaks
+   pnpm run dist                                # builds the installer
    node scripts/desktop-smoke.mjs --packaged   # the packaged app renders every view
    ```
 

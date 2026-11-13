@@ -345,7 +345,10 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   with one warning per reason in the swarmupd log. swarmupd deletes the folder with Node's
   `fs.rm`, then runs `git worktree prune`. It never uses `git worktree remove`, because Git for
   Windows follows a junction in the folder, such as a `node_modules` entry linked to the main
-  checkout, and deletes what the junction points to. A removal is saved before the folder is
+  checkout, and deletes what the junction points to. `fs.rm` removes a junction itself and
+  leaves its target alone, and it removes a hard link without touching the file's other links:
+  a worktree that pnpm installed from its store goes, and the store and every other checkout
+  that links the same files stay whole (AO-0299). A removal is saved before the folder is
   touched, so the next sweep finishes one that a crash or a locked file cut off. Set
   `swarmupd.reclaim_worktrees: false` to keep every worktree.
 - **Cleanup in Settings (AO-0298).** The **Cleanup** section of **Settings** shows and changes the
@@ -924,11 +927,15 @@ swarmupd:
 - **New dependencies.** The checks install packages in swarmupd's worktree, not in `checkout`.
   Use `npm ci` there, as in the example: it installs the lockfile as written and never rewrites
   it, while a plain `npm install` saves the tree it resolved and can drop lockfile entries.
-  When the merge changed a `package-lock.json` or `npm-shrinkwrap.json`, swarmupd runs `install`
-  before `build` in each directory of `checkout` whose lockfile changed (`checkout` itself for a
-  root lockfile, `site` for `site/package-lock.json`), so the build sees the new packages. Unset,
-  `install` is `npm install --no-save --no-audit --no-fund` in each of those directories that
-  still has an npm lockfile; `[]` turns it off. The default is not `npm ci`: that deletes
+  In a pnpm repo, use `pnpm install --frozen-lockfile` for the same reason.
+  When the merge changed a `package-lock.json`, `npm-shrinkwrap.json` or `pnpm-lock.yaml`,
+  swarmupd runs `install` before `build` in each directory of `checkout` whose lockfile changed
+  (`checkout` itself for a root lockfile, `site` for `site/package-lock.json`), so the build sees
+  the new packages. Unset, `install` is `pnpm install --frozen-lockfile` in each of those
+  directories that has a `pnpm-lock.yaml` (pnpm must be on swarmupd's PATH; it changes only the
+  packages that differ and never rewrites the lockfile), else
+  `npm install --no-save --no-audit --no-fund` in each that still has an npm lockfile; `[]`
+  turns it off. The rest of this entry is about the npm default. It is not `npm ci`: that deletes
   `node_modules` first, and when swarmupd or the app runs from `checkout`, files they lock stop it
   halfway and leave both broken. `npm install` can leave out, or remove, optional platform
   packages that the lockfile lists (such as `lightningcss-win32-x64-msvc`) and still say
