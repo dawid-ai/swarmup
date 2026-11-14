@@ -196,6 +196,12 @@ vi.mock(import('../ui/src/api'), async (original) => ({
   },
 }));
 
+// happy-dom loads no images, so the PNG step returns fixed bytes.
+vi.mock(import('../ui/src/lib/png'), async (original) => ({
+  ...(await original()),
+  svgToPng: async () => new Uint8Array([1]),
+}));
+
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
@@ -427,6 +433,45 @@ describe('Replay view', () => {
       expect(saved[1]).toContain('-agent-ops-docs-16x9-');
       pick(projectSelect(), '');
       expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30${query()}`);
+    } finally {
+      delete window.swarmup;
+    }
+  });
+
+  it('names Wrapped cards after the picked root and label (AO-0301)', async () => {
+    const saved: string[][] = [];
+    window.swarmup = {
+      saveImages: async (files: Array<{ name: string }>) => {
+        saved.push(files.map((f) => f.name));
+        return { ok: true, data: { dir: 'C:\\cards', files: files.map((f) => f.name) } };
+      },
+    } as unknown as typeof window.swarmup;
+    const option = (label: string): string =>
+      [...projectSelect().options].find((o) => o.textContent === label)!.value;
+    const saveCards = async (): Promise<string[]> => {
+      const b = [...box.querySelectorAll('button')].find((x) =>
+        /^Save \d+ cards$/.test(x.textContent!.trim()),
+      )!;
+      await act(async () => b.click());
+      // The PNGs are made one by one: let the chain of promises finish.
+      await act(async () => new Promise((r) => setTimeout(r, 0)));
+      return saved.at(-1)!;
+    };
+    try {
+      render();
+      act(() => button('Wrapped').click());
+      // The report of the fixture names no project, and swarmupd names only the label for a
+      // label inside a root: the root comes from the picker.
+      pick(projectSelect(), option('agent-ops / docs'));
+      const nested = await saveCards();
+      expect(nested.length).toBeGreaterThan(1);
+      for (const name of nested) {
+        expect(name).toMatch(/^wrapped-agent-ops-docs-\d{4}-\d\d-\d\d-\d+-/);
+      }
+      pick(projectSelect(), option('swarmup-web'));
+      expect((await saveCards())[0]).toMatch(/^wrapped-swarmup-web-\d{4}-/);
+      pick(projectSelect(), '');
+      expect((await saveCards())[0]).toMatch(/^wrapped-all-projects-\d{4}-/);
     } finally {
       delete window.swarmup;
     }

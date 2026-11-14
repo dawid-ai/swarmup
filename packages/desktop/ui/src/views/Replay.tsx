@@ -288,9 +288,12 @@ export function Replay({ record = recordScene }: ReplayProps) {
   const saveCards = (): void => {
     const w = timeline?.wrapped;
     if (!w) return;
+    // The picked root and label, as in the frame and MP4 names: the report's own `project` is
+    // the label alone, so `docs` of two roots would save under one name.
+    const named = { project: [root, project].filter(Boolean).join('-') || w.project, to: w.to };
     save(
       cards.map((c, i) => ({
-        name: cardFileName(w, c, i),
+        name: cardFileName(named, c, i),
         t: cardTime(i, cards.length, duration),
       })),
     );
