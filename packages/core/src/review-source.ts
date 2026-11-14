@@ -6,10 +6,16 @@ export interface MergeSource {
 }
 
 /**
+ * Where a name in code font ends: at a space, a bracket, a quote, a mark of punctuation or a full
+ * stop that ends a sentence. Not at a character that goes on with a ref: in `` `feature`-old `` or
+ * `` `feature`/next `` the span holds part of a longer word, so it names no branch `feature`.
+ */
+const CODE_END = '(?=[\\s:,;)\\]}>!?\'"]|\\.(?:\\s|$)|$)';
+/**
  * A name in code font, whole: a code span holds its text as written, so `__wip__` there is the
  * branch `__wip__` and no bold `wip` (AO-0325). Bold may stand around the span.
  */
-const CODE_NAME = '[*_]{0,3}`([^`\\s]+)`';
+const CODE_NAME = `[*_]{0,3}\`([^\`\\s]+)\`[*_]{0,3}${CODE_END}`;
 /**
  * A name outside code font ends at a space, a colon, a comma, a bracket or a full stop that ends
  * a sentence. It may be bold.
@@ -61,7 +67,8 @@ export interface ReviewSources {
  * commit and the name may be in code font or bold (`**x**` or `__x__`), as event text is
  * Markdown: a request that wrote the commit in code font named no commit before, and the merge
  * took an older request's branch for it (AO-0325). A name in code font keeps its text as written,
- * underscores included: `` `__wip__` `` is the branch `__wip__`.
+ * underscores included: `` `__wip__` `` is the branch `__wip__`. A span that a longer word runs on
+ * from (`` `feature`-old ``) names no branch.
  */
 export function reviewSources(text: string): ReviewSources {
   const both = new RegExp(`${START}(${HEX})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`, 'm').exec(text);

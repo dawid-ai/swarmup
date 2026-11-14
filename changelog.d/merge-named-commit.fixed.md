@@ -7,4 +7,5 @@
   its dependants keep waiting. A commit id of digits only or letters only counts when it follows
   `commit`, `sha`, `hash` or `rev`, or is in code font or bold. A commit id in capitals
   (`023F19E`) counts in both places. A branch name in code font is read as written, underscores
-  included (`` `__wip__` ``).
+  included (`` `__wip__` ``). A code span that a longer word runs on from (`` `feature`-old ``)
+  names no branch, so swarmupd does not take a branch `feature` for it.

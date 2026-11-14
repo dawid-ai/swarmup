@@ -550,6 +550,30 @@ describe('merging approved work', () => {
       'feature',
       'a+b@c',
     ]);
+    // A code span that a longer word runs on from is no name: `feature` is not the branch here.
+    expect(reviewSources('cc3d803 on branch `feature`-old is rebased.')).toEqual({ loose: [] });
+    expect(reviewSources('cc3d803 on branch `feature`/next.')).toEqual({ loose: [] });
+    expect(
+      reviewSources('on branch `feature`-old, branch **`feature`**/next, branch `feature`_old')
+        .loose,
+    ).toEqual([]);
+    expect(reviewSources('branch `feature`.old and branch __`feature`__x').loose).toEqual([]);
+    // Closing emphasis and punctuation end the name.
+    expect(
+      reviewSources(
+        'branch **`a`**, branch __`b`__. Then (branch `c`) and branch `d`\'s tip; "branch `e`"? branch `f`',
+      ).loose,
+    ).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    expect(reviewSources('cc3d803 on branch _`feature`_: rebased').named).toEqual({
+      commit: 'cc3d803',
+      branch: 'feature',
+    });
+    expect(
+      pickMergeSource(['The fix is on branch `feature`-old.', 'abc1234 on branch feature-old'], {
+        branch: (b) => b === 'feature' || b === 'feature-old',
+        commit: () => false,
+      }),
+    ).toEqual({ branch: 'feature-old' });
     expect(
       pickMergeSource(['The fix is on branch `__wip__`.', 'abc1234 on branch stale'], {
         branch: (b) => b === '__wip__' || b === 'stale',
@@ -2786,6 +2810,34 @@ describe('merging approved work', () => {
       s.as('human:dawid').verdict('1', 'approve', 'looks right');
       await s.merged();
       expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: '__wip__' });
+      expect(s.last().body).not.toContain('nothing to merge');
+      expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+      expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+    },
+  );
+
+  it.each([
+    ['named', (sha: string) => `T-0001: \`${sha}\` on branch \`feature\`-old is rebased.`],
+    ['loose', () => 'T-0001: the fix is on branch `feature`-old, rebased onto `main`.'],
+  ])(
+    'does not take the branch a code span names when a longer word runs on from the span: %s (AO-0325)',
+    async (_form, request) => {
+      const s = mergeSetup({ userMerge: true });
+      const commit = s.branch('two\n');
+      git(s.repo, 'branch', '-m', 'feature', 'feature-old');
+      // The stale branch whose name the code span holds: it is already in `main`.
+      git(s.repo, 'branch', 'feature', 'main');
+      const eng = s.as('fake:engineer');
+      eng.start('2', 'plan');
+      eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+      eng.start('1', 'plan');
+      eng.review('1', 'T-0001: the work is on branch feature-old.', 'human:dawid');
+      s.as('human:dawid').verdict('1', 'changes', 'rebase it');
+      eng.start('1', 'plan');
+      eng.review('1', request(commit.slice(0, 7)), 'human:dawid');
+      s.as('human:dawid').verdict('1', 'approve', 'looks right');
+      await s.merged();
+      expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature-old' });
       expect(s.last().body).not.toContain('nothing to merge');
       expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
       expect(s.as('human:dawid').view('2').unblocked).toBe(true);
