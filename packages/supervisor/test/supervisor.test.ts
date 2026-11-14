@@ -392,6 +392,52 @@ describe('runs', () => {
     ]);
   });
 
+  it("lists the decisions in force for a task in its run's prompt (AO-0109)", async () => {
+    const promptFile = join(temp(), 'prompt.txt');
+    const { sup, as } = setup({ env: { FAKE_PROMPT: promptFile } });
+    const human = as('human:dawid');
+    for (const project of ['p', 'q', 'r', 'p']) {
+      human.newTask({ title: `work in ${project}`, project, owner: 'fake:engineer' });
+    }
+    const old = human.recordDecision({ text: 'swarmupd never merges', project: 'p' }).meta.id;
+    const fresh = human.recordDecision({
+      text: 'swarmupd merges approved work',
+      project: 'p',
+      supersedes: [old],
+    }).meta.id;
+    for (let i = 1; i <= 31; i++) human.recordDecision({ text: `rule ${i} of r`, project: 'r' });
+    const promptOf = async (req: { task?: string; extra?: string }): Promise<string> => {
+      await ended(sup, sup.launch({ agent: 'fake:engineer', ...req }).id);
+      return readFileSync(promptFile, 'utf8');
+    };
+
+    // Inside the scope: the replacement is listed, the superseded record is not.
+    const inScope = await promptOf({ task: '1' });
+    expect(inScope).toMatch(
+      new RegExp(
+        '\\nDecisions in force for T-0001 \\(follow them; newest first\\):\\n' +
+          `- ${fresh} \\(\\d{4}-\\d{2}-\\d{2}\\): swarmupd merges approved work\\n` +
+          "If your plan or a choice you are about to make conflicts with one, don't work around it:\\n" +
+          `finish with \`swarmup ask T-0001 "contradiction with ${fresh}: \\.\\.\\."\`\\.\\n` +
+          '\\nRules for supervised runs:',
+      ),
+    );
+    expect(inScope).not.toContain('swarmupd never merges');
+    // Outside every scope: no list.
+    expect(await promptOf({ task: '2' })).not.toContain('Decisions in force');
+    // 31 decisions: the newest 30, then how to list the rest.
+    const capped = await promptOf({ task: '3' });
+    expect(capped.split('\n').filter((l) => /^- D-\d+ \(/.test(l))).toHaveLength(30);
+    expect(capped).toContain('): rule 31 of r\n');
+    expect(capped).toContain('): rule 2 of r\n1 more: swarmup decisions --log --task T-0003\nIf ');
+    expect(capped).not.toContain('): rule 1 of r\n');
+    // A schedule with a task carries the list with its own instructions.
+    const scheduled = await promptOf({ task: '4', extra: 'Write the digest.' });
+    expect(scheduled).toContain('Write the digest.\n\nDecisions in force for T-0004 ');
+    // An inbox run has no task, so no list.
+    expect(await promptOf({})).not.toContain('Decisions in force');
+  });
+
   it('frees the task when the run ends without finishing', async () => {
     const { sup, as } = setup({ mode: 'crash' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
@@ -3191,6 +3237,18 @@ describe('questions (AO-0063)', () => {
     );
     expect(work).toContain('- Before you finish, ask yourself what the next agent should know');
     expect(work).toContain('`swarmup learn <topic> "<title>" --task AO-0001 -m');
+
+    // A review run lists the decisions in force after its instructions; a question run does not.
+    const decisions = [{ id: 'D-0042', at: '2026-11-03T12:00:00.000Z', text: 'No approval' }];
+    const reviewed = runPrompt({ agent: 'codex:qa', task: 'AO-0001', review: true, decisions });
+    expect(reviewed).toContain(
+      '`swarmup verdict AO-0001 changes "what to fix, file:line"`.\n\n' +
+        'Decisions in force for AO-0001 (follow them; newest first):\n- D-0042 (2026-11-03): No approval\n',
+    );
+    expect(runPrompt({ agent: 'claude:engineer', decisions })).not.toContain('Decisions in force');
+    expect(runPrompt({ agent: 'claude:engineer', task: 'AO-0001', decisions: [] })).not.toContain(
+      'Decisions in force',
+    );
 
     const review = runPrompt({ agent: 'codex:qa', task: 'AO-0001', review: true, notes });
     expect(review).toContain('- `windows/taskkill-refused`');

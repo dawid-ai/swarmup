@@ -37,6 +37,8 @@ import {
   discoverRoots,
   initRoot,
   isHuman,
+  decisionLines,
+  DECISIONS_TOPIC,
   isStoreDirName,
   moveStore,
   OLD_ROOT_DIR_NAME,
@@ -426,6 +428,27 @@ function printLog(ctx: Ctx, entries: LogEntry[], opts: { notes: boolean; roots: 
       );
     }
   }
+}
+
+/**
+ * Prints the decisions in force for a task (AO-0109), in the format and under the cap of the run
+ * prompt, so a run without a task in its prompt (an inbox run, a schedule) sees them when it
+ * picks the task. `check` adds what to do on a conflict with a plan. Nothing is printed with
+ * `--json` or without decisions. A log that cannot be read is a warning, not a failed command.
+ */
+function printInForce(ctx: Ctx, ref: string, opts: { check?: boolean; gap?: boolean } = {}): void {
+  if (ctx.opts.json) return;
+  let lines: string[];
+  try {
+    lines = decisionLines(ref, ctx.ws().decisionLog({ task: ref }), opts);
+  } catch (err) {
+    // A task that does not exist is the command's own error to report.
+    if (err instanceof OpsError && err.message.startsWith('no task ')) return;
+    return void ctx.io.err(`warning: decisions not listed: ${(err as Error).message}`);
+  }
+  if (lines.length === 0) return;
+  if (opts.gap) ctx.io.out('');
+  for (const line of lines) ctx.io.out(line);
 }
 
 function printRecord(ctx: Ctx, d: Decision): void {
@@ -1097,9 +1120,10 @@ const COMMANDS: Record<string, Command> = {
       if (ctx.opts.json) {
         const attachments = files.map((a) => ({ ref: a.ref, file: a.file, type: a.type }));
         const decisions = Object.fromEntries(marks);
+        const in_force = ws.decisionLog({ task: ref });
         ctx.io.out(
           JSON.stringify(
-            { task: compact(v), meta: v.meta, body, events, decisions, attachments },
+            { task: compact(v), meta: v.meta, body, events, decisions, in_force, attachments },
             null,
             2,
           ),
@@ -1133,6 +1157,8 @@ const COMMANDS: Record<string, Command> = {
         );
       }
       if (body.trim()) o(`\n${body.trim()}`);
+      // Before the events, so a reader meets the decisions with the task text (AO-0109).
+      printInForce(ctx, ref, { gap: true });
       if (v.lostClaims.length) {
         o(
           `lost:     ${v.lostClaims.length} event(s) under a claim that lost a race (marked below)`,
@@ -1221,7 +1247,12 @@ const COMMANDS: Record<string, Command> = {
     usage: 'start ID [PLAN]',
     summary: 'start work (claims first when the task is free)',
     options: MESSAGE_OPTIONS,
-    run: (ctx) => printAct(ctx, ctx.ws().start(arg(ctx, 0, 'task id'), message(ctx, 1, false))),
+    run: (ctx) => {
+      const ref = arg(ctx, 0, 'task id');
+      printAct(ctx, ctx.ws().start(ref, message(ctx, 1, false)));
+      // After the claim: a run that picked the task itself has no list in its prompt (AO-0109).
+      printInForce(ctx, ref, { check: true });
+    },
   },
   progress: {
     usage: 'progress ID MESSAGE',
@@ -1295,10 +1326,12 @@ const COMMANDS: Record<string, Command> = {
     run: (ctx) => {
       const v = arg(ctx, 1, 'verdict');
       if (v !== 'approve' && v !== 'changes') usageError("verdict must be 'approve' or 'changes'");
-      printAct(
-        ctx,
-        ctx.ws().verdict(arg(ctx, 0, 'task id'), v, message(ctx, 2, v === 'changes'), mark(ctx)),
-      );
+      const ref = arg(ctx, 0, 'task id');
+      const text = message(ctx, 2, v === 'changes');
+      const marked = mark(ctx);
+      // Before the write, so an inbox run that reviews sees them for this task (AO-0109).
+      printInForce(ctx, ref);
+      printAct(ctx, ctx.ws().verdict(ref, v, text, marked));
     },
   },
   done: {
@@ -1348,8 +1381,14 @@ const COMMANDS: Record<string, Command> = {
     usage: `answer ID MESSAGE ${MARK_USAGE}`,
     summary: `answer an ask; the task goes back to todo; ${MARK_SUMMARY}`,
     options: { ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
-    run: (ctx) =>
-      printAct(ctx, ctx.ws().answer(arg(ctx, 0, 'task id'), message(ctx, 1, true), mark(ctx))),
+    run: (ctx) => {
+      const ref = arg(ctx, 0, 'task id');
+      const text = message(ctx, 1, true);
+      const marked = mark(ctx);
+      // Before the write, so an inbox run that answers sees them for this task (AO-0109).
+      printInForce(ctx, ref);
+      printAct(ctx, ctx.ws().answer(ref, text, marked));
+    },
   },
   unblock: {
     usage: 'unblock ID [MESSAGE]',
@@ -1499,6 +1538,16 @@ const COMMANDS: Record<string, Command> = {
       ctx.io.out(
         ctx.opts.json ? JSON.stringify({ ref: res.note.ref, file: res.note.file }) : res.note.ref,
       );
+      // The log, not a note, holds what the human decided (AO-0109); the note is still written,
+      // for lessons about how to decide. On stderr, so stdout stays the note's ref.
+      if (res.note.topic === DECISIONS_TOPIC) {
+        ctx.io.err(
+          'note: a learn note is not a recorded decision. A decision of the human goes in the ' +
+            'decision log: `swarmup decision "one line"` or a `--decision` mark; if you cannot ' +
+            'record it, tell the PM with `swarmup comment ID "..." --to claude:pm`, naming the ' +
+            'event or chat message.',
+        );
+      }
     },
   },
   kb: {
@@ -1526,13 +1575,21 @@ const COMMANDS: Record<string, Command> = {
         } catch (err) {
           ctx.io.err(`warning: read not recorded: ${(err as Error).message}`);
         }
+        // An imported note: the records that name it as their source (AO-0109).
+        const records = ws.noteRecords(n);
         if (ctx.opts.json) {
-          ctx.io.out(JSON.stringify(n, null, 2));
+          ctx.io.out(JSON.stringify(records.length > 0 ? { ...n, records } : n, null, 2));
           return;
         }
         ctx.io.out(`${n.ref}  ${n.title}`);
         const meta = [n.author, n.created_at.slice(0, 10), n.task, (n.tags ?? []).join(',')];
         ctx.io.out(meta.filter(Boolean).join('  '));
+        for (const r of records) {
+          const notes = logNotes(r);
+          ctx.io.out(
+            `decision: ${r.id} (${scopeText(r)})${notes.length > 0 ? `; ${notes.join('; ')}` : ''}`,
+          );
+        }
         ctx.io.out(`\n${n.body}`);
         return;
       }

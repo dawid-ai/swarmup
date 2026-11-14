@@ -1297,6 +1297,20 @@ export class Supervisor extends EventEmitter {
     }
   }
 
+  /**
+   * The decisions in force for a task (AO-0109), newest first, for its run's prompt: from the
+   * root that holds it and the same `inForce` as `swarmup decisions --log --task ID`. A decision
+   * file that cannot be read never stops the run: the prompt then lists none, and
+   * `swarmup start` reports the error.
+   */
+  private taskDecisions(ws: Workspace, ref: string): { id: string; at: string; text: string }[] {
+    try {
+      return ws.decisionLog({ task: ref }).map(({ id, at, text }) => ({ id, at, text }));
+    } catch {
+      return [];
+    }
+  }
+
   /** Git work on the checkout at `top`, with every task store swarmupd knows left out. */
   private checkout(top: string): Checkout {
     return new Checkout(
@@ -2911,6 +2925,11 @@ export class Supervisor extends EventEmitter {
     }
     // Custom prompts are used as given, so only a standard task prompt lists related notes.
     const notes = req.prompt === undefined && ref ? this.taskNotes(ws, ref) : [];
+    // The decisions in force for the task (AO-0109), for a work run, a review run and a schedule
+    // with a task. A question run answers and plans nothing; inbox runs and schedules without a
+    // task have no one root to take decisions from, and get them from `swarmup start`.
+    const decisions =
+      req.prompt === undefined && ref && !question ? this.taskDecisions(ws, ref) : [];
     // A custom prompt is used as given, plus the store-checkout rule when it applies, plus the
     // read-only Codex note.
     const prompt =
@@ -2934,6 +2953,7 @@ export class Supervisor extends EventEmitter {
             taskWorktree,
             scratch: readOnly || req.chat ? undefined : scratch,
             notes,
+            decisions,
           })) +
       (inv.note ?? '') +
       checksNote +

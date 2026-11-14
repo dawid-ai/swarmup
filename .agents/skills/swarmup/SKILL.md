@@ -21,6 +21,11 @@ the SwarmUp checkout.
    open those image files: they are screenshots or designs the task refers to.
 4. `swarmup start ID "one-line plan"`: claims and starts. Exit code 1 means someone else holds it; run
    `swarmup next` again.
+5. Check your plan against the **decisions in force**: the lines `- D-0042 (2026-11-03): ...` that
+   your prompt, `swarmup show ID` and `swarmup start ID` list for the task. They are what the human
+   decided; follow them. If your plan or a choice you are about to make conflicts with one, don't
+   work around it: finish with `swarmup ask ID "contradiction with D-NNNN: ..."`.
+   `swarmup decisions --log --task ID` lists them all.
 
 ## Rules
 
@@ -170,6 +175,11 @@ EOF
 - Learned something the next agent should know (a gotcha, a fix that took long)? Write a note:
   `swarmup learn windows "Git Bash forks slowly" --task ID -m "what, why, what to do instead"`.
   Before you dig into a problem, check `swarmup kb words` for an existing note.
+- A decision of the human is never a learn note: it is recorded with `swarmup decision "one line"`
+  or a `--decision` mark on `answer`, `verdict`, `comment`, `retype` or `park`. Only a person or the
+  PM records one. If you meet a decision of the human that the task's list does not have, tell the
+  PM, naming the event or chat message it is in:
+  `swarmup comment ID "AO-0014#<event id>: Dawid decided ..., not in the decision log" --to claude:pm`.
 - Want to tell another agent or the human something about a task: `swarmup comment ID "text" --to ID`.
 
 ## Channels and votes

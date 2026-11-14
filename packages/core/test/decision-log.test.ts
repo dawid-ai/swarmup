@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ChatSourceMessage, Workspace } from '../src/index.js';
-import { OpsError, stringifyDoc, writeOutcome } from '../src/index.js';
+import { decisionLines, OpsError, stringifyDoc, writeOutcome } from '../src/index.js';
 import { setup } from './helpers.js';
 
 /** The exit code a call fails with, or 0 when it does not throw. */
@@ -536,5 +536,93 @@ describe('decision log: a PM chat message as the source', () => {
     // A person is held to the same rule: a chat source is a person's chat message.
     expect(code(() => h.recordDecision({ text: 'x', source, chat: reply }))).toBe(2);
     expect(h.decisionLog()).toEqual([]);
+  });
+});
+
+describe('decision log: learn notes of the decisions topic in prompts (AO-0309)', () => {
+  const TITLE = 'Ask Dawid only for crucial decisions about hosting regions';
+  const SLUG = 'ask-dawid-only-for-crucial-decisions-about-hosting-regions';
+  const SOURCE = `kb/decisions/${SLUG}.md`;
+  const LESSON = 'Vote on crucial hosting regions with Dawid only when a quorum is reachable';
+  const refs = (ws: Workspace, task: string): string[] => ws.taskNotes(task).map((n) => n.ref);
+
+  function notes() {
+    const w = world();
+    const inP = w.h.newTask({ title: 'Pick crucial hosting regions with Dawid', project: 'p' }).id;
+    const inQ = w.h.newTask({ title: 'Pick crucial hosting regions with Dawid', project: 'q' }).id;
+    // Other work in the root, so the words the notes share with these tasks are rare enough to
+    // relate them (`relatedNotes` weighs a word by how few titles hold it).
+    for (let i = 0; i < 20; i++) w.h.newTask({ title: `Unrelated filler work ${i}` });
+    const agent = w.as('claude:engineer', { now: w.now });
+    const note = agent.learn({ topic: 'decisions', title: TITLE, body: 'He said so.' }).note;
+    expect(note.ref).toBe(`decisions/${SLUG}`);
+    // An agent's lesson in the same topic: the import leaves it out, so it gets no record.
+    const lesson = agent.learn({ topic: 'decisions', title: LESSON, body: 'From v1.' }).note;
+    return { ...w, inP, inQ, note, lesson };
+  }
+
+  it('omits a note with a record for a task in the record scope and keeps it outside', () => {
+    const { h, inP, inQ, note, lesson } = notes();
+    expect(refs(h, inP).sort()).toEqual([note.ref, lesson.ref].sort());
+    const record = h.recordDecision({ text: TITLE, project: 'p', source: SOURCE }).meta;
+    expect(record).toMatchObject({ source: SOURCE, scope: 'project', project: 'p' });
+
+    // Inside the scope the log gives the rule, so the note is no prompt guidance there; the
+    // note without a record stays.
+    expect(forTask(h, inP)).toEqual([record.id]);
+    expect(refs(h, inP)).toEqual([lesson.ref]);
+    // Outside it the task has no record, so it keeps the note.
+    expect(forTask(h, inQ)).toEqual([]);
+    expect(refs(h, inQ).sort()).toEqual([note.ref, lesson.ref].sort());
+    expect(h.noteRecords(note).map((e) => e.id)).toEqual([record.id]);
+    expect(h.noteRecords(lesson)).toEqual([]);
+  });
+
+  it('still omits the note after its record is superseded', () => {
+    const { h, inP, inQ, note, lesson } = notes();
+    const old = h.recordDecision({ text: TITLE, project: 'p', source: SOURCE }).meta.id;
+    const fresh = h.recordDecision({ text: 'Ask Dawid about every region', supersedes: [old] });
+    expect(forTask(h, inP)).toEqual([fresh.meta.id]);
+    // The hidden record still covers the task: its source note must not come back as guidance.
+    expect(refs(h, inP)).toEqual([lesson.ref]);
+    expect(refs(h, inQ)).toContain(note.ref);
+    expect(h.noteRecords(note)[0]).toMatchObject({
+      id: old,
+      state: 'superseded',
+      replaced: [{ by: fresh.meta.id, how: 'superseded', where: 'in project p' }],
+    });
+  });
+
+  it('omits the note under a tree record only for the tasks of that tree', () => {
+    const { h, inP, note } = notes();
+    const child = h.newTask({ title: 'Crucial hosting regions: ask Dawid', parent: inP }).id;
+    const beside = h.newTask({ title: 'Crucial hosting regions for Dawid', project: 'p' }).id;
+    h.recordDecision({ text: TITLE, task: inP, source: SOURCE });
+    expect(refs(h, child)).not.toContain(note.ref);
+    expect(refs(h, beside)).toContain(note.ref);
+  });
+});
+
+describe('decision log: the list for prompts and task commands', () => {
+  it('prints the newest 30, then how to list the rest', () => {
+    const entry = (n: number) => ({
+      id: `D-${String(n).padStart(4, '0')}`,
+      at: '2026-11-03T12:00:00.000Z',
+      text: `rule ${n}`,
+    });
+    expect(decisionLines('AO-0110', [])).toEqual([]);
+    expect(decisionLines('AO-0110', [entry(42), entry(7)], { check: true })).toEqual([
+      'Decisions in force for AO-0110 (follow them; newest first):',
+      '- D-0042 (2026-11-03): rule 42',
+      '- D-0007 (2026-11-03): rule 7',
+      "If your plan or a choice you are about to make conflicts with one, don't work around it:",
+      'finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.',
+    ]);
+    const all = Array.from({ length: 31 }, (_, i) => entry(31 - i));
+    expect(decisionLines('AO-0110', all.slice(0, 30))).toHaveLength(31);
+    const capped = decisionLines('AO-0110', all);
+    expect(capped).toHaveLength(32);
+    expect(capped[30]).toBe('- D-0002 (2026-11-03): rule 2');
+    expect(capped[31]).toBe('1 more: swarmup decisions --log --task AO-0110');
   });
 });

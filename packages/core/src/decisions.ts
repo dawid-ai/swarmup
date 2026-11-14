@@ -5,6 +5,7 @@ import { parseDoc, stringifyDoc } from './frontmatter.js';
 import { actorSlug, isHuman, OpsError, ownerMatches } from './ids.js';
 import type { Root } from './root.js';
 import { isUlid, ulidAfter } from './ulid.js';
+import { localTime } from './units.js';
 
 const DECISION_RE = /^D-(\d+)$/i;
 
@@ -579,6 +580,68 @@ export function decisionLog(
   const tasks = rootTasks(root);
   const all = listDecisionIds(root).map((id) => readDecisionFiles(root, id, nowMs));
   return { entries: logEntries(root, all, tasks), tasks };
+}
+
+/** The most decisions a run prompt, `swarmup start` and the other task commands list. */
+export const DECISIONS_CAP = 30;
+
+/**
+ * The decisions in force for a task as run prompts and `swarmup start`, `show`, `verdict` and
+ * `answer` print them (AO-0109, "Run prompts"): a heading, one line per decision, newest first
+ * and `DECISIONS_CAP` at most, then how to list the rest. `entries` come from `inForce`. With
+ * `check`, the lines that tell a run what to do on a conflict follow. No decisions, no lines.
+ */
+export function decisionLines(
+  task: string,
+  entries: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>,
+  opts: { check?: boolean } = {},
+): string[] {
+  const shown = entries.slice(0, DECISIONS_CAP);
+  const first = shown[0];
+  if (!first) return [];
+  const lines = [
+    `Decisions in force for ${task} (follow them; newest first):`,
+    ...shown.map((e) => `- ${e.id} (${localTime(e.at).slice(0, 10)}): ${e.text}`),
+  ];
+  const more = entries.length - shown.length;
+  if (more > 0) lines.push(`${more} more: swarmup decisions --log --task ${task}`);
+  if (opts.check) {
+    lines.push(
+      "If your plan or a choice you are about to make conflicts with one, don't work around it:",
+      `finish with \`swarmup ask ${task} "contradiction with ${first.id}: ..."\`.`,
+    );
+  }
+  return lines;
+}
+
+/** The topic whose learn notes the import turns into records (AO-0309). */
+export const DECISIONS_TOPIC = 'decisions';
+
+const NOTE_SOURCE = /^(?:\.\/)?kb\/decisions\/([^/]+)\.md$/i;
+
+/** The slug of the `kb/decisions/<slug>.md` note a record names as its source, else null. */
+export function noteSourceSlug(source: string | undefined): string | null {
+  return NOTE_SOURCE.exec((source ?? '').trim().replace(/\\/g, '/'))?.[1] ?? null;
+}
+
+/** The records of a log whose source is the decisions-topic note `slug`, newest first. */
+export function noteRecords(entries: LogEntry[], slug: string): LogEntry[] {
+  return entries.filter((e) => e.kind === 'record' && noteSourceSlug(e.source) === slug);
+}
+
+/**
+ * The slugs of the decisions-topic notes the log replaces for `task`: a record names the note as
+ * its source and has the task in its scope, in force there or hidden by a later record. Inside
+ * that scope `inForce` gives the current rule, so the note is not prompt guidance for the task;
+ * a task outside the scope keeps the note.
+ */
+export function recordedNoteSlugs(entries: LogEntry[], task: TaskScope): Set<string> {
+  const out = new Set<string>();
+  for (const e of entries) {
+    const slug = e.kind === 'record' ? noteSourceSlug(e.source) : null;
+    if (slug && covers(e, task)) out.add(slug);
+  }
+  return out;
 }
 
 /** A message of the desktop PM chat, as swarmupd returns it for a `chat:<id>` source. */

@@ -51,15 +51,18 @@ import {
   DECISION_TEXT_MAX,
   decisionConflicts,
   decisionLog,
+  DECISIONS_TOPIC,
   defaultQuorum,
   hasDecision,
   inForce,
   listDecisionIds,
   matchOption,
   mayVote,
+  noteRecords,
   parseDecisionId,
   readDecision,
   readDecisionFiles,
+  recordedNoteSlugs,
   scopeRelation,
   scopeText,
   taskScope,
@@ -2451,7 +2454,22 @@ export class Workspace {
    */
   taskNotes(ref: string, limit?: number): { ref: string; title: string; score: number }[] {
     const shown = this.showEvents(ref);
-    const all = this.roots.flatMap((root) => readNotes(root));
+    const at = this.resolve(ref);
+    // The decision log is canonical in prompts (AO-0109): a decisions note that a record covering
+    // this task names as its source is left out, before the limit, so another note takes its
+    // place. Most roots hold no decisions: nothing more is read then.
+    const recorded =
+      listDecisionIds(at.root).length > 0
+        ? (() => {
+            const { entries, tasks } = decisionLog(at.root, this.now());
+            return recordedNoteSlugs(entries, taskScope(tasks, at.id));
+          })()
+        : new Set<string>();
+    const all = this.roots
+      .flatMap((root) => readNotes(root))
+      .filter(
+        (n) => !(n.root === at.root.name && n.topic === DECISIONS_TOPIC && recorded.has(n.slug)),
+      );
     if (all.length === 0) return [];
     const seen = new Map<string, number>();
     for (const note of all) seen.set(note.ref, (seen.get(note.ref) ?? 0) + 1);
@@ -2573,6 +2591,18 @@ export class Workspace {
       throw new OpsError(`${ref} exists in several roots; write <root>/${ref}`, 2);
     }
     return found[0]!;
+  }
+
+  /**
+   * The recorded decisions that name `note` as their source (AO-0109), newest first, each with
+   * its scope and the records that replaced it. Only a note of the `decisions` topic has any.
+   */
+  noteRecords(note: KbNote): LogEntry[] {
+    if (note.topic !== DECISIONS_TOPIC) return [];
+    return this.roots
+      .filter((r) => r.name === note.root && listDecisionIds(r).length > 0)
+      .flatMap((r) => noteRecords(decisionLog(r, this.now()).entries, note.slug))
+      .filter((e, i, all) => all.findIndex((x) => x.id === e.id) === i);
   }
 
   /**

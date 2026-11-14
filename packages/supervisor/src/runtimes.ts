@@ -1,5 +1,5 @@
-import type { AgentDef } from '@swarmup/core';
-import { actorSlug, runtimeOf } from '@swarmup/core';
+import type { AgentDef, LogEntry } from '@swarmup/core';
+import { actorSlug, decisionLines, runtimeOf } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkModel } from './config.js';
 
@@ -365,6 +365,11 @@ export interface PromptInput {
   scratch?: string;
   /** Learn notes whose title or topic matches the task's words (AO-0049), best first. */
   notes?: { ref: string; title: string }[];
+  /**
+   * The decisions in force for `task` (AO-0109), newest first, from `inForce` in the task's root:
+   * what `swarmup decisions --log --task ID` lists. A run without a task has none.
+   */
+  decisions?: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>;
 }
 
 /** The rule that keeps a run's scratch files out of every repo (AO-0230). */
@@ -693,6 +698,11 @@ export function runPrompt(p: PromptInput): string {
       '',
       'Run `swarmup inbox` and handle what waits for you, then `swarmup next` and work that task.',
     );
+  }
+  // Inline, not a command to run: a line in the prompt is read every time (AO-0109). A question
+  // run answers and changes nothing, so it has no plan to check and gets no list.
+  if (p.task && !p.question && p.decisions && p.decisions.length > 0) {
+    lines.push('', ...decisionLines(p.task, p.decisions, { check: true }));
   }
   lines.push(
     '',
