@@ -1422,3 +1422,99 @@ describe('inbox recommendations and blocked tasks (AO-0065, AO-0066, AO-0068)', 
     );
   });
 });
+
+describe('swarmup plan (AO-0110)', () => {
+  const PLAN = [
+    'items:',
+    '  - key: apple',
+    '    title: Apple Developer account',
+    '    owner: human:dawid',
+    '    estimate: 1h',
+    '  - key: ci',
+    '    title: Build and sign the .dmg in CI',
+    "    owner: '*:engineer'",
+    '    after: [apple]',
+    '    estimate: 4h',
+    '    review: codex:qa',
+    '',
+  ].join('\n');
+
+  function milestone(): string {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    const made = swarmup(
+      d,
+      'human:dawid',
+      ...['new', 'Desktop app ships on macOS', '--type', 'milestone', '--to', 'claude:pm'],
+      ...['--done-when', 'A signed .dmg from CI installs on a clean Mac'],
+    );
+    expect(made.code).toBe(0);
+    writeFileSync(join(d, 'plan.yml'), PLAN);
+    swarmup(d, 'claude:pm', 'start', '1', 'write the plan');
+    return d;
+  }
+
+  it('proposes a plan, creates its tasks with one approval, and writes nothing the second time', () => {
+    const d = milestone();
+    const proposed = swarmup(d, 'claude:pm', 'plan', 'propose', '1', '--file', 'plan.yml');
+    expect(proposed).toMatchObject({ code: 0, out: 'T-0001 needs-review (owner claude:pm)' });
+    const pending = swarmup(d, 'human:dawid', 'plan', 'show', '1').out;
+    expect(pending).toMatch(/waits for approval: \S+ by claude:pm, 2 items, 5 h/);
+
+    const refused = swarmup(d, 'claude:pm', 'plan', 'approve', '1');
+    expect(refused.code).toBe(1);
+    expect(refused.err).toMatch(/only a person approves a plan/);
+    const approved = swarmup(d, 'human:dawid', 'plan', 'approve', '1');
+    expect(approved.code).toBe(0);
+    expect(approved.out.split('\n')).toEqual([
+      'T-0001 blocked (owner *:qa)',
+      "created T-0002 for 'apple'",
+      "created T-0003 for 'ci'",
+    ]);
+    const ci = JSON.parse(swarmup(d, 'human:dawid', 'show', '3', '--json').out);
+    expect(ci.meta).toMatchObject({
+      parent: 'T-0001',
+      blocked_by: ['T-0002'],
+      plan_item: 'T-0001#ci',
+      review: 'codex:qa',
+      labels: ['milestone:T-0001'],
+    });
+
+    const again = swarmup(d, 'claude:engineer', 'plan', 'apply', '1');
+    expect(again).toMatchObject({ code: 0 });
+    expect(again.out).toMatch(/nothing to write: the plan is applied/);
+    expect(swarmup(d, 'human:dawid', 'list').out.split('\n')).toHaveLength(3);
+
+    const shown = swarmup(d, 'human:dawid', 'plan', 'show', '1').out;
+    expect(shown).toMatch(/plan: 2 items, 5 h, 0 min spent; approved in \S+, planner claude:pm/);
+    expect(shown).toMatch(/^ci\s+T-0003\s+blocked\s+\*:engineer\s+apple\s+4h/m);
+    const yaml = swarmup(d, 'human:dawid', 'plan', 'show', '1', '--yaml').out;
+    expect(yaml).toMatch(/^items:\n {2}- key: apple/);
+    expect(yaml).not.toMatch(/origin/);
+  });
+
+  it('sends a plan back, amends an approved one, and names the plan file it needs', () => {
+    const d = milestone();
+    expect(swarmup(d, 'claude:pm', 'plan', 'propose', '1')).toMatchObject({ code: 2 });
+    swarmup(d, 'claude:pm', 'plan', 'propose', '1', '--file', 'plan.yml');
+    const back = swarmup(d, 'human:dawid', 'plan', 'reject', '1', 'T-0001: add a smoke check');
+    expect(back).toMatchObject({ code: 0, out: 'T-0001 todo (owner claude:pm)' });
+    swarmup(d, 'claude:pm', 'start', '1', 'revise');
+    swarmup(d, 'claude:pm', 'plan', 'propose', '1', '--file', 'plan.yml');
+    swarmup(d, 'human:dawid', 'plan', 'approve', '1');
+
+    writeFileSync(
+      join(d, 'sub.yml'),
+      "items:\n  - key: notarize\n    title: Notarize the build\n    owner: '*:engineer'\n    estimate: 1h\n    for: ci\n",
+    );
+    const amend = ['plan', 'amend', '1', '--file', 'sub.yml'];
+    expect(swarmup(d, 'claude:pm', ...amend).code).toBe(2);
+    const amended = swarmup(d, 'claude:pm', ...amend, '--kind', 'subtask');
+    expect(amended.code).toBe(0);
+    expect(amended.out).toMatch(/created T-0004 for 'notarize'/);
+    const over = swarmup(d, 'claude:pm', ...amend, '--kind', 'subtask');
+    expect(over.code).toBe(1);
+    expect(over.err).toMatch(/use --kind change/);
+    expect(swarmup(d, 'claude:pm', 'plan', 'drop', '1').code).toBe(2);
+  });
+});

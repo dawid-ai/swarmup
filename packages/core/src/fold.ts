@@ -10,7 +10,7 @@ import type {
   TaskView,
 } from './model.js';
 import { MERGE_ACTOR, OPEN_STATUSES, PLAN_CHECKER } from './model.js';
-import { readPlanBody } from './plan.js';
+import { planChangedKeys, readPlanBody } from './plan.js';
 import { reviewSources } from './review-source.js';
 import { ownerMatches } from './ids.js';
 import { ulidTime } from './ulid.js';
@@ -188,15 +188,9 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         const plan = planState();
         const first = plan.approval === null;
         const items = doc.items.map((i): EffectivePlanItem => ({ ...i, origin: 'approve' }));
-        const approved = new Map(items.map((i) => [i.key, i] as const));
         // Existing items this approval removes, hands to another owner or reorders. An estimate
         // lives in the plan only, so it changes no task.
-        plan.diff = plan.items
-          .filter((old) => {
-            const next = approved.get(old.key);
-            return !next || next.owner !== old.owner || !sameKeys(next.after, old.after);
-          })
-          .map((old) => old.key);
+        plan.diff = planChangedKeys(plan.items, items);
         plan.skipped = [];
         plan.items = items;
         plan.approval = e.id;
@@ -297,7 +291,8 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         clearClaim();
         clearWait();
         s.reviewer = null;
-        if (e.type === 'handoff') blockOn(e);
+        // A handoff, or an assign of a plan task, carries the waits the task keeps (AO-0110).
+        blockOn(e);
         break;
       case 'delegate':
         if (e.to) s.owner = e.to;
@@ -424,12 +419,6 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
 function splitMarker(marker: string): [string, string] {
   const at = marker.indexOf('#');
   return at < 0 ? [marker, ''] : [marker.slice(0, at), marker.slice(at + 1)];
-}
-
-function sameKeys(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-  const x = new Set(a ?? []);
-  const y = new Set(b ?? []);
-  return x.size === y.size && [...x].every((k) => y.has(k));
 }
 
 /**

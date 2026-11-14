@@ -15,6 +15,9 @@ import type {
   LogEntry,
   MarkInput,
   OpsEvent,
+  PlanReport,
+  PlanResult,
+  PlanRow,
   Priority,
   ProjectPlan,
   RepeatInput,
@@ -44,6 +47,7 @@ import {
   OLD_ROOT_DIR_NAME,
   localTime,
   masterRoot,
+  minutesText,
   mirrorPartners,
   OpsError,
   readDenyFile,
@@ -834,6 +838,92 @@ function printAct(ctx: Ctx, res: ActResult): void {
   printWarnings(ctx, res.warnings);
 }
 
+/** The result of a `swarmup plan` write: the milestone, then one line per task it wrote. */
+function printPlanResult(ctx: Ctx, res: PlanResult): void {
+  if (ctx.opts.json) {
+    ctx.io.out(
+      JSON.stringify(
+        {
+          task: compact(res.view),
+          events: res.events.map((e) => e.id),
+          created: res.created,
+          applied: res.applied,
+          skipped: res.skipped,
+          warnings: res.warnings,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  const v = res.view;
+  const who = v.claimedBy ? ` (${v.claimedBy})` : v.owner ? ` (owner ${v.owner})` : '';
+  ctx.io.out(`${v.meta.id} ${v.status}${who}`);
+  for (const c of res.created) ctx.io.out(`created ${c.id} for '${c.key}'`);
+  for (const a of res.applied) ctx.io.out(`${a.change} ${a.id} for '${a.key}'`);
+  for (const k of res.skipped) {
+    ctx.io.out(`skipped ${k.id} for '${k.key}': closed before the change applied`);
+  }
+  if (res.events.length + res.created.length + res.applied.length + res.skipped.length === 0) {
+    ctx.io.out('nothing to write: the plan is applied');
+  }
+  for (const n of res.notes ?? []) ctx.io.err(`note: ${n}`);
+  printWarnings(ctx, res.warnings);
+}
+
+/** One table of plan items: key, task, status, owner, what it waits for, estimate and time spent. */
+function printPlanRows(ctx: Ctx, rows: PlanRow[]): void {
+  const w = (pick: (r: PlanRow) => string, min: number): number =>
+    Math.max(min, ...rows.map((r) => pick(r).length));
+  const key = w((r) => r.key, 3);
+  const owner = w((r) => r.taskOwner ?? r.owner, 5);
+  const after = w((r) => r.after.join(',') || '-', 5);
+  ctx.io.out(
+    `${pad('key', key)} ${pad('task', 9)} ${pad('status', 12)} ${pad('owner', owner)} ${pad('after', after)} ${pad('est', 5)} spent  title`,
+  );
+  for (const r of rows) {
+    const spent = r.spent !== undefined ? minutesText(r.spent) : '-';
+    ctx.io.out(
+      `${pad(r.key, key)} ${pad(r.task ?? '-', 9)} ${pad(r.status ?? '-', 12)} ${pad(r.taskOwner ?? r.owner, owner)} ${pad(r.after.join(',') || '-', after)} ${pad(r.estimate, 5)} ${pad(spent, 6)} ${r.title}`,
+    );
+  }
+}
+
+function printPlanReport(ctx: Ctx, p: PlanReport): void {
+  const o = ctx.io.out;
+  o(`${p.id}  ${p.title}`);
+  if (p.doneWhen) o(`done when: ${p.doneWhen}`);
+  if (p.items.length > 0) {
+    o(
+      `plan: ${p.items.length} item${p.items.length === 1 ? '' : 's'}, ${minutesText(p.minutes)}, ${minutesText(p.spent)} spent; approved in ${p.approval}, planner ${p.planner ?? '-'}`,
+    );
+    printPlanRows(ctx, p.items);
+  } else if (!p.pending) {
+    o('no plan yet: the planner claims the milestone and runs swarmup plan propose');
+  }
+  if (p.incomplete) {
+    const parts = [
+      p.incomplete.missing.length ? `no task yet for ${p.incomplete.missing.join(', ')}` : '',
+      p.incomplete.unapplied.length
+        ? `change not applied to ${p.incomplete.unapplied.join(', ')}`
+        : '',
+    ].filter(Boolean);
+    o(`incomplete application: ${parts.join('; ')}; run swarmup plan apply ${p.id}`);
+  }
+  if (p.pending) {
+    const q = p.pending;
+    o('');
+    o(
+      `waits for approval: ${q.event} by ${q.actor}, ${q.items.length} item${q.items.length === 1 ? '' : 's'}, ${minutesText(q.minutes)}` +
+        (q.stale ? '; plan changed since proposal, so it cannot be approved' : ''),
+    );
+    if (q.notes) o(`notes: ${q.notes}`);
+    if (p.approval) for (const c of q.changes) o(`  ${c}`);
+    else printPlanRows(ctx, q.items);
+  }
+}
+
 /** Warnings go to stderr, so `--json` output and scripts reading stdout stay clean. */
 function printWarnings(ctx: Ctx, warnings: string[] | undefined): void {
   for (const w of warnings ?? []) ctx.io.err(`warning: ${w}`);
@@ -1493,6 +1583,62 @@ const COMMANDS: Record<string, Command> = {
           message: message(ctx, 2, false),
         }),
       ),
+  },
+  plan: {
+    usage:
+      'plan propose|show|approve|reject|amend|apply ID [--file PLAN.yml] [--kind subtask|fix|change] [--yaml] [MESSAGE]',
+    summary:
+      "a milestone's plan: propose it from a YAML file (the milestone's holder), show it, approve it as proposed or as edited in --file or reject it with a note (a person), amend it (--kind subtask or fix adds items at once; --kind change proposes the full revised plan), or apply what an approval left unfinished",
+    options: {
+      file: { type: 'string' },
+      kind: { type: 'string' },
+      yaml: { type: 'boolean' },
+      ...MESSAGE_OPTIONS,
+    },
+    run: (ctx) => {
+      const verb = arg(ctx, 0, 'plan command (propose, show, approve, reject, amend or apply)');
+      const id = arg(ctx, 1, 'milestone id');
+      const file = str(ctx.opts.file);
+      const plan = (): string =>
+        readText(
+          ctx,
+          file ?? usageError(`name the plan file: swarmup plan ${verb} ${id} --file plan.yml`),
+        );
+      const ws = ctx.ws();
+      switch (verb) {
+        case 'propose':
+          return printPlanResult(ctx, ws.planPropose(id, plan(), message(ctx, 2, false)));
+        case 'approve':
+          return printPlanResult(
+            ctx,
+            ws.planApprove(id, {
+              source: file ? plan() : undefined,
+              message: message(ctx, 2, false),
+            }),
+          );
+        case 'reject':
+          return printPlanResult(ctx, ws.planReject(id, message(ctx, 2, true)));
+        case 'amend': {
+          const kind = str(ctx.opts.kind);
+          if (kind !== 'subtask' && kind !== 'fix' && kind !== 'change') {
+            usageError('pass --kind subtask, --kind fix or --kind change');
+          }
+          return printPlanResult(ctx, ws.planAmend(id, kind, plan(), message(ctx, 2, false)));
+        }
+        case 'apply':
+          return printPlanResult(ctx, ws.planApply(id));
+        case 'show': {
+          const report = ws.planShow(id);
+          if (ctx.opts.json) return void ctx.io.out(JSON.stringify(report, null, 2));
+          if (ctx.opts.yaml) return void ctx.io.out(report.yaml.trimEnd());
+          return printPlanReport(ctx, report);
+        }
+        default:
+          usageError(
+            `unknown plan command '${verb}': use propose, show, approve, reject, amend or apply`,
+          );
+      }
+    },
   },
   archive: {
     usage: 'archive [--days N] [--dry-run]',

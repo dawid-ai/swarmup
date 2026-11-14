@@ -255,6 +255,11 @@ export function checkPlan(source: string, kind: PlanKind, plan: PlanState | null
   return doc;
 }
 
+/** A plan as the YAML of a plan file: what `swarmup plan show --yaml` prints for a revision. */
+export function planYaml(doc: PlanDoc): string {
+  return YAML.stringify({ ...(doc.notes ? { notes: doc.notes } : {}), items: doc.items });
+}
+
 const FENCE_RE = /^(`{3,})ya?ml[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/m;
 
 /**
@@ -262,7 +267,7 @@ const FENCE_RE = /^(`{3,})ya?ml[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/m;
  * longer than any run of backticks in the plan, so an item's body may hold code blocks.
  */
 export function planBody(doc: PlanDoc, text = ''): string {
-  const yaml = YAML.stringify({ ...(doc.notes ? { notes: doc.notes } : {}), items: doc.items });
+  const yaml = planYaml(doc);
   const longest = Math.max(2, ...(yaml.match(/`+/g) ?? []).map((run) => run.length));
   const fence = '`'.repeat(longest + 1);
   const head = text.trim() ? `${text.trim()}\n\n` : '';
@@ -282,3 +287,107 @@ export function readPlanBody(body: string): PlanDoc | null {
     return null;
   }
 }
+
+function sameSet(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const x = new Set(a ?? []);
+  const y = new Set(b ?? []);
+  return x.size === y.size && [...x].every((k) => y.has(k));
+}
+
+/**
+ * The keys of `old` that `next` changes on their tasks: removed, or with another owner or
+ * `after`. An estimate lives in the plan only, so it changes no task. The fold and the
+ * `swarmup plan` commands share this rule, so `planHold` and the application agree.
+ */
+export function planChangedKeys(old: readonly PlanItem[], next: readonly PlanItem[]): string[] {
+  const now = new Map(next.map((i) => [i.key, i] as const));
+  return old
+    .filter((o) => {
+      const n = now.get(o.key);
+      return !n || n.owner !== o.owner || !sameSet(n.after, o.after);
+    })
+    .map((o) => o.key);
+}
+
+/** The fields of a plan item that live in `task.md` and so never change in place. */
+const FIXED_FIELDS = ['title', 'body', 'done_when', 'review', 'type', 'priority', 'for'] as const;
+
+/**
+ * Refuses, with exit 1 and the key and field, a plan in which an existing item's title, body,
+ * `done_when`, `review`, `type` or `priority` differs from the effective plan (AO-0110, "No
+ * in-place edits"): no event changes `task.md`, so the plan replaces the item under a new key.
+ */
+export function refuseInPlaceEdits(effective: readonly PlanItem[], doc: PlanDoc): void {
+  const old = new Map(effective.map((i) => [i.key, i] as const));
+  for (const item of doc.items) {
+    const was = old.get(item.key);
+    if (!was) continue;
+    for (const field of FIXED_FIELDS) {
+      if ((was[field] ?? '') === (item[field] ?? '')) continue;
+      const how =
+        field === 'type' || field === 'priority'
+          ? `change it on the task with swarmup ${field === 'type' ? 'retype' : 'priority'}`
+          : 'remove the item and add it under a new key';
+      throw new OpsError(
+        `item '${item.key}': ${field} differs from the approved plan, and a plan never edits ` +
+          `an existing task in place; ${how}`,
+      );
+    }
+  }
+}
+
+/** What `next` changes against `old`, one short phrase per change, for a person to read. */
+export function planDiffLines(old: readonly PlanItem[], next: readonly PlanItem[]): string[] {
+  const was = new Map(old.map((i) => [i.key, i] as const));
+  const now = new Map(next.map((i) => [i.key, i] as const));
+  const out: string[] = [];
+  const keys = (list: readonly string[] | undefined): string => `[${(list ?? []).join(', ')}]`;
+  for (const o of old) if (!now.has(o.key)) out.push(`removed: ${o.key}`);
+  for (const n of next) {
+    const o = was.get(n.key);
+    if (!o) {
+      out.push(`added: ${n.key}`);
+      continue;
+    }
+    if (o.owner !== n.owner) out.push(`owner of ${n.key}: ${o.owner} -> ${n.owner}`);
+    if (!sameSet(o.after, n.after)) {
+      out.push(`after of ${n.key}: ${keys(o.after)} -> ${keys(n.after)}`);
+    }
+    if (o.estimate !== n.estimate) {
+      out.push(`estimate of ${n.key}: ${o.estimate} -> ${n.estimate}`);
+    }
+    for (const field of FIXED_FIELDS) {
+      if ((o[field] ?? '') !== (n[field] ?? '')) out.push(`${field} of ${n.key} edited`);
+    }
+  }
+  return out;
+}
+
+/** `items` with every item after the items it waits for; keys outside `items` are ignored. */
+export function planOrder<T extends PlanItem>(items: readonly T[]): T[] {
+  const byKey = new Map(items.map((i) => [i.key, i] as const));
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const visit = (item: T): void => {
+    if (seen.has(item.key)) return;
+    seen.add(item.key);
+    for (const a of item.after ?? []) {
+      const dep = byKey.get(a);
+      if (dep) visit(dep);
+    }
+    out.push(item);
+  };
+  for (const item of items) visit(item);
+  return out;
+}
+
+/** Minutes as an estimate sum reads: `45 min`, `6 h`, `1 h 30 min`. */
+export function minutesText(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** The share of the approved estimate that auto-applied `subtask` items may add in total. */
+export const PLAN_SUBTASK_SHARE = 0.25;

@@ -3557,6 +3557,38 @@ describe('bottlenecks and providers', () => {
     expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['other:engineer']);
   });
 
+  it('finishes a plan application that a crash left incomplete, then starts its task', async () => {
+    const { sup, as } = setup({
+      mode: 'hang',
+      opsd: { agents: { 'fake:engineer': { wake: true } } },
+    });
+    const h = as('human:dawid');
+    const m = h.newTask({
+      title: 'Ship',
+      type: 'milestone',
+      owner: 'human:dawid',
+      doneWhen: ['It ships'],
+    });
+    h.start(m.id, 'plan');
+    const item =
+      '  - key: build\n    title: Build it\n    owner: fake:engineer\n    estimate: 1h\n';
+    const plan = h.planPropose(m.id, `items:\n${item}`).events[0]!;
+    // The approval as a crash leaves it (AO-0110): the event is written, its task is not.
+    h.defaultRoot().appendEvent(m.id, {
+      type: 'plan-approve',
+      actor: 'human:dawid',
+      at: new Date().toISOString(),
+      plan: plan.id,
+      body: plan.body,
+    });
+    expect(h.view(m.id).planMissing).toEqual(['build']);
+    await sup.tick();
+    const task = h.views().find((v) => v.meta.plan_item === `${m.id}#build`);
+    expect(task?.meta).toMatchObject({ parent: m.id, created_by: 'human:dawid' });
+    expect(h.view(m.id).planMissing).toBeUndefined();
+    expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['fake:engineer']);
+  });
+
   it('plans with each planned run counted, and reports what wake then does', async () => {
     const { sup, as } = setup({
       mode: 'hang',

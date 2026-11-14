@@ -297,6 +297,8 @@ export { MERGE_ACTOR };
 export const DIRTY_ACTOR = 'opsd:checkout';
 /** Who gives ownerless work a role group as its owner (AO-0140). */
 export const ROUTE_ACTOR = 'opsd:router';
+/** Who finishes a plan application that a crash left incomplete (AO-0110). */
+export const PLAN_ACTOR = 'opsd:plan';
 /** Who files the finding on a task whose runs keep ending without finishing. */
 export const WATCH_ACTOR = 'opsd:watch';
 const DIRTY_CHANNEL = 'general';
@@ -4364,6 +4366,8 @@ export class Supervisor extends EventEmitter {
         this.safe(() => this.runRepeats());
         // Before wake: a person waiting for a reply comes before inbox work of the same agent.
         if (!this.stopping) this.safe(() => this.chat.tick());
+        // Before wake, so a plan a crash left half applied is whole before its tasks start.
+        if (!this.stopping) this.applyPlans();
         // Before wake, so an accepted finding gets its owner and starts in the same tick.
         if (!this.stopping) this.routeOwners();
         // Before wake, so the author of a task at its review limit is not started again.
@@ -6293,6 +6297,32 @@ export class Supervisor extends EventEmitter {
    * a finding a person accepted, or work whose owner no configured agent answers to. Recorded as
    * an `assign` event from `ROUTE_ACTOR` with the reason.
    */
+  /** The last refusal of a plan application per milestone, so a task that holds it warns once. */
+  private readonly planStuck = new Map<string, string>();
+
+  /**
+   * Finishes the plan applications a crash left incomplete (AO-0110), as `swarmup plan apply`
+   * does: a milestone with a plan key that has no task, or a changed key without its marker.
+   * Until then the plan's tasks are not claimable (`planHold`), so no run starts on the old plan.
+   * A task the change may not touch yet (claimed, in review, waiting on a question) refuses the
+   * application; it is tried again each tick and warned about once.
+   */
+  private applyPlans(): void {
+    this.safe(() => {
+      const ws = this.ws(PLAN_ACTOR);
+      for (const ref of ws.planIncomplete()) {
+        try {
+          ws.planApply(ref);
+          this.planStuck.delete(ref);
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          if (this.planStuck.get(ref) !== why) this.emit('warn', why);
+          this.planStuck.set(ref, why);
+        }
+      }
+    });
+  }
+
   private routeOwners(): void {
     this.safe(() => {
       const ws = this.ws(ROUTE_ACTOR);

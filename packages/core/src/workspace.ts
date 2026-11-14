@@ -70,7 +70,15 @@ import {
   writeBallot,
   writeOutcome,
 } from './decisions.js';
-import { derive, detailText, isClaimable, planChild, planLookup, summaryLine } from './fold.js';
+import {
+  derive,
+  detailText,
+  fold,
+  isClaimable,
+  planChild,
+  planLookup,
+  summaryLine,
+} from './fold.js';
 import {
   assertActor,
   assertOwner,
@@ -98,16 +106,36 @@ import { searchBudget, searchSources } from './search-index.js';
 import type { Timeline, TimelineTask } from './timeline.js';
 import { buildTimeline } from './timeline.js';
 import type {
+  EffectivePlanItem,
   OpsEvent,
   PlanChild,
+  PlanItem,
   PlanLookup,
+  PlanOrigin,
+  PlanState,
   Priority,
   Status,
   TaskMeta,
   TaskState,
   TaskView,
 } from './model.js';
-import { MERGE_ACTOR, MILESTONE_TYPE, OPEN_STATUSES, PRIORITIES } from './model.js';
+import { MERGE_ACTOR, MILESTONE_TYPE, OPEN_STATUSES, PLAN_CHECKER, PRIORITIES } from './model.js';
+import type { PlanDoc } from './plan.js';
+import {
+  checkPlan,
+  estimateMinutes,
+  minutesText,
+  PLAN_SUBTASK_SHARE,
+  planBody,
+  planChangedKeys,
+  planDiffLines,
+  planMinutes,
+  planOrder,
+  planYaml,
+  readPlanBody,
+  refuseInPlaceEdits,
+  validatePlan,
+} from './plan.js';
 import { reviewSources } from './review-source.js';
 import type {
   Condition,
@@ -406,7 +434,18 @@ export function needsHumanReview(meta: Pick<TaskMeta, 'type' | 'labels'>): boole
 export const RECORD_INBOX_DAYS = 7;
 
 /** Events that a `coordinated` root pushes at once; others wait for the batched sync. */
-const IMMEDIATE_SYNC = new Set(['claim', 'handoff', 'delegate', 'verdict', 'ask']);
+const IMMEDIATE_SYNC = new Set([
+  'claim',
+  'handoff',
+  'delegate',
+  'verdict',
+  'ask',
+  // The plan events (AO-0110): another machine must not claim a task on the plan they replace.
+  'plan',
+  'plan-approve',
+  'plan-amend',
+  'plan-reject',
+]);
 
 export interface InboxItem {
   kind:
@@ -1102,6 +1141,8 @@ export class Workspace {
     if (NOT_WORK_TYPES.has(v.meta.type)) return null;
     if (!v.owner) return `${v.meta.id} has no owner`;
     if (isHuman(v.owner)) return null;
+    // A plan task waits for the role its plan names (AO-0110): add the role file and it starts.
+    if (v.meta.plan_item) return null;
     const why = this.unreachable(v.owner);
     return why ? `owner ${why}` : null;
   }
@@ -1622,9 +1663,9 @@ export class Workspace {
    * (offline, say), the write stands locally and the next sync sends it. With `queueConfirm` set,
    * the sync is queued instead and the write returns at once.
    */
-  private confirm(root: Root, id: string, res: ActResult): ActResult {
+  private confirm<T extends ActResult>(root: Root, id: string, res: T, always = false): T {
     if (root.config.sync.policy !== 'coordinated') return res;
-    if (!res.events.some((e) => IMMEDIATE_SYNC.has(e.type))) return res;
+    if (!always && !res.events.some((e) => IMMEDIATE_SYNC.has(e.type))) return res;
     // A mirrored task syncs with its other copy too, so the claim settles in both places.
     const partners = mirrorPartners(root, this.roots, this.user);
     if (this.queueConfirm) {
@@ -1724,6 +1765,8 @@ export class Workspace {
       ? ownerMatches(v.owner, ctx.actor)
       : canClaimType(agent, v.meta.type, ctx.actor) && !isHuman(ctx.actor);
     if (!eligible) ctx.needPrivilege(`${v.meta.id} is owned by ${v.owner ?? 'nobody'}`);
+    const rule = this.planTask(root, v);
+    if (rule) this.planReviewerCheck(ctx, rule, ctx.actor);
     this.requireTriaged(v, ctx);
     const out: Array<Omit<OpsEvent, 'id' | 'actor' | 'at'>> = [];
     if (v.unblocked) {
@@ -1880,6 +1923,7 @@ export class Workspace {
 
   handoff(ref: string, to: string, message: string): ActResult {
     assertOwner(to);
+    const { root } = this.resolve(ref);
     const res = this.act(ref, (v, ctx) => {
       ctx.requireOpen('hand off');
       // swarmupd hands unclaimed work of a signed-out provider to another provider (AO-0154).
@@ -1887,7 +1931,9 @@ export class Workspace {
       if (!(byOpsd && !v.claimedBy)) ctx.needOwnerOrHolder();
       if (v.meta.type === QUESTION_TYPE) assertQuestionTo(to, v.meta.created_by, ctx.actor);
       this.checkTarget(ctx, to, 'new owner');
-      return [{ type: 'handoff', to, body: message }];
+      const rule = this.planTask(root, v);
+      const on = rule ? this.planOwnerChange(v, ctx, rule, to) : null;
+      return [{ type: 'handoff', to, body: message, ...(on && on.length > 0 ? { on } : {}) }];
     });
     return this.noteInactive(res, to);
   }
@@ -1907,6 +1953,11 @@ export class Workspace {
       // A blocked task keeps its open question (or wait on other tasks) under the new owner;
       // `answer` or `unblock` drop it on purpose (AO-0115). Handoff still clears the wait.
       const keepWait = v.status === 'blocked';
+      // A plan task keeps its planned waits and any extra ones in `on` (AO-0110).
+      const from = this.roots.find((r) => r.name === v.root);
+      const rule = from ? this.planTask(from, v) : null;
+      const on = rule ? this.planOwnerChange(v, ctx, rule, to) : null;
+      if (on) return [{ type: 'assign', to, body: message, ...(on.length > 0 ? { on } : {}) }];
       return [{ type: 'assign', to, body: message, ...(keepWait && { keep_wait: true }) }];
     });
     return this.noteInactive(isHuman(to) ? withNotes(res, messageNotes(message)) : res, to);
@@ -1942,6 +1993,13 @@ export class Workspace {
       // The author is whoever holds the work, whoever sends it.
       const author = v.claimedBy ?? ctx.actor;
       let reviewer: string | undefined;
+      const planned = this.planTask(root, v)?.item.review;
+      if (!opts.human && to && planned && to !== planned && !isHuman(to)) {
+        // One reviewer per plan item (AO-0110): an agent other than the approved one is refused.
+        ctx.needPrivilege(
+          `${v.meta.id}'s plan names ${planned} as reviewer; drop --to, pass --to ${planned}, or pass --human`,
+        );
+      }
       if (opts.human) reviewer = ctx.human;
       else if (to) reviewer = to;
       else if (needsHumanReview(v.meta)) {
@@ -2043,9 +2101,18 @@ export class Workspace {
   }
 
   done(ref: string, message = ''): ActResult {
+    const { root } = this.resolve(ref);
     return this.act(ref, (v, ctx) => {
       ctx.requireOpen('close');
       const reviewing = v.status === 'needs-review' && ownerMatches(v.reviewer, ctx.actor);
+      // A plan task with a reviewer closes only through the reviewer its review event named
+      // (AO-0110): the owner's `done` would skip the reviewer the person approved.
+      const planned = this.planTask(root, v)?.item.review;
+      if (planned && !reviewing) {
+        ctx.needPrivilege(
+          `${v.meta.id}'s plan names ${planned} as reviewer; send it with swarmup review`,
+        );
+      }
       if (!reviewing) ctx.needOwnerOrHolder();
       if (v.meta.type !== QUESTION_TYPE) return [{ type: 'done', body: message }];
       // The answer to a question goes to whoever asked, so it lands in their inbox.
@@ -2116,9 +2183,12 @@ export class Workspace {
 
   block(ref: string, message: string, opts: { on?: string[]; to?: string } = {}): ActResult {
     const { root } = this.resolve(ref);
-    const on = opts.on?.map((d) => this.depRef(root, d));
+    const given = opts.on?.map((d) => this.depRef(root, d));
     return this.act(ref, (v, ctx) => {
       ctx.requireOpen('block');
+      // On a plan task an extra wait never replaces the planned ones (AO-0110).
+      const rule = given && given.length > 0 ? this.planTask(root, v) : null;
+      const on = rule ? [...new Set([...given!, ...rule.after])] : given;
       // swarmupd blocks a task nobody holds for the PM, such as one whose reviews keep ending in
       // change requests (AO-0288).
       const byOpsd = !!this.actor && runtimeOf(this.actor) === 'opsd';
@@ -2154,8 +2224,16 @@ export class Workspace {
 
   unblock(ref: string, message = ''): ActResult {
     const freed = this.freedBy(ref, true);
+    const { root } = this.resolve(ref);
     return this.act(ref, (v, ctx) => {
       if (v.status !== 'blocked') ctx.wrongState('unblock');
+      const rule = this.planTask(root, v);
+      const open = rule ? rule.after.filter((d) => this.planDepOpen(root, d)) : [];
+      if (rule && open.length > 0) {
+        ctx.needPrivilege(
+          `${v.meta.id} waits for ${open.join(', ')} under ${rule.milestone}'s plan; ${planChangeHint(rule.milestone)}`,
+        );
+      }
       const waitingOnMe = v.waitingOn !== null && ownerMatches(v.waitingOn, ctx.actor);
       if (!waitingOnMe) ctx.needOwnerOrHolder();
       const { waited_minutes } = this.waitStats(v);
@@ -2376,9 +2454,16 @@ export class Workspace {
   }
 
   park(ref: string, message: string, mark?: MarkInput): ActResult {
-    return this.markAct(ref, mark, (_v, ctx) => {
+    const { root } = this.resolve(ref);
+    return this.markAct(ref, mark, (v, ctx) => {
       ctx.requireOpen('park');
       ctx.needTriager('only a person, the orchestrator or the PM parks tasks');
+      const rule = this.planTask(root, v);
+      if (rule) {
+        ctx.needPrivilege(
+          `${v.meta.id} is item '${rule.key}' of ${rule.milestone}'s plan, and dropping an item changes approved scope; ${planChangeHint(rule.milestone)}`,
+        );
+      }
       return [{ type: 'park', body: message }];
     });
   }
@@ -2388,8 +2473,10 @@ export class Workspace {
     return this.act(ref, (v, ctx) => {
       if (OPEN_STATUSES.has(v.status)) ctx.wrongState('reopen');
       ctx.needOwnerOrHolder();
+      // A plan task comes back under its plan's owner and dependencies (AO-0110).
+      const back = this.planReopen(root, v, ctx);
       if (root.isArchived(id)) root.unarchiveTask(id);
-      return [{ type: 'reopen', body: message }];
+      return [{ type: 'reopen', body: message, ...back }];
     });
   }
 
@@ -2400,6 +2487,7 @@ export class Workspace {
     const tokens = input.tokens ? parseTokens(input.tokens) : undefined;
     const due = input.due ? parseWhen(input.due, this.now()) : undefined;
     const review = input.review ? assertActor(input.review, 'reviewer') : undefined;
+    const { root } = this.resolve(ref);
     const res = this.act(ref, (v, ctx) => {
       ctx.requireOpen('delegate');
       ctx.needOwnerOrHolder();
@@ -2418,10 +2506,18 @@ export class Workspace {
           `the reviewer must come from another provider than the delegate (${runtimeOf(to)})`,
         );
       }
+      const rule = this.planTask(root, v);
+      if (rule?.item.review && review && review !== rule.item.review) {
+        ctx.needPrivilege(
+          `${v.meta.id}'s plan names ${rule.item.review} as reviewer; drop --review or pass --review ${rule.item.review}`,
+        );
+      }
+      const on = rule ? this.planOwnerChange(v, ctx, rule, to) : null;
       return [
         {
           type: 'delegate',
           to,
+          ...(on && on.length > 0 ? { on } : {}),
           budget_minutes: budget,
           tokens,
           due,
@@ -2431,6 +2527,660 @@ export class Workspace {
       ];
     });
     return this.noteInactive(res, to, review);
+  }
+
+  // ---- Milestone plans (AO-0110) ---------------------------------------------------------------
+
+  /**
+   * The task of each plan key of `milestone`: its children with a `plan_item`. The archive is
+   * read only when a key in `need` has no live task.
+   */
+  private planTasks(root: Root, milestone: string, need: readonly string[]): Map<string, string> {
+    const prefix = `${milestone}#`;
+    const out = new Map<string, string>();
+    const add = (list: readonly TaskState[]): void => {
+      for (const s of list) {
+        const item = s.meta.plan_item;
+        if (!item?.startsWith(prefix) || s.meta.parent !== milestone) continue;
+        const key = item.slice(prefix.length);
+        if (!out.has(key)) out.set(key, s.meta.id);
+      }
+    };
+    add(root.states());
+    if (need.some((k) => !out.has(k))) add(root.archivedStates());
+    return out;
+  }
+
+  /**
+   * What the approved plan says about a plan task: its item and the tasks of the item's `after`
+   * keys. Null for a task without `plan_item`, before the first approval, and for an item a
+   * later approval removed: the plan-task rules bind only items of the effective plan.
+   */
+  private planTask(root: Root, v: TaskView): PlanRule | null {
+    const ref = splitPlanItem(v.meta.plan_item);
+    if (!ref || !root.hasTask(ref.milestone)) return null;
+    const plan = root.foldTask(ref.milestone).plan;
+    const item = plan?.approval ? plan.items.find((i) => i.key === ref.key) : undefined;
+    if (!item) return null;
+    const tasks = this.planTasks(root, ref.milestone, item.after ?? []);
+    const after = (item.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+    return { task: v.meta.id, milestone: ref.milestone, key: ref.key, item, after };
+  }
+
+  /**
+   * The reviewer check of a plan task (AO-0110): a concrete agent on the provider of the item's
+   * agent reviewer cannot take the item, because its review to that reviewer would be refused.
+   */
+  private planReviewerCheck(ctx: ActCtx, rule: PlanRule, who: string): void {
+    const review = rule.item.review;
+    if (!review || isHuman(review) || isHuman(who) || isWildcard(who)) return;
+    if (runtimeOf(who) !== runtimeOf(review)) return;
+    ctx.needPrivilege(
+      `${rule.task}'s plan names ${review} as reviewer, so ${who}, of the same provider, ` +
+        `cannot take it; ${planChangeHint(rule.milestone)}`,
+    );
+  }
+
+  /**
+   * The checks of `handoff`, `assign` and `delegate` on a plan task, and the waits the event
+   * carries in `on`: the tasks of the item's `after` keys and every task it waits on now, so an
+   * extra `block --on` survives the owner change. Null when a forced write moves a task that
+   * waits on a question: the event then folds as it does without a plan.
+   */
+  private planOwnerChange(v: TaskView, ctx: ActCtx, rule: PlanRule, to: string): string[] | null {
+    const { item, milestone } = rule;
+    if (to !== item.owner && !ownerMatches(item.owner, to)) {
+      ctx.needPrivilege(
+        `${v.meta.id}'s plan gives it to ${item.owner}, not ${to}; ${planChangeHint(milestone)}`,
+      );
+    }
+    this.planReviewerCheck(ctx, rule, to);
+    if (v.status === 'blocked' && v.blockedOn.length === 0) {
+      ctx.needPrivilege(`${v.meta.id} waits on a question; answer it first`);
+      return null;
+    }
+    return [...new Set([...rule.after, ...v.blockedOn])];
+  }
+
+  /** Whether a plan dependency still holds its item: open, or done with its merge open. */
+  private planDepOpen(root: Root, id: string): boolean {
+    if (!root.hasTask(id)) return false;
+    const s = root.foldTask(id);
+    if (OPEN_STATUSES.has(s.status)) return true;
+    return s.status === 'done' && s.awaitsMerge && this.mergeRoots().has(root.name);
+  }
+
+  /**
+   * What a `reopen` of a plan task carries (AO-0110, "Reopening a plan task"): the owner and the
+   * dependencies the effective plan gives its key, so the task does not restart under a stale
+   * owner with its waits cleared. An item a later approval removed is refused: bringing it back
+   * changes approved scope.
+   */
+  private planReopen(root: Root, v: TaskView, ctx: ActCtx): Pick<PlannedEvent, 'to' | 'on'> {
+    const ref = splitPlanItem(v.meta.plan_item);
+    if (!ref || !root.hasTask(ref.milestone)) return {};
+    const plan = root.foldTask(ref.milestone).plan;
+    if (!plan?.approval) return {};
+    const item = plan.items.find((i) => i.key === ref.key);
+    if (!item) {
+      const by = removedBy(root.readEvents(ref.milestone), ref.key) ?? plan.approval;
+      ctx.needForce(
+        `${v.meta.id} was removed from ${ref.milestone}'s plan by ${by}; propose a change with a new key`,
+      );
+      return {};
+    }
+    const tasks = this.planTasks(root, ref.milestone, item.after ?? []);
+    const on = (item.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+    return { to: item.owner, ...(on.length > 0 ? { on } : {}) };
+  }
+
+  /** Runs `fn` under the locks of `ids`, taken in ascending task id order (AO-0110). */
+  private lockTasks<T>(root: Root, ids: readonly string[], fn: () => T): T {
+    const n = (id: string): number => parseTaskId(id)?.n ?? 0;
+    const sorted = [...new Set(ids)].sort((a, b) => n(a) - n(b) || (a < b ? -1 : 1));
+    const step = (i: number): T =>
+      i >= sorted.length ? fn() : root.lock(`task-${sorted[i]!}`, () => step(i + 1));
+    return step(0);
+  }
+
+  /**
+   * Under `coordinated` sync, pulls before a plan approval checks task states, so a claim pushed
+   * from another machine counts. Before any lock: sync takes the git lock, then task locks.
+   */
+  private pullFirst(root: Root): void {
+    if (root.config.sync.policy !== 'coordinated' || this.queueConfirm) return;
+    try {
+      syncAll(mirrorPartners(root, this.roots, this.user), this.user, {
+        pull: true,
+        push: false,
+        now: this.now(),
+      });
+    } catch {
+      // Offline: the approval stands locally, and the next sync settles a claim race.
+    }
+  }
+
+  /**
+   * One `swarmup plan` write, under the milestone's lock. It first finishes incomplete
+   * applications, then runs `fn`, which checks who may write and writes the plan events. Under
+   * `coordinated` sync the write is pushed at once, after every lock is released.
+   */
+  private planWrite(
+    ref: string,
+    opts: { pull?: boolean },
+    fn: (p: PlanWriteCtx) => void,
+  ): PlanResult {
+    const actor = this.requireActor();
+    if (this.helper) {
+      throw new OpsError(
+        'a helper run cannot change task state: use swarmup comment, or report to the run that started you',
+      );
+    }
+    const { root, id } = this.resolve(ref);
+    if (opts.pull) this.pullFirst(root);
+    const warnings: string[] = [];
+    const res = root.lock(`task-${id}`, (): PlanResult => {
+      const type = root.foldTask(id).meta.type;
+      if (type !== MILESTONE_TYPE) {
+        throw new OpsError(`${id} is a ${type}, not a milestone: only a milestone has a plan`, 2);
+      }
+      const writes: PlanWrites = { created: [], applied: [], skipped: [] };
+      this.applyPlan(root, id, actor, writes);
+      const v = this.freshView(root, id);
+      const ctx = new ActCtx(
+        warnings,
+        actor,
+        this.force,
+        v,
+        root.config.human,
+        holds(root, v, actor, this.run),
+      );
+      const events: OpsEvent[] = [];
+      const write = (e: PlannedEvent): OpsEvent => {
+        assertNoSecret(e.body);
+        const nowMs = this.now();
+        const ev = root.appendEvent(
+          id,
+          { ...e, actor, at: new Date(nowMs).toISOString(), forced: ctx.forced || undefined },
+          nowMs,
+        );
+        events.push(ev);
+        return ev;
+      };
+      fn({ root, id, v, ctx, actor, writes, write });
+      return { view: this.freshView(root, id), events, ...writes };
+    });
+    const wrote =
+      res.events.length + res.created.length + res.applied.length + res.skipped.length > 0;
+    const out = wrote ? this.confirm(root, id, res, true) : res;
+    return warnings.length > 0 ? { ...out, warnings } : out;
+  }
+
+  /**
+   * Finishes the incomplete applications of a milestone's plan (AO-0110, "Application markers"):
+   * creates the tasks of keys that have none, and writes the one event of each key the latest
+   * approval changes that has no marker yet. Call under the milestone's lock; it takes the locks
+   * of the changed tasks in ascending id order. A complete plan writes nothing.
+   */
+  private applyPlan(root: Root, id: string, actor: string, writes: PlanWrites): void {
+    const state = root.foldTask(id);
+    const plan = state.plan;
+    // A closed milestone creates no work: parked is dropped, done has passed its check.
+    if (!plan?.approval || !OPEN_STATUSES.has(state.status)) return;
+    const approval = plan.approval;
+    const tasks = this.planTasks(root, id, [...plan.items.map((i) => i.key), ...plan.diff]);
+    const open = plan.diff.filter((key) => {
+      const task = tasks.get(key);
+      if (!task || plan.skipped.includes(key)) return false;
+      return !root.foldTask(task).planApplied.includes(`${approval}#${key}`);
+    });
+    if (open.length === 0 && plan.items.every((i) => tasks.has(i.key))) return;
+    // The plan the approval replaced: its `after` keys are what an unchanged task still waits on.
+    const before =
+      open.length > 0
+        ? fold(
+            state.meta,
+            root.readEvents(id).filter((e) => e.id < approval),
+          ).plan
+        : null;
+    this.lockTasks(
+      root,
+      open.flatMap((key) => tasks.get(key) ?? []),
+      () => this.applyLocked(root, id, actor, writes, before),
+    );
+  }
+
+  /**
+   * The writes of an application, one per key: first the tasks of keys that have none, in `after`
+   * order, then the event of each changed key. Each write carries its marker (`plan_item` in
+   * `task.md`, `plan_apply` on the event), so a rerun writes only what is missing. The caller
+   * holds the milestone's lock and the locks of the changed tasks.
+   *
+   * A changed task that closed meanwhile gets a skip marker on the milestone. One in any other
+   * state the change may not touch (claimed, in review, waiting on a question) stops the
+   * application with exit 1 after the other keys are written.
+   */
+  private applyLocked(
+    root: Root,
+    id: string,
+    actor: string,
+    writes: PlanWrites,
+    before: PlanState | null,
+  ): void {
+    const state = root.foldTask(id);
+    const plan = state.plan;
+    if (!plan?.approval) return;
+    const approval = plan.approval;
+    const tasks = this.planTasks(root, id, [...plan.items.map((i) => i.key), ...plan.diff]);
+    const authors = planAuthors(root.readEvents(id));
+    const stamp = (): { ms: number; at: string } => {
+      const ms = this.now();
+      return { ms, at: new Date(ms).toISOString() };
+    };
+    for (const item of planOrder(plan.items)) {
+      if (tasks.has(item.key)) continue;
+      const blocked = (item.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+      const serves = item.for ? `Serves: ${item.for} (${tasks.get(item.for) ?? 'no task'})` : '';
+      const meta = root.createTask(
+        {
+          title: item.title,
+          type: item.type ?? 'task',
+          priority: item.priority ?? state.meta.priority,
+          owner: item.owner,
+          project: state.meta.project,
+          parent: id,
+          labels: [`milestone:${id}`],
+          blocked_by: blocked.length > 0 ? blocked : undefined,
+          done_when: [item.done_when ?? item.title],
+          plan_item: `${id}#${item.key}`,
+          review: item.review,
+          created_by: authors.get(item.key) ?? actor,
+          created_at: stamp().at,
+        },
+        [item.body, serves].filter(Boolean).join('\n\n'),
+        this.user.id_block ?? 0,
+      );
+      tasks.set(item.key, meta.id);
+      writes.created.push({ key: item.key, id: meta.id });
+    }
+    const now = new Map(plan.items.map((i) => [i.key, i] as const));
+    const stuck: string[] = [];
+    for (const key of plan.diff) {
+      const task = tasks.get(key);
+      const marker = `${approval}#${key}`;
+      if (!task || plan.skipped.includes(key)) continue;
+      if (root.foldTask(task).planApplied.includes(marker)) continue;
+      const old = before?.items.find((i) => i.key === key);
+      const oldAfter = (old?.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+      const how = this.planChangeState(root, task, oldAfter);
+      if (how === 'closed') {
+        const { ms, at } = stamp();
+        const body = `${key}: closed before the change applied`;
+        root.appendEvent(
+          id,
+          { type: 'comment', plan_apply: marker, plan_skip: 'closed', body, actor, at },
+          ms,
+        );
+        writes.skipped.push({ key, id: task });
+        continue;
+      }
+      if (how !== 'ok') {
+        stuck.push(`${task} (${key}) ${how}`);
+        continue;
+      }
+      const next = now.get(key);
+      const on = (next?.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+      let event: PlannedEvent;
+      if (!next) {
+        event = { type: 'park', body: `Removed from ${id}'s plan by ${approval}.` };
+      } else if (old && old.owner !== next.owner) {
+        const body = `${id}'s plan (${approval}) gives '${key}' to ${next.owner}.`;
+        event = { type: 'handoff', to: next.owner, body, ...(on.length > 0 ? { on } : {}) };
+      } else if (on.length > 0) {
+        event = {
+          type: 'block',
+          on,
+          body: `${id}'s plan (${approval}) changes what '${key}' waits for.`,
+        };
+      } else {
+        event = {
+          type: 'unblock',
+          body: `${id}'s plan (${approval}) leaves '${key}' waiting for nothing.`,
+        };
+      }
+      const { ms, at } = stamp();
+      root.appendEvent(task, { ...event, plan_apply: marker, actor, at }, ms);
+      writes.applied.push({ key, id: task, change: event.type });
+    }
+    if (stuck.length > 0) {
+      throw new OpsError(
+        `${id}'s plan change (${approval}) cannot reach ${stuck.join('; ')}: wait for the run or ` +
+          `the review, or answer the question, then run swarmup plan apply ${id}`,
+      );
+    }
+  }
+
+  /**
+   * Whether a plan change may touch a task (AO-0110): `ok` for `todo`, and for `blocked` on
+   * exactly the tasks of its `after` keys with no question open; `closed` for done or parked;
+   * else what holds it. An allow-list: a status added later is refused until it is named here.
+   */
+  private planChangeState(root: Root, task: string, after: readonly string[]): string {
+    const v = this.freshView(root, task);
+    if (v.status === 'done' || v.status === 'parked') return 'closed';
+    if (v.status === 'todo') return 'ok';
+    if (v.status !== 'blocked') return `is ${v.status}${v.claimedBy ? ` by ${v.claimedBy}` : ''}`;
+    if (v.blockedOn.length === 0) return 'waits on a question';
+    const planned = new Set(after);
+    const same = v.blockedOn.length === planned.size && v.blockedOn.every((d) => planned.has(d));
+    return same ? 'ok' : 'waits on tasks its plan did not set';
+  }
+
+  /** Refuses a plan change while another agent holds the milestone: the checker runs its check. */
+  private refuseHeldMilestone(v: TaskView, ctx: ActCtx): void {
+    const held = (v.status === 'claimed' || v.status === 'in-progress') && !v.stale;
+    if (!held || v.claimedBy === ctx.actor) return;
+    ctx.needForce(
+      `${v.meta.id} is held by ${v.claimedBy ?? 'another agent'}, which runs its check; a plan ` +
+        'change would end that claim: try again after the check',
+    );
+  }
+
+  /** A warning per owner of `doc` that no configured agent answers to: its tasks wait for the role. */
+  private planOwnerWarnings(doc: PlanDoc, ctx: ActCtx): void {
+    for (const owner of new Set(doc.items.map((i) => i.owner))) {
+      const why = this.unreachable(owner);
+      if (why) ctx.warnings.push(`owner ${why}: its items wait until a role file defines it`);
+    }
+  }
+
+  /**
+   * `swarmup plan propose`: stores the first plan of a milestone as a `plan` event and sends the
+   * milestone to the person for review. For the holder of the milestone's claim.
+   */
+  planPropose(ref: string, source: string, message = ''): PlanResult {
+    assertNoSecret(source, message);
+    return this.planWrite(ref, {}, ({ id, v, ctx, write }) => {
+      ctx.requireOpen('propose a plan for');
+      if (v.plan?.approval) {
+        throw new OpsError(
+          `${id} has an approved plan: revise it with swarmup plan amend ${id} --kind change`,
+        );
+      }
+      if (!ctx.holds) ctx.needHolder();
+      if (v.plan?.pending) {
+        throw new OpsError(
+          `${id} already has a plan that waits for approval (${v.plan.pending.event}); the ` +
+            `person approves it or sends it back first`,
+        );
+      }
+      const doc = checkPlan(source, 'proposal', v.plan);
+      this.planOwnerWarnings(doc, ctx);
+      write({ type: 'plan', body: planBody(doc, message) });
+      const sum = minutesText(planMinutes(doc.items));
+      const n = doc.items.length;
+      write({
+        type: 'review',
+        to: ctx.human,
+        body:
+          `Plan for ${id}: ${n} item${n === 1 ? '' : 's'}, ${sum}. Approve it with ` +
+          `\`swarmup plan approve ${id}\` (\`--file\` for an edited plan), or send it back with ` +
+          `\`swarmup plan reject ${id} "note"\`; \`swarmup plan show ${id}\` prints it.`,
+        ...(this.run ? { run: this.run } : {}),
+      });
+    });
+  }
+
+  /**
+   * `swarmup plan amend`. `subtask` and `fix` add new items and apply at once: a `plan-amend`
+   * event, then one task per item. `change` stores the full revised plan as a `plan` event with
+   * its `base` and changes nothing until a person approves it.
+   */
+  planAmend(
+    ref: string,
+    kind: 'subtask' | 'fix' | 'change',
+    source: string,
+    message = '',
+  ): PlanResult {
+    assertNoSecret(source, message);
+    return this.planWrite(ref, {}, ({ root, id, v, ctx, actor, writes, write }) => {
+      ctx.requireOpen('amend the plan of');
+      const plan = v.plan;
+      if (!plan?.approval) {
+        throw new OpsError(
+          `${id} has no approved plan to amend; propose one with swarmup plan propose ${id}`,
+        );
+      }
+      if (kind === 'fix') {
+        // The checker, while it holds the milestone after a failed check.
+        if (!(ctx.holds && v.owner === PLAN_CHECKER)) {
+          ctx.needPrivilege(`only the checker that holds ${id} adds fix tasks to its plan`);
+        }
+      } else {
+        if (plan.planner !== actor) {
+          ctx.needPrivilege(
+            `only ${plan.planner ?? 'the planner'} or a person amends ${id}'s plan`,
+          );
+        }
+        this.refuseHeldMilestone(v, ctx);
+      }
+      if (kind === 'change') {
+        if (plan.pending) {
+          throw new OpsError(
+            `${id} already has a plan change that waits for approval (${plan.pending.event}); ` +
+              'the person approves it or sends it back first',
+          );
+        }
+        const doc = checkPlan(source, 'change', plan);
+        refuseInPlaceEdits(plan.items, doc);
+        const changes = planDiffLines(plan.items, doc.items);
+        if (changes.length === 0) throw new OpsError('the file changes nothing in the plan');
+        this.planOwnerWarnings(doc, ctx);
+        const text = [message.trim(), `Changes to ${id}'s plan: ${changes.join('; ')}.`]
+          .filter(Boolean)
+          .join('\n\n');
+        const to = ctx.human && ctx.human !== actor ? ctx.human : undefined;
+        write({ type: 'plan', base: plan.head ?? undefined, to, body: planBody(doc, text) });
+        return;
+      }
+      const doc = checkPlan(source, kind, plan);
+      if (kind === 'subtask') {
+        // Many small amendments cannot add up past the share: every subtask since the last
+        // human approval counts, this file included.
+        const approved = planMinutes(plan.items.filter((i) => i.origin === 'approve'));
+        const added =
+          planMinutes(plan.items.filter((i) => i.origin === 'subtask')) + planMinutes(doc.items);
+        if (added > approved * PLAN_SUBTASK_SHARE) {
+          throw new OpsError(
+            `with these items the subtasks added since the last approval sum to ` +
+              `${minutesText(added)}, more than 25 % of the approved ${minutesText(approved)}: ` +
+              'use --kind change',
+          );
+        }
+      }
+      this.planOwnerWarnings(doc, ctx);
+      write({ type: 'plan-amend', plan_kind: kind, body: planBody(doc, message) });
+      this.applyLocked(root, id, actor, writes, null);
+    });
+  }
+
+  /**
+   * `swarmup plan approve`: a person approves the plan that waits, as proposed or as edited in
+   * `source`. Under the milestone's lock and the locks of every task the change touches, it
+   * checks those tasks' states, writes the `plan-approve` event, creates the tasks of new items
+   * and writes one event per changed item.
+   */
+  planApprove(ref: string, opts: { source?: string; message?: string } = {}): PlanResult {
+    assertNoSecret(opts.source, opts.message);
+    return this.planWrite(ref, { pull: true }, ({ root, id, v, ctx, actor, writes, write }) => {
+      ctx.requireOpen('approve the plan of');
+      ctx.needPrivilege(`only a person approves a plan; ${id} waits for one`);
+      const plan = v.plan;
+      const pending = plan?.pending;
+      if (!plan || !pending) throw new OpsError(`${id} has no plan that waits for approval`);
+      if (pending.stale) {
+        throw new OpsError(
+          `plan changed since proposal: ${id}'s plan moved past ${pending.base ?? 'its base'}; ` +
+            `propose the change again from swarmup plan show ${id} --yaml`,
+        );
+      }
+      const proposed = readPlanBody(
+        root.readEvents(id).find((e) => e.id === pending.event)?.body ?? '',
+      );
+      if (!proposed) throw new OpsError(`cannot read the plan in ${id}#${pending.event}`);
+      const change = plan.approval !== null;
+      const kind = change ? 'change' : 'proposal';
+      const doc = opts.source ? checkPlan(opts.source, kind, plan) : proposed;
+      if (!opts.source) validatePlan(doc, kind, plan);
+      if (change) {
+        this.refuseHeldMilestone(v, ctx);
+        refuseInPlaceEdits(plan.items, doc);
+      }
+      this.planOwnerWarnings(doc, ctx);
+      const edited = opts.source ? planDiffLines(proposed.items, doc.items) : [];
+      const text = [
+        opts.message?.trim(),
+        edited.length > 0 ? `Edited before approval: ${edited.join('; ')}.` : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      const changed = change ? planChangedKeys(plan.items, doc.items) : [];
+      const tasks = this.planTasks(root, id, changed);
+      const afterOf = (key: string): string[] =>
+        (plan.items.find((i) => i.key === key)?.after ?? []).flatMap((k) => tasks.get(k) ?? []);
+      this.lockTasks(
+        root,
+        changed.flatMap((key) => tasks.get(key) ?? []),
+        () => {
+          const refused: string[] = [];
+          for (const key of changed) {
+            const task = tasks.get(key);
+            if (!task) continue;
+            const how = this.planChangeState(root, task, afterOf(key));
+            if (how !== 'ok')
+              refused.push(`${task} (${key}) ${how === 'closed' ? 'is closed' : how}`);
+          }
+          if (refused.length > 0) {
+            throw new OpsError(
+              `the change removes, reorders or reassigns items whose tasks it cannot touch: ` +
+                `${refused.join('; ')}. Wait for the run or the review, answer the question, ` +
+                'or keep those items as they are',
+            );
+          }
+          write({ type: 'plan-approve', plan: pending.event, body: planBody(doc, text) });
+          this.applyLocked(root, id, actor, writes, plan);
+        },
+      );
+    });
+  }
+
+  /** `swarmup plan reject`: a person sends the plan that waits back to its planner with a note. */
+  planReject(ref: string, note: string): PlanResult {
+    if (!note.trim()) throw new OpsError('say what to change: swarmup plan reject ID "note"', 2);
+    return this.planWrite(ref, {}, ({ id, v, ctx, write }) => {
+      ctx.requireOpen('send back the plan of');
+      ctx.needPrivilege(`only a person sends a plan back; ${id} waits for one`);
+      const pending = v.plan?.pending;
+      if (!pending) throw new OpsError(`${id} has no plan that waits for approval`);
+      write({ type: 'plan-reject', plan: pending.event, to: pending.actor, body: note });
+    });
+  }
+
+  /**
+   * `swarmup plan apply`: finishes the incomplete applications of a milestone's plan and writes
+   * nothing else. For anyone: it only finishes what an approval or amendment already recorded.
+   */
+  planApply(ref: string): PlanResult {
+    return this.planWrite(ref, {}, () => {});
+  }
+
+  /**
+   * The milestones whose plan has an incomplete application, as `root/id`: a key without a task,
+   * or a changed key without its marker. swarmupd runs `planApply` on each.
+   */
+  planIncomplete(views: TaskView[] = this.views()): string[] {
+    return views
+      .filter((v) => v.meta.type === MILESTONE_TYPE && !v.archived)
+      .filter((v) => (v.planMissing?.length ?? 0) + (v.planUnapplied?.length ?? 0) > 0)
+      .map((v) => `${v.root}/${v.meta.id}`);
+  }
+
+  /** `swarmup plan show`: a milestone's plan with each item's task, status, estimate and time spent. */
+  planShow(ref: string): PlanReport {
+    const { root, id } = this.resolve(ref);
+    const v = this.freshView(root, id);
+    if (v.meta.type !== MILESTONE_TYPE) {
+      throw new OpsError(
+        `${id} is a ${v.meta.type}, not a milestone: only a milestone has a plan`,
+        2,
+      );
+    }
+    const plan = v.plan;
+    const items = plan?.items ?? [];
+    const tasks = this.planTasks(
+      root,
+      id,
+      items.map((i) => i.key),
+    );
+    const row = (item: PlanItem & { origin?: PlanOrigin }): PlanRow => {
+      const task = tasks.get(item.key);
+      const s = task ? root.foldTask(task) : undefined;
+      const spent = task
+        ? root
+            .readEvents(task)
+            .reduce((sum, e) => sum + (e.type === 'run-end' ? (e.minutes ?? 0) : 0), 0)
+        : undefined;
+      return {
+        key: item.key,
+        title: item.title,
+        owner: item.owner,
+        after: item.after ?? [],
+        estimate: item.estimate,
+        ...(item.origin ? { origin: item.origin } : {}),
+        ...(item.for ? { for: item.for } : {}),
+        ...(item.review ? { review: item.review } : {}),
+        ...(task && s ? { task, status: s.status, taskOwner: s.owner, spent } : {}),
+      };
+    };
+    const rows = items.map(row);
+    const pendingEvent = plan?.pending
+      ? root.readEvents(id).find((e) => e.id === plan.pending!.event)
+      : undefined;
+    const pendingDoc = pendingEvent ? readPlanBody(pendingEvent.body) : null;
+    const pending =
+      plan?.pending && pendingDoc
+        ? {
+            event: plan.pending.event,
+            actor: plan.pending.actor,
+            stale: plan.pending.stale,
+            ...(plan.pending.base ? { base: plan.pending.base } : {}),
+            ...(pendingDoc.notes ? { notes: pendingDoc.notes } : {}),
+            items: pendingDoc.items.map(row),
+            minutes: planMinutes(pendingDoc.items),
+            changes: plan.approval ? planDiffLines(items, pendingDoc.items) : [],
+          }
+        : null;
+    const missing = v.planMissing ?? [];
+    const unapplied = v.planUnapplied ?? [];
+    // The starting point of a revision: the effective plan's own values, so it passes the checks.
+    const source: PlanDoc | null = plan?.approval
+      ? { items: items.map(({ origin: _origin, ...item }) => item) }
+      : pendingDoc;
+    return {
+      id,
+      root: root.name,
+      title: v.meta.title,
+      ...(v.meta.done_when?.[0] ? { doneWhen: v.meta.done_when[0] } : {}),
+      status: v.status,
+      approval: plan?.approval ?? null,
+      planner: plan?.planner ?? null,
+      items: rows,
+      minutes: items.reduce((sum, i) => sum + estimateMinutes(i.estimate), 0),
+      spent: rows.reduce((sum, r) => sum + (r.spent ?? 0), 0),
+      pending,
+      incomplete: missing.length + unapplied.length > 0 ? { missing, unapplied } : null,
+      yaml: source ? planYaml(source) : '',
+    };
   }
 
   /**
@@ -4089,6 +4839,138 @@ function refusePlanHold(v: TaskView): void {
   throw new OpsError(
     `${v.meta.id} waits for ${milestone}'s plan to apply; run swarmup plan apply ${milestone}`,
   );
+}
+
+/** A plan task's item in the effective plan of its milestone, with the tasks it waits for. */
+interface PlanRule {
+  task: string;
+  milestone: string;
+  key: string;
+  item: EffectivePlanItem;
+  /** The tasks of the item's `after` keys, closed ones included. */
+  after: string[];
+}
+
+/** What a plan write did to other tasks, by plan key. */
+interface PlanWrites {
+  /** The tasks it created. */
+  created: { key: string; id: string }[];
+  /** The existing tasks a change reached, with the event type it wrote: park, handoff, block or unblock. */
+  applied: { key: string; id: string; change: string }[];
+  /** The changed tasks that had closed: each got a skip marker on the milestone. */
+  skipped: { key: string; id: string }[];
+}
+
+/** The result of a `swarmup plan` write: the milestone, its new events, and the writes on its tasks. */
+export interface PlanResult extends ActResult, PlanWrites {}
+
+/** What a `swarmup plan` command gets under the milestone's lock. */
+interface PlanWriteCtx {
+  root: Root;
+  id: string;
+  /** The milestone, after incomplete applications are finished. */
+  v: TaskView;
+  ctx: ActCtx;
+  actor: string;
+  writes: PlanWrites;
+  /** Writes one event on the milestone. */
+  write: (e: PlannedEvent) => OpsEvent;
+}
+
+/** One item of a plan as `swarmup plan show` prints it. */
+export interface PlanRow {
+  key: string;
+  title: string;
+  owner: string;
+  after: string[];
+  estimate: string;
+  origin?: PlanOrigin;
+  for?: string;
+  review?: string;
+  /** The item's task, once created, with its current status and owner and its runs' minutes. */
+  task?: string;
+  status?: Status;
+  taskOwner?: string | null;
+  spent?: number;
+}
+
+/** A milestone's plan as `swarmup plan show` reports it. */
+export interface PlanReport {
+  id: string;
+  root: string;
+  title: string;
+  doneWhen?: string;
+  status: Status;
+  /** The latest `plan-approve` event, or null before the first approval. */
+  approval: string | null;
+  planner: string | null;
+  /** The effective plan. */
+  items: PlanRow[];
+  /** The estimate sum of the effective plan, in minutes. */
+  minutes: number;
+  /** The minutes its tasks' runs took so far. */
+  spent: number;
+  /** The plan that waits for approval; `changes` is its diff against the effective plan. */
+  pending: {
+    event: string;
+    actor: string;
+    stale: boolean;
+    base?: string;
+    notes?: string;
+    items: PlanRow[];
+    minutes: number;
+    changes: string[];
+  } | null;
+  /** An incomplete application: keys without a task, and changed keys without their marker. */
+  incomplete: { missing: string[]; unapplied: string[] } | null;
+  /** The effective plan as YAML, or the pending one before the first approval. */
+  yaml: string;
+}
+
+/** What a refusal of a plan-task rule tells the caller to do instead. */
+function planChangeHint(milestone: string): string {
+  return `use swarmup plan amend ${milestone} --kind change`;
+}
+
+/** `<milestone>#<key>` as its two parts, or null. */
+function splitPlanItem(item: string | undefined): { milestone: string; key: string } | null {
+  const at = item?.indexOf('#') ?? -1;
+  if (!item || at <= 0) return null;
+  return { milestone: item.slice(0, at), key: item.slice(at + 1) };
+}
+
+function inIdOrder(events: readonly OpsEvent[]): OpsEvent[] {
+  return [...events].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** The `plan-approve` event that dropped `key` from a milestone's plan, if one did. */
+function removedBy(events: readonly OpsEvent[], key: string): string | undefined {
+  let present = false;
+  let by: string | undefined;
+  for (const e of inIdOrder(events)) {
+    if (e.type !== 'plan-approve' && e.type !== 'plan-amend') continue;
+    const has = readPlanBody(e.body)?.items.some((i) => i.key === key) ?? false;
+    if (has) {
+      present = true;
+      by = undefined;
+    } else if (present && e.type === 'plan-approve') {
+      present = false;
+      by = e.id;
+    }
+  }
+  return by;
+}
+
+/** Who approved or amended each key into a milestone's plan: the `created_by` of its task. */
+function planAuthors(events: readonly OpsEvent[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of inIdOrder(events)) {
+    if (e.type !== 'plan-approve' && e.type !== 'plan-amend') continue;
+    for (const item of readPlanBody(e.body)?.items ?? []) {
+      if (e.type === 'plan-approve' || !out.has(item.key)) out.set(item.key, e.actor);
+    }
+  }
+  return out;
 }
 
 function assertQuestionTo(owner: string | null | undefined, asker: string, actor: string): void {
