@@ -157,11 +157,63 @@ A review run's prompt tells the reviewer what to review against and what it may 
 - **No changes.** The reviewer never edits files, commits or pushes. Logs and test output go in
   the scratch folder.
 
+- **Changes to tests and check configuration.** The merge `checks` run in swarmupd's worktree,
+  but on the tests and the configuration the branch itself has: a branch that deletes or skips a
+  test, or loosens a check, still passes them. So when the reviewed work changes such files, the
+  prompt ends with a list of them and tells the reviewer to check that the task needs each
+  change. See [Changes to tests and check configuration](#changes-to-tests-and-check-configuration).
+
 A reviewer's role file should say the same and, for Claude, list the tools the checks need (such
 as `Bash(npm test*)`, `Bash(npm run *)` and `Bash(git worktree *)`): a Claude run is allowed only
 its role file's `tools`. A Codex run of a role that does not write can write only its task store
 (see [Runtimes](#runtimes)), so a check that writes build output in the worktree fails there; the
 verdict then names it as not run.
+
+#### Changes to tests and check configuration
+
+Before a review run starts, swarmupd compares the work the newest review request names with the
+point where it left the base branch (`swarmupd.merge.<root>.base`; without a merge setting, the
+remote's default branch, else `main` or `master`). It reads the repo only, with git, and checks
+nothing out. The review prompt then lists:
+
+- **Test files** that the work changes, deletes or moves, and each one where it adds a line that
+  skips or narrows tests, such as `it.skip(`, `describe.only(`, `xit(`, `@pytest.mark.skip` or
+  `t.Skip(`. A new test file is listed only when it adds such a line.
+- **Check configuration** that the work adds, changes or deletes: test, lint, format and type
+  check configuration, CI files and git hooks. A `package.json` is listed only when its `scripts`
+  differ.
+
+Deleted and skipped tests come first; the list names 40 files and counts the rest. swarmupd flags
+only: the review starts as usual, nothing is blocked, and the prompt says that many tasks change
+tests for good reason. Work that changes no such file adds nothing to the prompt. Neither does a
+review that names no commit or branch the repo has.
+
+The patterns are set per root, next to `merge` in the user config:
+
+```yaml
+swarmupd:
+  test_changes:
+    v2: # the root's name
+      tests: ['**/test/**', '*.test.*'] # test files
+      checks: [package.json, 'vitest.config.*', '.github/workflows/**'] # check configuration
+    notes: false # no list for this root
+```
+
+- A pattern without `/` matches the file name in any folder (`*.test.*`, `package.json`). With a
+  `/`, it matches the path from the top of the repo. `*` and `?` stay inside one path segment,
+  `**` crosses folders, and a pattern that ends in `/` covers the folder.
+- A root without an entry, and a list left out, take the defaults. Tests: `**/test/**`,
+  `**/tests/**`, `**/__tests__/**`, `**/e2e/**`, `*.test.*`, `*.spec.*`, `*_test.*` and
+  `test_*.py`. Check configuration: `package.json`, the configuration of Vitest, Jest,
+  Playwright, Cypress, Karma, Mocha, pytest, tox, ESLint, Prettier, Biome, Ruff and golangci-lint,
+  `tsconfig*.json`, `.github/workflows/**`, `.gitlab-ci.yml`, `.circleci/**`,
+  `azure-pipelines.yml`, `Jenkinsfile`, `.husky/**`, `lefthook.yml` and
+  `.pre-commit-config.yaml` (`DEFAULT_TEST_PATTERNS` and `DEFAULT_CHECK_PATTERNS` in
+  `packages/supervisor/src/test-changes.ts`).
+- A list you set replaces the defaults; `[]` lists no file of that kind.
+
+The list reaches a review run that swarmupd starts. A review that goes to a person has no
+prompt: the task's diff in the app shows the same files.
 
 ### Runtimes
 
@@ -682,6 +734,8 @@ swarmupd:
       prompt: Write the daily digest of open tasks and post it to the swarmup channel.
       paused: false # true keeps it without starting runs
   repeats: true # create the tasks of due repeats; false on every PC but one that shares a store
+  test_changes: # per root: the test and check configuration files a review prompt lists changes of
+    v2: { tests: ['**/test/**', '*.test.*'], checks: [package.json, 'vitest.config.*'] }
 ```
 
 - **Wake:** each tick, swarmupd carries out the wake plan (see "Limits"): one run per review request,

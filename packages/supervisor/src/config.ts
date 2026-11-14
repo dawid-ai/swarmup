@@ -158,6 +158,19 @@ export interface MergeConfig {
   timeout_minutes?: number;
 }
 
+/**
+ * Which files of one root count as tests and as check configuration, for the list of such changes
+ * in a review run's prompt (`swarmupd.test_changes.<root name>`, AO-0291). A pattern without `/`
+ * matches the file name in any folder; `*` and `?` stay inside one path segment, `**` crosses
+ * folders. An unset list takes the defaults (`DEFAULT_TEST_PATTERNS`, `DEFAULT_CHECK_PATTERNS`).
+ */
+export interface TestChangesConfig {
+  /** Test files. */
+  tests?: string[];
+  /** Test, lint and CI configuration, and files that hold package scripts. */
+  checks?: string[];
+}
+
 /** The `swarmupd` section of the user config. */
 export interface OpsdConfig {
   port: number;
@@ -234,6 +247,12 @@ export interface OpsdConfig {
   chat: ChatConfig;
   /** Roots whose approved branches swarmupd merges, by root name. */
   merge: Record<string, MergeConfig>;
+  /**
+   * Per root name, the patterns of the test and check configuration files whose changes a review
+   * run's prompt lists (AO-0291), or false for no list. A root without an entry gets the list
+   * with the default patterns.
+   */
+  test_changes: Record<string, TestChangesConfig | false>;
   /**
    * Per root name, whether swarmupd pushes the repo's task branches with new commits at each sync and
    * deletes a merged one's remote branch. On for every root unless set to false.
@@ -378,6 +397,7 @@ export function opsdConfig(
       budget: raw.chat?.budget,
     },
     merge: checkMerge((raw as { merge?: unknown }).merge),
+    test_changes: checkTestChanges((raw as { test_changes?: unknown }).test_changes),
     push_branches: checkPushBranches((raw as { push_branches?: unknown }).push_branches),
     code: checkCode((raw as { code?: unknown }).code),
     task_worktrees: raw.task_worktrees ?? true,
@@ -607,6 +627,46 @@ function checkMerge(raw: unknown): Record<string, MergeConfig> {
       build: commands(e.build, `${root}.build`),
       install: commands(e.install, `${root}.install`),
       timeout_minutes: t as number | undefined,
+    };
+  }
+  return out;
+}
+
+function checkTestChanges(raw: unknown): Record<string, TestChangesConfig | false> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError(
+      'swarmupd.test_changes: use one entry per root name, each false or with tests and checks',
+      2,
+    );
+  }
+  const out: Record<string, TestChangesConfig | false> = {};
+  const patterns = (v: unknown, name: string): string[] | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (!Array.isArray(v) || v.some((p) => typeof p !== 'string' || !p.trim())) {
+      throw new OpsError(`swarmupd.test_changes.${name}: use a list of path patterns`, 2);
+    }
+    return v as string[];
+  };
+  for (const [root, t] of Object.entries(raw as Record<string, unknown>)) {
+    if (t === false) {
+      out[root] = false;
+      continue;
+    }
+    if (t === true || t === null) {
+      out[root] = {};
+      continue;
+    }
+    if (typeof t !== 'object' || Array.isArray(t)) {
+      throw new OpsError(
+        `swarmupd.test_changes.${root}: use false, or tests and checks, each a list of path patterns`,
+        2,
+      );
+    }
+    const e = t as Record<string, unknown>;
+    out[root] = {
+      tests: patterns(e.tests, `${root}.tests`),
+      checks: patterns(e.checks, `${root}.checks`),
     };
   }
   return out;

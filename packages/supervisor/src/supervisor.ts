@@ -153,7 +153,8 @@ import {
 } from './worktree.js';
 import { repairRoot, type SandboxLister, staleTempFiles } from './store-repair.js';
 import { gitAsync } from './git.js';
-import { NoDiff, taskDiff } from './diff.js';
+import { gitIn, NoDiff, reviewRange, taskDiff } from './diff.js';
+import { readTestChanges, testChangesNote } from './test-changes.js';
 import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
@@ -776,6 +777,15 @@ export class Supervisor extends EventEmitter {
    * reviewers that cannot run them (AO-0296). Kept in memory: after a restart they run again.
    */
   private readonly reviewChecks = new Map<string, ReviewChecks>();
+  /**
+   * Per task ref, what the newest review request's work changes in tests and check configuration,
+   * as the lines for a review run's prompt (AO-0291): empty when it changes none or swarmupd could
+   * not read it. `last` is the task's last event when it was read, so a tick reads it once.
+   */
+  private readonly testChanges = new Map<
+    string,
+    { request: string; last: string | null; note: string }
+  >();
   /** The review checks under way; one at a time, and no merge beside them. */
   private reviewChecking: {
     key: string;
@@ -2621,6 +2631,15 @@ export class Supervisor extends EventEmitter {
    * so the launch runs no git in a checkout opsd has seen before (AO-0215).
    */
   async launchFresh(req: LaunchRequest): Promise<RunRecord> {
+    if (req.review && req.task && !req.chat) {
+      try {
+        const ws = this.ws();
+        const found = ws.resolve(req.task);
+        await this.readTestChangesOf(ws, `${found.root.name}/${found.id}`, null);
+      } catch {
+        // The launch names what is wrong with the task; the run starts without the list.
+      }
+    }
     const states = await this.readCheckouts();
     // A tick's launches run without an await, so none is under way here.
     this.tickStates = states;
@@ -2910,7 +2929,9 @@ export class Supervisor extends EventEmitter {
             notes,
           })) +
       (inv.note ?? '') +
-      checksNote;
+      checksNote +
+      // What the work changes in tests and check configuration, for the reviewer (AO-0291).
+      (req.review && ref && !req.chat ? this.testChangesNoteOf(ws, ref) : '');
 
     // Claim before the process starts, so two runs never race for one task.
     let claimedHere = false;
@@ -4179,6 +4200,9 @@ export class Supervisor extends EventEmitter {
       this.housekeepingTick();
       // After the merge step, which may move a checkout; the rest of the tick runs no await, so
       // the states hold for its launches.
+      // Before the wake plan, off the event loop, so a review run that starts in this tick has
+      // the list in its prompt.
+      await this.testChangesTick();
       const states = await this.readCheckouts();
       this.tickStates = states;
       this.dirtyHolds = new Map();
@@ -4862,6 +4886,81 @@ export class Supervisor extends EventEmitter {
     if (this.reviewChecks.size === 0) return undefined;
     const request = [...ws.showEvents(ref).events].reverse().find((e) => e.type === 'review');
     return request ? this.reviewChecks.get(`${ref}:${request.id}`) : undefined;
+  }
+
+  // ---- Changes to tests and check configuration, for the reviewer (AO-0291) --------------------
+
+  /**
+   * Reads, for each task that waits for a review, what its work changes in tests and check
+   * configuration, once per review request. Only where an agent wakes: a review started by hand
+   * reads its own in `launchFresh`.
+   */
+  private async testChangesTick(): Promise<void> {
+    if (this.stopping || this.wakingAgents().length === 0) return;
+    let ws: Workspace;
+    let views: TaskView[];
+    try {
+      ws = this.ws();
+      views = ws.list();
+    } catch {
+      return;
+    }
+    const waiting = new Set<string>();
+    for (const v of views) {
+      if (v.status !== 'needs-review') continue;
+      const ref = `${v.root}/${v.meta.id}`;
+      waiting.add(ref);
+      if (this.testChanges.get(ref)?.last === v.lastEvent) continue;
+      await this.readTestChangesOf(ws, ref, v.lastEvent);
+      if (this.stopping) return;
+    }
+    for (const ref of this.testChanges.keys()) if (!waiting.has(ref)) this.testChanges.delete(ref);
+  }
+
+  /**
+   * Reads what the work of the newest review request of `ref` changes in tests and check
+   * configuration, with git off the event loop, and keeps the lines for the review run's prompt.
+   * Read-only. A review that names no work the repo has gets no list; neither does a root with
+   * `swarmupd.test_changes.<root>: false`.
+   */
+  private async readTestChangesOf(ws: Workspace, ref: string, last: string | null): Promise<void> {
+    let request = '';
+    let note = '';
+    try {
+      const root = ws.resolve(ref).root;
+      const { events } = ws.showEvents(ref);
+      request = [...events].reverse().find((e) => e.type === 'review')?.id ?? '';
+      const known = this.testChanges.get(ref);
+      if (known && known.request === request) {
+        // A comment after the review request changes nothing about the work.
+        known.last = last;
+        return;
+      }
+      const patterns = this.config.test_changes[root.name];
+      if (request && patterns !== false) {
+        const cfg = this.config.merge[root.name];
+        const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+        if (top) {
+          const env = this.commandEnv();
+          const range = await reviewRange({ top, env, events, base: cfg?.base });
+          note = testChangesNote(await readTestChanges(gitIn(top, env), range, patterns));
+        }
+      }
+    } catch (err) {
+      if (!(err instanceof NoDiff)) {
+        const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+        this.emit('warn', `test changes of ${ref}: ${firstLines(msg)}`);
+      }
+    }
+    this.testChanges.set(ref, { request, last, note });
+  }
+
+  /** The lines about test and check changes for a review run of `ref`, or an empty string. */
+  private testChangesNoteOf(ws: Workspace, ref: string): string {
+    const known = this.testChanges.get(ref);
+    if (!known?.note) return '';
+    const request = [...ws.showEvents(ref).events].reverse().find((e) => e.type === 'review');
+    return request?.id === known.request ? known.note : '';
   }
 
   /** Whether a top-level writing run is live in the checkout `top`. */

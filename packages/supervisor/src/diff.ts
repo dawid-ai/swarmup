@@ -67,12 +67,12 @@ const GIT_TIMEOUT_MS = 60_000;
  * and reading a diff must run none. Prefixes and renames as the parser expects them, whatever the
  * user's git config says.
  */
-const DIFF_ARGS = ['--no-color', '--no-ext-diff', '--no-textconv', '-M'];
+export const DIFF_ARGS = ['--no-color', '--no-ext-diff', '--no-textconv', '-M'];
 
-type Git = (args: string[], maxBuffer?: number) => Promise<string>;
+export type Git = (args: string[], maxBuffer?: number) => Promise<string>;
 
 /** Git in `top`, off the event loop; read-only commands, with no prompt and no index refresh. */
-function gitIn(top: string, env: NodeJS.ProcessEnv): Git {
+export function gitIn(top: string, env: NodeJS.ProcessEnv): Git {
   return (args, maxBuffer) =>
     gitAsync(top, ['-c', 'core.quotePath=false', ...args], {
       env: { ...env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
@@ -147,6 +147,47 @@ export async function taskDiff(o: {
     }
   }
 
+  const range = await workRange(git, o.top, reviews, o.base);
+  return { ...range, merged: false, ...(await readDiff(git, range.from, range.to)) };
+}
+
+/** The commits a task's unmerged work spans, and what names them. */
+export interface WorkRange {
+  source: { commit?: string; branch?: string };
+  base: string;
+  from: string;
+  to: string;
+  note?: string;
+}
+
+/**
+ * The range of the work a task's review requests name, in the repo at `top`: from where the work
+ * left the base branch to the commit or branch tip the newest review names (`pickMergeSource`, as
+ * the merge picks it). Read-only.
+ *
+ * @param o.events The task's events, oldest first.
+ * @param o.base The branch the work goes into; without it, the remote's default branch, else
+ *   `main` or `master`.
+ * @throws NoDiff when no review names work the repo has.
+ */
+export async function reviewRange(o: {
+  top: string;
+  env: NodeJS.ProcessEnv;
+  events: Pick<OpsEvent, 'type' | 'body'>[];
+  base?: string;
+}): Promise<WorkRange> {
+  const reviews = o.events.filter((e) => e.type === 'review').reverse();
+  if (reviews.length === 0) throw new NoDiff('No review request yet, so there is no work to show.');
+  return workRange(gitIn(o.top, o.env), o.top, reviews, o.base);
+}
+
+/** {@link reviewRange} for the review requests `reviews`, newest first. */
+async function workRange(
+  git: Git,
+  top: string,
+  reviews: Pick<OpsEvent, 'body'>[],
+  wanted: string | undefined,
+): Promise<WorkRange> {
   const texts = reviews.map((e) => e.body);
   // As the merge does it: a first pass lists the commits the pick may ask about.
   const asked = new Set<string>();
@@ -175,13 +216,13 @@ export async function taskDiff(o: {
     : ((await commitOf(git, `refs/heads/${src.branch}`)) ?? (await commitOf(git, src.branch!)));
   if (!to) {
     const missing = src.commit ? `Commit ${src.commit}` : `Branch ${src.branch}`;
-    throw new NoDiff(`${missing} is not in the repo at ${o.top}.`);
+    throw new NoDiff(`${missing} is not in the repo at ${top}.`);
   }
 
-  const base = o.base ?? (await defaultBase(git, branches));
-  if (!base) throw new NoDiff(`No base branch to compare with in the repo at ${o.top}.`);
+  const base = wanted ?? (await defaultBase(git, branches));
+  if (!base) throw new NoDiff(`No base branch to compare with in the repo at ${top}.`);
   const baseTip = (await commitOf(git, `refs/heads/${base}`)) ?? (await commitOf(git, base));
-  if (!baseTip) throw new NoDiff(`No branch ${base} in the repo at ${o.top}.`);
+  if (!baseTip) throw new NoDiff(`No branch ${base} in the repo at ${top}.`);
   let from: string;
   try {
     from = (await git(['merge-base', baseTip, to])).trim();
@@ -198,15 +239,7 @@ export async function taskDiff(o: {
     from = parent;
     note = `${base} already has ${short(to)}, so this shows that commit alone.`;
   }
-  return {
-    source: src,
-    base,
-    from,
-    to,
-    merged: false,
-    ...(note ? { note } : {}),
-    ...(await readDiff(git, from, to)),
-  };
+  return { source: src, base, from, to, ...(note ? { note } : {}) };
 }
 
 function describe(src: { commit?: string; branch?: string }): string {
