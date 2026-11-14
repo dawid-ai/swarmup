@@ -7,6 +7,7 @@ import {
   lanesOf,
   loadViews,
   matchesFilter,
+  rootOfProject,
   upsertView,
 } from '../ui/src/lib/filters';
 import type { Task } from '../ui/src/types';
@@ -113,6 +114,31 @@ describe('task filters', () => {
     ).toBe('agent');
     const next = upsertView([good as never], { name: ' mine ', view: 'list', filter: {} });
     expect(next).toEqual([{ name: 'mine', view: 'list', filter: {} }]);
+  });
+});
+
+describe('the root a project filter stands for', () => {
+  const tasks = [
+    t('WEB-1', { root: 'web-store', project: 'swarmup-web' }),
+    t('WEB-2', { root: 'web-store', project: 'swarmup-web' }),
+    // One task of that project filed in another root: the root with most of them wins.
+    t('AO-1', { root: 'agent-ops', project: 'swarmup-web' }),
+    t('AO-2', { root: 'agent-ops', project: 'agent-ops' }),
+    t('OLD-1', { root: 'gone', project: 'legacy' }),
+  ];
+  const roots = ['agent-ops', 'web-store', 'docs'];
+
+  it('follows the root of the tasks, not the name alone', () => {
+    expect(rootOfProject('swarmup-web', tasks, roots)).toBe('web-store');
+    expect(rootOfProject('agent-ops', tasks, roots)).toBe('agent-ops');
+  });
+
+  it('falls back to the root of that name, and to nothing for an unknown project', () => {
+    expect(rootOfProject('docs', tasks, roots)).toBe('docs');
+    // Its only tasks live in a root that is not offered.
+    expect(rootOfProject('legacy', tasks, roots)).toBeUndefined();
+    expect(rootOfProject('nowhere', tasks, roots)).toBeUndefined();
+    expect(rootOfProject(undefined, tasks, roots)).toBeUndefined();
   });
 });
 

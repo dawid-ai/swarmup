@@ -23,6 +23,7 @@ import {
   loadViews,
   matchesFilter,
   setBoardShowsIdeas,
+  setViewProject,
 } from '../lib/filters';
 import { ago, columns, COLUMNS, ownerlessLabel, waitReasons } from '../lib/format';
 import { dueLabel, identity, priorityInfo, statusInfo } from '../lib/identity';
@@ -83,6 +84,12 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
     window.addEventListener(IDEAS_CHANGED, changed);
     return () => window.removeEventListener(IDEAS_CHANGED, changed);
   }, []);
+
+  // New task opens with the project this board is filtered to (AO-0323).
+  useEffect(() => {
+    setViewProject(filter.project);
+    return () => setViewProject(undefined);
+  }, [filter.project]);
 
   const why = waitReasons(waits.data?.waits ?? []);
   const running = new Set(

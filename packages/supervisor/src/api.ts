@@ -430,17 +430,32 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       }
       if (method === 'POST' && !id) {
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
-        const { meta, proposed } = ws.addTask({
-          title: need(body.title, 'title'),
-          body: str(body.body),
-          owner: str(body.to) || undefined,
-          type: str(body.type) || undefined,
-          priority: (str(body.priority) || undefined) as Priority | undefined,
-          project: str(body.project) || undefined,
-          parent: str(body.parent) || undefined,
-        });
+        // `root` names the data root the task goes to (AO-0323): its store, code checkout, agents
+        // and merge settings then handle it. Without it, the default root, as before.
+        const rootName = str(body.root)?.trim() || undefined;
+        const root = rootName ? ws.roots.find((r) => r.name === rootName) : undefined;
+        if (rootName && !root) {
+          const names = ws.roots.map((r) => r.name).join(', ');
+          throw new HttpError(400, `no root named '${rootName}': use one of ${names}`);
+        }
+        const { meta, proposed } = ws.addTask(
+          {
+            title: need(body.title, 'title'),
+            body: str(body.body),
+            owner: str(body.to) || undefined,
+            type: str(body.type) || undefined,
+            priority: (str(body.priority) || undefined) as Priority | undefined,
+            project: str(body.project) || undefined,
+            parent: str(body.parent) || undefined,
+          },
+          root,
+        );
         const warnings = ws.reachWarnings([meta.owner]);
-        const task = { ...compact(ws.view(meta.id)), proposed };
+        // The root's name with the id: another root may hold a task with the same id.
+        const task = {
+          ...compact(ws.view(`${(root ?? ws.defaultRoot()).name}/${meta.id}`)),
+          proposed,
+        };
         return send(res, 201, warnings.length > 0 ? { ...task, warnings } : task);
       }
       const ref = need(id, 'task id');

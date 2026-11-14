@@ -258,6 +258,44 @@ export function setBoardShowsIdeas(
   }
 }
 
+// ---- The project the open view is filtered to ----------------------------------------------------
+
+let shownProject: string | undefined;
+
+/**
+ * The Board and the List say which project their filter shows, and clear it when they close, so
+ * New task opens with that project (AO-0323). Not stored: it lasts as long as the view.
+ */
+export function setViewProject(project: string | undefined): void {
+  shownProject = project?.trim() || undefined;
+}
+
+/** The project the open Board or List is filtered to, if any. */
+export function viewProject(): string | undefined {
+  return shownProject;
+}
+
+/**
+ * The data root a project filter stands for: the root that holds most tasks of that project, since
+ * a root's tasks may carry another name than the root's (`project`, `project_aliases`); with no
+ * such task, the root of that name. Undefined when no root in `roots` fits.
+ */
+export function rootOfProject(
+  project: string | undefined,
+  tasks: Array<Pick<Task, 'project' | 'root'>>,
+  roots: string[],
+): string | undefined {
+  if (!project) return undefined;
+  const count = new Map<string, number>();
+  for (const t of tasks) {
+    if (t.project === project && roots.includes(t.root)) {
+      count.set(t.root, (count.get(t.root) ?? 0) + 1);
+    }
+  }
+  const [best] = [...count.entries()].sort(([a, x], [b, y]) => y - x || a.localeCompare(b));
+  return best?.[0] ?? roots.find((r) => r === project);
+}
+
 function safeStorage(): Storage | undefined {
   try {
     return window.localStorage;

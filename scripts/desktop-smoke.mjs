@@ -214,7 +214,11 @@ try {
       // Add project comes last: its dialog stays open. Screenshot mode has no folder dialog, so
       // the pick is named here.
       // The diff of SMK-0002 comes first: it covers the window until the next view closes its task.
-      SWARMUP_VIEWS: ['diff:SMK-0002', ...views, 'repeating', 'add-project'].join(','),
+      // New task opens with its project list open and `smo` typed in it (AO-0323); the next view
+      // closes the form.
+      SWARMUP_VIEWS: ['diff:SMK-0002', ...views, 'repeating', 'new-task:smo', 'add-project'].join(
+        ',',
+      ),
       SWARMUP_SCREENSHOT_PICKS: adoptable,
       ELECTRON_ENABLE_LOGGING: '1',
     },
@@ -239,7 +243,7 @@ try {
     }).status === 0;
 }
 
-const missing = [...views, 'diff-SMK-0002', 'add-project'].filter((v) => {
+const missing = [...views, 'diff-SMK-0002', 'new-task:smo', 'add-project'].filter((v) => {
   // The app names the file of `view:id` with a dash.
   const png = join(shots, `${v.replace(/[:/]/g, '-')}.png`);
   return !existsSync(png) || statSync(png).size < 1024;

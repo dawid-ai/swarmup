@@ -1286,23 +1286,25 @@ export class Workspace {
    * a subtask of an approved open task (a breakdown inherits the approval); anything else becomes
    * a finding, a proposal that waits for triage like any other.
    */
-  addTask(input: NewTaskInput): { meta: TaskMeta; proposed?: string } {
+  addTask(input: NewTaskInput, root?: Root): { meta: TaskMeta; proposed?: string } {
     const actor = this.requireActor();
-    if (privileged(actor)) return { meta: this.newTask(input) };
+    if (privileged(actor)) return { meta: this.newTask(input, root) };
     const type = input.type ?? 'task';
     // A question (AO-0063) asks another agent and creates no work, so it needs no approval.
-    if (NOT_WORK_TYPES.has(type) || type === QUESTION_TYPE) return { meta: this.newTask(input) };
+    if (NOT_WORK_TYPES.has(type) || type === QUESTION_TYPE) {
+      return { meta: this.newTask(input, root) };
+    }
     const why = input.parent
       ? this.unapprovedReason(input.parent)
       : 'it has no --parent; new work needs the PM or a person to accept it';
-    if (!why) return { meta: this.newTask(input) };
+    if (!why) return { meta: this.newTask(input, root) };
     const body = [
       input.body?.trim(),
       `Proposed by ${actor} as a ${type}${input.parent ? ` under ${input.parent}` : ''}.`,
     ]
       .filter(Boolean)
       .join('\n\n');
-    return { meta: this.newTask({ ...input, type: 'finding', body }), proposed: why };
+    return { meta: this.newTask({ ...input, type: 'finding', body }, root), proposed: why };
   }
 
   /**

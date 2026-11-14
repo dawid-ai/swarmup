@@ -14,7 +14,7 @@ import {
   cx,
 } from '../components';
 import type { TaskFilter } from '../lib/filters';
-import { loadViews, matchesFilter } from '../lib/filters';
+import { loadViews, matchesFilter, setViewProject } from '../lib/filters';
 import { ago, ownerlessLabel } from '../lib/format';
 import { dueLabel, STATUSES } from '../lib/identity';
 import type { Task } from '../types';
@@ -75,6 +75,11 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
     const v = loadViews().find((x) => x.name === preset.slice(6));
     if (v) setFilter(v.filter);
   }, [preset]);
+  // New task opens with the project this list is filtered to (AO-0323).
+  useEffect(() => {
+    setViewProject(filter.project);
+    return () => setViewProject(undefined);
+  }, [filter.project]);
   const { data, error } = useData<Task[]>(all ? '/api/tasks?all' : '/api/tasks');
   const tasks = useMemo(() => data ?? [], [data]);
   const rows = useMemo(() => {

@@ -33,7 +33,7 @@ import { Avatar, Toaster, cx, toast } from './components';
 import { Mark } from './ui/brand';
 import { Lightbox } from './ui/attach';
 import type { SavedView } from './lib/filters';
-import { loadViews, storeViews, VIEWS_CHANGED } from './lib/filters';
+import { loadViews, storeViews, viewProject, VIEWS_CHANGED } from './lib/filters';
 import type { AddAgentRequest } from './lib/goto';
 import { ADD_AGENT_EVENT } from './lib/goto';
 import { mouseNav } from './lib/history';
@@ -223,6 +223,16 @@ export function App() {
   }, []);
   const update = useUpdate();
   const [creating, setCreating] = useState(false);
+  /** The project Add project created while New task was open: the form selects it (AO-0323). */
+  const [addedProject, setAddedProject] = useState<string | undefined>(undefined);
+  /** The screenshot run opens New task with its project list open and this text typed. */
+  const [formSearch, setFormSearch] = useState<string | undefined>(undefined);
+  const shotForm = useRef(false);
+  const closeForm = useCallback((): void => {
+    setCreating(false);
+    setAddedProject(undefined);
+    setFormSearch(undefined);
+  }, []);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [restartNote, setRestartNote] = useState(false);
@@ -275,7 +285,17 @@ export function App() {
       }),
       b.onNavigate((m) => {
         const nav = m as { view: string; id?: string };
-        if (nav.view === 'task' && nav.id) setTask(nav.id);
+        // The form the screenshot run opened closes for its next view; one a person opened stays.
+        if (shotForm.current) {
+          shotForm.current = false;
+          closeForm();
+        }
+        // The screenshot run opens New task this way, its project list filtered by the id.
+        if (nav.view === 'new-task') {
+          shotForm.current = true;
+          setFormSearch(nav.id ?? '');
+          setCreating(true);
+        } else if (nav.view === 'task' && nav.id) setTask(nav.id);
         // The screenshot run opens a task with its diff this way (AO-0106).
         else if (nav.view === 'diff' && nav.id) {
           setDiffOf(nav.id);
@@ -296,7 +316,7 @@ export function App() {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [loadInfo, setTask, addProject]);
+  }, [loadInfo, setTask, addProject, closeForm]);
 
   // A swarmupd older than the app restarts once no run is live: look again every 30 s.
   useEffect(() => {
@@ -671,9 +691,15 @@ export function App() {
       {creating && (
         <NewTask
           me={me}
-          onClose={() => setCreating(false)}
+          roots={settings.data?.rootList}
+          tasks={allTasks.data ?? tasks.data ?? undefined}
+          // The project the Board or List is filtered to, whichever way the form opened.
+          project={viewProject()}
+          added={addedProject}
+          search={formSearch}
+          onClose={closeForm}
           onCreated={(id) => {
-            setCreating(false);
+            closeForm();
             setTask(id);
           }}
         />
@@ -695,7 +721,11 @@ export function App() {
                 ? `Created ${p.name} with ${p.tasks.length} ${p.tasks.length === 1 ? 'task' : 'tasks'}`
                 : `Created ${p.name}. Restart swarmupd in Settings to load it`,
             );
-            if (p.reloaded) nav.go('list', `project:${p.name}`);
+            // With New task open, the form stays as it is and takes the new project; otherwise
+            // the list shows it.
+            if (!p.reloaded) return;
+            if (creating) setAddedProject(p.name);
+            else nav.go('list', `project:${p.name}`);
           }}
         />
       )}
