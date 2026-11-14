@@ -22,7 +22,8 @@ const T0 = Date.parse('2026-11-01T00:00:00Z');
 /**
  * A day of work in two projects. T-0001: two review rounds with codex:reviewer, then a merge.
  * T-0002: one round with claude:reviewer, then a merge. T-0003: an ask and a review a person
- * answers, no merge. T-0004: stopped as stuck. T-0005: a quick ask.
+ * answers, no merge. T-0004: stopped as stuck. T-0005: a quick ask. T-0006: an ask withdrawn,
+ * then a block a person answers.
  */
 function store() {
   const repo = mkdtempSync(join(tmpdir(), 'swarmupd-loops-'));
@@ -93,6 +94,7 @@ function store() {
   h.newTask({ title: 'Docs', project: 'site' });
   h.newTask({ title: 'Importer', project: 'site' });
   h.newTask({ title: 'Quotas', project: 'api' });
+  h.newTask({ title: 'Queue', project: 'site' });
 
   // T-0001: the first run started before the window; a merged task still counts it.
   run('claude:engineer', '1', 'site', T0 - 60 * MIN, 60);
@@ -146,6 +148,17 @@ function store() {
   xe.ask('5', 'Per user or per key?');
   now += 5 * MIN;
   h.answer('5', 'Per key');
+
+  // T-0006: an ask that is withdrawn, then a block a person answers after 300 minutes. The
+  // answer is to the block, so it is no answered ask.
+  ce.start('6');
+  ce.ask('6', 'Which queue?');
+  now += 30 * MIN;
+  h.unblock('6', 'Not needed');
+  ce.start('6');
+  ce.block('6', 'Needs the import file', { to: 'human:dawid' });
+  now += 300 * MIN;
+  h.answer('6', 'Uploaded');
 
   // Runs without a task, one per remaining way to end, and one still going.
   run('codex:engineer', undefined, 'api', at, 10, { exit: null, reason: 'tokens' });
@@ -285,6 +298,13 @@ describe('loop figures in the report', () => {
     const ask = events.find((e) => e.type === 'ask')!;
     const answer = events.find((e) => e.type === 'answer')!;
     expect((Date.parse(answer.at) - Date.parse(ask.at)) / MIN).toBe(90);
+    // T-0006: the person answered a block; the ask before it was withdrawn, so it adds no wait.
+    expect(
+      h
+        .showEvents('6')
+        .events.map((e) => e.type)
+        .filter((t) => ['ask', 'unblock', 'block', 'answer'].includes(t)),
+    ).toEqual(['ask', 'unblock', 'block', 'answer']);
   });
 
   it('narrows every figure to a project and to the window', () => {

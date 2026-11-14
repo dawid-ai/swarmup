@@ -123,6 +123,28 @@ function stopReason(r: RunRecord, stuck: Set<string>): string {
   return r.reason ?? 'unknown';
 }
 
+/** Events that take a task out of `blocked`, or put another wait in place of an open ask. */
+const WAIT_ENDS = new Set([
+  'block',
+  'unblock',
+  'done',
+  'park',
+  'reopen',
+  'handoff',
+  'delegate',
+  'review',
+  'verdict',
+]);
+
+/**
+ * Whether the event ends the wait an `ask` opened without answering it, as the fold in
+ * `@swarmup/core` clears or replaces the wait. An `assign` that keeps the wait leaves the ask
+ * open, and so does a forwarded `ask`, which restarts the wait for its new addressee.
+ */
+function endsWait(e: OpsEvent): boolean {
+  return WAIT_ENDS.has(e.type) || (e.type === 'assign' && !e.keep_wait);
+}
+
 /**
  * The loop figures of a window (`fromIso` inclusive to `toIso` exclusive).
  *
@@ -155,6 +177,8 @@ export function buildLoops(
     let rejected = 0;
     let merge: { at: string; rejected: number } | null = null;
     for (const e of t.events) {
+      // The wait the ask opened is over or replaced: a later answer is not to this ask.
+      if (endsWait(e)) ask = null;
       if (e.type === 'review') {
         request = { author: e.actor, at: e.at };
         rounds++;
