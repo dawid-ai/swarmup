@@ -11,6 +11,7 @@ import type {
   BlockedSet,
   ChatSourceMessage,
   Decision,
+  DecisionImportResult,
   InboxItem,
   LogEntry,
   MarkInput,
@@ -50,6 +51,7 @@ import {
   minutesText,
   mirrorPartners,
   OpsError,
+  parseNoteMappings,
   readDenyFile,
   readUserConfig,
   scanFiles,
@@ -439,6 +441,31 @@ function printLog(ctx: Ctx, entries: LogEntry[], opts: { notes: boolean; roots: 
       ctx.io.out(
         `${' '.repeat(idWidth)}  ${localTime(r.at).slice(0, 10)}  revised: was '${r.choice}' (${r.by})`,
       );
+    }
+  }
+}
+
+/** Prints a table or learn-note import plan in the form a person reviews before the real run. */
+function printDecisionImport(ctx: Ctx, result: DecisionImportResult): void {
+  if (ctx.opts.json) return void ctx.io.out(JSON.stringify(result, null, 2));
+  ctx.io.out(`${result.dry_run ? 'dry run' : 'import'}: root ${result.root}`);
+  if (result.items.length === 0) return void ctx.io.out('no decisions found');
+  for (const item of result.items) {
+    if (item.status === 'skipped') {
+      ctx.io.out(`skip ${item.label}: ${item.reason}`);
+      continue;
+    }
+    const verb = item.status === 'would-import' ? 'would import' : `imported ${item.id}`;
+    ctx.io.out(`${verb} ${item.label}: ${item.text}`);
+    ctx.io.out(`  date: ${item.created_at?.slice(0, 10)}`);
+    ctx.io.out(`  scope: ${item.scope}`);
+    ctx.io.out(`  source: ${item.source}`);
+    if (item.supersedes?.length) ctx.io.out(`  supersedes: ${item.supersedes.join(', ')}`);
+    if (item.narrows?.length) ctx.io.out(`  narrows: ${item.narrows.join(', ')}`);
+    for (const note of item.notes ?? []) ctx.io.out(`  ${note}`);
+    if (item.body) {
+      ctx.io.out('  body:');
+      for (const line of item.body.split('\n')) ctx.io.out(`    ${line}`);
     }
   }
 }
@@ -2027,9 +2054,9 @@ const COMMANDS: Record<string, Command> = {
   },
   decision: {
     usage:
-      'decision TEXT [--project P] [--task ID] [--scope project|tree] [--supersedes D-ID[,D-ID]] [--narrows D-ID] [--source REF] [-m CONTEXT]',
+      'decision TEXT [...] | decision --import FILE --project P [--dry-run] | decision --import-notes [--project P] [--dry-run] [--except SLUG] [--supersedes-note SLUG=D-ID] [--narrows-note SLUG=D-ID]',
     summary:
-      'record a decision a person made, in one line (a person; the PM only with --source ID#EVENT or chat:<message id>)',
+      'record a decision a person made, or preview/import historical decision tables and decisions learn notes',
     options: {
       project: { type: 'string' },
       task: { type: 'string' },
@@ -2037,10 +2064,70 @@ const COMMANDS: Record<string, Command> = {
       supersedes: { type: 'string', multiple: true },
       narrows: { type: 'string', multiple: true },
       source: { type: 'string' },
+      import: { type: 'string' },
+      'import-notes': { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
+      except: { type: 'string', multiple: true },
+      'supersedes-note': { type: 'string', multiple: true },
+      'narrows-note': { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
       const ws = ctx.ws();
+      const file = str(ctx.opts.import);
+      const importNotes = Boolean(ctx.opts['import-notes']);
+      if (file || importNotes) {
+        if (file && importNotes) usageError('use --import FILE or --import-notes, not both');
+        if (
+          ctx.args.length > 0 ||
+          str(ctx.opts.source) ||
+          str(ctx.opts.task) ||
+          str(ctx.opts.scope)
+        ) {
+          usageError('an import takes no decision TEXT, --source, --task or --scope');
+        }
+        if (list(ctx.opts.supersedes).length || list(ctx.opts.narrows).length) {
+          usageError(
+            'an import uses --supersedes-note and --narrows-note, not --supersedes or --narrows',
+          );
+        }
+        if (file) {
+          if (!str(ctx.opts.project)) usageError('decision --import FILE needs --project P');
+          if (
+            list(ctx.opts.except).length ||
+            texts(ctx.opts['supersedes-note']).length ||
+            texts(ctx.opts['narrows-note']).length
+          ) {
+            usageError('--except, --supersedes-note and --narrows-note go with --import-notes');
+          }
+          return printDecisionImport(
+            ctx,
+            ws.importDecisionTable({
+              file,
+              project: str(ctx.opts.project)!,
+              dryRun: Boolean(ctx.opts['dry-run']),
+            }),
+          );
+        }
+        return printDecisionImport(
+          ctx,
+          ws.importDecisionNotes({
+            project: str(ctx.opts.project),
+            dryRun: Boolean(ctx.opts['dry-run']),
+            except: list(ctx.opts.except),
+            supersedes: parseNoteMappings(texts(ctx.opts['supersedes-note']), '--supersedes-note'),
+            narrows: parseNoteMappings(texts(ctx.opts['narrows-note']), '--narrows-note', true),
+          }),
+        );
+      }
+      if (
+        ctx.opts['dry-run'] ||
+        list(ctx.opts.except).length ||
+        texts(ctx.opts['supersedes-note']).length ||
+        texts(ctx.opts['narrows-note']).length
+      ) {
+        usageError('--dry-run, --except and note mappings need --import or --import-notes');
+      }
       // Who may record comes first: an agent that cannot gets that answer, whatever the source.
       ws.assertRecorder();
       const source = str(ctx.opts.source);

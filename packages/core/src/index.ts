@@ -5,6 +5,7 @@ export * from './attachments.js';
 export * from './channels.js';
 export * from './config.js';
 export * from './decisions.js';
+export * from './decision-import.js';
 export * from './env.js';
 export * from './exec-thread.js';
 export * from './fold.js';

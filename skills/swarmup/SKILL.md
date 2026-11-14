@@ -226,6 +226,17 @@ EOF
 - As a reviewer: `swarmup show ID`, check the work, then `swarmup verdict ID approve "why"` (closes it) or
   `swarmup verdict ID changes "what to fix"` (back to the owner).
 
+## Importing old decisions
+
+- Preview Markdown decision tables with
+  `swarmup decision --import FILE --project P --dry-run` and decisions-topic learn notes with
+  `swarmup decision --import-notes [--project P] --dry-run`.
+- For notes, use `--except SLUG[,SLUG]`, repeatable
+  `--supersedes-note SLUG=D-ID[,D-ID]`, and repeatable `--narrows-note SLUG=D-ID` to make the
+  reviewed migration explicit. The command validates every mapping before it writes anything.
+- The real import attributes the records to `human:dawid`. Do not run it until the human reviews
+  the complete dry-run output; the source tables and notes stay in place.
+
 ## Questions
 
 - A task of type `question` owned by you is someone asking you something; it blocks nothing.

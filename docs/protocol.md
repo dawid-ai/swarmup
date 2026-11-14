@@ -115,6 +115,8 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | `tally D-ID`, `decisions [--all]`                                                                  | Shows a vote or a recorded decision, or lists open votes.                                                                                                                                                                           |
 | `decide D-ID CHOICE [REASON] [--scope project\|tree]`                                              | Adds `outcomes/<ulid>.md` and comments on the linked task. Outcomes are never edited: a human's `--force` adds one more, and the newest is the result.                                                                              |
 | `decision TEXT [--project P] [--task ID] [--scope project\|tree] [--source REF]`                   | Records a decision a person made, in one line of 200 characters at most, as `decisions/D-<n>/decision.md` with `kind: record`. `--supersedes D-ID` replaces earlier decisions; `--narrows D-ID` is an exception in a smaller scope. |
+| `decision --import FILE --project P [--dry-run]`                                                   | Previews or imports decision rows from Markdown tables under `Decisions` headings. Existing rows are skipped.                                                                                                                       |
+| `decision --import-notes [--project P] [--dry-run] [...]`                                          | Previews or imports `kb/decisions/`, with `--except`, `--supersedes-note` and `--narrows-note` mappings. Existing notes are skipped.                                                                                                |
 | `decisions --log [--project P] [--task ID] [--all]`                                                | Lists the decisions in force, newest first: recorded decisions and decided votes. `--task` lists what applies to one task; `--all` adds superseded ones.                                                                            |
 
 A recorded decision and a decided vote are both lines of the decision log. `decision`,
@@ -489,6 +491,31 @@ swarmup decision TEXT [--project P] [--task ID] [--scope project|tree] [--supers
 ```
 
 The command prints the new id. `-m` or `--body-file` holds context for the body.
+
+Import old decision tables and decisions-topic learn notes only after a person reviews the dry run:
+
+```bash
+swarmup decision --import C:/agent-ops/CLAUDE.md --project agent-ops --dry-run
+swarmup decision --import-notes --project agent-ops --dry-run
+swarmup decision --import-notes --project agent-ops \
+  --except propose-a-vote-only-when-its-quorum-can-be-reached \
+  --supersedes-note ask-dawid-only-for-crucial-decisions-agents-triage-findings=D-0019 \
+  --dry-run
+```
+
+- `--import` reads Markdown tables below a heading that contains `Decisions`. It accepts a
+  `Decision` or `What` column and a `Date` or `When` column. Historical `Topic | Decision | Why`
+  tables take their date from a surrounding dated heading; without either date, the row is
+  skipped. Other columns become the record body. A source is `FILE#heading, row N`.
+- `--import-notes` reads the selected root's `kb/decisions/`. `--except SLUG[,SLUG]` leaves agent
+  lessons out. Repeatable `--supersedes-note SLUG=D-ID[,D-ID]` and
+  `--narrows-note SLUG=D-ID` preserve the relation to existing records. Every mapping is checked
+  before any record is written; the dry run says when the old decision stays in force outside
+  the imported record's scope. A title over 200 characters is skipped instead of cut.
+- A dry run writes no file. A real import creates append-only records with
+  `created_by: human:dawid`, the source's date, and `imported_by` naming the actor that ran it.
+  Tables and notes stay in place. A table row with the same source and text, or a note with the
+  same source, is skipped on later runs.
 
 Mark a decision as you write a task event:
 
