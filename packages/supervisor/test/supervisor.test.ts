@@ -22,6 +22,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   initRoot,
   mirrorPair,
+  parsePlan,
+  planBody,
   Root,
   samePath,
   secretKind,
@@ -4346,6 +4348,62 @@ describe('runtime backoff (AO-0150)', () => {
     expect(handoff).toMatchObject({ actor: 'opsd:runtime', to: 'other:engineer' });
     expect(handoff.body).toContain(`branch \`fake/${sent.id.toLowerCase()}\``);
     expect(handoff.body).toContain(`wt-${sent.id}`);
+  });
+
+  it('leaves a plan task with the agent its plan names while the provider is signed out (AO-0327)', async () => {
+    let now = Date.now();
+    const { sup, as } = setup({
+      mode: 'hang',
+      now: () => now,
+      opsd: {
+        agents: { 'fake:engineer': { wake: true }, 'other:engineer': { wake: true } },
+        runtimes: { other: HANG_RUNTIME },
+        roles: { engineer: { providers: ['fake', 'other'], writes: false, per_project: 2 } },
+      },
+    });
+    const h = as('human:dawid');
+    const milestone = h.newTask({
+      title: 'Ships on macOS',
+      type: 'milestone',
+      owner: 'human:dawid',
+      doneWhen: ['A signed build installs'],
+    });
+    const item = (key: string, owner: string) =>
+      `  - key: ${key}\n    title: Item ${key}\n    owner: '${owner}'\n    estimate: 1h`;
+    const body = planBody(
+      parsePlan(`items:\n${item('build', 'fake:engineer')}\n${item('port', '*:engineer')}\n`),
+    );
+    const root = h.defaultRoot();
+    const write = (type: string, extra: object = {}) =>
+      root.appendEvent(milestone.id, {
+        type,
+        actor: 'human:dawid',
+        at: new Date(now).toISOString(),
+        body,
+        ...extra,
+      });
+    const proposal = write('plan');
+    write('plan-approve', { plan: proposal.id });
+    const child = (key: string) =>
+      h.newTask({
+        title: `Item ${key}`,
+        owner: 'fake:engineer',
+        parent: milestone.id,
+        planItem: `${milestone.id}#${key}`,
+      });
+    // The plan names fake:engineer for `build`, and any engineer for `port`.
+    const build = child('build');
+    const port = child('port');
+    sup['markSignedOut']('fake', 'check');
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    now += 15 * 60_000;
+    for (let i = 0; i < 3; i++) await sup.tick();
+    expect(h.view(build.id).owner).toBe('fake:engineer');
+    expect(h.showEvents(build.id).events.some((e) => e.type === 'handoff')).toBe(false);
+    expect(warns.filter((w) => w.includes(build.id))).toEqual([]);
+    // A plan task whose plan lets the other provider's agent take it is handed over as before.
+    expect(h.view(port.id).owner).toBe('other:engineer');
   });
 
   it('hands send-backs to Codex with or without a worktree, since it commits there (AO-0175, AO-0234)', () => {

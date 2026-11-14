@@ -391,6 +391,20 @@ export interface SignInState {
   check_unreliable?: boolean;
 }
 
+/**
+ * The owner the approved plan gives a plan task (AO-0110), or null for a task without a plan
+ * item or whose milestone is not among `tasks`.
+ */
+function planOwnerOf(v: TaskView, tasks: readonly TaskView[]): string | null {
+  const marker = v.meta.plan_item;
+  if (!marker) return null;
+  const at = marker.indexOf('#');
+  const milestone = marker.slice(0, at);
+  const key = marker.slice(at + 1);
+  const plan = tasks.find((t) => t.root === v.root && t.meta.id === milestone)?.plan;
+  return plan?.items.find((i) => i.key === key)?.owner ?? null;
+}
+
 /** A signed-out provider as `GET /api/usage`, `swarmup usage` and the app's banner show it. */
 export interface SignedOutView {
   since: string;
@@ -2452,7 +2466,8 @@ export class Supervisor extends EventEmitter {
    * sent back, to the same role on another provider once the provider has been signed out for
    * `signed_out_handoff_minutes`. Work that has a worktree goes to no provider that cannot
    * commit there (AO-0155). Work owned by `*:<role>` needs none of this: the wake plan already
-   * passes over a signed-out provider.
+   * passes over a signed-out provider. A plan task goes only to an agent its plan's owner allows
+   * (AO-0327): a handoff to any other is refused, on every tick, so swarmupd does not try it.
    */
   private signedOutHandoffs(): void {
     const minutes = this.config.signed_out_handoff_minutes;
@@ -2467,7 +2482,8 @@ export class Supervisor extends EventEmitter {
     const ws = this.ws(RUNTIME_ACTOR);
     const waking = this.wakingAgents().filter((a) => !roleInactive(ws.agent(a)));
     const live = this.liveRecords();
-    for (const v of ws.list()) {
+    const tasks = ws.list();
+    for (const v of tasks) {
       const owner = v.owner;
       if (v.status !== 'todo' || v.claimedBy || !owner || isHuman(owner) || isWildcard(owner))
         continue;
@@ -2482,6 +2498,7 @@ export class Supervisor extends EventEmitter {
       const role = roleOf(owner);
       const worktree = this.taskWorktree(ws, v);
       const reviewer = v.delegation?.review ?? v.meta.review;
+      const planOwner = planOwnerOf(v, tasks);
       const order = roleLimits(this.config, role).providers;
       const rank = (a: string): number => {
         const i = order.indexOf(runtimeOf(a));
@@ -2491,6 +2508,7 @@ export class Supervisor extends EventEmitter {
         .filter((a) => roleOf(a) === role && runtimeOf(a) !== from)
         .filter((a) => !this.signIn[runtimeOf(a)]?.out)
         .filter((a) => !(reviewer && !isHuman(reviewer) && runtimeOf(reviewer) === runtimeOf(a)))
+        .filter((a) => !planOwner || ownerMatches(planOwner, a))
         .sort((a, b) => rank(a) - rank(b))[0];
       if (!to) continue;
       const where = worktree
