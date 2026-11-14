@@ -1,0 +1,1 @@
+- Treat Windows `taskkill`'s "no running instance" answer as an already-stopped process tree instead of reporting a false leftover after a timed-out Git command.

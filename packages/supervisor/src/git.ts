@@ -259,10 +259,17 @@ export function taskkillLeft(
   running: (pid: number) => boolean = runs,
 ): string | undefined {
   const named = (stderr.match(/\d+/g) ?? []).map(Number);
-  if (typeof err.code === 'number' && named.length > 0 && !named.some(running)) return undefined;
+  const said = stderr.trim().split(/\r?\n/).pop()?.trim();
+  const rootAlreadyGone = /^Reason:\s*There is no running instance of the task\.?$/i.test(
+    said ?? '',
+  );
+  if (
+    typeof err.code === 'number' &&
+    ((named.length > 0 && !named.some(running)) || (named.length === 0 && rootAlreadyGone))
+  )
+    return undefined;
   let how = `did not start (${err.code ?? err.message})`;
   if (err.killed) how = 'did not end in 15 s';
   else if (typeof err.code === 'number') how = `exited ${err.code}`;
-  const said = stderr.trim().split(/\r?\n/).pop()?.trim();
   return `\`taskkill /T\` ${how}${said ? `: ${said}` : ''}`;
 }

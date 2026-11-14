@@ -249,7 +249,7 @@ describe('gitAsync', () => {
     expect((err as GitFailure).treeLeft).toBeUndefined();
   }, 40_000);
 
-  it('tells a refused taskkill from one that met a process already gone (AO-0251)', () => {
+  it('tells a refused taskkill from one that met a process already gone (AO-0251, AO-0326)', () => {
     const denied =
       'ERROR: The process with PID 4321 (child process of PID 1234) could not be terminated.\r\nReason: Access is denied.\r\n';
     // A process it names still runs: the stop was refused.
@@ -260,6 +260,14 @@ describe('gitAsync', () => {
     const gone =
       'ERROR: The process with PID 4321 (child process of PID 1234) could not be terminated.\r\nReason: There is no running instance of the task.\r\n';
     expect(taskkillLeft({ code: 255, message: 'x' }, gone, () => false)).toBeUndefined();
+    // If the root ended before taskkill found it, taskkill names no PID but says nothing runs.
+    expect(
+      taskkillLeft(
+        { code: 255, message: 'x' },
+        'Reason: There is no running instance of the task.\r\n',
+        () => true,
+      ),
+    ).toBeUndefined();
     // It names no process, so nothing shows the tree ended.
     expect(taskkillLeft({ code: 1, message: 'x' }, 'Access is denied.\r\n', () => false)).toBe(
       '`taskkill /T` exited 1: Access is denied.',
