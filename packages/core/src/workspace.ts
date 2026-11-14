@@ -1994,8 +1994,9 @@ export class Workspace {
       const author = v.claimedBy ?? ctx.actor;
       let reviewer: string | undefined;
       const planned = this.planTask(root, v)?.item.review;
-      if (!opts.human && to && planned && to !== planned && !isHuman(to)) {
-        // One reviewer per plan item (AO-0110): an agent other than the approved one is refused.
+      if (!opts.human && to && planned && to !== planned) {
+        // One reviewer per plan item (AO-0110): every explicit --to equals the approved one, a
+        // person's id included. The route to the person is --human (AO-0308).
         ctx.needPrivilege(
           `${v.meta.id}'s plan names ${planned} as reviewer; drop --to, pass --to ${planned}, or pass --human`,
         );

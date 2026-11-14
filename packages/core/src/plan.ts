@@ -163,6 +163,13 @@ export function validatePlan(doc: PlanDoc, kind: PlanKind, plan: PlanState | nul
   if (doc.items.length > PLAN_MAX_ITEMS) {
     bad(`${doc.items.length} items: a plan holds ${PLAN_MAX_ITEMS} at most; split the milestone`);
   }
+  // An amendment adds to the effective plan, so the limit counts both.
+  if (amend && effective.size + doc.items.length > PLAN_MAX_ITEMS) {
+    bad(
+      `${effective.size} items in the plan and ${doc.items.length} new: a plan holds ` +
+        `${PLAN_MAX_ITEMS} at most; split the milestone`,
+    );
+  }
   const own = new Map<string, PlanItem>();
   for (const item of doc.items) {
     if (own.has(item.key)) bad(`duplicate key '${item.key}'`);

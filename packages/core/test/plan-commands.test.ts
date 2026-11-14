@@ -268,6 +268,10 @@ describe('plan task rules between plan changes (AO-0110)', () => {
     expect(why.message).toMatch(
       /T-0002's plan names codex:qa as reviewer; drop --to, pass --to codex:qa, or pass --human/,
     );
+    // A person's id in --to is no human route: only --human, the labels and a repeated request.
+    const person = refusal(() => eng.review(task('ci'), 'T-0002: abc1234 done', 'human:dawid'));
+    expect(person).toMatchObject({ code: 1 });
+    expect(person.message).toMatch(/plan names codex:qa as reviewer.*or pass --human/);
     const forced = as('claude:engineer', { force: true });
     expect(forced.review(task('ci'), 'T-0002: done', 'codex:reviewer').events[0]).toMatchObject({
       to: 'codex:reviewer',
@@ -411,6 +415,28 @@ describe('plan amendments (AO-0110)', () => {
     // Fix tasks do not count against the limit.
     expect(h.planAmend('1', 'fix', yaml('f1 claude:engineer - - 2h')).created).toHaveLength(1);
     expect(h.planShow('1').items.find((r) => r.key === 'f1')).toMatchObject({ origin: 'fix' });
+  });
+
+  it('holds the effective plan to 25 items across amendments', () => {
+    const rows = Array.from({ length: 24 }, (_, i) => `k${i} claude:engineer`);
+    const { h, events } = approved(...rows);
+    // The 25th item fits.
+    expect(h.planAmend('1', 'fix', yaml('f1 claude:engineer')).created).toHaveLength(1);
+    expect(h.planShow('1').items).toHaveLength(25);
+    for (const kind of ['fix', 'subtask'] as const) {
+      const file = `${yaml('x1 claude:engineer - - 10m')}    for: k0\n`;
+      const over = refusal(() => h.planAmend('1', kind, file));
+      expect(over).toMatchObject({ code: 2 });
+      expect(over.message).toMatch(/25 items in the plan and 1 new: a plan holds 25 at most/);
+    }
+    // Two new items on 24 are refused as a whole.
+    const w = approved(...rows);
+    const two = refusal(() =>
+      w.h.planAmend('1', 'fix', yaml('f1 claude:engineer', 'f2 claude:engineer')),
+    );
+    expect(two.message).toMatch(/24 items in the plan and 2 new/);
+    expect(w.events('1').filter((e) => e.type === 'plan-amend')).toHaveLength(0);
+    expect(events('1').filter((e) => e.type === 'plan-amend')).toHaveLength(1);
   });
 
   it('finishes an amendment a crash stopped, and refuses its file on the rerun', () => {
