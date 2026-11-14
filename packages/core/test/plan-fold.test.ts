@@ -527,6 +527,40 @@ describe('the view of a milestone that waits on its plan (AO-0110, "The mileston
     expect(v).toMatchObject({ status: 'blocked', unblocked: false, waitingOn: 'claude:pm' });
   });
 
+  it('stays blocked when the dependency of a `block --on` closes while the plan is unsettled', () => {
+    const blocked = fold(milestone, [
+      ...approved('apple human:dawid', 'ci *:engineer apple'),
+      ev(30, 'unblock', 'codex:qa'),
+      ev(31, 'claim', 'codex:qa'),
+      ev(32, 'block', 'codex:qa', { on: ['T-0009'], body: 'needs the CI runner' }),
+    ]);
+    expect(blocked).toMatchObject({ status: 'blocked', blockedOn: ['T-0009'], waitsOnPlan: true });
+    // The dependency is no child of the milestone.
+    const dep = (events: OpsEvent[]): TaskState =>
+      fold({ ...child(9, undefined).meta, parent: undefined }, events);
+    const apple = child(2, 'apple', closed());
+    const ci = child(3, 'ci', closed());
+    const back = child(3, 'ci', [...closed(), ev(40, 'reopen', 'human:dawid')]);
+
+    // The block's own wait holds while the dependency is open.
+    expect(view(blocked, [apple, ci, dep([])]).unblocked).toBe(false);
+    // The dependency closed: an open, a reopened, a missing or a merging child still holds it.
+    const done = dep(closed());
+    for (const kids of [[apple, child(3, 'ci')], [apple, back], [apple]]) {
+      const v = view(blocked, [...kids, done]);
+      expect(v).toMatchObject({ status: 'blocked', unblocked: false, blockedOn: ['T-0009'] });
+      expect(isClaimable(v)).toBe(false);
+    }
+    expect(view(blocked, [apple, back, done]).planOpen).toEqual(['T-0003']);
+    const merging = view(blocked, [apple, ci, done], { merging: ['T-0003'] });
+    expect(merging.unblocked).toBe(false);
+    expect(isClaimable(merging)).toBe(false);
+    // Dependency closed and plan settled: free.
+    const free = view(blocked, [apple, ci, done]);
+    expect(free).toMatchObject({ status: 'blocked', unblocked: true });
+    expect(isClaimable(free)).toBe(true);
+  });
+
   it('runs neither plan rule without the lookups', () => {
     const v = derive(ms, 'test', NOW, () => undefined);
     expect(v).toMatchObject({ status: 'blocked', unblocked: false });
