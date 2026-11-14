@@ -19,6 +19,29 @@ const NO_WORK = new Set(['claim', 'run-start', 'run-end', 'release', 'start', 'r
 /** The release note swarmupd writes when a run ends without finishing. */
 const UNFINISHED = /^run \S+ ended \(.*\) without finishing/;
 
+/**
+ * The first paragraph of the block swarmupd writes when it stops a stuck task. {@link stuckRun}
+ * reads the run back from it, so `swarmup report` can count that run as `stuck`.
+ */
+export function stuckNote(
+  ref: string,
+  streak: number,
+  run: { id: string; agent: string; reason?: string; exit?: number | null },
+): string {
+  return (
+    `${ref}: swarmupd stopped starting this task. ${streak} runs of ${run.agent} in a row ended ` +
+    `without finishing and with no work on the task; the last was run ${run.id} ` +
+    `(${run.reason}, exit ${run.exit ?? '-'}).`
+  );
+}
+
+const STUCK_NOTE = /swarmupd stopped starting this task\.[^\n]*? the last was run (\S+) \(/;
+
+/** The run a stuck block names as the last unfinished one, or null for any other text. */
+export function stuckRun(body: string | undefined): string | null {
+  return STUCK_NOTE.exec(body ?? '')?.[1] ?? null;
+}
+
 /** How much of a run log's end {@link runFailure} reads. */
 const TAIL_BYTES = 64 * 1024;
 /** Distinct error lines kept, and the length of each. */

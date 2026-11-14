@@ -126,6 +126,7 @@ import {
   failureNote,
   roundNote,
   runFailure,
+  stuckNote,
   unfinishedRuns,
 } from './stuck.js';
 import { Chat } from './chat.js';
@@ -3394,9 +3395,7 @@ export class Supervisor extends EventEmitter {
     const finding = this.stuckFinding(r, ref, streak, failure, pm);
     const what = failureNote(failure);
     const body = [
-      `${ref}: swarmupd stopped starting this task. ${streak} runs of ${r.agent} in a row ended ` +
-        `without finishing and with no work on the task; the last was run ${r.id} ` +
-        `(${r.reason}, exit ${r.exit ?? '-'}).`,
+      stuckNote(ref, streak, r),
       [
         what || '- The run log has no error lines.',
         finding ? `- Tracked as ${finding}.` : '',

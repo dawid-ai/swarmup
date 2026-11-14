@@ -11,6 +11,7 @@ export * from './doctor.js';
 export * from './proc.js';
 export * from './notify.js';
 export * from './report.js';
+export * from './loops.js';
 export * from './wrapped.js';
 export * from './runs.js';
 export * from './runtimes.js';

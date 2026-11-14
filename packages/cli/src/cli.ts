@@ -2043,7 +2043,7 @@ const COMMANDS: Record<string, Command> = {
   report: {
     usage: 'report [--days N | --from DATE [--to DATE]] [--project NAME] [--post CHANNEL] [--json]',
     summary:
-      'tasks opened and closed per project, runs and tokens per agent and provider, decisions; --post sends it to a channel',
+      'tasks opened and closed per project, runs and tokens per agent and provider, decisions, verdicts per author and reviewer pair, tokens per merged task, run stop reasons, human answer time; --post sends it to a channel',
     options: {
       days: { type: 'string' },
       from: { type: 'string' },

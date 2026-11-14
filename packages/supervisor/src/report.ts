@@ -1,5 +1,7 @@
 import type { Workspace } from '@swarmup/core';
 import { MERGE_ACTOR, OpsError, runtimeOf } from '@swarmup/core';
+import type { LoopsReport, LoopsTask } from './loops.js';
+import { buildLoops, median } from './loops.js';
 import type { RunRecord } from './runs.js';
 
 export interface ProjectReport {
@@ -66,14 +68,9 @@ export interface Report {
   decisions: Array<{ id: string; question: string; choice: string; at: string }>;
   channels: Array<{ channel: string; posts: number }>;
   answers: AnswersReport;
+  /** Reviews per author and reviewer, merged task cost, run stops and human answer time. */
+  loops: LoopsReport;
   totals: { opened: number; closed: number; runs: number; minutes: number; tokens: number };
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const s = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : Math.round(((s[mid - 1]! + s[mid]!) / 2) * 10) / 10;
 }
 
 /** `45 min`, `3 h 5 min` or `2 d 4 h`. */
@@ -129,6 +126,7 @@ export function buildReport(
     return p;
   };
   const answers: AnswerLine[] = [];
+  const loopTasks: LoopsTask[] = [];
   let given = 0;
   // Recommendation statistics count every reply that records `accepted`, including changes
   // verdicts, which are not answers because they unblock nothing.
@@ -145,7 +143,9 @@ export function buildReport(
       // that approval. Both events must lie in the window: a merge after its end adds nothing,
       // so the report of a past window does not change later.
       let approval: AnswerLine | undefined;
-      for (const e of ws.showEvents(`${t.root}/${t.meta.id}`).events) {
+      const { events } = ws.showEvents(`${t.root}/${t.meta.id}`);
+      loopTasks.push({ root: t.root, id: t.meta.id, title: t.meta.title, events });
+      for (const e of events) {
         if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) {
           if (approval && e.freed && inWindow(e.at)) {
             approval.unblocked += e.freed.length + (e.freed_indirect?.length ?? 0);
@@ -211,10 +211,15 @@ export function buildReport(
     line.tokens += r.tokens;
     map.set(key, line);
   };
+  const scopedRuns: RunRecord[] = [];
+  const windowRuns: RunRecord[] = [];
   for (const r of runs) {
     // Records written before `project` existed name only the root, which was the project then.
     if (root && r.root !== root) continue;
-    if (!inWindow(r.started_at) || !inProject(r.project ?? r.root)) continue;
+    if (!inProject(r.project ?? r.root)) continue;
+    scopedRuns.push(r);
+    if (!inWindow(r.started_at)) continue;
+    windowRuns.push(r);
     const end = r.ended_at ? Date.parse(r.ended_at) : Math.min(Date.now(), to);
     const minutes = Math.max(0, Math.round((end - Date.parse(r.started_at)) / 60_000));
     add(agents, r.agent, r, minutes);
@@ -273,6 +278,7 @@ export function buildReport(
         .sort((a, b) => b.unblocked - a.unblocked || a.at.localeCompare(b.at))
         .slice(0, 5),
     },
+    loops: buildLoops(loopTasks, scopedRuns, windowRuns, fromIso, toIso),
     totals: {
       opened: list.reduce((n, p) => n + p.opened, 0),
       closed: list.reduce((n, p) => n + p.closed, 0),
@@ -324,7 +330,56 @@ export function reportText(r: Report): string {
       lines.push(`Top answers by tasks unblocked: ${top.join('; ')}.`);
     }
   }
+  lines.push(...loopsLines(r.loops));
   return lines.join('\n');
+}
+
+/** The loop figures as report lines; a figure with nothing to count has no line. */
+function loopsLines(l: LoopsReport): string[] {
+  const lines: string[] = [];
+  const n = (count: number, one: string): string => `${count} ${one}${count === 1 ? '' : 's'}`;
+  if (l.pairs.length) {
+    const pairs = l.pairs.map(
+      (p) =>
+        `${p.author} > ${p.reviewer} ${n(p.reviews, 'review')}, ${p.approve} approved, ` +
+        `${p.changes} changes` +
+        (p.meanRounds !== null ? `, ${p.meanRounds} rounds to approve` : ''),
+    );
+    lines.push(`Reviews by author > reviewer: ${pairs.join('; ')}.`);
+  }
+  const m = l.merged;
+  if (m.tasks > 0) {
+    lines.push(
+      `Merged tasks: ${m.tasks}, median ${m.medianTokens} tokens and ` +
+        `${waitText(m.medianMinutes ?? 0)} in runs per task.`,
+    );
+    const top = m.top.map(
+      (t) =>
+        `${t.task} ${t.tokens} tokens, ${waitText(t.minutes)}, ${n(t.runs, 'run')}` +
+        (t.rejected ? `, ${n(t.rejected, 'rejected round')}` : ''),
+    );
+    lines.push(`Top merged tasks by tokens: ${top.join('; ')}.`);
+  }
+  const s = l.stops;
+  if (s.reasons.length || s.running) {
+    const parts = s.reasons.map(
+      (x) =>
+        `${x.reason === 'person' ? 'stopped by a person' : x.reason} ${x.runs}` +
+        (x.reason === 'exit' && s.failedExits ? ` (${s.failedExits} failed)` : ''),
+    );
+    if (s.running) parts.push(`still running ${s.running}`);
+    lines.push(`Run stops: ${parts.join(', ')}.`);
+  }
+  const wait = (what: string, w: LoopsReport['humanWaits']['asks']): string[] =>
+    w.count === 0
+      ? []
+      : [
+          `${n(w.count, what)}, median ${waitText(w.medianMinutes ?? 0)}, ` +
+            `longest ${waitText(w.longestMinutes ?? 0)} (${w.longestTask})`,
+        ];
+  const waits = [...wait('ask', l.humanWaits.asks), ...wait('review', l.humanWaits.reviews)];
+  if (waits.length) lines.push(`Human time to answer: ${waits.join('; ')}.`);
+  return lines;
 }
 
 const DAY_MS = 86_400_000;
