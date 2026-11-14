@@ -144,7 +144,10 @@ EOF
   on a task you create with `swarmup new "Title" --done-when "npm test passes"` (repeatable).
 - `swarmup review ID "..."` without `--to` goes to a reviewer agent of another provider:
   `codex:reviewer` for Claude work, `claude:reviewer` for Codex work. `swarmup review` refuses a
-  same-provider reviewer.
+  same-provider reviewer. A task that names its reviewer goes to that one instead: the reviewer
+  of a `swarmup delegate ... --review` first, else the one its milestone's plan item names
+  (`review` in `task.md`). swarmupd never routes such a task to an agent of that reviewer's
+  provider, and never wakes one on it.
 - Send it to the human with `--human` when the change touches money, accounts, credentials,
   publishing or releases, client-facing output, deleting data, or anything irreversible. A task
   whose type or label is `release`, `publish`, `money`, `billing`, `payment`, `account(s)`,

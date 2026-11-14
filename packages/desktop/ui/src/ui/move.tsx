@@ -173,7 +173,7 @@ function MoveDialog(props: {
         {move.needs === 'reviewer' && (
           <Field
             label="Reviewer"
-            hint="Another provider than the author, or a person. Empty: the delegation's reviewer or you."
+            hint="Another provider than the author, or a person. Empty: the reviewer of the delegation or of the plan item, else the default route."
           >
             <AgentPicker
               value={to}
