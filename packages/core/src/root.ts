@@ -353,15 +353,35 @@ export class Root {
     }
   }
 
-  /** Writes one new event file. Event files are never edited after this. */
-  appendEvent(taskId: string, ev: Omit<OpsEvent, 'id'>, atMs: number = Date.now()): OpsEvent {
+  /**
+   * The id the next event of a task gets when it is written at `atMs`. Pass it to
+   * {@link appendEvent} to write that event under it: a decision record names the event it marks
+   * before the event exists. Call both under the task's lock.
+   */
+  nextEventId(taskId: string, atMs: number = Date.now()): string {
     if (!this.hasTask(taskId)) throw new OpsError(`no task ${taskId} in root '${this.name}'`, 2);
     const dir = join(this.taskDir(taskId), 'events');
     mkdirSync(dir, { recursive: true });
-    const id = ulidAfter(newestEventId(dir), atMs);
+    return ulidAfter(newestEventId(dir), atMs);
+  }
+
+  /**
+   * Writes one new event file. Event files are never edited after this. `id` is an id from
+   * {@link nextEventId}; without it the event gets the next one.
+   */
+  appendEvent(
+    taskId: string,
+    ev: Omit<OpsEvent, 'id'>,
+    atMs: number = Date.now(),
+    id?: string,
+  ): OpsEvent {
+    if (!this.hasTask(taskId)) throw new OpsError(`no task ${taskId} in root '${this.name}'`, 2);
+    const dir = join(this.taskDir(taskId), 'events');
+    mkdirSync(dir, { recursive: true });
+    const eid = id ?? ulidAfter(newestEventId(dir), atMs);
     const { body, ...front } = ev;
-    this.writeAtomic(join(dir, `${id}-${actorSlug(ev.actor)}.md`), stringifyDoc(front, body));
-    return { ...ev, id };
+    this.writeAtomic(join(dir, `${eid}-${actorSlug(ev.actor)}.md`), stringifyDoc(front, body));
+    return { ...ev, id: eid };
   }
 
   /**

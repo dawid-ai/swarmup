@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,6 +99,28 @@ describe('swarmup doctor', () => {
     // A person confirms the result: the forced outcome ends the report.
     new Workspace({ cwd: repo, env, actor: 'human:dawid', force: true }).decide(v, 'SQLite');
     expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toBeUndefined();
+  });
+
+  it('reports a recorded decision whose source event does not exist (AO-0109)', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'site', human: 'human:dawid' });
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    const env = envFor(config);
+    const ws = new Workspace({ cwd: repo, env, actor: 'human:dawid' });
+    const task = ws.newTask({ title: 'slack' }).id;
+    const res = ws.park(task, 'Not now', { text: 'No Slack integration in v2' });
+    const id = `decision:site/${res.decision!.id}:source`;
+    expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toBeUndefined();
+    // The record is written first: an event write that failed leaves it without its source.
+    const events = join(ws.roots[0]!.taskDir(task), 'events');
+    for (const name of readdirSync(events)) rmSync(join(events, name));
+    expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toMatchObject({
+      status: 'warn',
+      detail: expect.stringContaining(`${task}#${res.events[0]!.id} does not exist`),
+      fix: expect.stringContaining(`--supersedes ${res.decision!.id}`),
+    });
   });
 
   it('fails a config that does not parse', async () => {

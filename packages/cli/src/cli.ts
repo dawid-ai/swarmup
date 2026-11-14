@@ -13,6 +13,7 @@ import type {
   Decision,
   InboxItem,
   LogEntry,
+  MarkInput,
   OpsEvent,
   Priority,
   ProjectPlan,
@@ -279,6 +280,20 @@ const MESSAGE_OPTIONS: Options = {
   'body-file': { type: 'string' },
 };
 
+/** `--decision` and its flags, on the commands whose event can mark a decision (AO-0109). */
+const MARK_OPTIONS: Options = {
+  decision: { type: 'string' },
+  scope: { type: 'string' },
+  supersedes: { type: 'string', multiple: true },
+  narrows: { type: 'string', multiple: true },
+};
+
+const MARK_USAGE =
+  '[--decision TEXT [--scope project|tree] [--supersedes D-ID[,D-ID]] [--narrows D-ID]]';
+
+const MARK_SUMMARY =
+  '--decision records one line of the message as a decision (a person only), for the task and the tasks below it unless --scope project';
+
 function usageError(msg: string): never {
   throw new OpsError(msg, 2);
 }
@@ -299,6 +314,25 @@ function list(v: Values[string]): string[] {
       .map((x) => x.trim())
       .filter(Boolean);
   return [];
+}
+
+/**
+ * The mark of `--decision TEXT`, or undefined without it. `--scope`, `--supersedes` and
+ * `--narrows` describe the decision, so they are refused without one.
+ */
+function mark(ctx: Ctx): MarkInput | undefined {
+  const text = str(ctx.opts.decision);
+  const supersedes = list(ctx.opts.supersedes);
+  const narrows = list(ctx.opts.narrows);
+  const scope = str(ctx.opts.scope);
+  if (text === undefined) {
+    const lone = scope !== undefined ? 'scope' : supersedes.length ? 'supersedes' : 'narrows';
+    if (scope !== undefined || supersedes.length || narrows.length) {
+      usageError(`--${lone} describes a decision: add --decision "one line"`);
+    }
+    return undefined;
+  }
+  return { text, scope, supersedes, narrows };
 }
 
 /** Text from a file, or from stdin for `-`; Windows line ends become `\n`. */
@@ -742,12 +776,30 @@ function printAct(ctx: Ctx, res: ActResult): void {
   if (ctx.opts.json) {
     const warnings = res.warnings;
     ctx.io.out(
-      JSON.stringify({ task: compact(v), events: res.events.map((e) => e.id), warnings }, null, 2),
+      JSON.stringify(
+        {
+          task: compact(v),
+          events: res.events.map((e) => e.id),
+          ...(res.decision ? { decision: res.decision.id } : {}),
+          warnings,
+        },
+        null,
+        2,
+      ),
     );
     return;
   }
   const who = v.claimedBy ? ` (${v.claimedBy})` : v.owner ? ` (owner ${v.owner})` : '';
   ctx.io.out(`${v.meta.id} ${v.status}${who}`);
+  if (res.decision) {
+    const d = res.decision;
+    const scope = scopeText({
+      scope: d.scope === 'tree' && d.task ? 'tree' : 'project',
+      project: d.project,
+      task: d.task,
+    });
+    ctx.io.out(`${d.id} recorded (${scope}): ${d.question}`);
+  }
   for (const n of res.notes ?? []) ctx.io.err(`note: ${n}`);
   printWarnings(ctx, res.warnings);
 }
@@ -1040,10 +1092,17 @@ const COMMANDS: Record<string, Command> = {
       const { body, events } = ws.showEvents(ref);
       // Images the text refers to, as local files, so an agent can open them.
       const files = ws.attachmentsIn(body, ...events.map((e) => e.body));
+      // The decisions its events carry: a mark (`--decision`), or a record that quotes the event.
+      const marks = ws.eventMarks(ref);
       if (ctx.opts.json) {
         const attachments = files.map((a) => ({ ref: a.ref, file: a.file, type: a.type }));
+        const decisions = Object.fromEntries(marks);
         ctx.io.out(
-          JSON.stringify({ task: compact(v), meta: v.meta, body, events, attachments }, null, 2),
+          JSON.stringify(
+            { task: compact(v), meta: v.meta, body, events, decisions, attachments },
+            null,
+            2,
+          ),
         );
         return;
       }
@@ -1104,6 +1163,10 @@ const COMMANDS: Record<string, Command> = {
         );
         for (const line of more) o(line.trim() ? `    ${line.trimEnd()}` : '');
         if (e.recommend) o(`    recommend: ${e.recommend}`);
+        for (const d of marks.get(e.id) ?? []) {
+          const by = d.recorded_by ? `; recorded by ${d.recorded_by} from ${d.by}` : '';
+          o(`    decision: ${d.id} (${d.scope}${by}): ${d.text}`);
+        }
       }
       if (files.length) {
         o('\nattachments:');
@@ -1226,13 +1289,16 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   verdict: {
-    usage: 'verdict ID approve|changes MESSAGE',
-    summary: 'finish a review: approve closes the task, changes sends it back',
-    options: MESSAGE_OPTIONS,
+    usage: `verdict ID approve|changes MESSAGE ${MARK_USAGE}`,
+    summary: `finish a review: approve closes the task, changes sends it back; ${MARK_SUMMARY}`,
+    options: { ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
     run: (ctx) => {
       const v = arg(ctx, 1, 'verdict');
       if (v !== 'approve' && v !== 'changes') usageError("verdict must be 'approve' or 'changes'");
-      printAct(ctx, ctx.ws().verdict(arg(ctx, 0, 'task id'), v, message(ctx, 2, v === 'changes')));
+      printAct(
+        ctx,
+        ctx.ws().verdict(arg(ctx, 0, 'task id'), v, message(ctx, 2, v === 'changes'), mark(ctx)),
+      );
     },
   },
   done: {
@@ -1279,10 +1345,11 @@ const COMMANDS: Record<string, Command> = {
       ),
   },
   answer: {
-    usage: 'answer ID MESSAGE',
-    summary: 'answer an ask; the task goes back to todo',
-    options: MESSAGE_OPTIONS,
-    run: (ctx) => printAct(ctx, ctx.ws().answer(arg(ctx, 0, 'task id'), message(ctx, 1, true))),
+    usage: `answer ID MESSAGE ${MARK_USAGE}`,
+    summary: `answer an ask; the task goes back to todo; ${MARK_SUMMARY}`,
+    options: { ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
+    run: (ctx) =>
+      printAct(ctx, ctx.ws().answer(arg(ctx, 0, 'task id'), message(ctx, 1, true), mark(ctx))),
   },
   unblock: {
     usage: 'unblock ID [MESSAGE]',
@@ -1291,13 +1358,15 @@ const COMMANDS: Record<string, Command> = {
     run: (ctx) => printAct(ctx, ctx.ws().unblock(arg(ctx, 0, 'task id'), message(ctx, 1, false))),
   },
   comment: {
-    usage: 'comment ID MESSAGE [--to ID]',
-    summary: 'add a comment; --to puts it in that inbox',
-    options: { to: { type: 'string' }, ...MESSAGE_OPTIONS },
+    usage: `comment ID MESSAGE [--to ID] ${MARK_USAGE}`,
+    summary: `add a comment; --to puts it in that inbox; ${MARK_SUMMARY}`,
+    options: { to: { type: 'string' }, ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
     run: (ctx) =>
       printAct(
         ctx,
-        ctx.ws().comment(arg(ctx, 0, 'task id'), message(ctx, 1, true), str(ctx.opts.to)),
+        ctx
+          .ws()
+          .comment(arg(ctx, 0, 'task id'), message(ctx, 1, true), str(ctx.opts.to), mark(ctx)),
       ),
   },
   priority: {
@@ -1317,14 +1386,14 @@ const COMMANDS: Record<string, Command> = {
       ),
   },
   retype: {
-    usage: 'retype ID TYPE [MESSAGE] [--to OWNER] [--priority P] [--answer TEXT]',
-    summary:
-      'change the task type, such as finding to bug or idea (human or orchestrator); --to and --priority set the owner and priority in the same write; --answer also answers its open question',
+    usage: `retype ID TYPE [MESSAGE] [--to OWNER] [--priority P] [--answer TEXT] ${MARK_USAGE}`,
+    summary: `change the task type, such as finding to bug or idea (human or orchestrator); --to and --priority set the owner and priority in the same write; --answer also answers its open question; ${MARK_SUMMARY}`,
     options: {
       to: { type: 'string' },
       priority: { type: 'string' },
       answer: { type: 'string' },
       ...MESSAGE_OPTIONS,
+      ...MARK_OPTIONS,
     },
     run: (ctx) =>
       printAct(
@@ -1333,14 +1402,16 @@ const COMMANDS: Record<string, Command> = {
           to: str(ctx.opts.to),
           answer: str(ctx.opts.answer),
           priority: str(ctx.opts.priority) as Priority | undefined,
+          mark: mark(ctx),
         }),
       ),
   },
   park: {
-    usage: 'park ID MESSAGE',
-    summary: 'close as not planned (human or orchestrator)',
-    options: MESSAGE_OPTIONS,
-    run: (ctx) => printAct(ctx, ctx.ws().park(arg(ctx, 0, 'task id'), message(ctx, 1, true))),
+    usage: `park ID MESSAGE ${MARK_USAGE}`,
+    summary: `close as not planned (human or orchestrator); ${MARK_SUMMARY}`,
+    options: { ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
+    run: (ctx) =>
+      printAct(ctx, ctx.ws().park(arg(ctx, 0, 'task id'), message(ctx, 1, true), mark(ctx))),
   },
   reopen: {
     usage: 'reopen ID [MESSAGE]',

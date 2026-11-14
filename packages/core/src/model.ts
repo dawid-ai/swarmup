@@ -164,6 +164,11 @@ export interface OpsEvent {
    * answer takes it when its text is the recommendation; a verdict when it approves.
    */
   accepted?: boolean;
+  /**
+   * answer, verdict, comment, retype, park written with `--decision`: the id of the recorded
+   * decision (`D-0042`) the event marks. The record names this event as its `source`.
+   */
+  decision?: string;
   body: string;
 }
 

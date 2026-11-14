@@ -121,6 +121,17 @@ A person records any decision. The PM records only with `--source` naming what a
 task event (`ID#<event id>`) or a message in the desktop PM chat (`chat:<message id>`, read from
 the swarmupd on that machine and quoted in the record). Other agents cannot record (exit 1).
 
+A person marks a decision while writing a task event: `--decision "one line"` on `answer`,
+`verdict`, `comment`, `retype` and `park`, with `--scope`, `--supersedes` and `--narrows` as on
+`swarmup decision`. The message holds the discussion; the one line is the decision, under the same
+limits. Without `--scope` the record covers the event's task and the tasks below it, or with
+`--supersedes` the widest scope it replaces. `swarmup` writes the record first, with the event as
+its `source` (`ID#<event id>`), then the event, which carries `decision: D-<n>`. If the event
+write fails, `swarmup doctor` reports a record whose source event does not exist. An agent cannot
+mark, the PM included: its own event is not something a person wrote (exit 1, nothing written).
+`swarmup show ID` prints a `decision:` line under an event that carries a mark or that a record
+quotes, with `recorded by <agent> from <person>` when the PM wrote the record down.
+
 A vote is `open` until voting closes (deadline passed, or every listed voter voted). It is
 `ready` when the quorum is met and one option leads by more than the missing ballots (ballots are
 final, so that lead cannot change), or when voting closed with one leader; then the proposer (or

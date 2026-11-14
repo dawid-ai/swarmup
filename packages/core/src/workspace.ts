@@ -212,6 +212,28 @@ export interface RecordInput {
   chat?: ChatSourceMessage;
 }
 
+/**
+ * `--decision` on `answer`, `verdict`, `comment`, `retype` and `park`: the event marks a decision
+ * (AO-0109). The record is written with the event as its source, and the event names the record.
+ */
+export interface MarkInput {
+  /** The one line; the event's message holds the discussion. */
+  text: string;
+  /** `project` or `tree`. Default: `tree` at the event's task, or the widest superseded scope. */
+  scope?: string;
+  supersedes?: string[];
+  narrows?: string[];
+}
+
+/** An event a mark is about to write: the source of the record that is written first. */
+interface PendingEvent {
+  root: Root;
+  task: string;
+  /** The id the event gets. */
+  event: string;
+  at: string;
+}
+
 export interface RecordResult {
   root: string;
   meta: DecisionMeta;
@@ -234,14 +256,31 @@ export interface LogFilter {
 export interface DecisionProblem {
   root: string;
   id: string;
-  /** `outcomes`: decided twice without `--force`. `conflict`: the mirror's two sides differ. */
-  kind: 'outcomes' | 'conflict';
+  /**
+   * `outcomes`: decided twice without `--force`. `conflict`: the mirror's two sides differ.
+   * `source`: the task event the record names as its source does not exist.
+   */
+  kind: 'outcomes' | 'conflict' | 'source';
   detail: string;
+}
+
+/** A recorded decision an event of a task carries: its mark, or a record that quotes it. */
+export interface EventMark {
+  id: string;
+  text: string;
+  /** `project v2`, `root` or `tree AO-0051`. */
+  scope: string;
+  /** Who decided. */
+  by: string;
+  /** Who wrote the record down, when that is not the decider. */
+  recorded_by?: string;
 }
 
 export interface ActResult {
   view: TaskView;
   events: OpsEvent[];
+  /** The decision the write recorded with `--decision`; the first event carries its id. */
+  decision?: DecisionMeta;
   /**
    * Things the caller should know, printed as `note:` lines: what the immediate sync reported
    * under `coordinated` sync, such as a failed push, and soft warnings about the message.
@@ -581,6 +620,24 @@ function sameDecision(answer: string, recommend: string): boolean {
       .replace(/[.!]+$/, '')
       .toLowerCase();
   return norm(answer) === norm(recommend);
+}
+
+/**
+ * The one line of a recorded decision, trimmed. Refuses an empty one, a line break and more than
+ * {@link DECISION_TEXT_MAX} characters; `where` says where the discussion goes instead.
+ */
+function decisionLine(raw: string, where: string): string {
+  const text = raw.trim();
+  if (!text) throw new OpsError('a decision needs its one line', 2);
+  if (/[\r\n]/.test(text)) throw new OpsError(`a decision is one line; ${where}`, 2);
+  if ([...text].length > DECISION_TEXT_MAX) {
+    throw new OpsError(
+      `a decision is one line of ${DECISION_TEXT_MAX} characters at most (this one has ${[...text].length}); ` +
+        `say the decision; ${where}`,
+      2,
+    );
+  }
+  return text;
 }
 
 /** A decision's source that is a task event: `AO-0107#<event id>` or `root/AO-0107#<event id>`. */
@@ -1409,12 +1466,28 @@ export class Workspace {
 
   // ---- State changes ---------------------------------------------------------------------------
 
+  /** {@link act} for a command that takes `--decision`: the first event carries the mark. */
+  private markAct(
+    ref: string,
+    mark: MarkInput | undefined,
+    plan: (v: TaskView, ctx: ActCtx) => PlannedEvent[],
+  ): ActResult {
+    return this.act(ref, plan, mark ? { mark } : {});
+  }
+
   private act(
     ref: string,
     plan: (v: TaskView, ctx: ActCtx) => PlannedEvent[],
-    opts: { helperOk?: boolean } = {},
+    opts: { helperOk?: boolean; mark?: MarkInput } = {},
   ): ActResult {
     const actor = this.requireActor();
+    const mark = opts.mark;
+    // Who may mark and what a mark may say come before any check of the task, so a refused mark
+    // writes neither the record nor the event.
+    if (mark) {
+      this.assertMarker();
+      decisionLine(mark.text, 'the message holds the discussion');
+    }
     // A helper run reports through comments; the run that started it owns the task's state.
     if (this.helper && !opts.helperOk) {
       throw new OpsError(
@@ -1435,18 +1508,50 @@ export class Workspace {
       );
       const planned = plan(v, ctx);
       for (const e of planned) assertNoSecret(e.body, e.recommend);
-      const written = planned.map((e) => {
-        const nowMs = this.now();
+      // A mark: the record is written first, with the id its event gets as the source, then the
+      // event, which carries the record's id. If the event write fails, the record is left
+      // without its source and `swarmup doctor` reports it.
+      let record: RecordResult | undefined;
+      let markedId: string | undefined;
+      let markedMs: number | undefined;
+      if (mark && planned.length > 0) {
+        markedMs = this.now();
+        markedId = root.nextEventId(id, markedMs);
+        record = this.writeRecord(
+          {
+            text: mark.text,
+            scope: mark.scope,
+            supersedes: mark.supersedes,
+            narrows: mark.narrows,
+          },
+          { root, task: id, event: markedId, at: new Date(markedMs).toISOString() },
+        );
+        warnings.push(...record.warnings);
+      }
+      const written = planned.map((e, i) => {
+        const marked = i === 0 && record !== undefined;
+        const nowMs = marked ? markedMs! : this.now();
         return root.appendEvent(
           id,
-          { ...e, actor, at: new Date(nowMs).toISOString(), forced: ctx.forced || undefined },
+          {
+            ...e,
+            ...(marked ? { decision: record!.meta.id } : {}),
+            actor,
+            at: new Date(nowMs).toISOString(),
+            forced: ctx.forced || undefined,
+          },
           nowMs,
+          marked ? markedId : undefined,
         );
       });
       for (const e of written) {
         if (e.type === 'claim' && e.token) root.rememberClaim(id, e.token, this.run ?? undefined);
       }
-      return { view: this.freshView(root, id), events: written };
+      return {
+        view: this.freshView(root, id),
+        events: written,
+        ...(record ? { decision: record.meta } : {}),
+      };
     });
     const out = this.confirm(root, id, res);
     return warnings.length > 0 ? { ...out, warnings } : out;
@@ -1497,7 +1602,7 @@ export class Workspace {
     }
     // Event ids in res.events can be stale when the sync renamed them; the view is current.
     const notes = sync.notes.length > 0 ? sync.notes : undefined;
-    return { view: this.freshView(root, id), events: res.events, notes };
+    return { ...res, view: this.freshView(root, id), notes };
   }
 
   /**
@@ -1820,7 +1925,12 @@ export class Workspace {
     return this.noteInactive(routed ? withNotes(res, [routed]) : res, sentTo);
   }
 
-  verdict(ref: string, verdict: 'approve' | 'changes', message: string): ActResult {
+  verdict(
+    ref: string,
+    verdict: 'approve' | 'changes',
+    message: string,
+    mark?: MarkInput,
+  ): ActResult {
     // An approval closes the task, so the tasks waiting on it can go on (AO-0068). The tasks
     // blocked on work swarmupd still has to merge stay blocked; its merge event names them.
     const freed =
@@ -1829,7 +1939,7 @@ export class Workspace {
         : this.approvalAwaitsMerge(ref)
           ? freedFields(this.mergeSplit(ref).free)
           : this.freedBy(ref, false);
-    return this.act(ref, (v, ctx) => {
+    return this.markAct(ref, mark, (v, ctx) => {
       ctx.requireStatus(['needs-review'], 'give a verdict on');
       if (!v.reviewer || !ownerMatches(v.reviewer, ctx.actor)) {
         ctx.needPrivilege(`${v.meta.id} waits for ${v.reviewer ?? 'a human'}'s review`);
@@ -1943,9 +2053,9 @@ export class Workspace {
     });
   }
 
-  answer(ref: string, message: string): ActResult {
+  answer(ref: string, message: string, mark?: MarkInput): ActResult {
     const freed = this.freedBy(ref, true);
-    return this.act(ref, (v, ctx) => {
+    return this.markAct(ref, mark, (v, ctx) => {
       if (v.status !== 'blocked') ctx.wrongState('answer');
       if (!(v.waitingOn && ownerMatches(v.waitingOn, ctx.actor))) {
         ctx.needPrivilege(`${v.meta.id} waits for ${v.waitingOn ?? 'a human'}`);
@@ -2099,7 +2209,7 @@ export class Workspace {
     };
   }
 
-  comment(ref: string, message: string, to?: string): ActResult {
+  comment(ref: string, message: string, to?: string, mark?: MarkInput): ActResult {
     if (to) assertOwner(to);
     if (!message.trim()) throw new OpsError('a comment needs text', 2);
     // A comment addressed to its own author notifies nobody, so it is written without one.
@@ -2109,7 +2219,7 @@ export class Workspace {
         this.checkTarget(ctx, to, 'addressee', false);
         return [{ type: 'comment', to: to === ctx.actor ? undefined : to, body: message }];
       },
-      { helperOk: true },
+      { helperOk: true, mark },
     );
     return to && isHuman(to) ? withNotes(res, messageNotes(message)) : res;
   }
@@ -2132,7 +2242,7 @@ export class Workspace {
     ref: string,
     type: string,
     message = '',
-    opts: { to?: string; answer?: string; priority?: Priority } = {},
+    opts: { to?: string; answer?: string; priority?: Priority; mark?: MarkInput } = {},
   ): ActResult {
     if (opts.to) assertOwner(opts.to);
     if (!/^[a-z][a-z0-9-]{0,29}$/.test(type)) {
@@ -2143,7 +2253,8 @@ export class Workspace {
     }
     const answer = opts.answer?.trim();
     const freed = answer ? this.freedBy(ref, true) : {};
-    return this.act(ref, (v, ctx) => {
+    // A mark goes on the retype event, the first of the write.
+    return this.markAct(ref, opts.mark, (v, ctx) => {
       ctx.needTriager('only a person, the orchestrator or the PM changes a task type');
       if (v.meta.type === type) throw new OpsError(`${v.meta.id} is already a ${type}`, 1);
       if (type === QUESTION_TYPE) {
@@ -2183,8 +2294,8 @@ export class Workspace {
     });
   }
 
-  park(ref: string, message: string): ActResult {
-    return this.act(ref, (_v, ctx) => {
+  park(ref: string, message: string, mark?: MarkInput): ActResult {
+    return this.markAct(ref, mark, (_v, ctx) => {
       ctx.requireOpen('park');
       ctx.needTriager('only a person, the orchestrator or the PM parks tasks');
       return [{ type: 'park', body: message }];
@@ -2814,30 +2925,49 @@ export class Workspace {
    * finishing commands, so the log holds only what a person decided.
    */
   recordDecision(input: RecordInput): RecordResult {
+    return this.writeRecord(input);
+  }
+
+  /**
+   * The acting id, when it may mark a decision on its own event (`--decision`): a person. A mark
+   * says what the writer of the event decides, and the PM records only what a person wrote, so
+   * its own event is no source. Else exit 1.
+   */
+  assertMarker(): string {
     const actor = this.assertRecorder();
-    const human = isHuman(actor);
-    const text = input.text.trim();
-    if (!text) throw new OpsError('a decision needs its one line', 2);
-    if (/[\r\n]/.test(text)) {
-      throw new OpsError('a decision is one line; put the context in -m or --body-file', 2);
-    }
-    if ([...text].length > DECISION_TEXT_MAX) {
+    if (!isHuman(actor)) {
       throw new OpsError(
-        `a decision is one line of ${DECISION_TEXT_MAX} characters at most (this one has ${[...text].length}); ` +
-          'say the decision, and put the discussion in -m',
-        2,
+        `${actor} cannot mark a decision on its own event: --decision records what the writer ` +
+          'decides, and only a person decides. Record what a person wrote with ' +
+          '`swarmup decision "one line" --source ID#<event id>` or `--source chat:<message id>`',
       );
     }
+    return actor;
+  }
+
+  /**
+   * Writes a record. With `pending`, it is the mark of an event about to be written: that event
+   * is the source, its task the default tree, and its time the record's.
+   */
+  private writeRecord(input: RecordInput, pending?: PendingEvent): RecordResult {
+    const actor = pending ? this.assertMarker() : this.assertRecorder();
+    const human = isHuman(actor);
+    const text = decisionLine(
+      input.text,
+      pending ? 'the message holds the discussion' : 'put the context in -m or --body-file',
+    );
     assertNoSecret(text, input.body);
     if (input.scope !== undefined && input.scope !== 'project' && input.scope !== 'tree') {
       throw new OpsError(`bad --scope '${input.scope}': use project or tree`, 2);
     }
 
     // The source: a task event, a PM chat message, or a file.
-    let source = input.source?.trim() || undefined;
+    let source = pending ? `${pending.task}#${pending.event}` : input.source?.trim() || undefined;
     let event: { root: Root; task: string; ev: OpsEvent } | undefined;
     let chat: ChatSourceMessage | undefined;
-    if (source && /^chat:/i.test(source)) {
+    if (pending) {
+      // The event does not exist yet: there is nothing to look up.
+    } else if (source && /^chat:/i.test(source)) {
       const mid = source.slice(5).trim();
       if (!mid) throw new OpsError('--source chat: needs a message id, as chat:<id>', 2);
       if (!input.chat || input.chat.id !== mid) {
@@ -2891,7 +3021,7 @@ export class Workspace {
     if (named && event && named.root !== event.root) {
       throw new OpsError(`--task ${named.id} and --source ${source} are in different roots`, 2);
     }
-    const root = named?.root ?? event?.root ?? this.defaultRoot();
+    const root = named?.root ?? pending?.root ?? event?.root ?? this.defaultRoot();
     const { entries, tasks } = decisionLog(root, this.now());
 
     // One message can hold two decisions, so only the same message with the same text is a repeat.
@@ -2936,7 +3066,7 @@ export class Workspace {
     const scope = this.recordScope(root, tasks, {
       scope: input.scope as DecisionScope | undefined,
       project: input.project?.trim() ? root.projectName(input.project.trim()) : undefined,
-      task: named?.id ?? event?.task,
+      task: named?.id ?? pending?.task ?? event?.task,
       supersedes,
     });
     const warnings: string[] = [];
@@ -3004,7 +3134,7 @@ export class Workspace {
         narrows: narrows.length > 0 ? narrows.map((s) => s.id) : undefined,
         recorded_by: by === actor ? undefined : actor,
         created_by: by,
-        created_at: quoted?.at ?? new Date(this.now()).toISOString(),
+        created_at: quoted?.at ?? pending?.at ?? new Date(this.now()).toISOString(),
       },
       body,
       this.user.id_block ?? 0,
@@ -3082,6 +3212,7 @@ export class Workspace {
           detail: `decided ${d.outcomes.length} times without --force (${list}); the newest stands: ${d.outcome!.choice}`,
         });
       }
+      out.push(...this.missingSources(root, nowMs));
       for (const copy of mirrorCopies(root, this.roots, this.user)) {
         for (const f of decisionConflicts(root, copy)) {
           const [id, ...file] = f.split('/');
@@ -3093,6 +3224,68 @@ export class Workspace {
           });
         }
       }
+    }
+    return out;
+  }
+
+  /**
+   * Records of a root whose source is a task event that does not exist: a mark whose event write
+   * failed after the record was written, or an event that was removed. An event that carries the
+   * record's id in `decision` counts as the source under any id: a sync gives an unpushed event a
+   * new id to order it after the remote's, and the record, written once, keeps the old one.
+   */
+  private missingSources(root: Root, nowMs: number): DecisionProblem[] {
+    const out: DecisionProblem[] = [];
+    const events = new Map<string, OpsEvent[] | null>();
+    for (const id of listDecisionIds(root)) {
+      const m = readDecisionFiles(root, id, nowMs).meta;
+      const src = m.kind === 'record' && m.source ? EVENT_SOURCE.exec(m.source) : null;
+      if (!src) continue;
+      const slash = src[1]!.indexOf('/');
+      // A source in another root is not this root's to check.
+      if (slash > 0 && src[1]!.slice(0, slash) !== root.name) continue;
+      const task = slash > 0 ? src[1]!.slice(slash + 1) : src[1]!;
+      if (!events.has(task)) events.set(task, root.hasTask(task) ? root.readEvents(task) : null);
+      const evs = events.get(task);
+      if (evs?.some((e) => e.id === src[2] || e.decision === id)) continue;
+      out.push({
+        root: root.name,
+        id,
+        kind: 'source',
+        detail: evs
+          ? `its source ${m.source} does not exist: ${task} has no such event, so the event of this mark was not written or was removed`
+          : `its source ${m.source} does not exist: root '${root.name}' has no task ${task}`,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * The recorded decisions the events of a task carry, by event id: a mark written with
+   * `--decision`, and a record that names the event as its source (`swarmup decision --source`).
+   */
+  eventMarks(ref: string): Map<string, EventMark[]> {
+    const { root, id } = this.resolve(ref);
+    const out = new Map<string, EventMark[]>();
+    // Most roots hold few decisions or none: `swarmup show` then reads nothing more.
+    if (listDecisionIds(root).length === 0) return out;
+    const records = decisionLog(root, this.now()).entries.filter((e) => e.kind === 'record');
+    if (records.length === 0) return out;
+    const events = root.readEvents(id);
+    for (const r of [...records].reverse()) {
+      const src = r.source ? EVENT_SOURCE.exec(r.source) : null;
+      const quoted = src && src[1]!.split('/').pop() === id ? src[2] : undefined;
+      // The event's own `decision` field comes first: it holds after a sync renamed the event.
+      const ev = events.find((e) => e.decision === r.id) ?? events.find((e) => e.id === quoted);
+      if (!ev) continue;
+      const mark: EventMark = {
+        id: r.id,
+        text: r.text,
+        scope: scopeText(r),
+        by: r.by,
+        ...(r.recorded_by ? { recorded_by: r.recorded_by } : {}),
+      };
+      out.set(ev.id, [...(out.get(ev.id) ?? []), mark]);
     }
     return out;
   }
