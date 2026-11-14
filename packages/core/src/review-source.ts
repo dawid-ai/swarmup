@@ -6,10 +6,17 @@ export interface MergeSource {
 }
 
 /**
- * A name ends at a space, a colon, a comma, a bracket or a full stop that ends a sentence. It may
- * be in code font or bold.
+ * A name in code font, whole: a code span holds its text as written, so `__wip__` there is the
+ * branch `__wip__` and no bold `wip` (AO-0325). Bold may stand around the span.
  */
-const NAME = '[`*]{0,3}([A-Za-z0-9._/-]+?)[`*]{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
+const CODE_NAME = '[*_]{0,3}`([^`\\s]+)`';
+/**
+ * A name outside code font ends at a space, a colon, a comma, a bracket or a full stop that ends
+ * a sentence. It may be bold.
+ */
+const BARE_NAME = '[`*]{0,3}([A-Za-z0-9._/-]+?)[`*]{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
+/** Two groups: the name of a code span, else the bare name. Read them with `nameOf`. */
+const NAME = `(?:${CODE_NAME}|${BARE_NAME})`;
 
 /**
  * A commit id starts and ends where no letter or digit adjoins it. `\b` does not do: `_` is a
@@ -30,6 +37,14 @@ function plain(name: string): string {
   return m ? m[2]! : name;
 }
 
+/**
+ * The name `NAME` matched: a code span's text as it is, a bare name without the underscores of
+ * emphasis.
+ */
+function nameOf(code: string | undefined, bare: string | undefined): string {
+  return code ?? plain(bare!);
+}
+
 /** What a review request names as the work to merge. */
 export interface ReviewSources {
   /** `<commit> on branch <name>`, the form the agent skill and swarmupd's own leftover reviews use. */
@@ -43,16 +58,19 @@ export interface ReviewSources {
 
 /**
  * Reads what a review request names: `<commit> on branch <name>`, and each `branch <word>`. The
- * commit and the name may be in code font or bold (`**x**` or `__x__`), as event text is Markdown: a request that wrote the commit
- * in code font named no commit before, and the merge took an older request's branch for it
- * (AO-0325).
+ * commit and the name may be in code font or bold (`**x**` or `__x__`), as event text is
+ * Markdown: a request that wrote the commit in code font named no commit before, and the merge
+ * took an older request's branch for it (AO-0325). A name in code font keeps its text as written,
+ * underscores included: `` `__wip__` `` is the branch `__wip__`.
  */
 export function reviewSources(text: string): ReviewSources {
   const both = new RegExp(`${START}(${HEX})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`, 'm').exec(text);
-  const named = both ? { commit: both[1]!.toLowerCase(), branch: plain(both[2]!) } : undefined;
+  const named = both
+    ? { commit: both[1]!.toLowerCase(), branch: nameOf(both[2], both[3]) }
+    : undefined;
   const loose: string[] = [];
   for (const m of text.matchAll(new RegExp(`\\bbranch\\s+${NAME}`, 'gm'))) {
-    const name = plain(m[1]!);
+    const name = nameOf(m[1], m[2]);
     if (name !== named?.branch && !loose.includes(name)) loose.push(name);
   }
   return named ? { named, loose } : { loose };

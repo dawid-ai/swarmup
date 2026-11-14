@@ -928,7 +928,8 @@ swarmupd:
   branch in the repo, since prose such as "this branch does not touch it" has the same shape.
   When that review names neither, swarmupd takes the newest earlier review that names a branch the
   repo has, and merges that branch's tip. The commit may be in code font or bold
-  (`` `abc1234` on branch `x` ``). A commit the repo lacks gets a note to the human, never an
+  (`` `abc1234` on branch `x` ``), and so may the name; a name in code font is read as written, so
+  `` `__wip__` `` is the branch `__wip__`, while a bold `__wip__` is `wip`. A commit the repo lacks gets a note to the human, never an
   earlier review's work. Only verdicts after swarmupd first saw the root's
   setting count (`merge.json` in the state folder), so turning it on merges no old work.
 - **Nothing to merge.** Work that is already in the base gets a merge event that says so, and

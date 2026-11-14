@@ -534,6 +534,28 @@ describe('merging approved work', () => {
     expect(reviewSources('_cc3d803_ on branch **x**, then branch _y_').loose).toEqual(['y']);
     // Underscores that are not a pair stay in the name.
     expect(reviewSources('cc3d803 on branch _wip').named?.branch).toBe('_wip');
+    // A code span holds its text as written: the underscores there are part of the name.
+    expect(reviewSources('cc3d803 on branch `__wip__`.').named).toEqual({
+      commit: 'cc3d803',
+      branch: '__wip__',
+    });
+    expect(reviewSources('`cc3d803` on branch **`_wip_`**, not branch `__old__`')).toEqual({
+      named: { commit: 'cc3d803', branch: '_wip_' },
+      loose: ['__old__'],
+    });
+    expect(reviewSources('The work is on branch `__wip__`; branch __wip__ is bold.').loose).toEqual(
+      ['__wip__', 'wip'],
+    );
+    expect(reviewSources('see branch __`feature`__, then branch `a+b@c`.').loose).toEqual([
+      'feature',
+      'a+b@c',
+    ]);
+    expect(
+      pickMergeSource(['The fix is on branch `__wip__`.', 'abc1234 on branch stale'], {
+        branch: (b) => b === '__wip__' || b === 'stale',
+        commit: () => false,
+      }),
+    ).toEqual({ branch: '__wip__' });
     expect(reviewCommits('the work is __0456def__, not _2b0ab62_ or x_1234abc')).toEqual([
       '0456def',
       '2b0ab62',
@@ -2742,6 +2764,33 @@ describe('merging approved work', () => {
     expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
     expect(s.as('human:dawid').view('2').unblocked).toBe(true);
   });
+
+  it.each([
+    ['named', (sha: string) => `T-0001: \`${sha}\` on branch \`__wip__\` is rebased.`],
+    ['loose', () => 'T-0001: the fix is on branch `__wip__`, rebased onto `main`.'],
+  ])(
+    'takes a branch whose name has underscores at both ends from code font, not the branch of an earlier review: %s (AO-0325)',
+    async (_form, request) => {
+      const s = mergeSetup({ userMerge: true });
+      const commit = s.branch('two\n');
+      git(s.repo, 'branch', '-m', 'feature', '__wip__');
+      git(s.repo, 'branch', 'stale', 'main');
+      const eng = s.as('fake:engineer');
+      eng.start('2', 'plan');
+      eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+      eng.start('1', 'plan');
+      eng.review('1', 'T-0001: 0123abc on branch stale is rebased.', 'human:dawid');
+      s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+      eng.start('1', 'plan');
+      eng.review('1', request(commit.slice(0, 7)), 'human:dawid');
+      s.as('human:dawid').verdict('1', 'approve', 'looks right');
+      await s.merged();
+      expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: '__wip__' });
+      expect(s.last().body).not.toContain('nothing to merge');
+      expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+      expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+    },
+  );
 
   it('takes the commit the approved review names in capitals, not the branch of an earlier review (AO-0325)', async () => {
     const s = mergeSetup({ userMerge: true });
