@@ -717,6 +717,74 @@ describe('merging approved work', () => {
     expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
   });
 
+  it('commits staged work before recording that the reviewed branch is already in main (AO-0330)', async () => {
+    const s = mergeSetup();
+    const commit = git(s.repo, 'rev-parse', 'main');
+    const wt = join(temp(), 'wt');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
+    writeFileSync(join(wt, 'extra.txt'), 'staged\n');
+    git(wt, 'add', 'extra.txt');
+    approveAfterRun(
+      s,
+      commit,
+      `cannot commit what it left in ${wt}: HEAD moved during the run; the changes stay for a person`,
+    );
+
+    await s.merged();
+
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'fake/t-0001-r1-merge' });
+    expect(e.body).not.toContain('already in main; nothing to merge');
+    expect(e.body).toContain('1 file(s) run R1 left uncommitted');
+    expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
+    expect(git(wt, 'status', '--porcelain')).toBe('');
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
+  });
+
+  it('looks again before recording no merge when staged work appears during the merge (AO-0330)', async () => {
+    const s = mergeSetup();
+    const commit = git(s.repo, 'rev-parse', 'main');
+    const wt = join(temp(), 'wt');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
+    approveAfterRun(
+      s,
+      commit,
+      `cannot commit what it left in ${wt}: HEAD moved during the run; the changes stay for a person`,
+    );
+    const original = MergeRepo.prototype.rebase;
+    const rebase = vi.spyOn(MergeRepo.prototype, 'rebase').mockImplementationOnce(async function (
+      this: MergeRepo,
+      source,
+      onto,
+    ) {
+      const result = await original.call(this, source, onto);
+      writeFileSync(join(wt, 'extra.txt'), 'staged late\n');
+      git(wt, 'add', 'extra.txt');
+      return result;
+    });
+    try {
+      await s.merged();
+      expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+      expect(git(wt, 'status', '--porcelain')).toBe('');
+      expect(git(s.repo, 'branch', '--list', 'fake/t-0001-r1-merge')).toContain(
+        'fake/t-0001-r1-merge',
+      );
+
+      await s.merged();
+
+      const e = s.last();
+      expect(e).toMatchObject({
+        type: 'merge',
+        actor: MERGE_ACTOR,
+        branch: 'fake/t-0001-r1-merge',
+      });
+      expect(e.body).not.toContain('already in main; nothing to merge');
+      expect(text(join(s.repo, 'extra.txt'))).toBe('staged late\n');
+    } finally {
+      rebase.mockRestore();
+    }
+  });
+
   it('merges the commit of what a run left when the merge starts again after it (AO-0300)', async () => {
     let slept = 0;
     const s = mergeSetup({ now: () => Date.now() + slept });

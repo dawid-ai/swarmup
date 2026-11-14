@@ -1,4 +1,4 @@
-import { CalendarClock, ChevronRight, GripVertical, Kanban, Rows3 } from 'lucide-react';
+import { CalendarClock, ChevronRight, Flag, GripVertical, Kanban, Rows3 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { Nav } from '../App';
 import { useData } from '../api';
@@ -28,7 +28,8 @@ import {
 import { ago, columns, COLUMNS, ownerlessLabel, waitReasons } from '../lib/format';
 import { dueLabel, identity, priorityInfo, statusInfo } from '../lib/identity';
 import { moveTo } from '../lib/transitions';
-import type { RunRecord, Status, Task, WaitsAnswer } from '../types';
+import { progressText } from '../lib/plan';
+import type { PlanProgress, RunRecord, Status, Task, WaitsAnswer } from '../types';
 import { FilterBar } from '../ui/filters';
 import { MergeUnderWay } from '../ui/merge';
 import { useMover } from '../ui/move';
@@ -49,12 +50,21 @@ const TYPE_COLOR: Record<string, string> = {
   doc: '#4fd1c5',
   eval: '#b18cff',
   idea: '#ffd166',
+  milestone: '#ff7eb6',
 };
 
 export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
   const { data, error } = useData<Task[]>('/api/tasks?all');
   const waits = useData<WaitsAnswer>('/api/waits');
   const live = useData<RunRecord[]>('/api/runs?live');
+  // Each milestone's progress on its plan (AO-0110), for its card and its lane's label. A
+  // swarmupd older than the route answers with an error: the cards then show no progress line.
+  const milestones = useData<PlanProgress[]>('/api/milestones');
+  const progress = useMemo(
+    () =>
+      new Map<string, PlanProgress>((milestones.data ?? []).map((p) => [`${p.root}/${p.id}`, p])),
+    [milestones.data],
+  );
   const [moveError, setMoveError] = useState<string | null>(null);
   const mover = useMover(nav, setMoveError);
   // Ideas are not work: hidden until asked for, so they do not crowd the todo column. The toggle
@@ -139,6 +149,7 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
             index={i}
             live={running.has(`${t.root}/${t.id}`)}
             waits={why.get(`${t.root}/${t.id}`)}
+            progress={progress.get(`${t.root}/${t.id}`)}
             dragging={drag?.id === t.id && drag.root === t.root}
             onDragStart={() => setDrag(t)}
             onDragEnd={() => {
@@ -273,7 +284,7 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
                       size={14}
                       className={cx('text-fg-4 transition', !closed && 'rotate-90')}
                     />
-                    <LaneLabel mode={lanes} k={g.key} />
+                    <LaneLabel mode={lanes} k={g.key} progress={progress.get(g.key)} />
                     <span className="ml-auto font-mono text-[11px] text-fg-4">
                       {g.tasks.filter((t) => !['done', 'parked'].includes(t.status)).length} open
                     </span>
@@ -294,8 +305,23 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
   );
 }
 
-function LaneLabel({ mode, k }: { mode: Lanes; k: string }) {
+function LaneLabel({ mode, k, progress }: { mode: Lanes; k: string; progress?: PlanProgress }) {
   if (mode === 'priority') return <PriorityTag p={k} />;
+  if (mode === 'milestone') {
+    // The key is `root/id`; the lane shows the id, the milestone's title and its progress.
+    return k ? (
+      <span className="flex min-w-0 items-center gap-2" data-milestone-lane={k}>
+        <Flag size={13} className="shrink-0 text-[#ff7eb6]" />
+        <span className="font-mono text-sm text-fg-2">{k.slice(k.indexOf('/') + 1)}</span>
+        {progress && <span className="truncate text-sm text-fg-3">{progress.title}</span>}
+        {progress && (
+          <span className="shrink-0 font-mono text-[11px] text-fg-4">{progressText(progress)}</span>
+        )}
+      </span>
+    ) : (
+      <span className="text-sm text-fg-4">No milestone</span>
+    );
+  }
   if (mode === 'agent') {
     return k ? (
       <Who id={k} label size="xs" />
@@ -315,6 +341,8 @@ function Card(props: {
   index: number;
   live: boolean;
   waits?: string;
+  /** A milestone's progress on its plan: `4/7 done, 9 h of 14 h`. */
+  progress?: PlanProgress;
   dragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -371,6 +399,21 @@ function Card(props: {
       >
         <RefText text={t.title} />
       </div>
+      {props.progress && (
+        <div className="mt-2" data-milestone-progress>
+          <div className="font-mono text-[11px] text-fg-2">{progressText(props.progress)}</div>
+          {props.progress.total > 0 && (
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/8">
+              <div
+                className="h-full rounded-full bg-[#ff7eb6]"
+                style={{
+                  width: `${Math.round(((props.progress.done + props.progress.parked) / props.progress.total) * 100)}%`,
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {(t.stale || t.unblocked) && (
         <div className="mt-1 text-[11px]">
           {t.stale && <span className="text-warn">stale claim</span>}

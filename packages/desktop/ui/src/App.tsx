@@ -240,6 +240,8 @@ export function App() {
   const [palette, setPalette] = useState(false);
   /** The task whose panel opens with its diff shown. */
   const [diffOf, setDiffOf] = useState<string | null>(null);
+  /** The milestone whose panel opens with its waiting plan in edit mode. */
+  const [planEditOf, setPlanEditOf] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
   const pendingG = useRef(false);
@@ -299,6 +301,11 @@ export function App() {
         // The screenshot run opens a task with its diff this way (AO-0106).
         else if (nav.view === 'diff' && nav.id) {
           setDiffOf(nav.id);
+          setTask(nav.id);
+        }
+        // And a milestone with its waiting plan in edit mode (AO-0110).
+        else if (nav.view === 'plan-edit' && nav.id) {
+          setPlanEditOf(nav.id);
           setTask(nav.id);
         }
         // The screenshot run opens the palette and the shortcut list this way.
@@ -654,6 +661,7 @@ export function App() {
           id={task}
           focus={focus ?? undefined}
           showDiff={diffOf === task}
+          editPlan={planEditOf === task}
           nav={nav}
           onClose={() => setTask(null)}
           onBack={back ?? undefined}

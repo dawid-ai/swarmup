@@ -10,6 +10,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'tasks',
     `tasks/${SEG}`,
     `tasks/${SEG}/diff`,
+    `tasks/${SEG}/plan`,
+    'milestones',
     'agents',
     'directory',
     `roles/${SEG}`,
@@ -39,7 +41,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
-    `tasks/${SEG}/(comment|answer|unblock|done|release|reopen|park|priority|verdict|delegate|start|block|review|assign|retype)`,
+    `tasks/${SEG}/(comment|answer|unblock|done|release|reopen|park|priority|verdict|delegate|start|block|review|assign|retype|plan-approve|plan-reject)`,
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,

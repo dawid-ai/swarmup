@@ -751,3 +751,128 @@ describe('reopening a plan task (AO-0110)', () => {
     expect(view('1').planOpen).toContain('T-0005');
   });
 });
+
+describe('a plan in the inbox and on the board (AO-0110, AO-0321)', () => {
+  it('shows the plan that waits to the person as a review with its size, once', () => {
+    const { h, pm, proposal } = proposed('apple human:dawid', 'ci *:engineer apple codex:qa 4h');
+    const plans = () => h.inbox().filter((it) => it.plan);
+    expect(plans()).toMatchObject([
+      {
+        kind: 'review',
+        task: 'T-0001',
+        from: 'claude:pm',
+        plan: { event: proposal.events[0]!.id, items: 2, minutes: 300, change: false },
+      },
+    ]);
+    expect(h.inbox().filter((it) => it.kind === 'review')).toHaveLength(1);
+    expect(pm.inbox().some((it) => it.plan)).toBe(false);
+    h.planApprove('1');
+    expect(plans()).toEqual([]);
+    // The milestone now waits for its tasks, not for an answer: only the person's own item shows.
+    expect(h.inbox().map((it) => `${it.kind} ${it.task}`)).toEqual(['owned T-0002']);
+  });
+
+  it('shows a plan change while it waits, and never as a message too', () => {
+    const { h, events } = changing();
+    const change = events('1')
+      .filter((e) => e.type === 'plan')
+      .at(-1)!;
+    const about = h.inbox().filter((it) => it.task === 'T-0001');
+    expect(about).toMatchObject([
+      {
+        kind: 'review',
+        event: change.id,
+        from: 'claude:pm',
+        summary: 'Plan change for T-0001: 4 items, 4 h',
+        plan: { event: change.id, items: 4, minutes: 240, change: true },
+      },
+    ]);
+    h.planReject('1', 'T-0001: keep e');
+    expect(h.inbox().filter((it) => it.task === 'T-0001')).toEqual([]);
+  });
+
+  it('reports each row with the fields an edited plan needs, and approves one sent as JSON', () => {
+    const w = world();
+    w.h.newTask({
+      title: 'Docs ship',
+      type: 'milestone',
+      owner: 'claude:pm',
+      doneWhen: ['docs/guide.md exists'],
+    });
+    w.pm.start('1', 'plan');
+    w.pm.planPropose(
+      '1',
+      [
+        'items:',
+        '  - key: guide',
+        '    title: Write the guide',
+        "    owner: '*:engineer'",
+        '    estimate: 2h',
+        '    done_when: docs/guide.md lists every command',
+        '    type: docs',
+        '    priority: p1',
+        '    review: codex:qa',
+        '    body: Start from the README.',
+        '  - key: links',
+        '    title: Check the links',
+        "    owner: '*:qa'",
+        '    estimate: 30m',
+        '    after: [guide]',
+        '',
+      ].join('\n'),
+    );
+    const guide = w.h.planShow('1').pending!.items[0]!;
+    const fixed = {
+      done_when: 'docs/guide.md lists every command',
+      type: 'docs',
+      priority: 'p1',
+      review: 'codex:qa',
+      body: 'Start from the README.',
+    };
+    expect(guide).toMatchObject({ key: 'guide', ...fixed });
+    // What the desktop's edit mode sends: the rows as a plan, in JSON, which is YAML too.
+    const edited = {
+      items: [
+        { key: 'guide', title: guide.title, owner: guide.owner, estimate: '3h', ...fixed },
+        { key: 'index', title: 'Add an index', owner: '*:engineer', estimate: '1h' },
+      ],
+    };
+    const res = w.h.planApprove('1', { source: JSON.stringify(edited) });
+    expect(res.created.map((c) => c.key)).toEqual(['guide', 'index']);
+    expect(res.events[0]!.body).toMatch(
+      /^Edited before approval: removed: links; estimate of guide: 2h -> 3h; added: index\./,
+    );
+    expect(w.view('2').meta).toMatchObject({ type: 'docs', priority: 'p1', review: 'codex:qa' });
+  });
+
+  it("reports a milestone's progress: items done of all, minutes spent of estimated", () => {
+    const { h, pm, raw } = approved(...BASE);
+    expect(h.planProgress()).toEqual([
+      {
+        root: h.defaultRoot().name,
+        id: 'T-0001',
+        title: 'Desktop app ships on macOS',
+        total: 4,
+        done: 0,
+        parked: 0,
+        minutes: 240,
+        spent: 0,
+        pending: null,
+      },
+    ]);
+    raw('2', 'claude:engineer', 'run-end', { minutes: 90 });
+    raw('2', 'claude:engineer', 'done');
+    expect(h.planProgress()[0]).toMatchObject({ done: 1, total: 4, spent: 90, minutes: 240 });
+    pm.planAmend('1', 'change', yaml(...CHANGE));
+    expect(h.planProgress()[0]).toMatchObject({ total: 4, pending: { items: 4, minutes: 240 } });
+  });
+
+  it('reports a plan that waits for its first approval with no items yet', () => {
+    const { h } = proposed('a claude:engineer', 'b claude:engineer a - 30m');
+    expect(h.planProgress()[0]).toMatchObject({
+      total: 0,
+      done: 0,
+      pending: { items: 2, minutes: 90 },
+    });
+  });
+});
