@@ -551,8 +551,15 @@ function waitOnChildren(
   const byItem = new Map<string, PlanChild>();
   for (const k of kids) if (k.plan_item) byItem.set(k.plan_item, k);
   const item = (key: string): string => `${view.meta.id}#${key}`;
-  // A key without a live task: its task may be archived, which is closed, not missing.
-  if (plans.archivedChildren && plan.items.some((i) => !byItem.has(item(i.key)))) {
+  // A key without a live task: its task may be archived, which is closed, not missing. That
+  // holds for a changed or removed key of the latest approval too: an archived task still needs
+  // its marker or the milestone's `plan_skip`.
+  const noLive = (key: string): boolean => !byItem.has(item(key));
+  if (
+    plans.archivedChildren &&
+    (plan.items.some((i) => noLive(i.key)) ||
+      plan.diff.some((key) => !plan.skipped.includes(key) && noLive(key)))
+  ) {
     kids = [...kids, ...plans.archivedChildren(view.meta.id)];
     for (const k of kids) if (k.plan_item && !byItem.has(k.plan_item)) byItem.set(k.plan_item, k);
   }

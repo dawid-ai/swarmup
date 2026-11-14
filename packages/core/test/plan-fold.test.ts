@@ -609,6 +609,28 @@ describe('an incomplete application and `planHold` (AO-0110, "Locks and the clai
     expect(view(back, [skipped, back]).planHold).toBeUndefined();
   });
 
+  it('reads the archived task of a removed key while every effective key has a live task', () => {
+    const apple = child(2, 'apple', closed(6));
+    const applied = (key: string, n: number): TaskState =>
+      child(n, key, [...closed(9), ev(12, 'comment', 'human:dawid', mark(key))]);
+    const live = [applied('ci', 3), child(4, 'smoke', closed(9))];
+    // `apple` is not in the effective plan, so only the diff makes the view read the archive.
+    const v = view(ms, live, { archived: [apple] });
+    expect(v).toMatchObject({ status: 'blocked', unblocked: false, planUnapplied: ['apple'] });
+    expect(v.planMissing).toBeUndefined();
+    expect(isClaimable(v)).toBe(false);
+    // The task marker or the milestone's skip marker settles it.
+    const marked = view(ms, live, { archived: [applied('apple', 2)] });
+    expect(marked.planUnapplied).toBeUndefined();
+    expect(marked.unblocked).toBe(true);
+    const skip = ev(9, 'comment', 'human:dawid', { ...mark('apple'), plan_skip: 'closed' });
+    const skipped = view(fold(milestone, [...first, change, approve, skip]), live, {
+      archived: [apple],
+    });
+    expect(skipped.planUnapplied).toBeUndefined();
+    expect(skipped.unblocked).toBe(true);
+  });
+
   it('holds nothing after a first approval or an amendment: they change no existing task', () => {
     const plain = fold(milestone, [
       ...first,
