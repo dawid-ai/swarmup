@@ -1282,7 +1282,7 @@ const COMMANDS: Record<string, Command> = {
   review: {
     usage: 'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT]',
     summary:
-      'ask for review; without --to, a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work',
+      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },

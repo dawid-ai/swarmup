@@ -593,9 +593,10 @@ wake and schedules wait for room.
   commit does not hold.
   - The `run-end` event names the branch and the commit.
   - If the run ended without `swarmup review`, swarmupd sends the task for review with the commit and
-    branch: to the reviewer the task's delegation expects, else the first active `qa` agent of
-    another provider, else the human. If the run already asked for review, swarmupd comments to its
-    reviewer where the files went.
+    branch: to the reviewer the task's delegation expects, else the reviewer its plan item names
+    (`review` in `task.md`), else the first active `qa` agent of another provider, else the
+    human. If the run already asked for review, swarmupd comments to its reviewer where the
+    files went.
   - swarmupd commits only once nothing of the run still writes: it first reaps the processes the run
     left behind and waits up to 30 seconds for the run's helpers to end, including helpers that
     ended first and are still reaping their own processes. Until then the run counts as live, so
@@ -680,7 +681,10 @@ auth status` and `codex login status` (`runtimes.<name>.sign_in_check`, the argu
     change request sent back to `claude:engineer`, waits `signed_out_handoff_minutes` (default
     15; `0` never hands it over) from the later of the sign-out and the moment the task became
     `todo` for that agent, then swarmupd hands it to the same role on the next provider, with a
-    handoff event that names the task's branch and worktree. Codex gets such work too: a writing
+    handoff event that names the task's branch and worktree. It skips the provider of the
+    reviewer the task expects (the delegation's, else the one its plan item names in `review` of
+    `task.md`), and a wake never starts an agent of that provider on the task, so the author and
+    the reviewer stay on different providers. Codex gets such work too: a writing
     Codex run commits in a worktree (AO-0155, AO-0234). Reviews that need the signed-out provider
     wait for it.
   - The state is kept in `signin.json` in the state folder. `swarmup usage`, `swarmup waits`, the
