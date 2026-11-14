@@ -729,7 +729,9 @@ swarmupd:
   root does not count. When one has
   uncommitted changes, the commit the review names lacks part of the work. If the run that asked
   for the approved review ended with a `run-end` that says swarmupd could not commit what it left
-  (an earlier run of the same author does not count for a later review),
+  (the `review` event names its run, and only that run's `run-end` counts: an earlier run of the
+  same author does not, even when its `run-end` arrives after a later review, and a review made
+  outside a run ties to none),
   and the worktree is still on the commit to merge, swarmupd commits the changes on a branch of
   their own (`<runtime>/<task>-<run>-merge`), restores the worktree and merges that commit; the
   `merge` event says so. A merge that starts again after that commit (the PC slept, a check

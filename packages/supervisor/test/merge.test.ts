@@ -351,7 +351,7 @@ function mergeSetup(
   const user = (
     opts.userMerge ? { opsd: { merge: { test: { base: 'main' } } } } : {}
   ) as UserConfig;
-  const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user });
+  const as = (actor: string, run?: string) => new Workspace({ cwd: repo, env, actor, user, run });
   as('human:dawid').newTask({ title: 'Change the code', owner: 'fake:engineer' });
   as('human:dawid').newTask({ title: 'Other work', owner: 'fake:engineer' });
   git(repo, 'add', '-A');
@@ -526,7 +526,7 @@ describe('merging approved work', () => {
     commit: string,
     runEnd: string,
   ): void => {
-    const eng = s.as('fake:engineer');
+    const eng = s.as('fake:engineer', 'R1');
     eng.start('1', 'plan');
     eng.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
     eng.recordRun('1', 'run-end', { run: 'R1', exit: 0, reason: 'exit', minutes: 1 }, runEnd);
@@ -609,7 +609,7 @@ describe('merging approved work', () => {
 
   /** Run R1 asks for review and ends with changes swarmupd could not commit; the review gets `changes`. */
   const olderUncommittedRun = (s: ReturnType<typeof mergeSetup>, commit: string, wt: string) => {
-    const eng = s.as('fake:engineer');
+    const eng = s.as('fake:engineer', 'R1');
     eng.start('1', 'plan');
     eng.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
     eng.recordRun(
@@ -619,7 +619,7 @@ describe('merging approved work', () => {
       `cannot commit what it left in ${wt}: HEAD moved during the run`,
     );
     s.as('human:dawid').verdict('1', 'changes', 'not yet');
-    return eng;
+    return s.as('fake:engineer');
   };
 
   it('commits nothing for a later review when only an older run ended with changes uncommitted (AO-0300)', async () => {
@@ -669,26 +669,128 @@ describe('merging approved work', () => {
     expect(existsSync(join(s.repo, 'extra.txt'))).toBe(false);
   });
 
-  it('takes a run-end for the approved review only from the run that asked for it (AO-0300)', () => {
+  it('commits nothing for the review of run R2 when the run-end of run R1 comes after it (AO-0300)', async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    // Run R1 asks for review and gets `changes` before swarmupd records its end.
+    const r1 = s.as('fake:engineer', 'R1');
+    r1.recordRun('1', 'run-start', { run: 'R1' }, 'fake run');
+    r1.start('1', 'plan');
+    r1.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'not yet');
+    // Run R2 leaves a file of its own and asks for review; only then does the end of R1 arrive.
+    const r2 = s.as('fake:engineer', 'R2');
+    r2.recordRun('1', 'run-start', { run: 'R2' }, 'fake run');
+    r2.start('1', 'fix');
+    writeFileSync(join(wt, 'extra.txt'), 'not reviewed\n');
+    git(wt, 'add', 'extra.txt');
+    r2.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
+    r1.recordRun(
+      '1',
+      'run-end',
+      { run: 'R1', exit: 0, reason: 'exit', minutes: 1 },
+      `cannot commit what it left in ${wt}: HEAD moved during the run`,
+    );
+    r2.recordRun('1', 'run-end', { run: 'R2', exit: 0, reason: 'exit', minutes: 1 }, '');
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 uncommitted change(s) (`extra.txt`)');
+    expect(e.body).toContain('no run-end of the run that asked for this review');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(git(wt, 'status', '--porcelain')).toBe('A  extra.txt');
+    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+  });
+
+  it('leaves the leftover branch of run R1 out when its run-end comes after the review of run R2 (AO-0300)', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const wt = worktreeOf(s.repo, 'feature');
+    const r1 = s.as('fake:engineer', 'R1');
+    r1.start('1', 'plan');
+    r1.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'not yet');
+    // What an earlier start of a merge would have committed for run R1, on the reviewed commit.
+    git(wt, 'checkout', '-q', '-b', 'fake/t-0001-r1-merge');
+    writeFileSync(join(wt, 'extra.txt'), 'stale\n');
+    git(wt, 'add', 'extra.txt');
+    git(wt, 'commit', '-qm', 'What run R1 left');
+    git(wt, 'checkout', '-q', 'feature');
+    const r2 = s.as('fake:engineer', 'R2');
+    r2.start('1', 'fix');
+    r2.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
+    r1.recordRun(
+      '1',
+      'run-end',
+      { run: 'R1', exit: 0, reason: 'exit', minutes: 1 },
+      `cannot commit what it left in ${wt}: HEAD moved during the run`,
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(existsSync(join(s.repo, 'extra.txt'))).toBe(false);
+  });
+
+  it('records the run that asks on the review event (AO-0300)', () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const r1 = s.as('fake:engineer', 'R1');
+    r1.start('1', 'plan');
+    r1.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
+    expect(s.last()).toMatchObject({ type: 'review', run: 'R1' });
+    s.as('human:dawid').verdict('1', 'changes', 'not yet');
+    const byHand = s.as('fake:engineer');
+    byHand.start('1', 'fix');
+    byHand.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
+    expect(s.last().type).toBe('review');
+    expect(s.last().run).toBeUndefined();
+  });
+
+  it('takes a run-end for the approved review only from the run the review names (AO-0300)', () => {
     const ev = (type: string, actor: string, more: object = {}) =>
       ({ type, actor, ...more }) as unknown as Parameters<typeof uncommittedRun>[0][number];
     const end = (run: string, body = 'cannot commit what it left in /wt: HEAD moved') =>
       ev('run-end', 'a:eng', { run, body });
-    const review = ev('review', 'a:eng');
+    const review = (run?: string) => ev('review', 'a:eng', run ? { run } : {});
+    const start = (run: string) => ev('run-start', 'a:eng', { run });
     const approve = ev('verdict', 'h:d', { verdict: 'approve' });
-    expect(uncommittedRun([review, end('R1'), approve])).toEqual({ id: 'R1', agent: 'a:eng' });
-    // The run-end comes before the review: another run, or none, made the review.
-    expect(uncommittedRun([end('R1'), review, approve])).toBeNull();
-    expect(uncommittedRun([review, end('R1'), ev('verdict', 'h:d'), review, approve])).toBeNull();
+    const got = { id: 'R1', agent: 'a:eng' };
+    expect(uncommittedRun([review('R1'), end('R1'), approve])).toEqual(got);
+    expect(uncommittedRun([start('R1'), review('R1'), end('R1'), approve])).toEqual(got);
+    // The end of another run between the review and the verdict changes nothing.
+    expect(uncommittedRun([review('R1'), end('R0', 'ok'), end('R1'), approve])).toEqual(got);
+    // A review that names no run (made by hand, or an older event) ties to none.
+    expect(uncommittedRun([review(), end('R1'), approve])).toBeNull();
+    expect(uncommittedRun([start('R1'), review(), end('R1'), approve])).toBeNull();
+    // The run-end comes before the review, or belongs to an earlier review.
+    expect(uncommittedRun([end('R1'), review('R1'), approve])).toBeNull();
+    expect(
+      uncommittedRun([review('R1'), end('R1'), ev('verdict', 'h:d'), review('R2'), approve]),
+    ).toBeNull();
     // The run that made the review ended with nothing left; an older one does not count.
-    expect(uncommittedRun([end('R1'), review, end('R2', 'ok'), approve])).toBeNull();
-    // A run that started after the review did not make it.
-    const started = ev('run-start', 'a:eng', { run: 'R2' });
-    expect(uncommittedRun([review, started, end('R2'), approve])).toBeNull();
-    expect(uncommittedRun([started, review, end('R2'), approve])).toEqual({
+    expect(uncommittedRun([end('R1'), review('R2'), end('R2', 'ok'), approve])).toBeNull();
+    // Interleaved: the run-end of R1 arrives after the review of R2, before or after R2 ends.
+    const twoRuns = [start('R1'), review('R1'), ev('verdict', 'h:d'), start('R2'), review('R2')];
+    expect(uncommittedRun([...twoRuns, end('R1'), approve])).toBeNull();
+    expect(uncommittedRun([...twoRuns, end('R1'), end('R2', 'ok'), approve])).toBeNull();
+    expect(uncommittedRun([...twoRuns, end('R2', 'ok'), end('R1'), approve])).toBeNull();
+    expect(uncommittedRun([...twoRuns, end('R1'), end('R2'), approve])).toEqual({
       id: 'R2',
       agent: 'a:eng',
     });
+    // Two ends of the named run, or one by another actor, are not a record to act on.
+    expect(uncommittedRun([review('R1'), end('R1'), end('R1'), approve])).toBeNull();
+    const other = ev('run-end', 'b:eng', { run: 'R1', body: 'left changes uncommitted: x' });
+    expect(uncommittedRun([review('R1'), other, approve])).toBeNull();
   });
 
   /** A branch `feature` checked out in the repo's own checkout, as a run without a task worktree leaves it. */

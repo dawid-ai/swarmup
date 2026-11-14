@@ -5,4 +5,5 @@
   changes while swarmupd commits, or stays changed after that commit, nothing is merged. The
   repo's own checkout is looked at too when it has the review's branch checked out. Only the run
   that asked for the approved review counts for that commit: what an earlier run of the same
-  author left is not committed or merged for a later review.
+  author left is not committed or merged for a later review. A `review` event now names the run
+  that asked (`run`), so a `run-end` that arrives late cannot stand in for another run's.

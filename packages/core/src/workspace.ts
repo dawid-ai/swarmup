@@ -1738,7 +1738,9 @@ export class Workspace {
         this.checkTarget(ctx, reviewer, 'reviewer');
       }
       sentTo = reviewer;
-      return [{ type: 'review', to: reviewer, body, ...(rec ? { recommend: rec } : {}) }];
+      // The run that asks: swarmupd ties what that run left uncommitted to this review (AO-0300).
+      const run = this.run ? { run: this.run } : {};
+      return [{ type: 'review', to: reviewer, body, ...run, ...(rec ? { recommend: rec } : {}) }];
     });
     return this.noteInactive(routed ? withNotes(res, [routed]) : res, sentTo);
   }
