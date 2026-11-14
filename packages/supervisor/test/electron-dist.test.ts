@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -7,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -271,6 +274,91 @@ describe('the shared Electron (AO-0306)', () => {
     // A checkout without Electron gets the environment as it was.
     const plain = { KEEP: 'yes' };
     expect(withElectronDist(plain, state, temp(), [main], WIN)).toBe(plain);
+  });
+});
+
+describe('the shared Electron for a worktree without path.txt (AO-0306)', () => {
+  const MAC = { platform: 'darwin' as const, arch: 'arm64' };
+  const require = createRequire(import.meta.url);
+  const entry = join(dirname(require.resolve('electron/package.json')), 'index.js');
+
+  /** What `require('electron')` returns in the checkout `dir`, from the package's own entry point. */
+  function requireElectron(dir: string, env: NodeJS.ProcessEnv): string {
+    const pkg = join(dir, 'node_modules', 'electron');
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, 'index.js'), readFileSync(entry));
+    return execFileSync(
+      process.execPath,
+      ['-e', 'process.stdout.write(require(process.argv[1]))', join(pkg, 'index.js')],
+      { env: { ...process.env, ...env }, encoding: 'utf8' },
+    );
+  }
+
+  it('gives a new macOS worktree a path that starts the executable in the app bundle', () => {
+    const state = temp();
+    const main = checkout();
+    unpack(main, '45.2.1', 'darwin');
+    // A new worktree: the lockfile, and a package that never ran its download, so no path.txt.
+    const worktree = checkout();
+    const env = withElectronDist({}, state, worktree, [main], MAC);
+    const shared = sharedElectronDist(state, '45.2.1', 'darwin', 'arm64');
+    expect(env[ELECTRON_DIST_ENV]).toBe(shared);
+
+    const resolved = requireElectron(worktree, env);
+    expect(existsSync(join(worktree, 'node_modules', 'electron', 'path.txt'))).toBe(false);
+    expect(resolved).toBe(join(shared, 'electron'));
+    const launcher = readFileSync(resolved, 'utf8');
+    expect(launcher.startsWith('#!/bin/sh\n')).toBe(true);
+    expect(launcher).toContain('exec "$(dirname "$0")/Electron.app/Contents/MacOS/Electron" "$@"');
+    // The checkout it came from holds no launcher: the copy got it, not the source.
+    expect(existsSync(join(checkoutElectronDist(main), 'electron'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('starts the executable with its arguments', () => {
+    const state = temp();
+    const main = checkout();
+    const dist = unpack(main, '45.2.1', 'darwin');
+    const exe = join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+    writeFileSync(exe, '#!/bin/sh\necho "started $0 $*"\n');
+    chmodSync(exe, 0o755);
+    const worktree = checkout();
+    const env = withElectronDist({}, state, worktree, [main], MAC);
+    const shared = sharedElectronDist(state, '45.2.1', 'darwin', 'arm64');
+    const out = execFileSync(requireElectron(worktree, env), ['--version', 'a b'], {
+      encoding: 'utf8',
+    });
+    expect(out.trim()).toBe(
+      `started ${join(shared, 'Electron.app', 'Contents', 'MacOS', 'Electron')} --version a b`,
+    );
+  });
+
+  it('adds the launcher to a shared folder made without one, and to one a worktree moved', () => {
+    const state = temp();
+    const main = checkout();
+    unpack(main, '45.2.1', 'darwin');
+    const shared = electronDistFor(state, main, [], MAC);
+    expect(shared).not.toBeNull();
+    rmSync(join(shared!, 'electron'));
+    expect(electronDistFor(state, checkout(), [], MAC)).toBe(shared);
+    expect(existsSync(join(shared!, 'electron'))).toBe(true);
+
+    const other = temp();
+    const worktree = checkout();
+    unpack(worktree, '45.2.1', 'darwin');
+    const moved = shareElectronDist(other, worktree, MAC);
+    expect(moved).toBe(sharedElectronDist(other, '45.2.1', 'darwin', 'arm64'));
+    expect(existsSync(join(moved!, 'electron'))).toBe(true);
+  });
+
+  it('leaves a Windows folder as the archive made it', () => {
+    const state = temp();
+    const main = checkout();
+    unpack(main);
+    const shared = electronDistFor(state, main, [], WIN);
+    expect(existsSync(join(shared!, 'electron'))).toBe(false);
+    // With no path.txt the package asks for `electron`; Windows adds `.exe` when it starts it.
+    const resolved = requireElectron(checkout(), { [ELECTRON_DIST_ENV]: shared! });
+    expect(resolved).toBe(join(shared!, 'electron'));
   });
 });
 

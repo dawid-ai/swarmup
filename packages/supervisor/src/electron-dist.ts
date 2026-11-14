@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -128,6 +129,43 @@ export function electronDistReady(
 }
 
 /**
+ * The name `electron/index.js` joins to the override folder when the package has no `path.txt`,
+ * which is the case in a worktree that never downloaded Electron itself.
+ */
+const FALLBACK_NAME = 'electron';
+
+/** The launcher swarmupd puts at the fallback name where the platform's executable is elsewhere. */
+const FALLBACK_LAUNCHER = `#!/bin/sh
+# Written by swarmupd (AO-0306): electron/index.js looks for this name when it has no path.txt.
+exec "$(dirname "$0")/${platformPath('darwin')}" "$@"
+`;
+
+/**
+ * Makes `<dist>/electron` start Electron on macOS, where the executable is
+ * `Electron.app/Contents/MacOS/Electron`. A script that replaces itself with the executable,
+ * not a symlink: the app finds its bundle from the path it was started under. Linux has the
+ * executable under that name already, and Windows finds `electron.exe` for a name without an
+ * extension. Throws when it cannot write the file.
+ */
+function addFallback(dist: string, platform: NodeJS.Platform): void {
+  if (platform !== 'darwin') return;
+  const file = join(dist, FALLBACK_NAME);
+  if (read(file) === FALLBACK_LAUNCHER) return;
+  writeFileSync(file, FALLBACK_LAUNCHER, { mode: 0o755 });
+  chmodSync(file, 0o755);
+}
+
+/** `shared` when `electron/index.js` finds an executable in it with and without `path.txt`. */
+function usable(shared: string, platform: NodeJS.Platform): string | null {
+  try {
+    addFallback(shared, platform);
+    return shared;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Whether the `electron` package in the checkout `dir` finished unpacking `version`: its
  * install script writes `path.txt` next to `dist` after the last file of the archive, and
  * removes nothing when it fails, so a download that stopped halfway leaves `dist` without it.
@@ -180,7 +218,7 @@ export function electronDistFor(
   if (!version) return null;
   const platform = opts.platform ?? process.platform;
   const shared = sharedElectronDist(stateDir, version, platform, opts.arch);
-  if (electronDistReady(shared, version, platform)) return shared;
+  if (electronDistReady(shared, version, platform)) return usable(shared, platform);
   for (const from of [dir, ...sources]) {
     if (!checkoutElectronReady(from, version, platform)) continue;
     const dist = checkoutElectronDist(from);
@@ -189,6 +227,7 @@ export function electronDistFor(
     try {
       mkdirSync(dirname(shared), { recursive: true });
       cpSync(dist, part, { recursive: true });
+      addFallback(part, platform);
       writeFileSync(join(part, ELECTRON_DIST_COMPLETE), `${version}\n`);
       place(part, shared, version, platform);
     } catch {
@@ -196,7 +235,7 @@ export function electronDistFor(
     } finally {
       rmSync(part, { recursive: true, force: true });
     }
-    if (electronDistReady(shared, version, platform)) return shared;
+    if (electronDistReady(shared, version, platform)) return usable(shared, platform);
   }
   return null;
 }
@@ -238,7 +277,7 @@ export function shareElectronDist(
     // The checkout keeps its copy, as the package left it.
   }
   rmSync(mark, { force: true });
-  return electronDistReady(shared, version, platform) ? shared : null;
+  return electronDistReady(shared, version, platform) ? usable(shared, platform) : null;
 }
 
 /**
