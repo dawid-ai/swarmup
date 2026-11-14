@@ -13,7 +13,7 @@ import type { RootConfig } from './config.js';
 import { ID_BLOCK_SIZE, isMirrorDir, readRootConfig } from './config.js';
 import { fold } from './fold.js';
 import { parseDoc, stringifyDoc } from './frontmatter.js';
-import { actorSlug, formatTaskId, OpsError, parseTaskId } from './ids.js';
+import { actorSlug, doneWhenLines, formatTaskId, OpsError, parseTaskId } from './ids.js';
 import { withLock, withLockAsync } from './lock.js';
 import type { OpsEvent, TaskMeta, TaskState } from './model.js';
 import { ulid, ulidAfter } from './ulid.js';
@@ -24,7 +24,8 @@ import { ulid, ulidAfter } from './ulid.js';
 // 9: addressed events carry their whole body as `detail` when it is longer than the summary.
 // 10: addressed events and lastReview carry the recommended decision (`recommend`).
 // 11: task states carry awaitsMerge.
-const INDEX_VERSION = 11;
+// 12: task metas carry done_when as a list; an older build kept a hand-written text value as text.
+const INDEX_VERSION = 12;
 
 interface IndexEntry {
   tm: number;
@@ -300,6 +301,10 @@ export class Root {
       type: doc.data.type ?? 'task',
       project: this.projectName(doc.data.project),
     };
+    // A hand-written `done_when: one line` reads as a list of one.
+    const doneWhen = doneWhenLines(doc.data.done_when);
+    if (doneWhen) meta.done_when = doneWhen;
+    else delete meta.done_when;
     return { meta, body: doc.body };
   }
 

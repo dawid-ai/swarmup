@@ -198,6 +198,54 @@ describe('swarmup', () => {
     expect(swarmup(d, 'human:dawid', 'show', '1').out).not.toContain(first!.id);
   });
 
+  it('sets done_when with new --done-when, prints it in show, and notes a review without evidence (AO-0290)', () => {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    const made = swarmup(
+      d,
+      'human:dawid',
+      'new',
+      'Add the field',
+      '--to',
+      'claude:engineer',
+      '--done-when',
+      '`npm test` passes',
+      '--done-when',
+      'show prints the list, commas kept',
+    );
+    expect(made.out).toBe('T-0001');
+    swarmup(d, 'human:dawid', 'new', 'No checks', '--to', 'claude:engineer');
+
+    const shown = swarmup(d, 'human:dawid', 'show', '1').out;
+    expect(shown).toContain(
+      'done when:\n  - `npm test` passes\n  - show prints the list, commas kept',
+    );
+    const json = JSON.parse(swarmup(d, 'human:dawid', 'show', '1', '--json').out) as {
+      meta: { done_when?: string[] };
+    };
+    expect(json.meta.done_when).toEqual(['`npm test` passes', 'show prints the list, commas kept']);
+    // A task without the field prints as before.
+    expect(swarmup(d, 'human:dawid', 'show', '2').out).not.toContain('done when');
+
+    swarmup(d, 'claude:engineer', 'start', '1', 'core first');
+    const vague = swarmup(d, 'claude:engineer', 'review', '1', 'T-0001: all the tests pass now');
+    expect(vague.code).toBe(0);
+    expect(vague.out).toContain('needs-review');
+    expect(vague.err).toMatch(
+      /note: the task has 2 done-when lines and the request names no command/,
+    );
+
+    swarmup(d, 'human:dawid', 'verdict', '1', 'changes', 'T-0001: name the commands');
+    swarmup(d, 'claude:engineer', 'start', '1', 'again');
+    const clear = swarmup(d, 'claude:engineer', 'review', '1', 'T-0001: `npm test`: 412 passed');
+    expect(clear.err).not.toMatch(/done-when/);
+
+    swarmup(d, 'claude:engineer', 'start', '2', 'go');
+    expect(swarmup(d, 'claude:engineer', 'review', '2', 'T-0002: tests pass').err).not.toMatch(
+      /done-when/,
+    );
+  });
+
   it('attaches an image and lists its file in show', () => {
     const d = repo();
     swarmup(d, 'human:dawid', 'init', '--name', 'demo');

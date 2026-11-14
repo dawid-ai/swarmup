@@ -302,6 +302,13 @@ function str(v: Values[string]): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+/** A repeatable text option, each value kept whole. */
+function texts(v: Values[string]): string[] {
+  return (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).filter(
+    (x): x is string => typeof x === 'string',
+  );
+}
+
 function list(v: Values[string]): string[] {
   if (Array.isArray(v))
     return v
@@ -1008,9 +1015,9 @@ const COMMANDS: Record<string, Command> = {
   },
   new: {
     usage:
-      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [-m BODY|--body-file F]',
+      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [--done-when CHECK]... [-m BODY|--body-file F]',
     summary:
-      'create a task; an agent files a proposal (finding) unless --parent names an approved open task',
+      'create a task; --done-when adds a check (a command or an observable behavior) that says when it is done; an agent files a proposal (finding) unless --parent names an approved open task',
     options: {
       to: { type: 'string' },
       type: { type: 'string' },
@@ -1019,6 +1026,7 @@ const COMMANDS: Record<string, Command> = {
       parent: { type: 'string' },
       label: { type: 'string', multiple: true },
       'blocked-by': { type: 'string' },
+      'done-when': { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
@@ -1036,6 +1044,8 @@ const COMMANDS: Record<string, Command> = {
         parent: str(ctx.opts.parent),
         labels: list(ctx.opts.label),
         blockedBy: list(ctx.opts['blocked-by']),
+        // Not `list`: a check is free text and may hold a comma.
+        doneWhen: texts(ctx.opts['done-when']),
       });
       if (ctx.opts.json) {
         ctx.io.out(JSON.stringify(proposed ? { ...meta, proposed } : meta, null, 2));
@@ -1133,6 +1143,10 @@ const COMMANDS: Record<string, Command> = {
         );
       }
       if (body.trim()) o(`\n${body.trim()}`);
+      if (v.meta.done_when?.length) {
+        o('\ndone when:');
+        for (const line of v.meta.done_when) o(`  - ${line}`);
+      }
       if (v.lostClaims.length) {
         o(
           `lost:     ${v.lostClaims.length} event(s) under a claim that lost a race (marked below)`,

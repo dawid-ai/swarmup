@@ -75,6 +75,8 @@ import {
   isOrchestrator,
   isPm,
   messageNotes,
+  doneWhenLines,
+  evidenceNotes,
   OpsError,
   ownerMatches,
   parseTaskId,
@@ -169,6 +171,8 @@ export interface NewTaskInput {
   parent?: string;
   labels?: string[];
   blockedBy?: string[];
+  /** Checks that say when the task is done: one command or observable behavior per line. */
+  doneWhen?: string[];
 }
 
 export interface DelegateInput {
@@ -1369,7 +1373,8 @@ export class Workspace {
     const actor = this.requireActor();
     const title = input.title.trim();
     if (!title) throw new OpsError('a task needs a title', 2);
-    assertNoSecret(title, input.body);
+    const doneWhen = doneWhenLines(input.doneWhen);
+    assertNoSecret(title, input.body, ...(doneWhen ?? []));
     if (input.owner) assertOwner(input.owner);
     if (input.type === QUESTION_TYPE) assertQuestionTo(input.owner, actor, actor);
     const why = input.owner ? this.ownerRefusal(input.owner) : null;
@@ -1397,6 +1402,7 @@ export class Workspace {
         parent,
         labels: input.labels && input.labels.length > 0 ? input.labels : undefined,
         blocked_by: blocked && blocked.length > 0 ? blocked : undefined,
+        done_when: doneWhen,
         created_by: actor,
         created_at: new Date(this.now()).toISOString(),
       },
@@ -1867,8 +1873,10 @@ export class Workspace {
     const { root, id } = this.resolve(ref);
     let sentTo: string | null | undefined;
     let routed: string | undefined;
+    let evidence: string[] = [];
     const res = this.act(ref, (v, ctx) => {
       ctx.requireStatus(['claimed', 'in-progress'], 'send for review');
+      evidence = evidenceNotes(message, v.meta.done_when);
       ctx.needOwnerOrHolder();
       // The author is whoever holds the work, whoever sends it.
       const author = v.claimedBy ?? ctx.actor;
@@ -1922,7 +1930,8 @@ export class Workspace {
       const run = this.run ? { run: this.run } : {};
       return [{ type: 'review', to: reviewer, body, ...run, ...(rec ? { recommend: rec } : {}) }];
     });
-    return this.noteInactive(routed ? withNotes(res, [routed]) : res, sentTo);
+    const notes = [...(routed ? [routed] : []), ...evidence];
+    return this.noteInactive(withNotes(res, notes), sentTo);
   }
 
   verdict(
