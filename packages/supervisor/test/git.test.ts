@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type GitFailure, gitAsync, taskkillLeft } from '../src/git.js';
+import { type GitFailure, gitAsync, taskkillLeft, taskkillSettled } from '../src/git.js';
 
 const dirs: string[] = [];
 const pids: number[] = [];
@@ -271,6 +271,36 @@ describe('gitAsync', () => {
     expect(taskkillLeft({ code: null, killed: true, message: 'x' }, '')).toBe(
       '`taskkill /T` did not end in 15 s',
     );
+  });
+
+  it('waits for a process taskkill names to end before it reports it as left (AO-0326)', async () => {
+    // What taskkill prints when a hook's `sleep` ended by itself: the sleep and its parent shell.
+    const gone =
+      'ERROR: The process with PID 46060 (child process of PID 22316) could not be terminated.\r\nReason: There is no running instance of the task.\r\r\n';
+    const err = { code: 255, message: 'x' };
+    // The shell, which taskkill ended next, still counts as running at the first two checks.
+    let asked = 0;
+    const ending = (pid: number) => pid === 22316 && ++asked <= 2;
+    expect(taskkillLeft(err, gone, (pid) => pid === 22316)).toBe(
+      '`taskkill /T` exited 255: Reason: There is no running instance of the task.',
+    );
+    expect(await taskkillSettled(err, gone, ending, 5_000)).toBeUndefined();
+    expect(asked).toBe(3);
+    // A refused stop leaves its process running for the whole wait, so it still reports.
+    const denied =
+      'ERROR: The process with PID 4321 (child process of PID 1234) could not be terminated.\r\nReason: Access is denied.\r\n';
+    expect(
+      await taskkillSettled({ code: 1, message: 'x' }, denied, (pid) => pid === 4321, 150),
+    ).toBe('`taskkill /T` exited 1: Reason: Access is denied.');
+    // Nothing to wait for when taskkill did not run or names no process.
+    const started = Date.now();
+    expect(
+      await taskkillSettled({ code: 'ENOENT', message: 'spawn taskkill ENOENT' }, '', () => true),
+    ).toBe('`taskkill /T` did not start (ENOENT)');
+    expect(await taskkillSettled({ code: 1, message: 'x' }, 'Access is denied.\r\n')).toBe(
+      '`taskkill /T` exited 1: Access is denied.',
+    );
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   // The tree path collects git's output itself; it reports too much output as `execFile` does.

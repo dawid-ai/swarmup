@@ -236,11 +236,41 @@ const stopTree: TreeStop = (pid) => {
       ['/T', '/F', '/PID', String(pid)],
       { windowsHide: true, timeout: 15_000 },
       (err, _stdout, stderr) => {
-        resolve(err ? taskkillLeft(err, String(stderr)) : undefined);
+        if (err) void taskkillSettled(err, String(stderr)).then(resolve);
+        else resolve(undefined);
       },
     );
   });
 };
+
+/** How long a process that taskkill names may take to end before it counts as left running. */
+const SETTLE_MS = 2_000;
+
+/**
+ * {@link taskkillLeft}, asked again for a while when a process that taskkill names still runs.
+ *
+ * Next to a process that was already gone, taskkill names its parent, which it ends a moment
+ * later, and Windows ends a process in the background: on a busy machine the parent may still
+ * count as running when taskkill exits (AO-0326). A refused stop leaves its process running for
+ * the whole wait, so it still reports (AO-0251).
+ *
+ * @param settleMs How long to keep asking; tests shorten it.
+ */
+export async function taskkillSettled(
+  err: { code?: number | string | null; killed?: boolean; message: string },
+  stderr: string,
+  running: (pid: number) => boolean = runs,
+  settleMs = SETTLE_MS,
+): Promise<string | undefined> {
+  // Only an exit with named processes may change with time.
+  const mayEnd = typeof err.code === 'number' && /\d/.test(stderr);
+  const until = Date.now() + settleMs;
+  for (;;) {
+    const left = taskkillLeft(err, stderr, running);
+    if (left === undefined || !mayEnd || Date.now() >= until) return left;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 
 /**
  * Why a failed `taskkill /T` may have left processes running, or `undefined` when it left none.
