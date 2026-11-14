@@ -3350,6 +3350,21 @@ describe('bottlenecks and providers', () => {
     expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['other:engineer']);
   });
 
+  it('never hands a *:role task to the provider of the reviewer its plan item names', async () => {
+    const { sup, as } = setup({
+      mode: 'hang',
+      opsd: {
+        agents: { 'fake:engineer': { wake: true }, 'other:engineer': { wake: true } },
+        runtimes: { other: HANG, fake: HANG },
+        roles: { engineer: { providers: ['fake', 'other'] } },
+      },
+    });
+    // `review` in task.md: what an approved plan writes for an item with a reviewer (AO-0110).
+    as('human:dawid').newTask({ title: 'x', owner: '*:engineer', review: 'fake:qa' });
+    await sup.tick();
+    expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['other:engineer']);
+  });
+
   it('plans with each planned run counted, and reports what wake then does', async () => {
     const { sup, as } = setup({
       mode: 'hang',

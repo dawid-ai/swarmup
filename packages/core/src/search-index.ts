@@ -23,10 +23,10 @@ import type { Dir } from 'node:fs';
 import { join } from 'node:path';
 import { CHANNEL_RE, readMessage } from './channels.js';
 import { parseDecisionId, readDecisionFiles } from './decisions.js';
-import { derive, fold } from './fold.js';
+import { derive, fold, planLookup } from './fold.js';
 import { parseTaskId } from './ids.js';
 import { readNote } from './kb.js';
-import type { Status, TaskState } from './model.js';
+import type { PlanLookup, Status, TaskState } from './model.js';
 import type { Root } from './root.js';
 import type {
   SearchNote,
@@ -575,6 +575,21 @@ function tasks(
     pending.add(`${root.name}/${id}`);
     if (bare.get(id) !== null) barePending.add(id);
   }
+  // The plan rules of `derive` (AO-0110): each root's live and archived tasks, already read.
+  const live = new Map<string, TaskState[]>();
+  const old = new Map<string, TaskState[]>();
+  for (const { root, rec, archived } of all.values()) {
+    const into = archived ? old : live;
+    const list = into.get(root.name);
+    if (list) list.push(rec.state);
+    else into.set(root.name, [rec.state]);
+  }
+  const plans = new Map<string, PlanLookup>();
+  const plansOf = (name: string): PlanLookup => {
+    let p = plans.get(name);
+    if (!p) plans.set(name, (p = planLookup(live.get(name) ?? [], () => old.get(name) ?? [])));
+    return p;
+  };
   return [...all.values()].map(({ root, rec, archived }) => {
     const statusOf = (ref: string): Status | undefined =>
       ref.includes('/')
@@ -586,7 +601,7 @@ function tasks(
         : status.has(`${root.name}/${ref}`)
           ? pending.has(`${root.name}/${ref}`)
           : barePending.has(ref);
-    const view = derive(rec.state, root.name, nowMs, statusOf, mergePending);
+    const view = derive(rec.state, root.name, nowMs, statusOf, mergePending, plansOf(root.name));
     if (archived) view.archived = true;
     return { view, text: rec.text };
   });
