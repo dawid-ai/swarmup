@@ -117,20 +117,9 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | `decision TEXT [--project P] [--task ID] [--scope project\|tree] [--source REF]`                   | Records a decision a person made, in one line of 200 characters at most, as `decisions/D-<n>/decision.md` with `kind: record`. `--supersedes D-ID` replaces earlier decisions; `--narrows D-ID` is an exception in a smaller scope. |
 | `decisions --log [--project P] [--task ID] [--all]`                                                | Lists the decisions in force, newest first: recorded decisions and decided votes. `--task` lists what applies to one task; `--all` adds superseded ones.                                                                            |
 
-A person records any decision. The PM records only with `--source` naming what a person wrote: a
-task event (`ID#<event id>`) or a message in the desktop PM chat (`chat:<message id>`, read from
-the swarmupd on that machine and quoted in the record). Other agents cannot record (exit 1).
-
-A person marks a decision while writing a task event: `--decision "one line"` on `answer`,
-`verdict`, `comment`, `retype` and `park`, with `--scope`, `--supersedes` and `--narrows` as on
-`swarmup decision`. The message holds the discussion; the one line is the decision, under the same
-limits. Without `--scope` the record covers the event's task and the tasks below it, or with
-`--supersedes` the widest scope it replaces. `swarmup` writes the record first, with the event as
-its `source` (`ID#<event id>`), then the event, which carries `decision: D-<n>`. If the event
-write fails, `swarmup doctor` reports a record whose source event does not exist. An agent cannot
-mark, the PM included: its own event is not something a person wrote (exit 1, nothing written).
-`swarmup show ID` prints a `decision:` line under an event that carries a mark or that a record
-quotes, with `recorded by <agent> from <person>` when the PM wrote the record down.
+A recorded decision and a decided vote are both lines of the decision log. `decision`,
+`decisions --log`, `decide --scope` and the `--decision` mark on `answer`, `verdict`, `comment`,
+`retype` and `park` are described in [Decisions](#decisions).
 
 A vote is `open` until voting closes (deadline passed, or every listed voter voted). It is
 `ready` when the quorum is met and one option leads by more than the missing ballots (ballots are
@@ -222,6 +211,278 @@ done_when:
   their output next time. The reviewer checks each line against that evidence.
 
 The milestone design (AO-0110) uses the same field for a milestone's check.
+
+## Decisions
+
+The decision log holds what a person decided, so an agent can check its plan against it. It has
+two kinds of lines: a **recorded decision**, which a person made and someone wrote down in one
+line, and a **decided vote**. Both live in `decisions/<id>/` of the root and share the `D-<n>`
+ids. The log is append-only: a decision is replaced by a newer one, never edited or deleted.
+
+### The record file
+
+A recorded decision is `decisions/D-<n>/decision.md` with `kind: record`. A file without `kind`
+is a vote.
+
+```markdown
+---
+id: D-0042
+kind: record
+question: Subtasks of an approved task need no approval
+options: []
+scope: tree
+project: agent-ops
+task: AO-0107
+source: AO-0107#01M6GN7Q2K8T4W9XB3C5D6E7F8
+supersedes:
+  - D-0007
+created_by: human:dawid
+created_at: 2026-11-03T12:24:00.000Z
+---
+
+Optional context. Prompts and checks use the one line.
+```
+
+- `question` is the one line of the decision: 200 characters at most, no line break. The
+  discussion goes in the body.
+- `scope`, `project` and `task` say what the decision applies to; see [Scope](#scope).
+- `source` says where the decider's words are; see [Sources](#sources).
+- `supersedes` and `narrows` list the decisions this one replaces; see
+  [Supersede and narrow](#supersede-and-narrow).
+- `created_by` is who decided and `created_at` is the effective date. `recorded_by` is who wrote
+  the record down, when that is not the decider.
+- A record has no ballots and no outcomes. Its state is `recorded`, or `superseded` when other
+  records replace it for every task in its scope.
+- The id comes from this machine's `id_block`, as for a vote. A project root and its Master Repo
+  copy are one id space: an id used in either is taken.
+
+### Scope
+
+- `project`: the decision applies to every task whose project is the decision's `project`. A
+  `project` scope without a `project` applies to every task of the root.
+- `tree`: the decision applies to `task` and every task below it (the `parent` chain, in the same
+  root), whatever their project.
+
+`swarmup decision` picks the scope from what you name, in this order:
+
+1. `--scope project` or `--scope tree`. `--scope tree` needs a task: `--task ID`, or a `--source`
+   that is a task event. `--scope project` without `--project` takes the project of that task, or
+   the whole root without a task.
+2. `--project P`: the project `P`. With `--scope tree`, `P` must be the project of the task.
+3. `--supersedes` with neither `--scope` nor `--project`: the widest scope among the decisions it
+   supersedes. That is the whole root when one of them covers the root, their project when the
+   project-wide ones share one, else the tree that holds the others. If none of them covers the
+   rest, `swarmup` refuses (exit 2) and you name the scope.
+4. `--task ID`, or a `--source` that is a task event: the tree of that task.
+5. None of these: the whole root.
+
+A `--decision` mark has the event's task, so it covers that task and the tasks below it. With
+`--scope project` it covers the task's project, and with `--supersedes` and no `--scope` it takes
+the widest scope it replaces, as in step 3.
+
+### Who records
+
+- A person records any decision.
+- The PM (`claude:pm`, `codex:pm`) records only with `--source` naming what a person wrote: a task
+  event by a person (`ID#<event id>`) or a message a person wrote in the desktop PM chat
+  (`chat:<message id>`). Without such a source, or with an event an agent wrote, `swarmup`
+  refuses (exit 1). The record then has the person as `created_by`, the time of the person's
+  words as `created_at`, and the PM as `recorded_by`.
+- Other agents cannot record (exit 1). Their technical choices go in finishing commands, where
+  the reviewer checks them. An agent that meets a decision of a person that is not in the log
+  tells the PM, naming the event or chat message:
+  `swarmup comment ID "AO-0014#<event id>: Dawid decided ..., not in the decision log" --to claude:pm`.
+- Only a person marks a decision with `--decision`. The PM cannot: its own event is not something
+  a person wrote (exit 1, and neither the record nor the event is written).
+- `swarmup decide` on a vote keeps its own rule: a human at any time, anyone else only for the
+  winner of a `ready` vote.
+
+A decision of a person is never a learn note. `swarmup learn decisions ...` still writes the
+note, for lessons about how to decide, and prints a note that points at `swarmup decision`.
+
+### Sources
+
+`source` is one line in one of three forms:
+
+- **A task event**, `AO-0107#<event id>`. `swarmup show ID --ids` prints the event ids; the start
+  of an id is enough when it is at least 6 characters and matches one event. `swarmup` refuses
+  (exit 2) an event that does not exist. The log prints the task id.
+- **A PM chat message**, `chat:<message id>`. The chat prompt gives the PM each message's id. The
+  conversation is in swarmupd's state folder on one machine and keeps only its newest messages,
+  so the record carries the words: `swarmup` reads the message from the swarmupd on this machine
+  (`GET /api/chat/messages/:id`) and quotes its author, time and text in the record's body.
+  `created_by` is the message's author and `created_at` its time. `swarmup` refuses (exit 2)
+  when swarmupd is not running, when the chat has no such message, and when the message is not
+  one a person wrote in the app: a reply of the agent or a channel post that mentions it. The
+  same message with the same text is recorded once: a second run prints the existing id. The
+  same message with another text is a new record, because one message can hold two decisions.
+- **A file**, any other text, such as `kb/decisions/<slug>.md`. `swarmup` does not open it; the
+  log prints it as written.
+
+A mark needs no `--source`: its source is its own event.
+
+### Supersede and narrow
+
+One rule decides what is in force, per task, when the log is read: a record that names `D-old` in
+`supersedes` or `narrows` hides `D-old` for every task inside the new record's scope. For a task
+outside that scope, `D-old` stays in force. The rule is per task because a tree can cross
+projects and grow after the decision: a subtask in another project keeps the old decision.
+
+The two flags have the same effect. They state the intent and pick the check `swarmup` runs when
+the record is written:
+
+- `--supersedes D-ID[,D-ID]`: the new decision replaces the old one wherever both apply.
+  `swarmup` refuses (exit 2) when the new scope is strictly inside the old one (use `--narrows`),
+  or when the two can never share a task: two different projects, or two trees where neither top
+  is below the other. A project and a tree can share a task whenever the tree has a task in the
+  project, now or later, so that pair passes; `swarmup` warns when no task of the tree is in the
+  project at that time.
+- `--narrows D-ID`: an exception inside a smaller scope. `swarmup` refuses (exit 2) unless the
+  new scope is strictly inside the old one: a tree against a project or the whole root, a tree
+  below another tree, or a project against the whole root.
+
+Both take recorded decisions and decided votes of the same root. A vote without an outcome is not
+in the log and cannot be named. A vote supersedes nothing itself.
+
+A record cannot be decided or voted on (`swarmup decide` and `swarmup vote` exit 2). To change
+it, record a new one with `--supersedes`.
+
+### Decided votes
+
+A decided vote is in the log as `question → choice`, by whoever decided it, with the date of its
+current outcome. A vote that is `open`, `ready`, `tie` or `no-quorum` is not in the log. A vote
+has no stored scope unless `swarmup decide --scope` wrote one, so the log derives it when it is
+read:
+
+- A vote with a `task`: the tree of that task. Its project is the task's project, read from the
+  task (an archived task counts).
+- A vote without a `task`: the whole root.
+- `swarmup decide D-ID CHOICE --scope project` stores a `project` scope with the project of the
+  vote's task, or the whole root without a task. `--scope tree` stores the tree and needs a vote
+  with a task.
+
+Outcomes are append-only. `swarmup decide` adds `decisions/<id>/outcomes/<ULID>.md` (`choice`,
+`decided_by`, `at`, and `scope` and `project` when `--scope` was given) and never edits one.
+Without `--force` it refuses a vote that has an outcome. A human's `--force` adds one more file
+with `forced: true`, and the newest outcome is the result. An `outcome.md` from before outcomes
+were append-only reads as the oldest. `swarmup tally` and `swarmup decisions --log --all` list
+the earlier outcomes as `revised`.
+
+### Commands
+
+Record a decision without a task event:
+
+```bash
+swarmup decision "No AI attribution in any repo" --project agent-ops
+swarmup decision "Subtasks of an approved task need no approval" --source AO-0107#01M6GN7Q
+swarmup decision "The decision log is built as designed" --source chat:01M7B2D4 -m "Context"
+swarmup decision "swarmupd merges approved work" --supersedes D-0007
+```
+
+```text
+swarmup decision TEXT [--project P] [--task ID] [--scope project|tree] [--supersedes D-ID[,D-ID]] [--narrows D-ID] [--source REF] [-m CONTEXT]
+```
+
+The command prints the new id. `-m` or `--body-file` holds context for the body.
+
+Mark a decision as you write a task event:
+
+```bash
+swarmup answer AO-0104 "pr; I merge" --decision "swarmupd opens PRs; Dawid merges" --scope project
+swarmup comment AO-0107 "If it is part of an approved task ..." --decision "Subtasks of an approved task need no approval"
+swarmup verdict AO-0088 changes "..." --decision "SECURITY.md stays in plain English"
+swarmup retype AO-0109 task "Accepted" --decision "Decisions are logged and checked" --scope project
+swarmup park AO-0072 "Not now" --decision "No Slack integration" --supersedes D-0031
+```
+
+- `--decision "one line"` on `answer`, `verdict`, `comment`, `retype` and `park` records the line
+  under the limits of `swarmup decision`. The message holds the discussion; no flag turns the
+  whole message into a decision.
+- `--scope`, `--supersedes` and `--narrows` work as on `swarmup decision` and are refused
+  without `--decision` (exit 2).
+- `swarmup` writes the record first, with the event as its `source` (`ID#<event id>`), then the
+  event, which carries `decision: D-<n>`. A refused mark writes neither.
+- `swarmup show ID` prints a `decision:` line under an event that carries a mark or that a record
+  names as its source, with `recorded by <agent> from <person>` when the PM wrote the record down.
+
+List the log:
+
+```bash
+swarmup decisions --log                      # in force, every root, newest first
+swarmup decisions --log --project agent-ops  # one project, and what covers the whole root
+swarmup decisions --log --task AO-0110       # in force for one task
+swarmup decisions --log --all                # superseded ones and earlier outcomes too
+swarmup decisions --log --json
+```
+
+```text
+D-0042  2026-11-03  project agent-ops  Subtasks of an approved task need no approval   (AO-0107, human:dawid)
+D-0031  2026-11-01  tree AO-0051       Desktop ships as a tray app first               (AO-0051, human:dawid; superseded in project agent-ops by D-0055; in force for AO-0063)
+D-0019  2026-10-20  root               Ship weekly → yes                               (vote, human:dawid)
+```
+
+- Each line has the id, the effective date, the scope (`project <name>`, `tree <task>` or
+  `root`), the one line, and in parentheses where the words are: the task of the
+  source event, `PM chat` or `vote`, then who decided and `recorded by <agent>` when the PM
+  wrote it down. A record with a file source prints the file instead.
+- A decision that is replaced only in part stays in the list with a note: `superseded` or
+  `narrowed`, where and by which record, and for a tree the tasks it is still in force for. A
+  decision replaced for every task in its scope is `superseded` and is listed only with `--all`.
+- `--project P` lists the decisions of project `P` and those that cover the whole root. A tree
+  counts by the project of its top task.
+- `--task ID` reads the root that holds the task and lists only what is in force for that task,
+  without notes.
+- `--root NAME` limits the log to one root. Without it, in a workspace with several roots, each
+  id prints as `<root>/D-<n>`.
+- `swarmup decisions` without `--log` lists open votes, and with `--all` decided ones too.
+  `--project` and `--task` go with `--log`.
+- `swarmup tally D-ID` prints one decision: for a record its state, scope, task, source, who
+  recorded it and what it supersedes or narrows.
+
+### Where an agent sees the decisions
+
+- **Run prompts.** The prompt of a work run, a review run and a schedule with a task lists the
+  decisions in force for the task; see
+  [Decisions in the prompt](supervisor.md#decisions-in-the-prompt).
+- **`swarmup start ID`** prints the same list after the claim, so a run that picks its task
+  itself (an inbox run, a schedule without a task) sees it before it plans.
+- **`swarmup show ID`** prints the list after the task text, and `swarmup verdict` and
+  `swarmup answer` print it before they write.
+
+```text
+Decisions in force for AO-0110 (follow them; newest first):
+- D-0042 (2026-11-03): Subtasks of an approved task need no approval
+- D-0007 (2026-10-12): swarmupd opens PRs; Dawid merges
+If your plan or a choice you are about to make conflicts with one, don't work around it:
+finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
+```
+
+The list holds the newest 30; with more, a line `N more: swarmup decisions --log --task ID`
+follows. The last two lines, on what to do on a conflict, are in the prompt and in the output of
+`swarmup start`. A task without decisions in force prints nothing, and `--json` output carries
+no list, except `swarmup show ID --json`: it has `in_force`, and `decisions` by event id.
+
+An agent whose plan conflicts with a decision does not work around it: it finishes with
+`swarmup ask ID "contradiction with D-NNNN: ..."`.
+
+Learn notes of the `decisions` topic and the log do not both reach a prompt. A record whose
+`source` is `kb/decisions/<slug>.md` replaces that note in the prompt's learn notes of every task
+in the record's scope, whether the record is in force there or hidden by a later one; a task
+outside the scope still gets the note. `swarmup kb --read decisions/<slug>` prints such a note
+with a `decision:` line: the record's id, its scope and what replaced it.
+
+### Mirror and doctor
+
+`decisions/` crosses between a project root and its Master Repo copy as a union of files:
+`decision.md`, ballots and outcomes are written once, so a file one side lacks is copied and none
+is overwritten. `swarmup doctor` reports:
+
+- A decision file that both sides hold with different content. The mirror merges neither.
+- A vote with more than one outcome whose newest is not forced: two machines, or the two sides
+  of a mirror, each decided before they synced. The newest stands; a person confirms it with
+  `swarmup decide --force`.
+- A record whose source event does not exist: the event write of a mark failed after the record
+  was written, or the event was removed. A `chat:` source is never looked up again.
 
 ## Messages to a person
 
@@ -367,7 +628,9 @@ or task wait under the new owner; `assign` writes it whenever the task is blocke
 it assigns without answering; `answer` or `unblock` drop the wait on purpose, and `handoff` always
 clears it), `on` (block: the tasks the task waits on; on a `handoff`, `delegate` or `reopen` with a
 non-empty list, the task is blocked on those tasks in the same event, after the old wait is
-cleared, and a `reopen` with `to` also sets the owner), `plan_apply` and `plan_skip` (the markers
+cleared, and a `reopen` with `to` also sets the owner), `decision` (answer, verdict, comment,
+retype, park: the id of the recorded decision the event marks; see [Decisions](#decisions)),
+`plan_apply` and `plan_skip` (the markers
 of a milestone's plan change on one plan item). Types that change state:
 `claim`, `start`, `progress`, `checkpoint`, `release`, `handoff`, `delegate`, `assign`, `review`,
 `verdict`, `done`, `ask`, `block`, `answer`, `unblock`, `priority`, `park`, `reopen`, and on a
@@ -545,7 +808,10 @@ Every session pushes when it ends or compacts its context, whatever the policy:
   - The mirror reads and writes only inside the two data roots and never through a symlink or
     junction; a root whose name is not one plain folder name is not mirrored.
   - `channels/`, `kb/` and `attachments/`: files one side lacks cross both ways. `config.yml` and `agents/` go from
-    the project root to the copy only. Decisions are not mirrored yet.
+    the project root to the copy only.
+  - `decisions/`: files one side lacks cross both ways, and none is overwritten. A file both
+    sides hold with different content is reported by `swarmup sync` and `swarmup doctor`; see
+    [Decisions](#mirror-and-doctor).
   - `repeats/`: an add, edit, pause or delete on either side reaches the other; when both sides
     changed one repeat since the last mirror, the project root's version wins and `swarmup sync` says
     so. A machine with only the Master Repo fires the project's repeats in the copy.

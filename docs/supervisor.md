@@ -227,6 +227,31 @@ run is told that the task is done when every line holds, and to name the command
 output in its review request. A review run is told to check every line against that evidence and
 against its own runs (see [The review prompt](#the-review-prompt)).
 
+### Decisions in the prompt
+
+The standard prompt of a work run, a review run and a schedule with a task lists the decisions in
+force for the task (see [Decisions](protocol.md#decisions)): what
+`swarmup decisions --log --task ID` prints, from the root that holds the task.
+
+```text
+Decisions in force for AO-0110 (follow them; newest first):
+- D-0042 (2026-11-03): Subtasks of an approved task need no approval
+- D-0007 (2026-10-12): swarmupd opens PRs; Dawid merges
+If your plan or a choice you are about to make conflicts with one, don't work around it:
+finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
+```
+
+- The list is inline, newest first, and holds 30 decisions at most. With more, a line
+  `N more: swarmup decisions --log --task ID` follows.
+- A task without decisions in force adds nothing to the prompt. If swarmupd cannot read the
+  decisions, the run starts without the list and `swarmup start` prints a warning.
+- A question run, a run with a custom prompt, an inbox run and a schedule without a task get no
+  list. A run that picks its task itself sees the same list when it runs `swarmup start ID`;
+  `swarmup show`, `swarmup verdict` and `swarmup answer` print it too.
+- The prompt's learn notes leave out a note of the `decisions` topic when a recorded decision
+  that names the note as its source covers the task; see
+  [Where an agent sees the decisions](protocol.md#where-an-agent-sees-the-decisions).
+
 ### Runtimes
 
 | Runtime  | Command line                                                                                                                                       |
@@ -833,6 +858,10 @@ which every new config seeds).
   are always denied. Its prompt allows creating tasks, comments, assigning, retyping, priority,
   parking, channel posts, findings and answering agents' asks; never a verdict, a vote decision,
   an answer for the human, or claiming and working a task.
+- **Decisions.** Each message a person wrote in the app carries its id in the prompt. When the
+  person states a decision, the prompt tells the agent to record it in the same turn with
+  `swarmup decision "one line" --source chat:<message id>` and to give the new id and the one
+  line in its reply; see [Sources](protocol.md#sources).
 - **Streaming.** swarmupd reads a live turn's log (`--include-partial-messages`) every 300 ms and
   sends the reply so far as a `chat` event. When the turn ends, the reply is saved with what the
   agent did in SwarmUp during the turn (task events, new tasks and channel posts by the agent
