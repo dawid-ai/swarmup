@@ -295,6 +295,12 @@ export function readPlanBody(body: string): PlanDoc | null {
   }
 }
 
+/** The text a plan event's body holds before its plan: the note of whoever wrote the event. */
+export function planNote(body: string): string {
+  const m = FENCE_RE.exec(body);
+  return (m ? body.slice(0, m.index) : body).trim();
+}
+
 function sameSet(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
   const x = new Set(a ?? []);
   const y = new Set(b ?? []);

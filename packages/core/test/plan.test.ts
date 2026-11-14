@@ -77,6 +77,7 @@ function approved(items: EffectivePlanItem[], gone: string[] = []): PlanState {
     usedKeys: [...items.map((i) => i.key), ...gone],
     diff: [],
     skipped: [],
+    failedChecks: [],
   };
 }
 

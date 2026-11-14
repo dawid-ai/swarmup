@@ -6360,6 +6360,86 @@ describe('role file status', () => {
     expect(sup.runs({ live: true }).map((r) => r.task)).toEqual([q.id]);
   });
 
+  it('starts the qa check of a milestone whose plan tasks closed, with the check prompt', async () => {
+    const promptFile = join(temp(), 'prompt.txt');
+    const { sup, as, repo } = setup({
+      env: { FAKE_PROMPT: promptFile },
+      opsd: {
+        agents: { 'fake:qa': { wake: true } },
+        roles: { qa: { providers: ['fake'] } },
+        // The person plans the milestone by hand here; the check must not wait for that session.
+        outside_session_minutes: 0,
+      },
+    });
+    const dir = join(repo, '.swarmup', 'agents');
+    mkdirSync(dir, { recursive: true });
+    // What step 5 of the milestone design puts in the `qa` role files (AO-0110).
+    writeFileSync(join(dir, 'fake-qa.md'), '---\ncan_claim: [question, milestone]\n---\n');
+    const h = as('human:dawid');
+    const m = h.newTask({
+      title: 'Ship',
+      type: 'milestone',
+      owner: 'human:dawid',
+      doneWhen: ['The installer runs on a clean machine'],
+    });
+    const item = (key: string): string =>
+      `  - key: ${key}\n    title: Item ${key}\n    owner: human:dawid\n    estimate: 1h\n`;
+    h.start(m.id, 'plan');
+    h.planPropose(m.id, `items:\n${item('build')}${item('sign')}`);
+    const [build, sign] = h.planApprove(m.id).created.map((c) => c.id);
+    const ref = `test/${m.id}`;
+    const waits = (): string | undefined => sup.waits().find((w) => w.task === ref)?.reason;
+    /** The prompt of the next check run, which the fake agent ends without a finishing command. */
+    const checkPrompt = async (): Promise<string> => {
+      expect(waits()).toBe('starts at the next tick');
+      await sup.tick();
+      const run = sup.runs({ live: true }).find((r) => r.task === m.id)!;
+      expect(run).toMatchObject({ agent: 'fake:qa' });
+      await ended(sup, run.id);
+      if (h.view(m.id).claimedBy) as('fake:qa').release(m.id, 'the fake run ended');
+      return readFileSync(promptFile, 'utf8');
+    };
+
+    // No check while a plan task is open; a parked one counts as closed.
+    h.done(build!, 'built');
+    await sup.tick();
+    expect(sup.runs()).toEqual([]);
+    h.park(sign!, 'dropped: signing moves to the next milestone');
+
+    const first = await checkPrompt();
+    expect(first).toContain(`Check the milestone ${m.id}:`);
+    expect(first).toContain('"The installer runs on a clean machine"');
+    expect(first).toContain(`Parked plan items, whose work was dropped: \`sign\` (${sign})`);
+    expect(first).toContain(`swarmup done ${m.id} "check passed: <evidence>"`);
+    expect(first).toContain(`swarmup plan amend ${m.id} --kind fix --file -`);
+    expect(first).not.toContain('Failed checks so far');
+    expect(first).not.toContain(`Work on ${m.id}:`);
+
+    // Two failed checks, each with fix tasks that then close.
+    for (const [n, key] of ['fix-a', 'fix-b'].entries()) {
+      const fix = h.planAmend(m.id, 'fix', `items:\n${item(key)}`, `check failed: gap ${n + 1}`);
+      await sup.tick();
+      expect(sup.runs({ live: true })).toEqual([]);
+      h.done(fix.created[0]!.id, 'fixed');
+      const next = await checkPrompt();
+      expect(next).toContain(`Failed checks so far: ${n + 1}.`);
+      expect(next).toMatch(
+        new RegExp(
+          `${m.id}#\\S+ \\(.*human:dawid\\): fixes \`${key}\`; check failed: gap ${n + 1}`,
+        ),
+      );
+      if (n === 0) {
+        expect(next).toContain(`swarmup plan amend ${m.id} --kind fix --file -`);
+        continue;
+      }
+      // The third failed check adds no fix tasks: it asks, without --to.
+      expect(next).toContain('this is the third failed check, so add no fix tasks');
+      expect(next).toContain(`swarmup ask ${m.id} "..." --recommend`);
+      expect(next).toContain('change `done_when`, add work, or park');
+      expect(next).not.toContain('--kind fix --file -');
+    }
+  });
+
   it('starts a task assigned by name to a read-only role whatever its type (AO-0136)', async () => {
     const { sup, as, repo } = setup({
       mode: 'hang',

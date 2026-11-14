@@ -50,6 +50,8 @@ import {
   rootNameOf,
   ROOTS_ONLY_ENV,
   QUESTION_TYPE,
+  MILESTONE_TYPE,
+  PLAN_CHECKER,
   READ_ONLY_CAN_CLAIM,
   takesGroupWork,
   taskRefs,
@@ -133,7 +135,12 @@ import {
   unfinishedRuns,
 } from './stuck.js';
 import { Chat } from './chat.js';
-import type { ChatInvocation, PlanCheckTask, QuestionPrompt } from './runtimes.js';
+import type {
+  ChatInvocation,
+  MilestoneCheckPrompt,
+  PlanCheckTask,
+  QuestionPrompt,
+} from './runtimes.js';
 import {
   CODEX_GIT_DIRS,
   invocation,
@@ -213,6 +220,32 @@ export function questionPrompt(ws: Workspace, ref: string, v: TaskView): Questio
     tasks,
     projects: projectRefs(text),
     ...(rounds.length > 0 ? { rounds } : {}),
+  };
+}
+
+/**
+ * What the check run of a milestone carries in its prompt (AO-0110, "Closing"), or undefined for
+ * a task that is not a milestone in its check: a milestone belongs to the checker from its first
+ * approved plan on, and swarmupd starts a run on it when its plan tasks are closed and merged.
+ * The failed checks come from the milestone's own events, so the run knows whether a failure
+ * adds fix tasks or asks.
+ */
+export function milestoneCheckPrompt(
+  ws: Workspace,
+  ref: string,
+  v: TaskView,
+): MilestoneCheckPrompt | undefined {
+  if (v.meta.type !== MILESTONE_TYPE || !v.plan?.approval || v.owner !== PLAN_CHECKER) {
+    return undefined;
+  }
+  const report = ws.planShow(ref);
+  return {
+    ...(report.doneWhen ? { doneWhen: report.doneWhen } : {}),
+    failed: report.failedChecks,
+    fixRounds: report.fixRounds,
+    parked: report.items.flatMap((r) =>
+      r.status === 'parked' && r.task ? [{ key: r.key, task: r.task }] : [],
+    ),
   };
 }
 
@@ -2714,6 +2747,7 @@ export class Supervisor extends EventEmitter {
     let heldHere = false;
     let delegation: { budget_minutes?: number; tokens?: number } | null = null;
     let question: QuestionPrompt | undefined;
+    let check: MilestoneCheckPrompt | undefined;
     let taskType: string | undefined;
     const parent = req.parent ? this.live.get(req.parent)?.record : undefined;
     if (req.parent) {
@@ -2744,6 +2778,7 @@ export class Supervisor extends EventEmitter {
       delegation = v.delegation;
       taskType = v.meta.type;
       if (!req.review && v.meta.type === QUESTION_TYPE) question = questionPrompt(ws, ref, v);
+      if (!req.review) check = milestoneCheckPrompt(ws, ref, v);
       if (req.review) {
         if (v.status !== 'needs-review' || !ownerMatches(v.reviewer, agent)) {
           throw new OpsError(`${ref} does not wait for ${agent}'s review`);
@@ -2971,6 +3006,7 @@ export class Supervisor extends EventEmitter {
             role: def,
             review: req.review,
             question,
+            check,
             extra: req.extra,
             storeCheckout,
             taskWorktree,

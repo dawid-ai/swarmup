@@ -119,7 +119,14 @@ import type {
   TaskState,
   TaskView,
 } from './model.js';
-import { MERGE_ACTOR, MILESTONE_TYPE, OPEN_STATUSES, PLAN_CHECKER, PRIORITIES } from './model.js';
+import {
+  MERGE_ACTOR,
+  MILESTONE_TYPE,
+  OPEN_STATUSES,
+  PLAN_CHECKER,
+  PLAN_FIX_ROUNDS,
+  PRIORITIES,
+} from './model.js';
 import type { PlanDoc } from './plan.js';
 import {
   checkPlan,
@@ -127,6 +134,7 @@ import {
   minutesText,
   PLAN_SUBTASK_SHARE,
   planBody,
+  planNote,
   planChangedKeys,
   planDiffLines,
   planMinutes,
@@ -2115,6 +2123,22 @@ export class Workspace {
         );
       }
       if (!reviewing) ctx.needOwnerOrHolder();
+      // A milestone closes on its check, and the check runs on the merged work of every plan
+      // task (AO-0110, "Closing"): the checker owns it all along, so owning it is not enough.
+      const open = v.waitsOnPlan
+        ? [
+            ...(v.planMissing ?? []).map((key) => `'${key}' (no task yet)`),
+            ...(v.planUnapplied ?? []).map((key) => `'${key}' (plan change not applied)`),
+            ...(v.planOpen ?? []),
+            ...(v.mergeWait ?? []).map((id) => `${id} (merge)`),
+          ]
+        : [];
+      if (open.length > 0) {
+        ctx.needPrivilege(
+          `${v.meta.id} waits for its plan: ${open.join(', ')}; its check runs when they are ` +
+            'closed and merged',
+        );
+      }
       if (v.meta.type !== QUESTION_TYPE) return [{ type: 'done', body: message }];
       // The answer to a question goes to whoever asked, so it lands in their inbox.
       const asker = v.meta.created_by;
@@ -2957,6 +2981,17 @@ export class Workspace {
         if (!(ctx.holds && v.owner === PLAN_CHECKER)) {
           ctx.needPrivilege(`only the checker that holds ${id} adds fix tasks to its plan`);
         }
+        // Two rounds of fixes that did not pass mean the plan or the check is wrong (AO-0110,
+        // "Closing"): the third failed check goes to the PM as a question, with no fix tasks.
+        const failed = plan.failedChecks.length;
+        if (failed >= PLAN_FIX_ROUNDS) {
+          ctx.needPrivilege(
+            `${id}'s check has failed ${failed} times since its plan was approved, and each ` +
+              `time got fix tasks; a failed check after that adds none: ask with swarmup ask ` +
+              `${id} "what failed each time; options: change done_when, add work, park" ` +
+              `--recommend "your pick"`,
+          );
+        }
       } else {
         if (plan.planner !== actor) {
           ctx.needPrivilege(
@@ -3163,6 +3198,16 @@ export class Workspace {
         : null;
     const missing = v.planMissing ?? [];
     const unapplied = v.planUnapplied ?? [];
+    const failedIds = new Set(plan?.failedChecks ?? []);
+    const failedChecks = (failedIds.size > 0 ? root.readEvents(id) : [])
+      .filter((e) => failedIds.has(e.id))
+      .map((e) => ({
+        event: e.id,
+        actor: e.actor,
+        at: e.at,
+        keys: readPlanBody(e.body)?.items.map((i) => i.key) ?? [],
+        note: planNote(e.body),
+      }));
     // The starting point of a revision: the effective plan's own values, so it passes the checks.
     const source: PlanDoc | null = plan?.approval
       ? { items: items.map(({ origin: _origin, ...item }) => item) }
@@ -3180,6 +3225,8 @@ export class Workspace {
       spent: rows.reduce((sum, r) => sum + (r.spent ?? 0), 0),
       pending,
       incomplete: missing.length + unapplied.length > 0 ? { missing, unapplied } : null,
+      failedChecks,
+      fixRounds: PLAN_FIX_ROUNDS,
       yaml: source ? planYaml(source) : '',
     };
   }
@@ -4924,6 +4971,13 @@ export interface PlanReport {
   } | null;
   /** An incomplete application: keys without a task, and changed keys without their marker. */
   incomplete: { missing: string[]; unapplied: string[] } | null;
+  /**
+   * The failed checks since the latest approval or reopen, oldest first: the fix amendment of
+   * each, the keys of its fix items and the checker's note on what failed.
+   */
+  failedChecks: Array<{ event: string; actor: string; at: string; keys: string[]; note: string }>;
+  /** The failed checks that may add fix tasks; the one after them asks instead. */
+  fixRounds: number;
   /** The effective plan as YAML, or the pending one before the first approval. */
   yaml: string;
 }

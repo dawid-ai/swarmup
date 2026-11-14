@@ -902,6 +902,21 @@ function printPlanReport(ctx: Ctx, p: PlanReport): void {
   } else if (!p.pending) {
     o('no plan yet: the planner claims the milestone and runs swarmup plan propose');
   }
+  const parked = p.items.filter((r) => r.status === 'parked');
+  if (parked.length > 0) {
+    o(`parked: ${parked.map((r) => `${r.key} (${r.task})`).join(', ')}`);
+  }
+  if (p.failedChecks.length > 0) {
+    const n = p.failedChecks.length;
+    o(
+      `failed checks: ${n} of the ${p.fixRounds} that add fix tasks` +
+        (n >= p.fixRounds ? '; the next failed check asks instead (swarmup ask)' : ''),
+    );
+    for (const f of p.failedChecks) {
+      const note = f.note.split('\n')[0];
+      o(`  ${f.event} ${f.actor}: fixes ${f.keys.join(', ')}${note ? `; ${note}` : ''}`);
+    }
+  }
   if (p.incomplete) {
     const parts = [
       p.incomplete.missing.length ? `no task yet for ${p.incomplete.missing.join(', ')}` : '',

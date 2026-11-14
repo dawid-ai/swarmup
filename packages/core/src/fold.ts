@@ -100,6 +100,7 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
       usedKeys: [],
       diff: [],
       skipped: [],
+      failedChecks: [],
     });
   const useKeys = (plan: PlanState, items: EffectivePlanItem[]): void => {
     for (const i of items) if (!plan.usedKeys.includes(i.key)) plan.usedKeys.push(i.key);
@@ -192,6 +193,7 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         // lives in the plan only, so it changes no task.
         plan.diff = planChangedKeys(plan.items, items);
         plan.skipped = [];
+        plan.failedChecks = [];
         plan.items = items;
         plan.approval = e.id;
         plan.head = e.id;
@@ -220,6 +222,8 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         plan.items = [...plan.items, ...items];
         plan.head = e.id;
         useKeys(plan, items);
+        // The checker files fixes only after a failed check, so each such event is one.
+        if (origin === 'fix') plan.failedChecks.push(e.id);
         waitOnPlan();
         break;
       }
@@ -351,6 +355,7 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         // with an effective plan waits on it again.
         if (e.to) s.owner = e.to;
         blockOn(e);
+        if (s.plan) s.plan.failedChecks = [];
         if (s.plan?.approval) waitOnPlan();
         break;
       case 'ask':
