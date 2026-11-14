@@ -4958,13 +4958,14 @@ export class Supervisor extends EventEmitter {
       if (err instanceof GitTimeout) throw err;
       throw new Error(`cannot list the worktrees of ${job.top}: ${gitError(err)}`);
     }
-    const bases = new Set(Object.values(this.config.merge).map((m) => m.base));
     const mine: WorktreeEntry[] = [];
     for (const w of list) {
       // The repo's own checkout counts too when it has the review's branch checked out: a run
       // without a task worktree (`task_worktrees: false`, an agent's own `cwd`) works there.
+      // Only the base of this merge is left out: the base of another root is a branch like any
+      // other here, and a review may name it.
       if (
-        !(w.branch !== null && w.branch === job.src.branch && !bases.has(w.branch)) &&
+        !(w.branch !== null && w.branch === job.src.branch && w.branch !== job.cfg.base) &&
         taskIdOfWorktree(job.top, w.path)?.toLowerCase() !== id.toLowerCase()
       ) {
         continue;

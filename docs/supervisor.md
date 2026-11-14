@@ -725,7 +725,8 @@ swarmupd:
 - **Uncommitted changes in the task's worktree.** Before it merges, swarmupd looks at the worktree
   that has the review's branch checked out and at the task's own (`out/wt-<ID>`). The repo's own
   checkout counts when it has the review's branch checked out (a run without a task worktree
-  works there). When one has
+  works there), unless that branch is the `base` of this root's merge; the `base` of another
+  root does not count. When one has
   uncommitted changes, the commit the review names lacks part of the work. If the last run of
   the review's author ended with a `run-end` that says swarmupd could not commit what it left,
   and the worktree is still on the commit to merge, swarmupd commits the changes on a branch of
