@@ -146,3 +146,150 @@ export function messageNotes(message: string): string[] {
   }
   return notes;
 }
+
+/**
+ * `done_when` as a list of one-line checks, or undefined when there are none (AO-0290). Accepts
+ * what a hand-written `task.md` can hold: one string or a list. A string with several lines is
+ * one check per line, and a leading list marker is dropped.
+ */
+export function doneWhenLines(value: unknown): string[] | undefined {
+  const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  const lines = items
+    .flatMap((item) => String(item).split(/\r?\n/))
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, '').trim())
+    .filter(Boolean);
+  return lines.length > 0 ? lines : undefined;
+}
+
+/** Programs that are a whole command on their own, such as `pytest`. */
+const BARE_COMMAND_RE =
+  /^(?:npx|make|pytest|tox|vitest|jest|mocha|tsc|eslint|prettier|ruff|mypy|rspec|rake|phpunit|ctest|ninja|just)$/;
+
+/**
+ * Programs an agent runs to check work. A span that starts with one of these and has an
+ * argument is a command; an unknown first word needs other evidence (see `isCommand`), because
+ * prose in code font (`has identical copies`) starts with a lower-case word too.
+ */
+const KNOWN_PROGRAM_RE =
+  /^(?:npm|npx|pnpm|yarn|bun|deno|node|tsx|ts-node|tsc|vitest|jest|mocha|playwright|cypress|eslint|prettier|biome|swarmup|ops|git|gh|python3?|py|pip3?|pipx|uv|poetry|pytest|tox|ruff|mypy|cargo|rustc|go|make|cmake|ctest|ninja|just|dotnet|java|mvn|gradle|gradlew|ruby|bundle|rake|rspec|php|composer|phpunit|docker|podman|kubectl|helm|terraform|curl|wget|bash|sh|zsh|pwsh|powershell|cmd|grep|rg|ls|cat|diff|jq|sed|awk|electron|vite|webpack|rollup|esbuild|turbo|nx)(?:\.(?:exe|cmd|bat))?$/;
+
+/**
+ * Known programs whose name is also an English word. Prose in code font starts with them too
+ * (`make sure it works`, `go to the page`), so an argument alone is no sign of a command: the
+ * arguments must fit the program (see `fitsProgram`).
+ */
+const TARGET_PROGRAM_RE = /^(?:make|just|rake|ninja)$/;
+const FILE_PROGRAM_RE = /^(?:cat|diff|ls|java|ruby)$/;
+const SUBCOMMANDS: Record<string, RegExp> = {
+  go: /^(?:build|test|vet|run|fmt|mod|generate|install|list|get|version|tool|clean|doc|env|work)$/,
+  cargo:
+    /^(?:build|test|check|clippy|fmt|run|doc|bench|install|update|publish|tree|metadata|nextest|audit|\+\w+)$/,
+  bundle: /^(?:exec|install|update|check|outdated|audit)$/,
+  poetry: /^(?:run|install|check|build|lock|show|update)$/,
+  helm: /^(?:lint|template|install|upgrade|test|status|list|dependency|version)$/,
+  composer: /^(?:install|update|test|validate|run|run-script|audit|exec)$/,
+  turbo: /^(?:run|build|test|lint|typecheck|prune)$/,
+};
+
+/** Usual names of a build target or recipe, for `make test` and the like. */
+const TARGET_RE =
+  /^(?:all|test|tests|check|lint|build|clean|install|dist|release|typecheck|format|fmt|docs?|ci|verify|e2e|coverage|run|dev|default|spec|bench)$/;
+
+/** Words of a sentence that no target, subcommand argument or file is named after. */
+const PROSE_WORD_RE =
+  /^(?:a|an|the|it|its|is|are|was|be|to|of|and|or|but|for|with|on|in|at|by|from|that|this|these|those|sure|so|if|when|then|not|no|we|you|i|they|there|here|again|now|still|also)$/i;
+
+/** A word that a sentence does not hold: a flag, `VAR=value`, or a name with a digit or `_=./\:-`. */
+function machineWord(word: string): boolean {
+  return /^--?[A-Za-z]/.test(word) || /[\d_=./\\:-]/.test(word.replace(/[.,;:]$/, ''));
+}
+
+/**
+ * Whether the arguments fit a program whose name is also an English word:
+ *
+ * - `make`, `just`, `rake`, `ninja`: every argument is a usual target name (`test`, `lint`) or
+ *   a machine word (`build-all`, `-j4`, `CC=gcc`);
+ * - `go`, `cargo`, `bundle`, `poetry`, `helm`, `composer`, `turbo`: the first argument that is
+ *   not a flag is one of the program's subcommands;
+ * - `cat`, `diff`, `ls`, `java`, `ruby`: an argument is a flag or a path.
+ *
+ * In every case a sentence word (`the`, `to`, `sure`) among the arguments means prose. Returns
+ * undefined for a program that is not ambiguous.
+ */
+function fitsProgram(name: string, args: string[]): boolean | undefined {
+  const sub = SUBCOMMANDS[name];
+  const targets = TARGET_PROGRAM_RE.test(name);
+  if (!sub && !targets && !FILE_PROGRAM_RE.test(name)) return undefined;
+  if (args.some((arg) => PROSE_WORD_RE.test(arg))) return false;
+  if (targets) return args.every((arg) => TARGET_RE.test(arg) || machineWord(arg));
+  if (sub) return sub.test(args.find((arg) => !arg.startsWith('-')) ?? '');
+  return args.some(machineWord);
+}
+
+/** A program name or a path to one, in lower case. */
+const PROGRAM_RE = /^(?:\.{0,2}[\\/])?[a-z][\w.+-]*(?:[\\/][\w.+-]+)*$/;
+
+/** A script by its extension, such as `scripts/check.sh`. */
+const SCRIPT_RE = /\.(?:sh|bash|ps1|py|js|mjs|cjs|ts|rb|pl|cmd|bat|exe)$/;
+
+/**
+ * Whether a code span reads as a command. A review request also puts branches, commits, paths,
+ * identifiers and quoted test names in code font, and none of those is evidence, so the span
+ * needs a positive sign of a command, one of:
+ *
+ * - a shell prompt in front (`$ anything here`);
+ * - a known program with at least one argument (`npm test`), or one that runs alone (`pytest`);
+ *   a program whose name is also an English word needs arguments that fit it (`make test`,
+ *   `go test ./...`), so `make sure it works` and `go to the page` are prose;
+ * - a script with an argument (`scripts/check.sh --all`), or alone behind `./` (`./check.sh`);
+ * - a program name followed by a flag (`mytool --check`).
+ *
+ * `VAR=value` words in front of the program are skipped.
+ */
+function isCommand(span: string): boolean {
+  const text = span.trim();
+  const prompt = /^\$\s+\S/.test(text);
+  const words = text.replace(/^\$\s+/, '').split(/\s+/);
+  while (words.length > 1 && /^[A-Za-z_]\w*=\S*$/.test(words[0] ?? '')) words.shift();
+  const program = words[0] ?? '';
+  if (!PROGRAM_RE.test(program)) return false;
+  if (prompt) return true;
+  const script = SCRIPT_RE.test(program);
+  if (words.length === 1) {
+    return BARE_COMMAND_RE.test(program) || (script && /^\.{1,2}[\\/]/.test(program));
+  }
+  const name = program.split(/[\\/]/).pop() ?? '';
+  const fits = fitsProgram(name.replace(/\.(?:exe|cmd|bat)$/, ''), words.slice(1));
+  if (fits !== undefined) return fits;
+  if (KNOWN_PROGRAM_RE.test(name) || script) return true;
+  return words.slice(1).some((word) => /^--?[A-Za-z]/.test(word));
+}
+
+/** A command in a message: a fenced block, or an inline code span that reads as a command. */
+function namesCommand(message: string): boolean {
+  if (message.includes('```')) return true;
+  return [...message.matchAll(/`([^`\n]+)`/g)].some((m) => isCommand(m[1] ?? ''));
+}
+
+/** A result in a message: an outcome word, a count, an exit code, or pasted output. */
+const RESULT_RE =
+  /```|\b(?:pass(?:es|ed|ing)?|fail(?:s|ed|ing|ures?)?|green|red|clean|ok|succeed(?:s|ed)?|errors?|warnings?|output|prints?|printed|returns?|returned|shows?|showed|exit(?:s|ed)?(?: code)? \d+)\b|\b\d+ (?:tests?|files?|checks?|of \d+)\b/i;
+
+/**
+ * Soft check for a review request on a task with `done_when` (AO-0290): the request should name
+ * the commands that were run and what they printed, so the reviewer can check each line without
+ * taking "tests pass" on trust. Returns notes to print; never refuses.
+ */
+export function evidenceNotes(message: string, doneWhen: string[] | undefined): string[] {
+  if (!doneWhen || doneWhen.length === 0) return [];
+  const missing = [
+    namesCommand(message) ? null : 'no command (in code font, such as `npm test`)',
+    RESULT_RE.test(message) ? null : 'no result (what each command printed, or what you saw)',
+  ].filter(Boolean);
+  if (missing.length === 0) return [];
+  const n = doneWhen.length;
+  return [
+    `the task has ${n} done-when line${n === 1 ? '' : 's'} and the request names ${missing.join(' and ')}: ` +
+      'say which commands you ran and their output, so the reviewer can check each line',
+  ];
+}

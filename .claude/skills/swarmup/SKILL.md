@@ -18,7 +18,8 @@ the SwarmUp checkout.
 2. `swarmup next`: the best task for you. Exit code 3 and no output means nothing to do; stop quietly.
 3. `swarmup show ID`: the task, its state, and every event so far. Read the latest checkpoint and
    comments; don't redo what they say is done or decided. If it ends with an `attachments:` list,
-   open those image files: they are screenshots or designs the task refers to.
+   open those image files: they are screenshots or designs the task refers to. A `done when:`
+   list holds the task's checks: the task is done when every line holds.
 4. `swarmup start ID "one-line plan"`: claims and starts. Exit code 1 means someone else holds it; run
    `swarmup next` again.
 5. Check your plan against the **decisions in force**: the lines `- D-0042 (2026-11-03): ...` that
@@ -137,6 +138,10 @@ EOF
 
 ## Reviews
 
+- When the task has a `done when:` list, your review request names the commands you ran and
+  their output, for every line of the list: `` `npm test`: 412 passed ``, not "tests pass".
+  `swarmup review` prints a `note:` when the request names no command or no result. Set the list
+  on a task you create with `swarmup new "Title" --done-when "npm test passes"` (repeatable).
 - `swarmup review ID "..."` without `--to` goes to a reviewer agent of another provider:
   `codex:reviewer` for Claude work, `claude:reviewer` for Codex work. `swarmup review` refuses a
   same-provider reviewer.
