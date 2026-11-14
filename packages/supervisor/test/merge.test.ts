@@ -36,6 +36,7 @@ import {
   missingOptionalPackages,
   notLiveNotice,
   npmRegistry,
+  withoutScriptEnv,
   opsdCodeChanges,
   opsdConfig,
   pickMergeSource,
@@ -219,7 +220,7 @@ const code = readFileSync('code.txt', 'utf8');
 console.log('checking ' + code.trim());
 appendFileSync(process.env.MERGE_COUNT, 'x');
 if (process.env.MERGE_ENV_OUT) {
-  const names = ['SWARMUP_DAEMON_ENTRY', 'OPS_DAEMON_ENTRY', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'MERGE_KEEP'];
+  const names = ['SWARMUP_DAEMON_ENTRY', 'OPS_DAEMON_ENTRY', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'MERGE_KEEP', 'npm_config_registry', 'npm_config_user_agent', 'npm_execpath', 'INIT_CWD'];
   writeFileSync(process.env.MERGE_ENV_OUT, JSON.stringify(names.filter((n) => process.env[n] !== undefined)));
 }
 if (code.includes('nap') && !existsSync(process.env.MERGE_NAPPED)) {
@@ -841,6 +842,11 @@ describe('merging approved work', () => {
         ELECTRON_NO_ASAR: '1',
         MERGE_KEEP: 'yes',
         MERGE_ENV_OUT: out,
+        // And when `pnpm swarmup` started it (AO-0307).
+        npm_config_registry: 'https://registry.npmjs.org/',
+        npm_config_user_agent: 'pnpm/9.15.4 npm/? node/v22.0.0 win32 x64',
+        npm_execpath: 'C:/pnpm/bin/pnpm.cjs',
+        INIT_CWD: 'C:/engine',
       },
     });
     s.approve(s.branch('two\n'));
@@ -1300,6 +1306,19 @@ describe('merging approved work', () => {
     expect(npmRegistry(dir, undefined)).toBe('https://npm.example.com/all/');
     expect(npmRegistry(dir, '@scope')).toBe('https://npm.example.com/scope/');
     expect(npmRegistry(dir, '@other')).toBe('https://npm.example.com/all/');
+    // A swarmupd started with `pnpm swarmup` has pnpm's registry in its environment, and npm
+    // takes that variable over an `.npmrc` file; the project's own registry still answers (AO-0307).
+    const script = {
+      ...process.env,
+      npm_config_registry: 'https://registry.example.org/',
+      npm_config_user_agent: 'pnpm/9.15.4 npm/? node/v22.0.0 win32 x64',
+    };
+    expect(npmRegistry(dir, undefined, script)).toBe('https://npm.example.com/all/');
+    expect(npmRegistry(dir, '@scope', script)).toBe('https://npm.example.com/scope/');
+    // A variable a person set for their shell, with no script around it, still wins, as in npm.
+    const shell = withoutScriptEnv(process.env);
+    shell.npm_config_registry = 'https://registry.example.org/';
+    expect(npmRegistry(dir, undefined, shell)).toBe('https://registry.example.org/');
     // The default lookup of `missingOptionalPackages` is this one, in the directory it reads.
     const here = { os: 'win32', cpu: 'x64' };
     const write = (host: string) =>

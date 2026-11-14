@@ -5,6 +5,7 @@ import type { MergeSource } from '@swarmup/core';
 import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES, samePath } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
+import { withoutScriptEnv } from './runenv.js';
 
 export { reviewSources };
 export type { MergeSource, ReviewSources } from '@swarmup/core';
@@ -145,12 +146,22 @@ export type RegistryLookup = (scope: string | undefined) => string | undefined;
  * The registry that `npm install <name>@<version>` in `dir` fetches a package of `scope` from, as
  * npm's own configuration says (`.npmrc` files, environment): `@scope:registry` when set, or
  * `registry`. `undefined` when npm does not answer with an http(s) URL.
+ *
+ * `env` goes to npm without what a package manager's script added (`withoutScriptEnv`): the
+ * `npm_config_registry` of a swarmupd started with `pnpm swarmup` is the engine checkout's
+ * registry, and npm would take it over the `.npmrc` in `dir` (AO-0307).
  */
-export function npmRegistry(dir: string, scope: string | undefined): string | undefined {
+export function npmRegistry(
+  dir: string,
+  scope: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const clean = withoutScriptEnv(env);
   const get = (key: string): string | undefined => {
     // `shell` because npm is `npm.cmd` on Windows; the key is a checked scope name or a constant.
     const r = spawnSync(`npm config get ${key}`, {
       cwd: dir,
+      env: clean,
       shell: true,
       encoding: 'utf8',
       timeout: 60_000,
