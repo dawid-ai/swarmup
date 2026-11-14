@@ -87,6 +87,7 @@ import {
   notLiveNotice,
   opsdCodeChanges,
   pickMergeSource,
+  reviewCommits,
   reviewSources,
 } from './merge.js';
 import type { NotifyItem } from './notify.js';
@@ -458,6 +459,8 @@ interface MergeJob {
   /** The root's human, who gets notes on merges swarmupd cannot do. */
   human?: string;
   root: string;
+  /** The text of the review request the approval answers. */
+  review: string;
 }
 
 /**
@@ -5399,7 +5402,16 @@ export class Supervisor extends EventEmitter {
       : `branch ${src.branch ?? '?'}`;
     const v = ws.view(ref);
     const author = v.owner && !v.owner.includes('*') ? v.owner : review.actor;
-    return { cfg, top, src, what, author, human: root.config.human, root: root.name };
+    return {
+      cfg,
+      top,
+      src,
+      what,
+      author,
+      human: root.config.human,
+      root: root.name,
+      review: review.body,
+    };
   }
 
   /**
@@ -5703,6 +5715,11 @@ export class Supervisor extends EventEmitter {
         return;
       }
       if (r.head === onto) {
+        const lacks = await this.unmergedNamed(repo, job, approved, onto);
+        if (lacks.length > 0) {
+          this.mergeLacks(ref, job, lacks, onto);
+          return;
+        }
         this.mergeRecord(
           { ref, base: cfg.base, branch: src.branch, commit: onto },
           `${job.what} is already in ${cfg.base}; nothing to merge.`,
@@ -5989,6 +6006,61 @@ export class Supervisor extends EventEmitter {
     if (!(ref in all)) return;
     delete all[ref];
     this.store.writeJson('merge-builds.json', all);
+  }
+
+  /**
+   * The commits the approved review request mentions that the base lacks, when the merge took
+   * something else than that request's own `<commit> on branch <name>`: a branch the request
+   * names loosely, or what an earlier request names. Such a source can be an empty branch while
+   * the approved commit never reached the repo (AO-0325, after AO-0290: its commit sat in a
+   * bundle, and the earlier request's branch pointed at the base). A commit counts as in the
+   * base when it is an ancestor of it, or of the source, whose changes the rebase found there.
+   */
+  private async unmergedNamed(
+    repo: MergeRepo,
+    job: MergeJob,
+    source: string,
+    onto: string,
+  ): Promise<string[]> {
+    if (reviewSources(job.review).named) return [];
+    const lacks: string[] = [];
+    for (const sha of reviewCommits(job.review)) {
+      const commit = await repo.commit(sha);
+      const there =
+        !!commit &&
+        ((await repo.isAncestor(commit, onto)) || (await repo.isAncestor(commit, source)));
+      if (!there) lacks.push(sha);
+    }
+    return lacks;
+  }
+
+  /**
+   * Files a finding, linked from the task, that its approved work is not in the base. No merge
+   * event: the task keeps waiting for its merge, and so do the tasks blocked on it (AO-0325).
+   */
+  private mergeLacks(ref: string, job: MergeJob, lacks: string[], onto: string): void {
+    const { base } = job.cfg;
+    const ws = this.ws(MERGE_ACTOR);
+    const id = ws.resolve(ref).id;
+    const names = lacks.map((c) => `\`${c}\``).join(', ');
+    const title = `${id} is approved, but its work is not in ${base}: swarmupd found nothing to merge`;
+    const body = [
+      `swarmupd merged nothing for ${id}. Its approved review request names ${names}, and ` +
+        `${base} (${short(onto)}) does not have ${lacks.length === 1 ? 'it' : 'them'}. That ` +
+        `request has no \`<commit> on branch <name>\`, so swarmupd took ${job.what} from a looser ` +
+        `or earlier mention, and that is already in ${base}.`,
+      `${id} stays approved and waits for its merge; the tasks blocked on it stay blocked.`,
+      `Triage: get the named commit into \`${job.top}\` (fetch its branch or bundle), then reopen ` +
+        `${id} with a review request that says \`<commit> on branch <name>\`. If the work is in ` +
+        `${base} after all, free each blocked task with \`swarmup unblock\`.`,
+    ].join('\n\n');
+    try {
+      ws.finding({ title, body, owner: this.pmFor(ws), priority: 'p1', task: ref });
+    } catch (err) {
+      // The note alone keeps the merge from being taken for done.
+      this.emit('warn', `merge of ${ref}: cannot file a finding: ${String(err)}`);
+      this.mergeNote(ref, `${title}.\n\n${body}`, job.human);
+    }
   }
 
   /** The merge event, with the commit the base moved to. */

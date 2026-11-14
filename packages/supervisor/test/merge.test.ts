@@ -44,6 +44,7 @@ import {
   opsdConfig,
   pickMergeSource,
   repairInstallCommand,
+  reviewCommits,
   reviewSources,
   staleWorktree,
   startApi,
@@ -508,6 +509,28 @@ describe('merging approved work', () => {
       commit: 'abc1234',
       branch: 'gone',
     });
+    // A commit in code font or bold is named all the same (AO-0325): AO-0290's last review, whose
+    // commit the repo lacked, lost to the branch of the review before it.
+    const final290 = 'AO-0290: `cc3d803` on branch `codex/ao-0290-final` is rebased onto `main`.';
+    const older290 = 'AO-0290: `ee160f1` on branch `codex/ao-0290-rebased` is in the bundle.';
+    expect(reviewSources(final290).named).toEqual({
+      commit: 'cc3d803',
+      branch: 'codex/ao-0290-final',
+    });
+    expect(reviewSources('**cc3d803** on branch x').named).toEqual({
+      commit: 'cc3d803',
+      branch: 'x',
+    });
+    expect(
+      pickMergeSource([final290, older290], {
+        branch: (b) => b === 'codex/ao-0290-rebased',
+        commit: () => false,
+      }),
+    ).toEqual({ commit: 'cc3d803', branch: 'codex/ao-0290-final' });
+    // Words that look like commits: hex with a digit and a letter, not numbers, dates or ids.
+    expect(
+      reviewCommits('cc3d803 replaces `2b0ab62`; 1572 passed on 20261114, run 01M7C6SD, cc3d803.'),
+    ).toEqual(['cc3d803', '2b0ab62']);
     // An earlier review whose branch is gone counts by its commit.
     expect(pickMergeSource([prose148, 'ca2b7d9b on branch deleted-one'], has)).toEqual({
       commit: 'ca2b7d9b',
@@ -2536,6 +2559,117 @@ describe('merging approved work', () => {
     await s.merged();
     expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(existsSync(join(s.state, 'checks.txt'))).toBe(false);
+    expect(s.last()).toMatchObject({ type: 'merge', commit: tip });
+    expect(s.last().body).toContain('is already in main; nothing to merge');
+  });
+
+  it('takes the commit the approved review names in code font, not the branch of an earlier review (AO-0325)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const commit = s.branch('two\n');
+    // The branch of an earlier round: it points at main, as an import that failed left it.
+    git(s.repo, 'branch', 'stale', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', 'T-0001: `0123abc` on branch `stale` is rebased.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+    eng.start('1', 'plan');
+    eng.review(
+      '1',
+      `T-0001: \`${commit.slice(0, 7)}\` on branch \`feature\` is rebased onto current \`main\`.`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+  });
+
+  it('merges nothing when the commit the approved review names in code font is not in the repo (AO-0325)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    git(s.repo, 'branch', 'stale', 'main');
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', 'T-0001: `0123abc` on branch `stale` is rebased.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+    eng.start('1', 'plan');
+    // As AO-0290's last review: the commit is in a bundle, not in the repo.
+    eng.review(
+      '1',
+      'T-0001: `0456def` on branch `final` is rebased onto current `main`; import the bundle.',
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('swarmupd cannot merge 0456def on branch final');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
+    expect(s.as('human:dawid').view('2')).toMatchObject({ status: 'blocked', unblocked: false });
+  });
+
+  it('files a finding, not a merge, when a fallback source is in the base and the approved review names a commit that is not (AO-0325)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    git(s.repo, 'branch', 'stale', 'main');
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', 'T-0001: 0123abc on branch stale is rebased.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+    eng.start('1', 'plan');
+    // No `<commit> on branch <name>`: the pick falls back to the earlier review's branch.
+    eng.review(
+      '1',
+      `T-0001: the work is commit 0456def in the bundle, rebased onto ${tip.slice(0, 7)}.`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'finding', actor: MERGE_ACTOR });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    const human = s.as('human:dawid');
+    expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
+    expect(human.view('2')).toMatchObject({ status: 'blocked', unblocked: false });
+    const finding = human.view(e.ref!);
+    expect(finding.meta).toMatchObject({ type: 'finding', priority: 'p1' });
+    expect(finding.meta.title).toContain('T-0001 is approved, but its work is not in main');
+    const filed = human.showEvents(e.ref!).body;
+    expect(filed).toContain('`0456def`');
+    // The base's own commit, which the review names too, is not reported.
+    expect(filed).not.toContain(`\`${tip.slice(0, 7)}\``);
+    // Once only, and no later tick frees the waiter.
+    await s.merged();
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(human.view('2').unblocked).toBe(false);
+  });
+
+  it('records a fallback source already in the base when the approved review names no commit the base lacks (AO-0325)', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    git(s.repo, 'merge', '-q', '--ff-only', 'feature');
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('1', 'plan');
+    eng.review('1', `T-0001: ${commit.slice(0, 7)} on branch feature`, 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'say what the tests cover');
+    eng.start('1', 'plan');
+    eng.review(
+      '1',
+      `T-0001: ${commit.slice(0, 7)} is unchanged; the tests cover it.`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', commit: tip });
     expect(s.last().body).toContain('is already in main; nothing to merge');
   });

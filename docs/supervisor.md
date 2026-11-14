@@ -927,8 +927,17 @@ swarmupd:
   tip: swarmupd merges what the reviewer approved. A `branch <name>` counts only when `<name>` is a
   branch in the repo, since prose such as "this branch does not touch it" has the same shape.
   When that review names neither, swarmupd takes the newest earlier review that names a branch the
-  repo has, and merges that branch's tip. Only verdicts after swarmupd first saw the root's
+  repo has, and merges that branch's tip. The commit may be in code font or bold
+  (`` `abc1234` on branch `x` ``). A commit the repo lacks gets a note to the human, never an
+  earlier review's work. Only verdicts after swarmupd first saw the root's
   setting count (`merge.json` in the state folder), so turning it on merges no old work.
+- **Nothing to merge.** Work that is already in the base gets a merge event that says so, and
+  the tasks blocked on it go on. Not when swarmupd took the work from an earlier review or a loose
+  `branch <name>`, and the approved review mentions a commit that the base lacks (a commit that
+  is not in the repo, or not an ancestor of the base or of the work taken): then the branch is
+  likely an empty one and the approved commit never reached the repo. swarmupd records no merge,
+  files a `p1` finding for the PM that is linked from the task and names the commits, and the
+  task and the tasks blocked on it keep waiting for the merge.
 - **Uncommitted changes in the task's worktree.** Before it merges, swarmupd looks at the worktree
   that has the review's branch checked out and at the task's own (`out/wt-<ID>`). The repo's own
   checkout counts when it has the review's branch checked out (a run without a task worktree

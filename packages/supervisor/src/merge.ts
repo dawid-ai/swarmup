@@ -2,12 +2,19 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { MergeSource } from '@swarmup/core';
-import { PATCH_KEY_ARGS, patchKey, reviewSources, ROOT_DIR_NAMES, samePath } from '@swarmup/core';
+import {
+  PATCH_KEY_ARGS,
+  patchKey,
+  reviewCommits,
+  reviewSources,
+  ROOT_DIR_NAMES,
+  samePath,
+} from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
 import { withoutScriptEnv } from './runenv.js';
 
-export { reviewSources };
+export { reviewCommits, reviewSources };
 export type { MergeSource, ReviewSources } from '@swarmup/core';
 
 /**
@@ -757,6 +764,20 @@ export class MergeRepo {
       allowFail: true,
     });
     return out.trim() !== '';
+  }
+
+  /**
+   * Whether commit `a` is `b` or an ancestor of it. False too when git cannot tell, as for a
+   * commit whose history the repo lacks: the caller takes that for work that is not in `b`.
+   */
+  async isAncestor(a: string, b: string): Promise<boolean> {
+    try {
+      await this.git(this.top, ['merge-base', '--is-ancestor', a, b]);
+      return true;
+    } catch (err) {
+      if (err instanceof GitTimeout) throw err;
+      return false;
+    }
   }
 
   /** The names of the repo's local branches, in one git call. */
