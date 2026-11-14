@@ -43,6 +43,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,
+    'decisions',
     `decisions/${SEG}/(vote|decide)`,
     'channels',
     `channels/${SEG}`,

@@ -7,6 +7,7 @@ import { statusInfo } from '../lib/identity';
 import type { Move } from '../lib/transitions';
 import { moveRequest, moveTo } from '../lib/transitions';
 import type { Status, Task } from '../types';
+import { DecisionMark, useDecisionMark } from './decision';
 import { StatusIcon } from './identity';
 import { AgentPicker, MentionArea } from './pickers';
 import { onTaskRef, RefText } from './refs';
@@ -29,9 +30,10 @@ export function useMover(nav: Nav, onError: (msg: string | null) => void) {
     t: Task,
     move: Move,
     input: { message?: string; to?: string; on?: string },
+    mark: Record<string, unknown> = {},
   ) => {
     const { path, body } = moveRequest(move, input);
-    await api('POST', `/api/tasks/${q(ref(t))}/${path}`, { as: nav.me, ...body });
+    await api('POST', `/api/tasks/${q(ref(t))}/${path}`, { as: nav.me, ...body, ...mark });
     refreshSoon();
   };
   const request = (t: Task, target: Status): void => {
@@ -50,7 +52,7 @@ export function useMover(nav: Nav, onError: (msg: string | null) => void) {
       task={pending.task}
       move={pending.move}
       onClose={() => setPending(null)}
-      apply={(input) => apply(pending.task, pending.move, input)}
+      apply={(input, mark) => apply(pending.task, pending.move, input, mark)}
     />
   ) : null;
   return { request, dialog };
@@ -69,11 +71,17 @@ function MoveDialog(props: {
   task: Task;
   move: Move;
   onClose: () => void;
-  apply: (input: { message?: string; to?: string; on?: string }) => Promise<void>;
+  apply: (
+    input: { message?: string; to?: string; on?: string },
+    mark?: Record<string, unknown>,
+  ) => Promise<void>;
 }) {
   const { task: t, move, nav } = props;
   const act = useAction();
   const [message, setMessage] = useState('');
+  // A verdict and a park can record a decision (AO-0109); the other moves' events cannot.
+  const marks = move.action === 'verdict-changes' || move.action === 'park';
+  const mark = useDecisionMark(message);
   const [to, setTo] = useState<string[]>(() => {
     if (move.needs === 'reviewer' && t.delegation?.review) return [t.delegation.review];
     if (
@@ -103,7 +111,7 @@ function MoveDialog(props: {
       );
       return;
     }
-    act.run(() => props.apply({ message, to: to[0], on }), props.onClose);
+    act.run(() => props.apply({ message, to: to[0], on }, marks ? mark.fields : {}), props.onClose);
   };
   // Blocking and requesting changes say why; parking and review notes are optional.
   const ready =
@@ -112,6 +120,7 @@ function MoveDialog(props: {
       : move.action === 'block' || move.action === 'verdict-changes'
         ? message.trim().length > 0
         : true;
+  const held = marks && mark.problem !== null;
   return (
     <Modal title={move.label} icon={ArrowRightLeft} onClose={props.onClose} width={520}>
       {/* App opens a clicked reference in the task panel; close the dialog so the panel shows. */}
@@ -230,16 +239,17 @@ function MoveDialog(props: {
               onChange={setMessage}
               me={nav.me}
               rows={3}
-              onSubmit={() => ready && submit()}
+              onSubmit={() => ready && !held && submit()}
             />
           </Field>
         )}
+        {marks && <DecisionMark mark={mark} me={nav.me} />}
         <ErrorLine error={act.error} />
         <div className="flex justify-end gap-2">
           <Button kind="ghost" onClick={props.onClose}>
             Cancel
           </Button>
-          <Button kind="primary" disabled={!ready || act.busy} onClick={submit}>
+          <Button kind="primary" disabled={!ready || held || act.busy} onClick={submit}>
             {move.needs === 'work' && mode === 'agent' ? 'Start run' : move.label}
           </Button>
         </div>

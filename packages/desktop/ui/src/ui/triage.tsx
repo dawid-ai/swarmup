@@ -13,6 +13,7 @@ import { Button, ErrorLine, Input, Who, useAction } from '../components';
 import type { PriorityKey } from '../lib/identity';
 import { PRIORITIES, priorityInfo } from '../lib/identity';
 import type { Question } from '../types';
+import { DecisionMark, useDecisionMark } from './decision';
 import { PriorityIcon } from './identity';
 import { Markdown } from './markdown';
 import { AgentPicker, MentionArea, Menu } from './pickers';
@@ -69,10 +70,15 @@ export function TriageActions({
   const [answer, setAnswer] = useState('');
   const [parking, setParking] = useState(false);
   const [reason, setReason] = useState('');
+  // The decision the triage records (AO-0109): its line starts as the first sentence of the
+  // reason while parking, else of the answer.
+  const mark = useDecisionMark(parking ? reason : answer);
+  const hold = act.busy || mark.problem !== null;
   const post = (action: string, body: Record<string, unknown>) =>
-    api('POST', `/api/tasks/${q(task)}/${action}`, { as: me, ...body });
+    api('POST', `/api/tasks/${q(task)}/${action}`, { as: me, ...body, ...mark.fields });
   const after = (what: string) => (): void => {
     setAnswer('');
+    mark.reset();
     onDone?.(what);
     refreshSoon();
   };
@@ -152,19 +158,19 @@ export function TriageActions({
           size="sm"
           kind="primary"
           icon={ListChecks}
-          disabled={act.busy}
+          disabled={hold}
           onClick={() => accept('task')}
         >
           {idea ? 'Make task' : 'Accept as task'}
         </Button>
-        <Button size="sm" icon={Bug} disabled={act.busy} onClick={() => accept('bug')}>
+        <Button size="sm" icon={Bug} disabled={hold} onClick={() => accept('bug')}>
           Bug
         </Button>
         {!idea && (
           <Button
             size="sm"
             icon={Lightbulb}
-            disabled={act.busy}
+            disabled={hold}
             onClick={() =>
               act.run(
                 () => post('retype', { type: 'idea', message: 'Set aside as an idea' }),
@@ -201,13 +207,14 @@ export function TriageActions({
           <Button
             size="sm"
             kind="danger"
-            disabled={act.busy || !reason.trim()}
+            disabled={hold || !reason.trim()}
             onClick={() => act.run(() => post('park', { message: reason.trim() }), after('Parked'))}
           >
             Park it
           </Button>
         </div>
       )}
+      <DecisionMark mark={mark} me={me} />
       <ErrorLine error={act.error} />
     </div>
   );

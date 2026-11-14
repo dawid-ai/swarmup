@@ -59,6 +59,8 @@ export interface OpsEvent {
   minutes?: number;
   tokens?: number;
   forced?: boolean;
+  /** The recorded decision this event marks, as `D-0042` (AO-0109). */
+  decision?: string;
   body: string;
   /** Shown while its write is out; opsd has not stored it yet (AO-0171). */
   pending?: boolean;
@@ -370,6 +372,34 @@ export interface Decision {
     state: 'open' | 'ready' | 'tie' | 'no-quorum' | 'decided';
     missing: string[];
   };
+}
+
+/** One line of the decision log (`GET /api/decisions?log`): a recorded decision or a decided vote. */
+export interface LogEntry {
+  root: string;
+  id: string;
+  kind: 'record' | 'vote';
+  /** The one line: a record's text, or `question → choice` for a vote. */
+  text: string;
+  scope: 'project' | 'tree';
+  /** Absent with a `project` scope: the whole root. */
+  project?: string;
+  task?: string;
+  /** `ID#<event id>`, a file, or `chat:<message id>`. */
+  source?: string;
+  /** Who decided. */
+  by: string;
+  recorded_by?: string;
+  at: string;
+  supersedes: string[];
+  narrows: string[];
+  state: 'recorded' | 'superseded';
+  /** The records that replace it, and where. */
+  replaced: Array<{ by: string; how: 'superseded' | 'narrowed'; where: string }>;
+  /** A `tree` decision replaced in part: the tasks still under it. */
+  in_force_for?: string[];
+  /** A vote decided more than once: the earlier outcomes, newest first. */
+  revised?: Array<{ choice: string; at: string; by: string }>;
 }
 
 export interface ChannelInfo {

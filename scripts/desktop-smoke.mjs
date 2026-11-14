@@ -152,6 +152,8 @@ swarmup(
   '--deadline',
   '+48h',
 );
+// A recorded decision, for the Log tab of Decisions (AO-0315).
+swarmup('human:smoke', 'decision', 'Docs ship with every feature');
 
 // A repo without a data root, for Add project's proposal (AO-0274).
 const adoptable = join(base, 'shop');
@@ -179,6 +181,8 @@ const views = [
   'standups',
   'schedules',
   'decisions',
+  // With a vote open, Decisions shows the votes: `decisions:log` opens the decision log.
+  'decisions:log',
   'chat',
   'channels',
   'knowledge',

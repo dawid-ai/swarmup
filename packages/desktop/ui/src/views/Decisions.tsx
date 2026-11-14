@@ -1,4 +1,4 @@
-import { Clock, Gavel, Trophy, Users, Vote } from 'lucide-react';
+import { Clock, Gavel, Replace, ScrollText, Trophy, Users, Vote } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Nav } from '../App';
 import { api, q, refreshSoon, useData } from '../api';
@@ -9,32 +9,345 @@ import {
   ErrorLine,
   Input,
   Section,
+  toast,
   Toggle,
   useAction,
   Who,
   cx,
 } from '../components';
-import { ago } from '../lib/format';
-import type { Decision } from '../types';
+import { DECISION_TEXT_MAX, decisionLength, logNotes, logOrigin, scopeText } from '../lib/decision';
+import { ago, localTime } from '../lib/format';
+import type { Decision, LogEntry } from '../types';
 import { Markdown } from '../ui/markdown';
 import { RefText } from '../ui/refs';
 
+type Tab = 'log' | 'votes';
+
+/**
+ * Two lists under one view: the decision log (what people decided, as `swarmup decisions --log`
+ * prints it) and the votes. `selected` is a vote to show (`root/D-0001`), or `log` or `votes` to
+ * open that tab. Without it, open votes come first: they wait for someone; else the log.
+ */
 export function Decisions({ nav, selected }: { nav: Nav; selected?: string }) {
+  const vote = selected && selected !== 'log' && selected !== 'votes' ? selected : undefined;
+  const [picked, setPicked] = useState<Tab | null>(
+    selected === 'log' ? 'log' : selected ? 'votes' : null,
+  );
+  const votes = useData<Decision[]>('/api/decisions');
+  const open = (votes.data ?? []).filter((d) => !d.outcome).length;
+  const tab: Tab | null = picked ?? (votes.data ? (open > 0 ? 'votes' : 'log') : null);
   // A vote opened from search may be decided: show decided ones then.
-  const [all, setAll] = useState(Boolean(selected));
-  const { data, error } = useData<Decision[]>(all ? '/api/decisions?all' : '/api/decisions');
-  const open = (data ?? []).filter((d) => !d.outcome).length;
+  const [decided, setDecided] = useState(Boolean(vote));
+  const [superseded, setSuperseded] = useState(false);
+  const tabs = (
+    <div role="tablist" className="inline-flex rounded-lg bg-white/5 p-0.5 ring-1 ring-white/8">
+      {(
+        [
+          ['log', 'Log', undefined],
+          ['votes', 'Votes', open || undefined],
+        ] as const
+      ).map(([key, label, count]) => (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={tab === key}
+          onClick={() => setPicked(key)}
+          className={cx(
+            'inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition',
+            tab === key ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
+          )}
+        >
+          {label}
+          {count !== undefined && (
+            <span className="rounded-full bg-white/10 px-1.5 font-mono text-[10px]">{count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <Section
       title="Decisions"
       icon={Vote}
       subtitle={
-        data
-          ? `${open} open · agents and people vote; ties and missing quorum go to a person`
-          : 'Agents and people vote; ties and missing quorum go to a person'
+        tab === 'log'
+          ? 'What people decided, newest first; agents follow the ones in force for their task'
+          : votes.data
+            ? `${open} open · agents and people vote; ties and missing quorum go to a person`
+            : 'Agents and people vote; ties and missing quorum go to a person'
       }
-      actions={<Toggle checked={all} onChange={setAll} label="Include decided" />}
+      actions={
+        <div className="flex items-center gap-4">
+          {tab === 'votes' && (
+            <Toggle checked={decided} onChange={setDecided} label="Include decided" />
+          )}
+          {tab === 'log' && (
+            <Toggle checked={superseded} onChange={setSuperseded} label="Include superseded" />
+          )}
+          {tabs}
+        </div>
+      }
     >
+      {tab === 'votes' && <Votes nav={nav} selected={vote} all={decided} />}
+      {tab === 'log' && (
+        <DecisionLog nav={nav} all={superseded} onVote={() => setPicked('votes')} />
+      )}
+    </Section>
+  );
+}
+
+/** A date as the log prints it: `2026-11-03`, local. */
+const day = (at: string): string => localTime(at).slice(0, 10);
+
+/**
+ * The decision log: one row per recorded decision or decided vote, with its scope, where the
+ * words are, and how it was replaced. `all` adds the superseded ones (`--all`).
+ */
+function DecisionLog({ nav, all, onVote }: { nav: Nav; all: boolean; onVote: () => void }) {
+  const { data, error, reload } = useData<LogEntry[]>(
+    all ? '/api/decisions?log&all' : '/api/decisions?log',
+  );
+  const [superseding, setSuperseding] = useState<string | null>(null);
+  // An id alone is not unique across roots: each row carries its root when there are several.
+  const roots = new Set((data ?? []).map((e) => e.root)).size > 1;
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col gap-2.5 px-6 py-5">
+      <ErrorLine error={error} />
+      {data && data.length === 0 && (
+        <Empty icon={ScrollText} title="No decisions in force">
+          Mark a decision with the Decision toggle when you answer, review, comment or triage, or
+          record one with <code>swarmup decision</code>. It shows here and in the prompt of every
+          run it applies to.
+          {!all && ' Turn on Include superseded to see replaced ones.'}
+        </Empty>
+      )}
+      {data?.map((e) => {
+        const ref = `${e.root}/${e.id}`;
+        return (
+          <LogRow
+            key={ref}
+            e={e}
+            nav={nav}
+            roots={roots}
+            onVote={onVote}
+            superseding={superseding === ref}
+            onSupersede={(on) => setSuperseding(on ? ref : null)}
+            onRecorded={() => {
+              setSuperseding(null);
+              reload();
+              refreshSoon();
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function LogRow({
+  e,
+  nav,
+  roots,
+  onVote,
+  superseding,
+  onSupersede,
+  onRecorded,
+}: {
+  e: LogEntry;
+  nav: Nav;
+  roots: boolean;
+  onVote: () => void;
+  superseding: boolean;
+  onSupersede: (on: boolean) => void;
+  onRecorded: () => void;
+}) {
+  const origin = logOrigin(e);
+  const notes = logNotes(e);
+  const old = e.state === 'superseded';
+  return (
+    <article
+      data-log-entry={e.id}
+      data-state={e.state}
+      className={cx('panel animate-rise px-4 py-3', old && 'opacity-60')}
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <span className="font-mono text-xs text-fg-3">{roots ? `${e.root}/${e.id}` : e.id}</span>
+        <span className="font-mono text-xs text-fg-4" title={new Date(e.at).toLocaleString()}>
+          {day(e.at)}
+        </span>
+        <span
+          data-scope
+          className="rounded-md bg-signal/8 px-1.5 py-px font-mono text-[11px] text-signal ring-1 ring-signal/20 ring-inset"
+          title={
+            e.scope === 'tree'
+              ? `Applies to ${e.task} and the tasks below it`
+              : e.project === undefined
+                ? 'Applies to every task of the root'
+                : `Applies to every task of project ${e.project}`
+          }
+        >
+          {scopeText(e)}
+        </span>
+        {old && (
+          <span className="rounded-md bg-white/6 px-1.5 py-px text-[11px] text-fg-3">
+            superseded
+          </span>
+        )}
+        {nav.me?.startsWith('human:') && !old && (
+          <span className="ml-auto">
+            <Button
+              size="sm"
+              kind={superseding ? 'plain' : 'ghost'}
+              icon={Replace}
+              title={`Opens a new decision that replaces ${e.id}`}
+              onClick={() => onSupersede(!superseding)}
+            >
+              Supersede
+            </Button>
+          </span>
+        )}
+      </div>
+      <div className={cx('mt-1.5 text-sm text-fg', old && 'line-through decoration-white/30')}>
+        <RefText text={e.text} />
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-4">
+        {origin.kind === 'event' && (
+          <button
+            type="button"
+            className="font-mono text-signal hover:underline"
+            title="Opens the event that holds the decider's words"
+            onClick={() => nav.openTask(`${e.root}/${origin.ref}`)}
+          >
+            {origin.task}
+          </button>
+        )}
+        {origin.kind === 'chat' && <span>PM chat</span>}
+        {origin.kind === 'vote' && (
+          <button type="button" className="text-signal hover:underline" onClick={onVote}>
+            vote
+          </button>
+        )}
+        {origin.kind === 'file' && <span className="font-mono">{origin.file}</span>}
+        {origin.kind === 'none' && e.scope === 'project' && e.task && (
+          <button
+            type="button"
+            className="font-mono text-signal hover:underline"
+            onClick={() => nav.openTask(`${e.root}/${e.task}`)}
+          >
+            {e.task}
+          </button>
+        )}
+        <Who id={e.by} size="xs" />
+        {e.recorded_by && (
+          <span className="inline-flex items-center gap-1">
+            recorded by <Who id={e.recorded_by} size="xs" plain />
+          </span>
+        )}
+        {e.supersedes.length > 0 && <span>· supersedes {e.supersedes.join(', ')}</span>}
+        {e.narrows.length > 0 && <span>· narrows {e.narrows.join(', ')}</span>}
+        {notes.map((n) => (
+          <span key={n} data-log-note>
+            · {n}
+          </span>
+        ))}
+      </div>
+      {(e.revised ?? []).map((r) => (
+        <div key={`${r.at}:${r.choice}`} className="mt-1 text-xs text-fg-4">
+          {day(r.at)} revised: was '{r.choice}' ({r.by})
+        </div>
+      ))}
+      {superseding && (
+        <SupersedeForm e={e} me={nav.me} onCancel={() => onSupersede(false)} onDone={onRecorded} />
+      )}
+    </article>
+  );
+}
+
+/**
+ * A new record that replaces `e` (`swarmup decision TEXT --supersedes ID`): one line, and the
+ * scope it takes, which is the old decision's because no scope is sent.
+ */
+function SupersedeForm({
+  e,
+  me,
+  onCancel,
+  onDone,
+}: {
+  e: LogEntry;
+  me: string | null;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [line, setLine] = useState('');
+  const act = useAction();
+  const n = decisionLength(line);
+  const over = n > DECISION_TEXT_MAX;
+  const ready = n > 0 && !over && !act.busy;
+  const record = (): void => {
+    if (!ready) return;
+    act.run(
+      () =>
+        api<{ id: string }>('POST', '/api/decisions', {
+          as: me,
+          root: e.root,
+          text: line.trim(),
+          supersedes: [e.id],
+        }).then((res) => toast(`Recorded ${res.id}: it supersedes ${e.id}`)),
+      onDone,
+    );
+  };
+  return (
+    <div
+      data-supersede-form
+      className="mt-3 flex flex-col gap-2 rounded-lg bg-white/4 p-3 ring-1 ring-white/8 ring-inset"
+    >
+      <div className="label-caps">New decision · supersedes {e.id}</div>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Input
+            value={line}
+            onChange={setLine}
+            onEnter={record}
+            autoFocus
+            placeholder="The new decision, in one line"
+            className={cx('w-full pr-16', over && '!border-bad/60')}
+          />
+          <span
+            data-decision-count
+            className={cx(
+              'pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 font-mono text-[11px]',
+              over ? 'text-bad' : 'text-fg-4',
+            )}
+          >
+            {n}/{DECISION_TEXT_MAX}
+          </span>
+        </div>
+        <Button kind="primary" size="sm" icon={Gavel} disabled={!ready} onClick={record}>
+          Record
+        </Button>
+        <Button kind="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+      <p className="text-[11px] leading-snug text-fg-4">
+        Takes the scope of {e.id}: {scopeText(e)}. {e.id} leaves the list; Include superseded shows
+        it.
+      </p>
+      {over && (
+        <p data-decision-error className="text-xs text-bad">
+          A decision is one line of {DECISION_TEXT_MAX} characters at most; this one has {n}
+        </p>
+      )}
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+function Votes({ nav, selected, all }: { nav: Nav; selected?: string; all: boolean }) {
+  const { data, error } = useData<Decision[]>(all ? '/api/decisions?all' : '/api/decisions');
+  return (
+    <>
       <div className="mx-auto flex max-w-4xl flex-col gap-4 px-6 py-5">
         <ErrorLine error={error} />
         {data && data.length === 0 && (
@@ -53,7 +366,7 @@ export function Decisions({ nav, selected }: { nav: Nav; selected?: string }) {
           />
         ))}
       </div>
-    </Section>
+    </>
   );
 }
 
