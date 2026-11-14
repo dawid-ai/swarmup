@@ -555,6 +555,29 @@ describe('merging approved work', () => {
     expect(
       reviewCommits('cc3d803 replaces `2b0ab62`; 1572 passed on 20261114, run 01M7C6SD, cc3d803.'),
     ).toEqual(['cc3d803', '2b0ab62']);
+    // A commit id of digits only or letters only counts where the text says it is a commit: after
+    // a label, in a labeled list, or in code font or bold. Bare, it is a number or a word.
+    expect(reviewCommits('commit 1234567 is in the bundle; 7654321 passed, defaced.')).toEqual([
+      '1234567',
+    ]);
+    expect(reviewCommits('the commit abcdefa is in the bundle')).toEqual(['abcdefa']);
+    expect(reviewCommits('Commits `1234567`, abcdefa and 7654321; then 1111111')).toEqual([
+      '1234567',
+      'abcdefa',
+      '7654321',
+    ]);
+    expect(reviewCommits('sha: abcdefa, hash=7654321, rev **1111111**')).toEqual([
+      'abcdefa',
+      '7654321',
+      '1111111',
+    ]);
+    expect(reviewCommits('the work is `1234567`, **abcdefa**, __7654321__ and _deadbee_')).toEqual([
+      '1234567',
+      'abcdefa',
+      '7654321',
+      'deadbee',
+    ]);
+    expect(reviewCommits('run_1234567_x, x_7654321, recommit 1111111, 20261114')).toEqual([]);
     // An earlier review whose branch is gone counts by its commit.
     expect(pickMergeSource([prose148, 'ca2b7d9b on branch deleted-one'], has)).toEqual({
       commit: 'ca2b7d9b',
@@ -2749,6 +2772,39 @@ describe('merging approved work', () => {
     expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
     expect(human.view('2')).toMatchObject({ status: 'blocked', unblocked: false });
   });
+
+  // A commit id may have no letter or no digit; the guard reads it after a label or in Markdown.
+  it.each([
+    ['all digits after a label', 'the work is commit 1234567 in the bundle', '1234567'],
+    ['all letters after a label', 'the work is commit abcdefa in the bundle', 'abcdefa'],
+    ['all digits in code font', 'the work is `1234567`, in the bundle', '1234567'],
+    ['all letters in bold', 'the work is **abcdefa**, in the bundle', 'abcdefa'],
+  ])(
+    'files a finding when a fallback source is in the base and the approved review names an unmerged commit of %s (AO-0325)',
+    async (_form, says, sha) => {
+      const s = mergeSetup({ userMerge: true });
+      git(s.repo, 'branch', 'stale', 'main');
+      const tip = git(s.repo, 'rev-parse', 'main');
+      const eng = s.as('fake:engineer');
+      eng.start('2', 'plan');
+      eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+      eng.start('1', 'plan');
+      eng.review('1', 'T-0001: 0123abc on branch stale is rebased.', 'human:dawid');
+      s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+      eng.start('1', 'plan');
+      // No `<commit> on branch <name>`: the pick falls back to the earlier review's branch.
+      eng.review('1', `T-0001: ${says}.`, 'human:dawid');
+      s.as('human:dawid').verdict('1', 'approve', 'looks right');
+      await s.merged();
+      const e = s.last();
+      expect(e).toMatchObject({ type: 'finding', actor: MERGE_ACTOR });
+      expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+      const human = s.as('human:dawid');
+      expect(human.showEvents(e.ref!).body).toContain(`\`${sha}\``);
+      expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
+      expect(human.view('2')).toMatchObject({ status: 'blocked', unblocked: false });
+    },
+  );
 
   it('records a fallback source already in the base when the approved review names no commit the base lacks (AO-0325)', async () => {
     const s = mergeSetup();

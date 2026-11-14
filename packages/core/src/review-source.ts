@@ -55,16 +55,35 @@ export function reviewSources(text: string): ReviewSources {
   return named ? { named, loose } : { loose };
 }
 
+/** A word that says the next one is a commit, with what may stand between the two. */
+const LABEL = /\b(?:commits?|sha|hash|rev|revision)[:=]?\s*[`*_]{0,3}$/i;
+/** What opens code font or bold: an underscore does so only where no word runs into it. */
+const OPENS = /(?:[`*]|(?<![0-9A-Za-z])_{1,3})$/;
+const CLOSES = /^[`*_]/;
+/** What stands between two commits of a list: `commits 1234567, 7654321 and abcdefa`. */
+const LIST = /^[`*_]{0,3}(?:\s*,\s*(?:and\s+)?|\s+and\s+)[`*_]{0,3}$/;
+
 /**
- * The words of a review request that look like commit ids: 7 to 40 hex digits with a digit and a
- * letter among them, each once, in order. Prose gives words that are no commit, so a caller
- * asks the repo about each.
+ * The words of a review request that look like commit ids, each once, in order: 7 to 40 hex
+ * digits. In plain prose such a word counts only with a digit and a letter among them, which
+ * leaves out numbers, dates and words (`20261114`, `defaced`). A commit id can be all digits or
+ * all letters too, so any such word counts where the text says it is one: after `commit`, `sha`,
+ * `hash` or `rev` (and the others of a list that starts so), or in code font or bold (AO-0325).
+ * Prose still gives words that are no commit, so a caller asks the repo about each.
  */
 export function reviewCommits(text: string): string[] {
   const out: string[] = [];
-  const word = new RegExp(`${START}(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}${END}`, 'g');
+  const word = new RegExp(`${START}[0-9a-f]{7,40}${END}`, 'g');
+  /** Where the last commit of a labeled list ended. */
+  let listEnd = -1;
   for (const m of text.matchAll(word)) {
-    if (!out.includes(m[0])) out.push(m[0]);
+    const before = text.slice(0, m.index);
+    const end = m.index + m[0].length;
+    const labeled = LABEL.test(before) || (listEnd >= 0 && LIST.test(text.slice(listEnd, m.index)));
+    if (labeled) listEnd = end;
+    const marked = OPENS.test(before) && CLOSES.test(text.slice(end));
+    const mixed = /[0-9]/.test(m[0]) && /[a-f]/.test(m[0]);
+    if ((labeled || marked || mixed) && !out.includes(m[0])) out.push(m[0]);
   }
   return out;
 }
