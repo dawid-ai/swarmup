@@ -17,6 +17,12 @@ const NAME = '[`*]{0,3}([A-Za-z0-9._/-]+?)[`*]{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)'
  */
 const START = '(?<![0-9A-Za-z])';
 const END = '(?![0-9A-Za-z])';
+/**
+ * The digits of a commit id, in either case: git reads `023F19E` as it reads `023f19e`, so a
+ * request that writes the id in capitals names the same commit (AO-0325). The functions here
+ * return it in lower case, as git prints it.
+ */
+const HEX = '[0-9A-Fa-f]{7,40}';
 
 /** A name without the underscores of `_name_` or `__name__`; they are part of a name only unpaired. */
 function plain(name: string): string {
@@ -42,11 +48,8 @@ export interface ReviewSources {
  * (AO-0325).
  */
 export function reviewSources(text: string): ReviewSources {
-  const both = new RegExp(
-    `${START}([0-9a-f]{7,40})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`,
-    'm',
-  ).exec(text);
-  const named = both ? { commit: both[1], branch: plain(both[2]!) } : undefined;
+  const both = new RegExp(`${START}(${HEX})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`, 'm').exec(text);
+  const named = both ? { commit: both[1]!.toLowerCase(), branch: plain(both[2]!) } : undefined;
   const loose: string[] = [];
   for (const m of text.matchAll(new RegExp(`\\bbranch\\s+${NAME}`, 'gm'))) {
     const name = plain(m[1]!);
@@ -64,8 +67,8 @@ const CLOSES = /^[`*_]/;
 const LIST = /^[`*_]{0,3}(?:\s*,\s*(?:and\s+)?|\s+and\s+)[`*_]{0,3}$/;
 
 /**
- * The words of a review request that look like commit ids, each once, in order: 7 to 40 hex
- * digits. In plain prose such a word counts only with a digit and a letter among them, which
+ * The words of a review request that look like commit ids, each once, in order and in lower
+ * case: 7 to 40 hex digits, written in either case. In plain prose such a word counts only with a digit and a letter among them, which
  * leaves out numbers, dates and words (`20261114`, `defaced`). A commit id can be all digits or
  * all letters too, so any such word counts where the text says it is one: after `commit`, `sha`,
  * `hash` or `rev` (and the others of a list that starts so), or in code font or bold (AO-0325).
@@ -73,7 +76,7 @@ const LIST = /^[`*_]{0,3}(?:\s*,\s*(?:and\s+)?|\s+and\s+)[`*_]{0,3}$/;
  */
 export function reviewCommits(text: string): string[] {
   const out: string[] = [];
-  const word = new RegExp(`${START}[0-9a-f]{7,40}${END}`, 'g');
+  const word = new RegExp(`${START}${HEX}${END}`, 'g');
   /** Where the last commit of a labeled list ended. */
   let listEnd = -1;
   for (const m of text.matchAll(word)) {
@@ -82,8 +85,9 @@ export function reviewCommits(text: string): string[] {
     const labeled = LABEL.test(before) || (listEnd >= 0 && LIST.test(text.slice(listEnd, m.index)));
     if (labeled) listEnd = end;
     const marked = OPENS.test(before) && CLOSES.test(text.slice(end));
-    const mixed = /[0-9]/.test(m[0]) && /[a-f]/.test(m[0]);
-    if ((labeled || marked || mixed) && !out.includes(m[0])) out.push(m[0]);
+    const sha = m[0].toLowerCase();
+    const mixed = /[0-9]/.test(sha) && /[a-f]/.test(sha);
+    if ((labeled || marked || mixed) && !out.includes(sha)) out.push(sha);
   }
   return out;
 }

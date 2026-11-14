@@ -5,4 +5,5 @@
   earlier or loose mention is already in the base and the approved review mentions a commit the
   base lacks, swarmupd now records no merge and files a finding linked from the task; the task and
   its dependants keep waiting. A commit id of digits only or letters only counts when it follows
-  `commit`, `sha`, `hash` or `rev`, or is in code font or bold.
+  `commit`, `sha`, `hash` or `rev`, or is in code font or bold. A commit id in capitals
+  (`023F19E`) counts in both places.

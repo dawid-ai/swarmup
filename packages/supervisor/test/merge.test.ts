@@ -578,6 +578,26 @@ describe('merging approved work', () => {
       'deadbee',
     ]);
     expect(reviewCommits('run_1234567_x, x_7654321, recommit 1111111, 20261114')).toEqual([]);
+    // Capitals name the same commit: git reads `CC3D803` as `cc3d803`. Both come back in lower case.
+    expect(reviewSources('T-0001: `CC3D803` on branch `codex/ao-0290-final`.').named).toEqual({
+      commit: 'cc3d803',
+      branch: 'codex/ao-0290-final',
+    });
+    expect(reviewSources('Cc3D803 on branch X').named).toEqual({ commit: 'cc3d803', branch: 'X' });
+    expect(reviewCommits('commit ABCDEFA, then 0456DEF, `1234567` and **DEADBEE**')).toEqual([
+      'abcdefa',
+      '0456def',
+      '1234567',
+      'deadbee',
+    ]);
+    expect(reviewCommits('CC3D803 replaces cc3d803 and Cc3d803')).toEqual(['cc3d803']);
+    expect(reviewCommits('DEFACED and FEEDBAC stay words; SHA: FEEDBAC')).toEqual(['feedbac']);
+    expect(
+      pickMergeSource(['`CC3D803` on branch `codex/ao-0290-final`', older290], {
+        branch: (b) => b === 'codex/ao-0290-rebased',
+        commit: () => false,
+      }),
+    ).toEqual({ commit: 'cc3d803', branch: 'codex/ao-0290-final' });
     // An earlier review whose branch is gone counts by its commit.
     expect(pickMergeSource([prose148, 'ca2b7d9b on branch deleted-one'], has)).toEqual({
       commit: 'ca2b7d9b',
@@ -2723,6 +2743,55 @@ describe('merging approved work', () => {
     expect(s.as('human:dawid').view('2').unblocked).toBe(true);
   });
 
+  it('takes the commit the approved review names in capitals, not the branch of an earlier review (AO-0325)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const commit = s.branch('two\n');
+    git(s.repo, 'branch', 'stale', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', 'T-0001: 0123abc on branch stale is rebased.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+    eng.start('1', 'plan');
+    eng.review(
+      '1',
+      `T-0001: ${commit.slice(0, 7).toUpperCase()} on branch feature is rebased onto current \`main\`.`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+  });
+
+  it('merges nothing when the commit the approved review names in capitals is not in the repo (AO-0325)', async () => {
+    const s = mergeSetup({ userMerge: true });
+    git(s.repo, 'branch', 'stale', 'main');
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    eng.review('1', 'T-0001: 0123abc on branch stale is rebased.', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'changes', 'the branch is empty');
+    eng.start('1', 'plan');
+    eng.review(
+      '1',
+      'T-0001: ABCDEFA on branch final is rebased; import the bundle.',
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('swarmupd cannot merge abcdefa on branch final');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
+    expect(s.as('human:dawid').view('2')).toMatchObject({ status: 'blocked', unblocked: false });
+  });
+
   it('merges nothing when the commit the approved review names in underscore bold is not in the repo (AO-0325)', async () => {
     const s = mergeSetup({ userMerge: true });
     git(s.repo, 'branch', 'stale', 'main');
@@ -2779,6 +2848,9 @@ describe('merging approved work', () => {
     ['all letters after a label', 'the work is commit abcdefa in the bundle', 'abcdefa'],
     ['all digits in code font', 'the work is `1234567`, in the bundle', '1234567'],
     ['all letters in bold', 'the work is **abcdefa**, in the bundle', 'abcdefa'],
+    ['capital letters after a label', 'the work is commit ABCDEFA in the bundle', 'abcdefa'],
+    ['capitals and digits in prose', 'the work is 0456DEF, in the bundle', '0456def'],
+    ['capital letters in code font', 'the work is `ABCDEFA`, in the bundle', 'abcdefa'],
   ])(
     'files a finding when a fallback source is in the base and the approved review names an unmerged commit of %s (AO-0325)',
     async (_form, says, sha) => {

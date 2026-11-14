@@ -940,7 +940,8 @@ swarmupd:
   task and the tasks blocked on it keep waiting for the merge. A word counts as a commit there
   when it is 7 to 40 hex digits and has both a digit and a letter, or when the text says it is a
   commit: it follows `commit`, `sha`, `hash` or `rev`, or it is in code font or bold. That covers
-  a commit id of digits only or letters only (`commit 1234567`).
+  a commit id of digits only or letters only (`commit 1234567`). Capitals count as well
+  (`commit ABCDEFA`, `023F19E on branch x`): git reads them as the same commit.
 - **Uncommitted changes in the task's worktree.** Before it merges, swarmupd looks at the worktree
   that has the review's branch checked out and at the task's own (`out/wt-<ID>`). The repo's own
   checkout counts when it has the review's branch checked out (a run without a task worktree
