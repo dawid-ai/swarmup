@@ -23,6 +23,10 @@ describe('initRoot', () => {
     expect(ids).toContain('codex:backend');
     const backend = readAgents(withAgents).find((a) => a.id === 'codex:backend')!;
     expect(backend.can_claim).toEqual(['task', 'bug']);
+    const pm = readAgents(withAgents).find((a) => a.id === 'claude:pm')!;
+    const qa = readAgents(withAgents).find((a) => a.id === 'claude:qa')!;
+    expect(pm.can_claim).toEqual(['question', 'milestone']);
+    expect(qa.can_claim).toEqual(['task', 'bug', 'milestone']);
     expect(readFileSync(join(withAgents, 'people', 'owner.md'), 'utf8')).toContain('human:owner');
   });
 });

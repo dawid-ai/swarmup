@@ -3,7 +3,7 @@ id: claude:qa
 name: QA
 description: Reproduces bugs, writes and runs tests, checks acceptance criteria before review
 status: proposed
-can_claim: [task, bug]
+can_claim: [task, bug, milestone]
 projects: ['*']
 model: default
 budget_min: 45

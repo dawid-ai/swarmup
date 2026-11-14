@@ -142,4 +142,13 @@ describe('the PM role template', () => {
     );
     expect(text).toContain('names in neither `supersedes`\n  nor `narrows`');
   });
+
+  it('states how to plan a milestone', () => {
+    expect(text).toContain('can_claim: [question, milestone]');
+    expect(text).toContain('A milestone is the exception: claim and start it only to research');
+    expect(text).toContain('swarmup plan propose <ID> --file <plan.yml>');
+    expect(text).toContain('Do not duplicate an open task in a milestone plan');
+    expect(text).toContain('Keep each plan item to one run (at most one day)');
+    expect(text).toContain('swarmup plan amend <ID> --kind change --file <full-plan.yml>');
+  });
 });

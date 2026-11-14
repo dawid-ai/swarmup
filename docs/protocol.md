@@ -212,6 +212,111 @@ done_when:
 
 The milestone design (AO-0110) uses the same field for a milestone's check.
 
+## Milestones and plans
+
+A task of type `milestone` is a goal that is broken into an approved set of child tasks. It has
+exactly one `done_when` line: the final check that closes the goal. `new --type milestone` and
+`retype ... milestone` refuse zero or several lines. A role sees a milestone in `swarmup next`
+only when its role file lists `milestone` in `can_claim`; the PM plans it and a QA role checks it
+after its children close.
+
+The planner claims and starts the milestone, reads its goal, the repository and the open tasks,
+then writes a YAML plan. A plan has optional `notes` and an `items` list:
+
+```yaml
+notes: The open AO-0042 task already covers packaging, so this plan leaves that item out.
+items:
+  - key: build
+    title: Build the signed package
+    owner: '*:engineer'
+    estimate: 1d
+    done_when: The build job uploads a package and its signature check passes.
+    review: codex:qa
+  - key: smoke
+    title: Run the clean-machine smoke check
+    owner: '*:qa'
+    after: [build]
+    estimate: 2h
+    done_when: The documented smoke check passes with evidence attached.
+```
+
+Each item needs a lowercase, never-reused `key`, a `title`, an `owner` and an `estimate` (`30m`,
+`2h`, `1d`, where a day is 8 hours). `after` names keys whose tasks must close first.
+`done_when` defaults to the title. `type` may be `task` (the default), `bug` or `docs`; plans do
+not nest milestones. `priority` defaults to the milestone's priority. `review` is one concrete
+actor and must be on another provider than a concrete agent owner. `body` supplies more task
+detail. An item in a `subtask` amendment also needs `for`, naming the approved item it serves;
+`for` is optional for a `fix` amendment and is not allowed in a proposal. A plan holds at most
+25 items.
+
+### Plan commands
+
+| Command                                                         | Effect                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swarmup plan propose ID --file PLAN.yml [MESSAGE]`             | The milestone's holder stores the first full plan and sends it to the human for approval. There must be no approved or pending plan.                                                                                                                     |
+| `swarmup plan show ID`                                          | Shows the effective items, their tasks, states, owners, dependencies, estimates and time spent; it also shows a pending proposal, failed checks and incomplete application. `--yaml` prints the effective YAML to revise and `--json` prints the report. |
+| `swarmup plan approve ID [--file EDITED.yml] [MESSAGE]`         | A human approves the pending plan, optionally after editing it, and applies it. On the first approval it creates the child tasks and gives the milestone to `*:qa`. A later approval replaces the effective item set.                                    |
+| `swarmup plan reject ID "NOTE"`                                 | A human rejects the pending proposal and returns the first proposal to its planner. A rejected change proposal leaves the milestone blocked on its effective plan.                                                                                       |
+| `swarmup plan amend ID --kind subtask --file ADD.yml [MESSAGE]` | The planner or a human adds new items immediately, without another approval. They must serve approved items, and all subtasks since the last approval may add at most 25% of the approved estimate.                                                      |
+| `swarmup plan amend ID --kind fix --file FIXES.yml [MESSAGE]`   | The QA checker holding the milestone records a failed check and immediately adds fix items. Two failed-check rounds may add fixes; the next failure must use `swarmup ask`.                                                                              |
+| `swarmup plan amend ID --kind change --file FULL.yml [MESSAGE]` | The planner or a human proposes a complete revised plan. Removing, reordering or reassigning items needs this kind and a later human approval.                                                                                                           |
+| `swarmup plan apply ID`                                         | Anyone finishes task creation or item changes left incomplete by a crash. It writes nothing when the plan is already applied; swarmupd also runs it automatically.                                                                                       |
+
+The planner of the approved plan may write `subtask` and `change` amendments without owning the
+milestone. Those writes, and approval of a change, wait while the QA checker holds a live claim.
+Only the checker holding the milestone may write a `fix` amendment. A human may use `--force` to
+perform another actor's plan action; the event records that override.
+
+### Plan events and application
+
+Four append-only events on the milestone hold its plan:
+
+| Event          | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `plan`         | A full initial proposal, or a full `change` proposal with the effective plan event it is based on. |
+| `plan-approve` | The complete human-approved item set and the `plan` event it approves.                             |
+| `plan-amend`   | The new items of an immediately applied `subtask` or `fix` amendment.                              |
+| `plan-reject`  | The pending `plan` event a human rejected and the reason.                                          |
+
+The latest approval plus later `plan-amend` events is the effective plan. A change proposal must
+still be based on that plan when it is approved; otherwise the planner starts again from
+`swarmup plan show ID --yaml`.
+
+Approval and immediate amendments create one child per new key. Its immutable `task.md` carries
+`parent`, `plan_item: <milestone>#<key>`, the planned owner, dependencies, reviewer and
+`done_when`. A changed existing task receives one event marked
+`plan_apply: <plan-approve event>#<key>`. A task that closed before a change reached it gets a
+`plan_skip` marker on the milestone instead. Missing tasks or markers keep the plan incomplete;
+affected tasks cannot be claimed until `swarmup plan apply` finishes it.
+
+### Rules for plan tasks
+
+An approved plan continues to govern its open items between plan changes:
+
+- `claim`, `handoff`, `assign` and `delegate` refuse an owner outside the planned owner or role.
+  An agent on the provider of the planned reviewer cannot take the task. Owner changes preserve
+  both the planned dependencies and extra `block --on` waits, and wait for an open question to be
+  answered first.
+- `delegate --review` and `review --to` must name the planned reviewer when they name one. The
+  normal human routes still win: `review --human`, human-review task types or labels, and an
+  unchanged commit already sent back by a reviewer go to the human.
+- When an item has a reviewer, its owner cannot close it with `done`; the reviewer named by the
+  review event closes it with `done` or `verdict approve`. An item without a reviewer closes as
+  an ordinary task.
+- `block --on` adds dependencies without replacing planned ones. `unblock` cannot bypass an open
+  planned dependency. `park` of an effective item is refused because dropping it needs a
+  `change` amendment.
+- Reopening an effective item restores its planned owner and dependencies. Reopening an item a
+  later plan removed is refused; a new plan key is required.
+
+The milestone stays blocked while a plan key has no task, any child is open, a changed item is
+not applied, or a done child still waits for swarmupd's merge or no-merge event. When all of that
+settles it becomes `todo(unblocked)` for a QA role. The checker runs the milestone's one
+`done_when` check and records evidence. A pass uses `swarmup done ID "check passed: ..."`. A
+failure uses a `fix` amendment with one task per gap. After two fix rounds, another failure uses
+`swarmup ask ID` with the earlier evidence and the options to change `done_when`, add work or park
+the milestone.
+
 ## Decisions
 
 The decision log holds what a person decided, so an agent can check its plan against it. It has

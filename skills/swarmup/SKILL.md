@@ -76,6 +76,77 @@ Finish with exactly one of these, then run `swarmup next` again:
 | Waiting on another task    | `swarmup block ID "why" --on OTHER`                                 | `blocked`; frees itself when OTHER closes                     |
 | Out of time or wrong agent | `swarmup checkpoint ...`, then `swarmup release ID "why"`           | back to the queue                                             |
 
+## Milestones and plans
+
+A `milestone` is a goal with exactly one `done when:` line. The PM proposes one approved plan of
+child tasks; after every child closes and its merge settles, a QA role runs that line as the final
+check. `swarmup next` returns a milestone only to a role whose `can_claim` includes `milestone`.
+
+When you plan a milestone, claim and start it first. Read its goal, the repository and the open
+tasks. Do not duplicate overlapping work: name the open task and overlap in `notes`, and leave that
+item out. Keep each item to one run (at most one day) and give it a checkable `done_when`:
+
+```yaml
+notes: AO-0042 already covers packaging, so it is not another item.
+items:
+  - key: build
+    title: Build the signed package
+    owner: '*:engineer'
+    estimate: 1d
+    done_when: The build job uploads a package and its signature check passes.
+    review: codex:qa
+  - key: smoke
+    title: Run the clean-machine smoke check
+    owner: '*:qa'
+    after: [build]
+    estimate: 2h
+    done_when: The documented smoke check passes with evidence attached.
+```
+
+Every item needs a lowercase, never-reused `key`, `title`, `owner` and `estimate` (`30m`, `2h`,
+`1d`; a day is 8 hours). `after` names item keys it waits for. Optional fields are `done_when`
+(defaults to the title), `type` (`task`, `bug` or `docs`), `priority`, one concrete `review` actor,
+and `body`. Plans hold at most 25 items and do not nest milestones.
+
+Use the plan commands as follows:
+
+```bash
+swarmup plan propose ID --file plan.yml       # holder sends the first full plan to the human
+swarmup plan show ID                          # table, states, estimates, failed checks
+swarmup plan show ID --yaml                   # effective YAML to revise
+swarmup plan approve ID                       # human approves the pending plan
+swarmup plan approve ID --file edited.yml     # human edits and approves in one command
+swarmup plan reject ID "what to change"       # human returns the pending plan
+swarmup plan amend ID --kind subtask --file add.yml
+swarmup plan amend ID --kind fix --file fixes.yml
+swarmup plan amend ID --kind change --file full.yml
+swarmup plan apply ID                         # finish an application interrupted by a crash
+```
+
+- `subtask` adds items immediately for the planner or a human. Each item needs `for`, naming an
+  approved item it serves; all subtasks since the last approval may add at most 25% of that
+  approval's estimate.
+- `fix` adds items immediately for the QA checker holding the milestone after a failed final
+  check. Two failed-check rounds may add fixes. On the next failure, add none: `swarmup ask ID`
+  with the evidence and the options to change `done_when`, add work or park.
+- `change` is a complete revised plan for the planner or a human. Use it whenever a discovery or
+  contradiction changes approved scope, order or owners. It waits for human approval.
+- `apply` is safe for anyone and writes nothing when the recorded approval is already applied.
+  swarmupd also runs it when it finds an incomplete application.
+
+An approved plan governs its tasks. Handoffs, assignments and delegations stay within the planned
+owner or role, preserve planned and extra waits, and cannot move a task with an open question.
+The planned reviewer fixes the provider that may do the work; `delegate --review` and
+`review --to` must agree with it. Human review routes still win. A plan task with a reviewer closes only
+through the reviewer named by its review event. `block --on` adds to planned dependencies;
+`unblock` cannot skip them, and dropping an item with `park` needs a `change` amendment. Reopening
+an effective item restores its planned owner and waits; an item removed from the plan needs a new
+key instead.
+
+The final QA check starts only after every plan task is closed and every merge or no-merge event is
+present. Record the command and result. Pass with `swarmup done ID "check passed: <evidence>"`;
+fail with a `fix` amendment as above.
+
 ## Writing event text
 
 Event text is Markdown: the app renders it, and `swarmup show` keeps its lines. Anything longer than a
