@@ -5,7 +5,9 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { initRoot, Workspace } from '@swarmup/core';
 import { opsdConfig, Supervisor } from '../src/index.js';
-import { addedSkip, patternRegExp, testChangesNote } from '../src/test-changes.js';
+import type { Git } from '../src/diff.js';
+import { gitIn } from '../src/diff.js';
+import { addedSkip, patternRegExp, readTestChanges, testChangesNote } from '../src/test-changes.js';
 import { until, WAIT_MS } from './until.js';
 
 const dirs: string[] = [];
@@ -251,6 +253,76 @@ describe('changes to tests and check configuration, for the reviewer (AO-0291)',
       const off = setup({ test_changes: { test: false } });
       const gone = off.branch((wt) => rmSync(join(wt, 'test/code.test.ts')));
       expect(await off.reviewPrompt(gone)).not.toContain('changes tests or check configuration');
+    },
+    WAIT_MS * 3,
+  );
+
+  /** A plain repo: `main` with one commit, and `feature` with 230 new test files. */
+  function manyNewTests(): { range: { base: string; from: string; to: string }; read: Git } {
+    const repo = temp();
+    git(repo, 'init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'code.ts'), 'export const one = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'start');
+    const from = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    mkdirSync(join(repo, 'test'));
+    for (let n = 0; n < 230; n++) {
+      // Only the last file, past the first chunks, comes skipped.
+      const call = n === 229 ? 'it.skip' : 'it';
+      writeFileSync(join(repo, 'test', `f${n}.test.ts`), `${call}('is ${n}', () => {});\n`);
+    }
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'Add tests');
+    const to = git(repo, 'rev-parse', 'HEAD');
+    return { range: { base: 'main', from, to }, read: gitIn(repo, { ...process.env, ...ID }) };
+  }
+
+  it(
+    'finds a skipped new test among more files than one git call reads',
+    async () => {
+      const { range, read } = manyNewTests();
+      const changes = await readTestChanges(read, range);
+      expect(changes.items).toEqual([
+        {
+          path: 'test/f229.test.ts',
+          kind: 'test',
+          status: 'added',
+          added: 1,
+          deleted: 0,
+          skip: "it.skip('is 229', () => {});",
+        },
+      ]);
+    },
+    WAIT_MS * 3,
+  );
+
+  it(
+    'reads the files of a failed chunk one by one, and lists a new test it cannot read',
+    async () => {
+      const { range, read } = manyNewTests();
+      // Git fails for every call that names more than one file, and for `f7` alone.
+      const failing: Git = (args, max) => {
+        const paths = args.slice(args.indexOf('--') + 1);
+        const patch = args.includes('-U0');
+        if (patch && (paths.length > 1 || paths[0]!.endsWith('/f7.test.ts'))) {
+          return Promise.reject(new Error('maxBuffer length exceeded'));
+        }
+        return read(args, max);
+      };
+      const changes = await readTestChanges(failing, range);
+      expect(changes.items.map((i) => i.path).sort()).toEqual([
+        'test/f229.test.ts',
+        'test/f7.test.ts',
+      ]);
+      const unread = changes.items.find((i) => i.path === 'test/f7.test.ts')!;
+      expect(unread.unread).toBe(true);
+      expect(unread.skip).toBeUndefined();
+      expect(changes.items.find((i) => i.path === 'test/f229.test.ts')!.skip).toContain('it.skip');
+      const note = testChangesNote(changes);
+      expect(note).toContain(
+        '- new test: `test/f7.test.ts`, not read for lines that skip or narrow tests: read it yourself',
+      );
     },
     WAIT_MS * 3,
   );

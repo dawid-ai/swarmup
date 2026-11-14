@@ -178,7 +178,9 @@ nothing out. The review prompt then lists:
 
 - **Test files** that the work changes, deletes or moves, and each one where it adds a line that
   skips or narrows tests, such as `it.skip(`, `describe.only(`, `xit(`, `@pytest.mark.skip` or
-  `t.Skip(`. A new test file is listed only when it adds such a line.
+  `t.Skip(`. A new test file is listed only when it adds such a line. swarmupd reads the added
+  lines of every such file, however many the work has; a file whose lines git cannot give (for
+  example, a diff over 16 MB) is listed as not read, so that the reviewer reads it.
 - **Check configuration** that the work adds, changes or deletes: test, lint, format and type
   check configuration, CI files and git hooks. A `package.json` is listed only when its `scripts`
   differ.
@@ -211,6 +213,8 @@ swarmupd:
   `.pre-commit-config.yaml` (`DEFAULT_TEST_PATTERNS` and `DEFAULT_CHECK_PATTERNS` in
   `packages/supervisor/src/test-changes.ts`).
 - A list you set replaces the defaults; `[]` lists no file of that kind.
+- swarmupd reads the setting when it starts and when a change in **Settings** reloads the
+  config. After you edit `swarmupd.test_changes` in `config.yml` by hand, restart swarmupd.
 
 The list reaches a review run that swarmupd starts. A review that goes to a person has no
 prompt: the task's diff in the app shows the same files.

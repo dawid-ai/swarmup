@@ -27,6 +27,8 @@ export interface TestChange {
   deleted: number;
   /** The first line the work adds that skips or narrows tests, such as `it.skip('x', ...)`. */
   skip?: string;
+  /** Git could not give the lines the work adds here, so they were not read for such a line. */
+  unread?: true;
   /** A `package.json` whose `scripts` changed. */
   scripts?: true;
 }
@@ -91,8 +93,8 @@ const SKIP =
 
 /** How many changes the prompt lists; it counts the rest. */
 const MAX_ITEMS = 40;
-/** Test files whose added lines are read for skips; a larger change is listed without them. */
-const MAX_SKIP_FILES = 200;
+/** Test files whose added lines one git call reads for skips; more files take more calls. */
+const SKIP_CHUNK_FILES = 50;
 const MAX_SKIP_OUTPUT = 16 * 1024 * 1024;
 const MAX_SKIP_CHARS = 80;
 
@@ -151,7 +153,8 @@ function scriptsOf(text: string | null): string | null {
  * Reads the changes to tests and check configuration between two commits. Read-only.
  *
  * - Test files (`cfg.tests`): changed, deleted, renamed, or with an added line that skips or
- *   narrows tests. New test files are not listed, unless they add such a line.
+ *   narrows tests. New test files are not listed, unless they add such a line, or git could not
+ *   give their lines (`unread`): a skip is never dropped for the size of the change.
  * - Check configuration (`cfg.checks`): every change; a `package.json` only when its `scripts`
  *   differ, or when either side is not JSON.
  */
@@ -204,10 +207,14 @@ export async function readTestChanges(
     kept.push(item);
   }
 
+  // Every test file with added lines is read, in chunks that keep the command line and the output
+  // small. Where a chunk fails (too much output, a pathspec git refuses), its files are read one
+  // by one; a file that still cannot be read is marked `unread` and listed.
   const read = kept.filter((i) => i.kind === 'test' && i.status !== 'deleted' && i.added > 0);
-  if (read.length > 0 && read.length <= MAX_SKIP_FILES) {
+  const scan = async (part: TestChange[]): Promise<boolean> => {
+    let text: string;
     try {
-      const text = await git(
+      text = await git(
         [
           'diff',
           ...DIFF_ARGS,
@@ -217,21 +224,36 @@ export async function readTestChanges(
           from,
           to,
           '--',
-          ...read.map((i) => `:(literal)${i.path}`),
+          ...part.map((i) => `:(literal)${i.path}`),
         ],
         MAX_SKIP_OUTPUT,
       );
-      const patches = splitPatch(text);
-      for (const item of read) {
-        const skip = addedSkip(patches.get(item.path) ?? '');
-        if (skip) item.skip = skip;
-      }
     } catch {
-      // Too much output, or a pathspec git refused: the files are listed without skips.
+      return false;
+    }
+    const patches = splitPatch(text);
+    for (const item of part) {
+      const patch = patches.get(item.path);
+      if (patch === undefined) {
+        item.unread = true;
+        continue;
+      }
+      const skip = addedSkip(patch);
+      if (skip) item.skip = skip;
+    }
+    return true;
+  };
+  for (let at = 0; at < read.length; at += SKIP_CHUNK_FILES) {
+    const part = read.slice(at, at + SKIP_CHUNK_FILES);
+    if (await scan(part)) continue;
+    for (const item of part) {
+      if (part.length === 1 || !(await scan([item]))) item.unread = true;
     }
   }
-  // A new test file takes nothing away from the checks, unless it comes skipped.
-  const flagged = kept.filter((i) => !(i.kind === 'test' && i.status === 'added' && !i.skip));
+  // A new test file takes nothing away from the checks, unless it comes skipped, or unread.
+  const flagged = kept.filter(
+    (i) => !(i.kind === 'test' && i.status === 'added' && !i.skip && !i.unread),
+  );
   return { ...range, items: flagged };
 }
 
@@ -250,6 +272,7 @@ function describe(i: TestChange): string {
   else text = `changed ${what}: \`${i.path}\`${size}`;
   if (i.scripts) text += ', its `scripts` differ';
   if (i.skip) text += `, adds a line that skips or narrows tests: \`${i.skip.replace(/`/g, "'")}\``;
+  if (i.unread) text += ', not read for lines that skip or narrow tests: read it yourself';
   return text;
 }
 
@@ -260,7 +283,7 @@ function describe(i: TestChange): string {
 export function testChangesNote(c: TestChanges): string {
   if (c.items.length === 0) return '';
   const rank = (i: TestChange): number =>
-    i.status === 'deleted' ? 0 : i.skip ? 1 : i.kind === 'check' ? 2 : 3;
+    i.status === 'deleted' ? 0 : i.skip || i.unread ? 1 : i.kind === 'check' ? 2 : 3;
   const sorted = c.items
     .map((item, at) => ({ item, at }))
     .sort((a, b) => rank(a.item) - rank(b.item) || a.at - b.at)
