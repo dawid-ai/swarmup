@@ -3,6 +3,28 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.4 (2026-11-14)
+
+- **New task picks the project.** **New task** has a project dropdown: type to filter, or choose
+  **Add project** without losing what you wrote. It opens with the project the Board or the list
+  is filtered to. The task is now created in that project, so its own agents and code checkout
+  handle it.
+- **Less disk per task.** Each task worktree now takes about 30 MB of its own instead of several
+  hundred, and swarmupd removes the worktrees of closed tasks again. **Settings > Cleanup**
+  turns that on or off, sets how long it waits, and lists the worktrees it kept and why.
+- **See the changes.** **View changes** in the task panel shows the diff a review names, side by
+  side or unified, with syntax colors.
+- **A decision log.** Answers, verdicts and comments have a **Decision** toggle that records the
+  decision. **Decisions > Log** lists the decisions in force, agents see them in their prompts,
+  and the PM asks you when a new answer contradicts one.
+- **Better reviews.** Reviewers run the tests of the work they review, and a Codex reviewer gets
+  the check results first. After 3 rounds of changes on one task, swarmupd hands the task to the PM
+  instead of starting another round.
+- **Fixes.** Merges no longer leave out work a run could not commit, or merge an earlier commit
+  than the approved one. On Windows, tasks no longer fail with `EPERM` after a Codex session, a
+  crashed git process no longer blocks sync, and the dead Start menu shortcut of the earlier build
+  is removed. **Replay** can show one project.
+
 ## v0.3.0-beta.3 (2026-11-13)
 
 - **Add project from the app.** **Add project**, in the sidebar's new **Projects** list and under

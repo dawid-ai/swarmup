@@ -1,1 +1,0 @@
-- On Windows, a timed-out Git command no longer reports a process left running when the processes that `taskkill` names end a moment after it exits.

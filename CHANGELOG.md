@@ -6,6 +6,182 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.4 (2026-11-14)
+
+### Added
+
+- **Settings** has a **Cleanup** section: a switch for removing the worktrees of closed tasks (on
+  by default), the grace period in minutes, and how many days a run's scratch folder stays. A
+  change applies from the next cleanup sweep. The section also lists the closed tasks' worktrees
+  that the last sweep left in place, each with the reason, such as uncommitted changes.
+- The PM checks asks, plans and new decisions against the decision log. Before it answers an
+  ask, it compares the answer with the decisions in force for the task and forwards a conflict
+  to the person as `contradiction with D-NNNN (date): <line>` with `keep` and `change` options
+  and a recommendation. swarmupd starts one PM run at most once per `plan_check_minutes`
+  (default 30; `0` turns it off) with the new `swarmup start` plans and checkpoint `--next`
+  steps and the decisions in force for their tasks. A decision a person records shows in the
+  PM's inbox as a `record` item, so a conflict the record does not name gets a comment to that
+  person. The starter roles gain a PM role file, `claude-pm.md`.
+- A decision log: `swarmup decision "one line"` records a decision a person made, for a project
+  or for one task tree, and `swarmup decisions --log` lists the decisions in force, also for one
+  task (`--task ID`). `--supersedes` and `--narrows` replace an earlier decision without editing
+  it. Decided votes are in the log too, and a redecision with `--force` now adds an outcome file
+  instead of rewriting one. Decisions mirror to the Master Repo.
+- Mark a decision as you write it: `--decision "one line"` on `swarmup answer`, `verdict`,
+  `comment`, `retype` and `park` records the line in the decision log with that event as its
+  source, for the task and the tasks below it (`--scope project` widens it; `--supersedes` and
+  `--narrows` replace an earlier decision). `swarmup show` prints the mark under the event, and
+  `swarmup doctor` reports a recorded decision whose source event does not exist.
+- A run sees the decisions in force for its task: the prompt of a work run, a review run and a
+  schedule with a task lists them, newest first and 30 at most, and `swarmup start`, `swarmup show`,
+  `swarmup verdict` and `swarmup answer` print the same list. A learn note of the `decisions` topic
+  that a record names as its source is left out of the prompt's learn notes for the tasks the
+  record covers, and `swarmup kb --read` names that record. `swarmup learn decisions` points at
+  `swarmup decision`.
+- Desktop: mark a decision in the app. The answer, verdict, comment, triage, park and
+  **Request changes** forms have a **Decision** toggle with a one-line field, prefilled from
+  the first sentence of the message, and a **Project-wide** checkbox; a line over 200 characters
+  is refused. **Decisions** has a **Log** tab that lists what `swarmup decisions --log` lists,
+  with **Include superseded** and a **Supersede** button that records a replacement. On an ask
+  that names a contradiction (`contradiction with D-0007`), **Accept change** makes the answer
+  supersede that decision, or narrow it with **Only this task tree**.
+- A task can say when it is done: `swarmup new --done-when "CHECK"` (repeatable) stores a list of
+  checks in the task's `done_when` field, and `swarmup show` prints it. Run and review prompts
+  point at the list.
+- `swarmup review` prints a note when a request on a task with `done_when` names no command or no
+  result. The request is still sent.
+- The check that closes a milestone (step 3 of the milestone design). When every task of a
+  milestone's plan is closed and merged, swarmupd starts a `qa` run on it with a check prompt: run
+  the `done_when` line, record the evidence, then `swarmup done <milestone> "check passed: ..."`.
+  A failed check adds one fix task per gap with `swarmup plan amend <milestone> --kind fix`, which
+  blocks the milestone until the fixes close and merge. After two failed checks the next one adds
+  none: `--kind fix` is refused, and the run asks with a plain `swarmup ask`, which reaches the PM.
+  An approved plan change or a reopen starts a new count.
+- `swarmup plan show` lists the failed checks, with the fix keys and the checker's note of each,
+  and the parked items by key.
+- `swarmup done` on a milestone is refused while a plan task is open or waits for its merge. A
+  person passes, and anyone else with `--force`, recorded.
+- Core reads milestones and their plans (step 1 of the milestone design; no `swarmup plan` command
+  yet). A task of type `milestone` needs exactly one `--done-when` line. The fold reads `plan`,
+  `plan-approve`, `plan-amend` and `plan-reject` events into the effective plan, and a milestone
+  with an approved plan stays `blocked` until every plan item has a task, every child is done or
+  parked, and no done child still waits for its merge.
+- `swarmup review` without `--to` and swarmupd read a reviewer from `review` in `task.md` after a
+  delegation's reviewer; `--human` and the type or label route still come first.
+- `swarmup plan propose | show | approve | reject | amend | apply` (step 2 of the milestone
+  design). The holder of a milestone proposes its plan from a YAML file; one
+  `swarmup plan approve` by a person creates a task per item with `parent`, `blocked_by`,
+  `labels: [milestone:<id>]`, `plan_item`, `review` and `done_when`. `amend --kind subtask` and
+  `--kind fix` add items at once, subtasks up to 25 % of the approved estimate;
+  `amend --kind change` proposes the full revised plan, and its approval parks, blocks, unblocks
+  or hands off the tasks it changes, one event per item. `swarmup plan apply` finishes an
+  application that a crash left incomplete, and swarmupd runs it on its own.
+- A task created from a plan keeps what the plan fixed: `handoff`, `assign` and `delegate` need an
+  owner the plan allows and carry the task's waits; `park`, an early `unblock`, a `review --to`
+  or `delegate --review` that differs from the plan's reviewer, and `done` by anyone but the
+  reviewer its review named are refused. A person passes, and anyone else with `--force`,
+  recorded. `reopen` brings a plan task back under the plan's owner and dependencies, and refuses
+  an item the plan removed.
+- Under `coordinated` sync the plan events are pushed at once, like claims and handoffs.
+- swarmupd no longer routes a plan task to a role group when no agent answers to its owner: the
+  task waits for the role its plan names.
+- `swarmup report` adds four figures for the window: verdicts per author and reviewer pair with
+  the rounds an approval took, tokens and run minutes per merged task (median and top 5), why
+  runs stopped, and how long people took to answer asks and reviews. `--json` carries them as
+  `loops`.
+- swarmupd stops a review loop: after `review_rounds` `changes` verdicts on a task in a row
+  (default 3; `0` turns it off), it blocks the task for the PM with the text of those verdicts
+  instead of waking the author for another round.
+- A review run's prompt now lists the test files and the check configuration (test, lint and CI
+  configuration, package scripts) that the reviewed work changes, deletes or skips, and tells the
+  reviewer to check that the task needs each change. It flags only and blocks nothing. Set the
+  patterns per root with `swarmupd.test_changes.<root>`, or turn the list off with `false`.
+- The task panel shows the changes a review names: **View changes** opens the diff of those
+  commits from the local repo, with the list of files, a side-by-side or unified layout, and
+  syntax colors. After swarmupd merged the work, it shows what the base branch got. Read-only.
+
+### Changed
+
+- **New task** has a project dropdown in place of the free-text field: type to filter, pick with the
+  arrow keys and Enter, or choose **Add project** without losing the draft. It opens with the
+  project the Board or the list is filtered to, and the task is created in that project's store, so
+  that project's agents and code checkout handle it. `POST /api/tasks` takes `root` for this.
+- The engine repo installs with pnpm (`pnpm install`, one `pnpm-lock.yaml`) instead of npm. pnpm
+  hard-links packages from one store, so each task worktree's `node_modules` takes about 30 MB of
+  its own disk instead of about 260 MB.
+- After a merge changed a `pnpm-lock.yaml`, swarmupd runs `pnpm install --frozen-lockfile` in
+  that directory of the build checkout before the build. A configured `install` still wins.
+- Claude runs may use `pnpm` commands by default (`Bash(pnpm *)`).
+- A review run's prompt now lets the reviewer build the reviewed commit and run its tests and
+  checks in a worktree, and has it name the commands and their results in the verdict. The
+  reviewer reviews against the task text and its "Done when", and files style and matters outside
+  the task as findings instead of asking for changes. It still never edits, commits or pushes.
+
+### Fixed
+
+- A Codex reviewer no longer reviews without test results. Its sandbox cannot build, install or
+  test, so swarmupd now runs the root's merge `checks` on the reviewed commit before the review
+  run starts, in a worktree of its own, and puts each command's result and a failed command's
+  output in the run's prompt. `swarmup waits` shows the review as waiting for the checks;
+  `swarmupd.review_checks: false` turns it off.
+- A Codex run of a role that does not write can write its scratch folder, where `TEMP` points.
+- `swarmup sync --session-end` in a supervised run whose sandbox refuses git or has no network
+  says that swarmupd syncs the store when the run ends, and exits 0 instead of failing on
+  `.git/index.lock`.
+- swarmupd merges the commit the approved review names when the review writes it in code font or
+  bold (`` `abc1234` on branch `x` ``). Before, such a review named no commit, so swarmupd took the
+  branch of an earlier review; when that branch was empty, it recorded "already in main; nothing
+  to merge" and unblocked the tasks that waited for the work. When the work it takes from an
+  earlier or loose mention is already in the base and the approved review mentions a commit the
+  base lacks, swarmupd now records no merge and files a finding linked from the task; the task and
+  its dependants keep waiting. A commit id of digits only or letters only counts when it follows
+  `commit`, `sha`, `hash` or `rev`, or is in code font or bold. A commit id in capitals
+  (`023F19E`) counts in both places. A branch name in code font is read as written, underscores
+  included (`` `__wip__` ``). A code span that a longer word runs on from (`` `feature`-old ``,
+  `` `feature`_ ``) names no branch, so swarmupd does not take a branch `feature` for it.
+- swarmupd no longer merges an approved commit while the task's worktree holds uncommitted
+  changes: it commits what a run could not commit and merges that, or sends the task back to its
+  author with the list of files. A reviewer is told when a run asks for review with changes
+  swarmupd could not commit. While git cannot read the task's worktree or swarmupd cannot look at its folder, or when a file there
+  changes while swarmupd commits, or stays changed after that commit, nothing is merged. The
+  repo's own checkout is looked at too when it has the review's branch checked out. Only the run
+  that asked for the approved review counts for that commit: what an earlier run of the same
+  author left is not committed or merged for a later review. A `review` event now names the run
+  that asked (`run`), so a `run-end` that arrives late cannot stand in for another run's.
+- **Replay** can play one project of the sidebar alone. The **Project** picker now stands next to
+  the time range and lists every data root by its name, plus the project labels inside a root
+  that has more than one; before, it listed only the labels tasks carried, so a root such as
+  `swarmup-web` was missing. The choice limits every scene and the saved PNG and MP4 files, whose
+  names carry it. `GET /api/report` takes `root=R`, the Wrapped cards of `GET /api/timeline` follow
+  `root`, and `swarmup report` and `swarmup wrapped` with `--root` count only that root's runs.
+- A swarmupd started through a package script (`npm run swarmup`, `pnpm swarmup`) no longer hands
+  the script's `npm_*` variables, `INIT_CWD` and `PNPM_SCRIPT_SRC_DIR` to agent runs, merge and
+  review commands, and its own registry lookup. With pnpm's `npm_config_registry` in the
+  environment, npm in a project with its own registry in `.npmrc` asked the public registry instead.
+  An `npm_config_*` variable you set in your shell stays when no script starts swarmupd.
+- A task worktree that runs the tests no longer holds its own Electron binary (about 350 MB).
+  swarmupd keeps one unpacked copy per Electron version in its state folder (`electron/`) and
+  names it in `ELECTRON_OVERRIDE_DIST_PATH` for agent runs and for merge and review checks. The
+  copy comes from a checkout that already holds that version; when none does, the first run
+  downloads it as before and swarmupd moves it to the shared place after the run.
+- While a provider is signed out, swarmupd no longer tries to hand a plan task to an agent its
+  plan does not allow. Such a handoff is refused, so it logged a warning on every tick.
+- An update deletes the dead shortcut that a build under the app's earlier name left in the Start
+  menu or on the desktop, for this user and for all users. A shortcut that still works stays.
+- On Windows, swarmupd repairs what a Codex sandbox session leaves in a task store, so the next
+  session no longer fails with `EPERM` on a task, note or lock an earlier session made: it makes
+  each file and folder the sandbox user owns again under your account, and removes the stale
+  locks of a crashed session. It runs before the first Codex launch, every 10 minutes and after
+  each Codex run, and the next Codex run starts only once that repair is over;
+  `swarmupd.repair_stores: false` turns it off. Temp files older than an hour in the task store's
+  temp folder are named in the swarmupd log, and deleted only with
+  `swarmupd.remove_stale_temp: true`.
+- A git process that dies mid-write in a task store no longer blocks every later `swarmup sync`
+  with `Unable to create index.lock: File exists`. A sync, from the CLI or from swarmupd, removes
+  the store's `.git/index.lock` when it is at least 2 minutes old and no live git process started
+  before it was made, and says so in a note. A lock that a live git process may hold stays.
+- On Windows, a timed-out Git command no longer reports a process left running when the processes that `taskkill` names end a moment after it exits.
+
 ## 0.3.0-beta.3 (2026-11-13)
 
 ### Added
