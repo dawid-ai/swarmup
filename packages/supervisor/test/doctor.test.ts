@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { initRoot } from '@swarmup/core';
+import { initRoot, Workspace, writeOutcome } from '@swarmup/core';
 import type { Check } from '../src/index.js';
 import { bundledSkillFile, doctor, formatChecks } from '../src/index.js';
 
@@ -70,6 +70,35 @@ describe('swarmup doctor', () => {
     });
     checks = await doctor({ env, cwd: repo, home });
     expect(byId(checks, id)).toBeUndefined();
+  });
+
+  it('reports a vote with two outcomes that were not forced (AO-0109)', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'site', human: 'human:dawid' });
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    const env = envFor(config);
+    const ws = new Workspace({ cwd: repo, env, actor: 'human:dawid' });
+    const v = ws.propose({ question: 'Index?', options: ['JSON', 'SQLite'], deadline: '+1h' }).id;
+    ws.decide(v, 'JSON');
+    const id = `decision:site/${v}:outcomes`;
+    expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toBeUndefined();
+    // The outcome another machine wrote before the two synced.
+    writeOutcome(ws.roots[0]!, v, {
+      choice: 'SQLite',
+      decided_by: 'human:anna',
+      at: new Date().toISOString(),
+      body: '',
+    });
+    expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toMatchObject({
+      status: 'warn',
+      detail: expect.stringContaining('the newest stands: SQLite'),
+      fix: expect.stringContaining('--force'),
+    });
+    // A person confirms the result: the forced outcome ends the report.
+    new Workspace({ cwd: repo, env, actor: 'human:dawid', force: true }).decide(v, 'SQLite');
+    expect(byId(await doctor({ env, cwd: repo, home: temp() }), id)).toBeUndefined();
   });
 
   it('fails a config that does not parse', async () => {

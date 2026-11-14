@@ -34,16 +34,36 @@ import {
 import type { UserConfig } from './config.js';
 import { daemonSection, discoverRoots, readUserConfig } from './config.js';
 import { envVar } from './env.js';
-import type { Decision, DecisionMeta } from './decisions.js';
+import type {
+  ChatSourceMessage,
+  Decision,
+  DecisionMeta,
+  DecisionScope,
+  LogEntry,
+  ScopeOf,
+  ScopeTask,
+} from './decisions.js';
 import {
+  chatQuote,
+  chatSourceRefusal,
+  covers,
   createDecision,
+  DECISION_TEXT_MAX,
+  decisionConflicts,
+  decisionLog,
   defaultQuorum,
   hasDecision,
+  inForce,
   listDecisionIds,
   matchOption,
   mayVote,
   parseDecisionId,
   readDecision,
+  readDecisionFiles,
+  scopeRelation,
+  scopeText,
+  taskScope,
+  unforcedOutcomes,
   writeBallot,
   writeOutcome,
 } from './decisions.js';
@@ -109,7 +129,7 @@ import {
 import { Root } from './root.js';
 import { secretKind } from './secrets.js';
 import type { SyncResult } from './sync.js';
-import { mirrorPartners, syncAll } from './mirror.js';
+import { mirrorCopies, mirrorPartners, syncAll } from './mirror.js';
 import { parseDuration, parseTokens, parseWhen } from './units.js';
 
 export interface WorkspaceOptions {
@@ -172,6 +192,51 @@ export interface ProposeInput {
   deadline?: string;
   task?: string;
   body?: string;
+}
+
+/** `swarmup decision`: a decision a person made, written to the log (AO-0109). */
+export interface RecordInput {
+  /** The one line that prompts and checks use. */
+  text: string;
+  /** Optional context. */
+  body?: string;
+  project?: string;
+  task?: string;
+  /** `project` or `tree`. */
+  scope?: string;
+  supersedes?: string[];
+  narrows?: string[];
+  /** `ID#<event id>`, a file, or `chat:<message id>`. */
+  source?: string;
+  /** For a `chat:<id>` source: the message as the local swarmupd returned it. */
+  chat?: ChatSourceMessage;
+}
+
+export interface RecordResult {
+  root: string;
+  meta: DecisionMeta;
+  /** True when the same chat message with the same text was recorded before: nothing was written. */
+  existing: boolean;
+  warnings: string[];
+}
+
+/** What `swarmup decisions --log` lists. */
+export interface LogFilter {
+  /** Decisions that apply to this project: its own, the whole root's, and trees in it. */
+  project?: string;
+  /** Only what is in force for this task. */
+  task?: string;
+  /** Superseded decisions too. */
+  all?: boolean;
+}
+
+/** A decision `swarmup doctor` reports: a person looks at it. */
+export interface DecisionProblem {
+  root: string;
+  id: string;
+  /** `outcomes`: decided twice without `--force`. `conflict`: the mirror's two sides differ. */
+  kind: 'outcomes' | 'conflict';
+  detail: string;
 }
 
 export interface ActResult {
@@ -517,6 +582,9 @@ function sameDecision(answer: string, recommend: string): boolean {
       .toLowerCase();
   return norm(answer) === norm(recommend);
 }
+
+/** A decision's source that is a task event: `AO-0107#<event id>` or `root/AO-0107#<event id>`. */
+const EVENT_SOURCE = /^((?:[A-Za-z0-9._-]+\/)?[A-Za-z][A-Za-z0-9]*-\d+)#(\S+)$/;
 
 function assertNoSecret(...texts: (string | undefined)[]): void {
   for (const t of texts) {
@@ -2678,6 +2746,7 @@ export class Workspace {
       },
       input.body ?? '',
       this.user.id_block ?? 0,
+      mirrorCopies(root, this.roots, this.user),
     );
   }
 
@@ -2686,12 +2755,346 @@ export class Workspace {
     return readDecision(root, id, this.now());
   }
 
-  /** Decisions in every root; open ones unless `all`. */
+  /**
+   * Votes in every root; open ones unless `all`. Recorded decisions are not votes: they are in
+   * the log ({@link decisionLog}).
+   */
   decisions(opts: { all?: boolean } = {}): Decision[] {
     const nowMs = this.now();
     return this.roots
-      .flatMap((r) => listDecisionIds(r).map((id) => readDecision(r, id, nowMs)))
+      .flatMap((r) => listDecisionIds(r).map((id) => readDecisionFiles(r, id, nowMs)))
+      .filter((d) => d.meta.kind !== 'record')
       .filter((d) => opts.all || d.tally.state !== 'decided');
+  }
+
+  /**
+   * The decision log (AO-0109): recorded decisions and decided votes, newest first. With `task`,
+   * only what is in force for that task, from the root that holds it; else every root (or the
+   * selected one), without the superseded ones unless `all`.
+   */
+  decisionLog(filter: LogFilter = {}): LogEntry[] {
+    if (filter.task) {
+      const { root, id } = this.resolve(filter.task);
+      const { entries, tasks } = decisionLog(root, this.now());
+      return inForce(entries, taskScope(tasks, id));
+    }
+    const out: LogEntry[] = [];
+    for (const root of this.scopedRoots()) {
+      const project = filter.project?.trim() ? root.projectName(filter.project.trim()) : undefined;
+      for (const e of decisionLog(root, this.now()).entries) {
+        if (!filter.all && e.state === 'superseded') continue;
+        // A tree's project is the project of its top task: the tree may reach into others.
+        const applies =
+          project === undefined ||
+          (e.scope === 'project' ? e.project === undefined : false) ||
+          e.project === project;
+        if (applies) out.push(e);
+      }
+    }
+    return out.sort((a, b) => (a.at !== b.at ? (a.at < b.at ? 1 : -1) : 0));
+  }
+
+  /** The acting id, when it may record decisions at all: a person or the PM. Else exit 1. */
+  assertRecorder(): string {
+    const actor = this.requireActor();
+    if (!isHuman(actor) && !isPm(actor)) {
+      throw new OpsError(
+        `${actor} cannot record a decision: a person records one, or the PM with --source naming ` +
+          "what a person wrote. Put your own choices in your finishing command; tell the PM about a person's " +
+          'decision that is not in the log with `swarmup comment ID "..." --to <pm>`',
+      );
+    }
+    return actor;
+  }
+
+  /**
+   * Records a decision a person made (`swarmup decision`). A person records any decision. The PM
+   * records only what a person wrote: `source` names a task event by a person or a message a
+   * person wrote in the PM chat. Other agents cannot record: their technical choices go in
+   * finishing commands, so the log holds only what a person decided.
+   */
+  recordDecision(input: RecordInput): RecordResult {
+    const actor = this.assertRecorder();
+    const human = isHuman(actor);
+    const text = input.text.trim();
+    if (!text) throw new OpsError('a decision needs its one line', 2);
+    if (/[\r\n]/.test(text)) {
+      throw new OpsError('a decision is one line; put the context in -m or --body-file', 2);
+    }
+    if ([...text].length > DECISION_TEXT_MAX) {
+      throw new OpsError(
+        `a decision is one line of ${DECISION_TEXT_MAX} characters at most (this one has ${[...text].length}); ` +
+          'say the decision, and put the discussion in -m',
+        2,
+      );
+    }
+    assertNoSecret(text, input.body);
+    if (input.scope !== undefined && input.scope !== 'project' && input.scope !== 'tree') {
+      throw new OpsError(`bad --scope '${input.scope}': use project or tree`, 2);
+    }
+
+    // The source: a task event, a PM chat message, or a file.
+    let source = input.source?.trim() || undefined;
+    let event: { root: Root; task: string; ev: OpsEvent } | undefined;
+    let chat: ChatSourceMessage | undefined;
+    if (source && /^chat:/i.test(source)) {
+      const mid = source.slice(5).trim();
+      if (!mid) throw new OpsError('--source chat: needs a message id, as chat:<id>', 2);
+      if (!input.chat || input.chat.id !== mid) {
+        throw new OpsError(`no message ${mid} in the PM chat on this machine`, 2);
+      }
+      const why = chatSourceRefusal(input.chat);
+      if (why) throw new OpsError(`chat message ${mid} cannot be the source: ${why}`, 2);
+      if (Number.isNaN(Date.parse(input.chat.at))) {
+        throw new OpsError(`chat message ${mid} has no time`, 2);
+      }
+      assertNoSecret(input.chat.text);
+      chat = input.chat;
+      source = `chat:${mid}`;
+    } else if (source) {
+      const m = EVENT_SOURCE.exec(source);
+      if (m) {
+        const at = this.resolve(m[1]!);
+        const want = m[2]!.replace(/\.+$/, '').toUpperCase();
+        const found = at.root
+          .readEvents(at.id)
+          .filter((e) => e.id === want || (want.length >= 6 && e.id.startsWith(want)));
+        if (found.length !== 1) {
+          throw new OpsError(
+            found.length === 0
+              ? `${at.id} has no event ${m[2]}: see \`swarmup show ${at.id} --ids\``
+              : `${m[2]} matches ${found.length} events of ${at.id}: write the whole event id`,
+            2,
+          );
+        }
+        event = { root: at.root, task: at.id, ev: found[0]! };
+        source = `${at.id}#${found[0]!.id}`;
+      } else if (/[\r\n]/.test(source) || source.length > 300) {
+        throw new OpsError('--source is one line: ID#<event id>, a file, or chat:<message id>', 2);
+      }
+    }
+    if (!human) {
+      if (!event && !chat) {
+        throw new OpsError(
+          `${actor} records a decision only with --source naming what a person wrote: a task event ` +
+            '(ID#<event id>, from `swarmup show ID --ids`) or a PM chat message (chat:<message id>)',
+        );
+      }
+      if (event && !isHuman(event.ev.actor)) {
+        throw new OpsError(
+          `${source} was written by ${event.ev.actor}, not by a person: ${actor} records only what a person wrote`,
+        );
+      }
+    }
+
+    const named = input.task ? this.resolve(input.task) : undefined;
+    if (named && event && named.root !== event.root) {
+      throw new OpsError(`--task ${named.id} and --source ${source} are in different roots`, 2);
+    }
+    const root = named?.root ?? event?.root ?? this.defaultRoot();
+    const { entries, tasks } = decisionLog(root, this.now());
+
+    // One message can hold two decisions, so only the same message with the same text is a repeat.
+    if (chat) {
+      const same = entries.find(
+        (e) => e.kind === 'record' && e.source === source && e.text === text,
+      );
+      if (same) {
+        return {
+          root: root.name,
+          meta: readDecisionFiles(root, same.id, this.now()).meta,
+          existing: true,
+          warnings: [],
+        };
+      }
+    }
+
+    const target = (ref: string, flag: string): LogEntry => {
+      const slash = ref.indexOf('/');
+      if (slash > 0 && ref.slice(0, slash) !== root.name) {
+        throw new OpsError(
+          `${flag} ${ref}: a decision replaces decisions of its own root (${root.name})`,
+          2,
+        );
+      }
+      const id = parseDecisionId(slash > 0 ? ref.slice(slash + 1) : ref);
+      if (!id) throw new OpsError(`bad decision id '${ref}' in ${flag}: use D-0001`, 2);
+      const e = entries.find((x) => x.id === id);
+      if (e) return e;
+      throw new OpsError(
+        hasDecision(root, id)
+          ? `${flag} ${id}: it is a vote without an outcome, so it is not in the log`
+          : `${flag} ${id}: no decision ${id} in root '${root.name}'`,
+        2,
+      );
+    };
+    const supersedes = [...new Set(input.supersedes ?? [])].map((r) => target(r, '--supersedes'));
+    const narrows = [...new Set(input.narrows ?? [])].map((r) => target(r, '--narrows'));
+    const both = supersedes.find((s) => narrows.includes(s));
+    if (both) throw new OpsError(`${both.id} is in --supersedes and --narrows: pick one`, 2);
+
+    const scope = this.recordScope(root, tasks, {
+      scope: input.scope as DecisionScope | undefined,
+      project: input.project?.trim() ? root.projectName(input.project.trim()) : undefined,
+      task: named?.id ?? event?.task,
+      supersedes,
+    });
+    const warnings: string[] = [];
+    const mine = scopeText(scope);
+    for (const old of supersedes) {
+      const rel = scopeRelation(scope, old, tasks);
+      if (rel === 'inside') {
+        throw new OpsError(
+          `--supersedes ${old.id}: ${mine} is inside its scope (${scopeText(old)}), so this is an ` +
+            `exception to it, not a replacement: use --narrows ${old.id}`,
+          2,
+        );
+      }
+      if (rel === 'disjoint') {
+        throw new OpsError(
+          `--supersedes ${old.id}: ${mine} and its scope (${scopeText(old)}) can never share a task`,
+          2,
+        );
+      }
+      if (rel === 'overlap') {
+        const tree = [...tasks.keys()]
+          .map((id) => taskScope(tasks, id))
+          .filter((t) => covers(old, t));
+        if (!tree.some((t) => covers(scope, t))) {
+          warnings.push(
+            `no task under ${old.task} is in project ${scope.project} now, so ${old.id} stays in ` +
+              'force for all of them; it is replaced only for tasks of that project in the tree',
+          );
+        }
+      }
+    }
+    for (const old of narrows) {
+      const rel = scopeRelation(scope, old, tasks);
+      if (rel === 'inside') continue;
+      throw new OpsError(
+        rel === 'disjoint'
+          ? `--narrows ${old.id}: ${mine} and its scope (${scopeText(old)}) can never share a task`
+          : `--narrows ${old.id}: an exception needs a scope strictly inside ${scopeText(old)}, and ` +
+              `${mine} is not: use --supersedes ${old.id}, or a smaller scope (--scope tree --task ID)`,
+        2,
+      );
+    }
+
+    // A quoted source carries its author and time: the effective date is when the person said it.
+    const quoted = chat
+      ? { by: chat.from!, at: new Date(chat.at).toISOString() }
+      : event && !human
+        ? { by: event.ev.actor, at: event.ev.at }
+        : undefined;
+    const by = quoted?.by ?? actor;
+    const body = [chat ? chatQuote(chat) : '', input.body?.trim() ?? '']
+      .filter(Boolean)
+      .join('\n\n');
+    const meta = createDecision(
+      root,
+      {
+        kind: 'record',
+        question: text,
+        options: [],
+        scope: scope.scope,
+        project: scope.project,
+        task: scope.task,
+        source,
+        supersedes: supersedes.length > 0 ? supersedes.map((s) => s.id) : undefined,
+        narrows: narrows.length > 0 ? narrows.map((s) => s.id) : undefined,
+        recorded_by: by === actor ? undefined : actor,
+        created_by: by,
+        created_at: quoted?.at ?? new Date(this.now()).toISOString(),
+      },
+      body,
+      this.user.id_block ?? 0,
+      mirrorCopies(root, this.roots, this.user),
+    );
+    return { root: root.name, meta, existing: false, warnings };
+  }
+
+  /**
+   * The scope of a new record. Named parts win: `--scope`, then `--project` (a project scope),
+   * then the task (its tree). With `--supersedes` and neither `--scope` nor `--project`, the
+   * record takes the widest scope among the decisions it supersedes: a replacement covers what
+   * it replaces unless the person narrows it on purpose. Without any of these it covers the root.
+   */
+  private recordScope(
+    root: Root,
+    tasks: Map<string, ScopeTask>,
+    given: { scope?: DecisionScope; project?: string; task?: string; supersedes: LogEntry[] },
+  ): ScopeOf {
+    const { project, task } = given;
+    const ofTask = task ? tasks.get(task)?.project : undefined;
+    let scope = given.scope;
+    if (!scope && !project && given.supersedes.length > 0) {
+      const olds = given.supersedes;
+      const projects = olds.filter((o) => o.scope === 'project');
+      if (projects.some((o) => o.project === undefined)) return { scope: 'project', task };
+      const names = [...new Set(projects.map((o) => o.project!))];
+      if (names.length === 1) return { scope: 'project', project: names[0], task };
+      const widest = olds.find((o) =>
+        olds.every((x) => ['same', 'covers'].includes(scopeRelation(o, x, tasks))),
+      );
+      if (names.length > 1 || !widest) {
+        throw new OpsError(
+          `--supersedes names decisions with scopes that none of them covers ` +
+            `(${olds.map((o) => `${o.id}: ${scopeText(o)}`).join('; ')}): name the new scope with ` +
+            '--scope and --project or --task',
+          2,
+        );
+      }
+      return { scope: 'tree', project: widest.project, task: widest.task };
+    }
+    scope ??= project ? 'project' : task ? 'tree' : 'project';
+    if (scope === 'tree') {
+      if (!task) {
+        throw new OpsError(
+          '--scope tree needs --task ID, the top of the tree (or a --source that is a task event)',
+          2,
+        );
+      }
+      if (project && project !== ofTask) {
+        throw new OpsError(
+          `--scope tree covers ${task} and the tasks below it, whatever their project; ` +
+            `${task} is in project ${ofTask ?? root.projectName()}, not ${project}: drop --project, or use --scope project`,
+          2,
+        );
+      }
+      return { scope, project: ofTask, task };
+    }
+    return { scope, project: project ?? ofTask, task };
+  }
+
+  /** Decisions a person should look at; `swarmup doctor` reports them. */
+  decisionProblems(): DecisionProblem[] {
+    const out: DecisionProblem[] = [];
+    const nowMs = this.now();
+    for (const root of this.roots) {
+      for (const id of listDecisionIds(root)) {
+        const d = readDecisionFiles(root, id, nowMs);
+        if (!unforcedOutcomes(d)) continue;
+        const list = d.outcomes.map((o) => `${o.choice} by ${o.decided_by}`).join(', then ');
+        out.push({
+          root: root.name,
+          id,
+          kind: 'outcomes',
+          detail: `decided ${d.outcomes.length} times without --force (${list}); the newest stands: ${d.outcome!.choice}`,
+        });
+      }
+      for (const copy of mirrorCopies(root, this.roots, this.user)) {
+        for (const f of decisionConflicts(root, copy)) {
+          const [id, ...file] = f.split('/');
+          out.push({
+            root: root.name,
+            id: id!,
+            kind: 'conflict',
+            detail: `${file.join('/')} differs between the project root (${root.dir}) and its Master Repo copy (${copy.dir}); the mirror merges neither`,
+          });
+        }
+      }
+    }
+    return out;
   }
 
   /** Casts the actor's ballot. Ballots are final. */
@@ -2700,7 +3103,9 @@ export class Workspace {
     assertNoSecret(reason);
     const { root, id } = this.resolveDecision(ref);
     return root.lock(`decision-${id}`, () => {
-      const d = readDecision(root, id, this.now());
+      const d = readDecisionFiles(root, id, this.now());
+      if (d.meta.kind === 'record')
+        throw new OpsError(`${id} is a recorded decision, not a vote`, 2);
       if (d.outcome) throw new OpsError(`${id} is decided: ${d.outcome.choice}`);
       if (d.meta.deadline && Date.parse(d.meta.deadline) <= this.now()) {
         throw new OpsError(`voting on ${id} closed at ${d.meta.deadline}`);
@@ -2727,13 +3132,30 @@ export class Workspace {
   /**
    * Records the outcome. A human may decide at any time; anyone else only when the vote is ready
    * and the choice is the leading option. Ties and missing quorum go to the human.
+   *
+   * An outcome is a new file and is never edited: a human's redecision with `--force` adds one
+   * marked `forced`, and the newest outcome is the vote's result. `scope` stores the scope the
+   * decision log gives the vote (`project` or `tree`), in place of the one it derives from the
+   * vote's task.
    */
-  decide(ref: string, choice: string, reason = ''): Decision {
+  decide(ref: string, choice: string, reason = '', opts: { scope?: string } = {}): Decision {
     const actor = this.requireActor();
     assertNoSecret(reason);
+    if (opts.scope !== undefined && opts.scope !== 'project' && opts.scope !== 'tree') {
+      throw new OpsError(`bad --scope '${opts.scope}': use project or tree`, 2);
+    }
     const { root, id } = this.resolveDecision(ref);
     const d = root.lock(`decision-${id}`, () => {
-      const cur = readDecision(root, id, this.now());
+      const cur = readDecisionFiles(root, id, this.now());
+      if (cur.meta.kind === 'record') {
+        throw new OpsError(
+          `${id} is a recorded decision, not a vote: replace it with \`swarmup decision "..." --supersedes ${id}\``,
+          2,
+        );
+      }
+      if (opts.scope === 'tree' && !cur.meta.task) {
+        throw new OpsError(`${id} has no task to be the top of a tree: use --scope project`, 2);
+      }
       if (cur.outcome && !(this.force && isHuman(actor))) {
         throw new OpsError(`${id} is decided: ${cur.outcome.choice} (a human can use --force)`);
       }
@@ -2748,15 +3170,30 @@ export class Workspace {
           throw new OpsError(`the vote on ${id} chose '${t.leaders[0]}', not '${opt}'`);
         }
       }
-      writeOutcome(root, id, {
-        choice: opt,
-        decided_by: actor,
-        at: new Date(this.now()).toISOString(),
-        body: reason,
-      });
-      return readDecision(root, id, this.now());
+      // A project scope takes the project of the vote's task; without a task it is the root.
+      const task = cur.meta.task;
+      const project =
+        opts.scope === 'project' && task && root.hasTask(task)
+          ? root.readTask(task).meta.project
+          : undefined;
+      writeOutcome(
+        root,
+        id,
+        {
+          choice: opt,
+          decided_by: actor,
+          at: new Date(this.now()).toISOString(),
+          forced: cur.outcome ? true : undefined,
+          scope: opts.scope as DecisionScope | undefined,
+          project,
+          body: reason,
+        },
+        this.now(),
+      );
+      return readDecisionFiles(root, id, this.now());
     });
-    if (d.meta.task) {
+    // A vote can outlive its task; the outcome stands without a comment then.
+    if (d.meta.task && root.hasTask(d.meta.task)) {
       const why = reason ? `. ${reason}` : '';
       const text = `Decision ${id} (${d.meta.question}): ${d.outcome!.choice}${why}`;
       const to = d.meta.created_by === actor ? undefined : d.meta.created_by;

@@ -9,8 +9,10 @@ import type {
   AppliedPlan,
   ApplyOptions,
   BlockedSet,
+  ChatSourceMessage,
   Decision,
   InboxItem,
+  LogEntry,
   OpsEvent,
   Priority,
   ProjectPlan,
@@ -44,6 +46,7 @@ import {
   readDenyFile,
   readUserConfig,
   scanFiles,
+  scopeText,
   setRootMirror,
   setupUserConfig,
   STATUSES,
@@ -62,6 +65,7 @@ import type {
 } from '@swarmup/supervisor';
 import {
   buildReport,
+  chatMessage,
   daemonCall,
   doctor,
   formatChecks,
@@ -334,11 +338,88 @@ function runEnd(e: OpsEvent): string {
   return parts.filter(Boolean).join(', ');
 }
 
+/** A task event as a source, `AO-0107#<event id>`: the log names the task alone. */
+const EVENT_REF = /^((?:[A-Za-z0-9._-]+\/)?[A-Za-z][A-Za-z0-9]*-\d+)#[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** Where a decision's words are and who decided, as the log prints it in parentheses. */
+function logOrigin(e: LogEntry): string {
+  const who = e.recorded_by ? `${e.by}, recorded by ${e.recorded_by}` : e.by;
+  if (e.kind === 'vote') return `vote, ${who}`;
+  if (e.source?.startsWith('chat:')) return `PM chat, ${who}`;
+  const event = e.source ? EVENT_REF.exec(e.source) : null;
+  if (event) return `${event[1]}, ${who}`;
+  // A file an import read: the file says where the words are.
+  if (e.source) return e.source;
+  return e.scope === 'project' && e.task ? `${e.task}, ${who}` : who;
+}
+
+/** How a decision was replaced, and for which tasks it still holds. */
+function logNotes(e: LogEntry): string[] {
+  if (e.state === 'superseded') {
+    return [`superseded by ${[...new Set(e.replaced.map((r) => r.by))].join(', ')}`];
+  }
+  const notes = e.replaced.map((r) => `${r.how} ${r.where} by ${r.by}`);
+  const left = e.in_force_for ?? [];
+  if (left.length > 0) {
+    const more = left.length > 5 ? ` and ${left.length - 5} more` : '';
+    notes.push(`in force for ${left.slice(0, 5).join(', ')}${more}`);
+  }
+  return notes;
+}
+
+/**
+ * The decision log, one line per decision, newest first:
+ * `D-0042  2026-11-03  project v2      Subtasks need no approval   (AO-0107, human:dawid)`.
+ * With several roots each id carries its root, the form commands take.
+ */
+function printLog(ctx: Ctx, entries: LogEntry[], opts: { notes: boolean; roots: boolean }): void {
+  if (ctx.opts.json) return void ctx.io.out(JSON.stringify(entries, null, 2));
+  if (entries.length === 0) return void ctx.io.out('no decisions in force');
+  const id = (e: LogEntry): string => (opts.roots ? `${e.root}/${e.id}` : e.id);
+  const idWidth = Math.max(...entries.map((e) => id(e).length));
+  const scopeWidth = Math.max(...entries.map((e) => scopeText(e).length));
+  const textWidth = Math.min(60, Math.max(...entries.map((e) => e.text.length)));
+  for (const e of entries) {
+    const tail = [logOrigin(e), ...(opts.notes ? logNotes(e) : [])].join('; ');
+    ctx.io.out(
+      `${pad(id(e), idWidth)}  ${localTime(e.at).slice(0, 10)}  ${pad(scopeText(e), scopeWidth)}  ` +
+        `${pad(e.text, textWidth)}   (${tail})`,
+    );
+    if (!opts.notes) continue;
+    for (const r of e.revised ?? []) {
+      ctx.io.out(
+        `${' '.repeat(idWidth)}  ${localTime(r.at).slice(0, 10)}  revised: was '${r.choice}' (${r.by})`,
+      );
+    }
+  }
+}
+
+function printRecord(ctx: Ctx, d: Decision): void {
+  const o = ctx.io.out;
+  const m = d.meta;
+  o(`${m.id}  ${m.question}`);
+  o(`state:    ${d.tally.state}`);
+  o(
+    `scope:    ${scopeText({ scope: m.scope === 'tree' && m.task ? 'tree' : 'project', project: m.project, task: m.task })}`,
+  );
+  if (m.task) o(`task:     ${m.task}`);
+  if (m.source) o(`source:   ${m.source}`);
+  o(
+    m.recorded_by
+      ? `recorded by ${m.recorded_by} from ${m.created_by}, ${localTime(m.created_at)}`
+      : `recorded by ${m.created_by}, ${localTime(m.created_at)}`,
+  );
+  if (m.supersedes?.length) o(`supersedes: ${m.supersedes.join(', ')}`);
+  if (m.narrows?.length) o(`narrows:  ${m.narrows.join(', ')}`);
+  if (d.body) o(`\n${d.body}`);
+}
+
 function printDecision(ctx: Ctx, d: Decision, full: boolean): void {
   if (ctx.opts.json) {
     ctx.io.out(JSON.stringify(d, null, 2));
     return;
   }
+  if (d.meta.kind === 'record') return printRecord(ctx, d);
   const o = ctx.io.out;
   const t = d.tally;
   const state = d.outcome ? `decided: ${d.outcome.choice} by ${d.outcome.decided_by}` : t.state;
@@ -355,6 +436,10 @@ function printDecision(ctx: Ctx, d: Decision, full: boolean): void {
   if (d.ballots.length) o('');
   for (const b of d.ballots) o(`${pad(b.actor, 18)} ${b.choice}${b.body ? `: ${b.body}` : ''}`);
   if (d.outcome?.body) o(`\noutcome: ${d.outcome.body}`);
+  // A redecision adds an outcome; the earlier ones stay on file.
+  for (const e of d.outcomes.slice(0, -1).reverse()) {
+    o(`revised:  was '${e.choice}' by ${e.decided_by}, ${localTime(e.at)}`);
+  }
 }
 
 /** Names used by more than one root; those repeats print as `root/name`, the form commands take. */
@@ -1621,11 +1706,71 @@ const COMMANDS: Record<string, Command> = {
     summary: 'print a vote: question, options, ballots, state',
     run: (ctx) => printDecision(ctx, ctx.ws().decision(arg(ctx, 0, 'decision id')), true),
   },
-  decisions: {
-    usage: 'decisions [--all]',
-    summary: 'list open votes (with --all, decided ones too)',
-    options: { all: { type: 'boolean' } },
+  decision: {
+    usage:
+      'decision TEXT [--project P] [--task ID] [--scope project|tree] [--supersedes D-ID[,D-ID]] [--narrows D-ID] [--source REF] [-m CONTEXT]',
+    summary:
+      'record a decision a person made, in one line (a person; the PM only with --source ID#EVENT or chat:<message id>)',
+    options: {
+      project: { type: 'string' },
+      task: { type: 'string' },
+      scope: { type: 'string' },
+      supersedes: { type: 'string', multiple: true },
+      narrows: { type: 'string', multiple: true },
+      source: { type: 'string' },
+      ...MESSAGE_OPTIONS,
+    },
     run: (ctx) => {
+      const ws = ctx.ws();
+      // Who may record comes first: an agent that cannot gets that answer, whatever the source.
+      ws.assertRecorder();
+      const source = str(ctx.opts.source);
+      const record = (chat?: ChatSourceMessage): void => {
+        const res = ws.recordDecision({
+          text: ctx.args.join(' '),
+          body: bodyText(ctx),
+          project: str(ctx.opts.project),
+          task: str(ctx.opts.task),
+          scope: str(ctx.opts.scope),
+          supersedes: list(ctx.opts.supersedes),
+          narrows: list(ctx.opts.narrows),
+          source,
+          chat,
+        });
+        if (ctx.opts.json) ctx.io.out(JSON.stringify(res, null, 2));
+        else ctx.io.out(res.meta.id);
+        if (res.existing) ctx.io.err(`note: ${source} is already recorded with this text`);
+        printWarnings(ctx, res.warnings);
+      };
+      // The PM chat lives in the swarmupd of this machine: the message is read from there.
+      const chatId = source ? /^chat:(.*)$/i.exec(source.trim())?.[1]?.trim() : undefined;
+      if (!chatId) return record();
+      return chatMessage(ctx.io.env, chatId).then(record);
+    },
+  },
+  decisions: {
+    usage: 'decisions [--all] | decisions --log [--project P] [--task ID] [--all]',
+    summary:
+      'list open votes (with --all, decided ones too); --log lists the decisions in force: for a project, for one task, or with --all the superseded ones too',
+    options: {
+      all: { type: 'boolean' },
+      log: { type: 'boolean' },
+      project: { type: 'string' },
+      task: { type: 'string' },
+    },
+    run: (ctx) => {
+      const task = str(ctx.opts.task);
+      const project = str(ctx.opts.project);
+      if (!ctx.opts.log && (task || project)) usageError('--project and --task go with --log');
+      if (ctx.opts.log) {
+        const ws = ctx.ws();
+        const entries = ws.decisionLog({ task, project, all: Boolean(ctx.opts.all) });
+        // One task: only what is in force for it, without notes on where else a decision holds.
+        return printLog(ctx, entries, {
+          notes: !task,
+          roots: !task && !ws.scope && ws.roots.length > 1,
+        });
+      }
       const ds = ctx.ws().decisions({ all: Boolean(ctx.opts.all) });
       if (ctx.opts.json) return void ctx.io.out(JSON.stringify(ds, null, 2));
       if (ds.length === 0) ctx.io.out('no open votes');
@@ -1636,13 +1781,16 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   decide: {
-    usage: 'decide D-ID CHOICE [REASON]',
-    summary: 'record the outcome (the human any time; others only for the vote winner)',
-    options: MESSAGE_OPTIONS,
+    usage: 'decide D-ID CHOICE [REASON] [--scope project|tree]',
+    summary:
+      'record the outcome (the human any time; others only for the vote winner); --scope sets what the decision log applies it to',
+    options: { scope: { type: 'string' }, ...MESSAGE_OPTIONS },
     run: (ctx) => {
       const d = ctx
         .ws()
-        .decide(arg(ctx, 0, 'decision id'), arg(ctx, 1, 'choice'), message(ctx, 2, false));
+        .decide(arg(ctx, 0, 'decision id'), arg(ctx, 1, 'choice'), message(ctx, 2, false), {
+          scope: str(ctx.opts.scope),
+        });
       printDecision(ctx, d, false);
     },
   },

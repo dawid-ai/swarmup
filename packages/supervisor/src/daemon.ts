@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ChatSourceMessage } from '@swarmup/core';
 import {
   deleteEnvVars,
   envVar,
@@ -317,6 +318,40 @@ export async function daemonCall<T>(
   }
   const type = res.headers.get('content-type') ?? '';
   return (type.includes('json') ? JSON.parse(text) : text) as T;
+}
+
+/**
+ * The message `id` of the desktop PM chat, read from the swarmupd on this machine, for
+ * `swarmup decision --source chat:<id>` (AO-0109). The chat lives in swarmupd's state folder on
+ * one machine, so there is no other place to read it. Throws a usage error (exit 2) when
+ * swarmupd is not running or the chat holds no such message.
+ */
+export async function chatMessage(env: NodeJS.ProcessEnv, id: string): Promise<ChatSourceMessage> {
+  const info = readDaemon(env);
+  if (!info) {
+    throw new OpsError(
+      `swarmupd is not running, so chat message ${id} cannot be read: the PM chat lives in swarmupd ` +
+        'on this machine (start it with `swarmup daemon start`)',
+      2,
+    );
+  }
+  try {
+    return await daemonCall<ChatSourceMessage>(
+      info,
+      'GET',
+      `/api/chat/messages/${encodeURIComponent(id)}`,
+    );
+  } catch (err) {
+    if (err instanceof DaemonCallError && err.status === 404) {
+      throw new OpsError(
+        `no message ${id} in the PM chat on this machine: the chat keeps its newest messages only`,
+        2,
+      );
+    }
+    if (err instanceof DaemonCallError) throw err;
+    // swarmupd's PID is alive but it does not answer: for this command the same as stopped.
+    throw new OpsError(`${(err as Error).message}; chat message ${id} cannot be read`, 2);
+  }
 }
 
 /** A sync as the daemon log reports it. */

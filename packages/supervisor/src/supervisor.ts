@@ -6495,6 +6495,8 @@ export class Supervisor extends EventEmitter {
         parts.push(d, stamp(dir), stamp(join(dir, 'decision.md')), stamp(join(dir, 'outcome.md')));
         parts.push(stamp(ballots));
         for (const b of files(ballots)) parts.push(b, stamp(join(ballots, b)));
+        // An outcome is a new file in `outcomes`: a redecision adds one (AO-0109).
+        parts.push(stamp(join(dir, 'outcomes')));
       }
       // An event is a new file in the task's `events` folder, which changes the folder's stamp.
       for (const id of root.listTaskIds()) {

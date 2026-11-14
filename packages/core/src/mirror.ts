@@ -22,6 +22,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import YAML from 'yaml';
 import type { UserConfig } from './config.js';
 import { rootDirOf, samePath } from './config.js';
+import { decisionConflicts } from './decisions.js';
 import { parseDoc } from './frontmatter.js';
 import type { GitSteps } from './git-steps.js';
 import { gitOrNull, runSteps, runStepsAsync } from './git-steps.js';
@@ -423,8 +424,8 @@ function oneWay(p: Side, m: Side, rel: string): void {
 }
 
 /**
- * Keeps a project root and its copy in the Master Repo in step: tasks, channels, learn notes and
- * repeats both ways, config.yml and agents/ from the project only. Creates the copy on
+ * Keeps a project root and its copy in the Master Repo in step: tasks, channels, learn notes,
+ * decisions and repeats both ways, config.yml and agents/ from the project only. Creates the copy on
  * first use. Run between pull and push of both repos; commits come from their next sync.
  */
 export function mirrorPair(project: Root, master: Root, opts: { now?: number } = {}): MirrorResult {
@@ -540,6 +541,17 @@ function* mirrorFenced(
   unionDir(p, m, 'kb-reads');
   unionDir(p, m, 'kb-shown');
   unionDir(p, m, 'attachments');
+
+  // Decisions: `decision.md`, ballots and outcomes are written once and never edited, so the
+  // copy is a union of files, and a forced redecision is one more outcome file. A file both
+  // sides hold with different content is left alone on both and reported.
+  unionDir(p, m, 'decisions');
+  for (const f of decisionConflicts(project, copy)) {
+    notes.push(
+      `${project.name}/${f}: differs between the project root and the Master Repo; ` +
+        'not merged (see `swarmup doctor`)',
+    );
+  }
 
   const repeatBaseFile = join(project.opsDir, 'mirror-repeats.json');
   let repeatBase: Record<string, string> = {};
@@ -707,6 +719,24 @@ export function mirrorPartners(root: Root, roots: Root[], user: UserConfig): Roo
   if (root.config.mirror === true && !root.isMirror) return [root, master];
   if (root.isMirror && samePath(dirname(dirname(root.dir)), master.dir)) return [master];
   return [root];
+}
+
+/**
+ * The other copies of `root` on this machine, as roots: the Master Repo's copy of a mirrored
+ * project root, when it exists. A root and its copies are one id space for decisions. A loaded
+ * project root hides its copy from the workspace, so the copy is opened here by its folder.
+ */
+export function mirrorCopies(root: Root, roots: Root[], user: UserConfig): Root[] {
+  const partners = mirrorPartners(root, roots, user);
+  if (root.isMirror || partners.length < 2 || !MIRROR_NAME.test(root.name)) return [];
+  const dir = join(partners[1]!.dir, 'mirrors', root.name);
+  if (!existsSync(join(dir, 'config.yml'))) return [];
+  try {
+    const copy = new Root(dir);
+    return copy.name === root.name && copy.prefix === root.prefix ? [copy] : [];
+  } catch {
+    return [];
+  }
 }
 
 /**

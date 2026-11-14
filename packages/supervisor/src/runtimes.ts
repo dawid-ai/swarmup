@@ -459,6 +459,11 @@ function questionLines(task: string, q: QuestionPrompt): string[] {
 
 /** One message a chat turn answers: from the person in the app, or a channel post. */
 export interface ChatPromptMessage {
+  /**
+   * The message's id in the chat. A message a person wrote in the app carries it in the prompt,
+   * so the agent can name it as the source of a decision: `--source chat:<id>` (AO-0109).
+   */
+  id?: string;
   from: string;
   text: string;
   /** The channel of a post that mentions the agent, without `#`. */
@@ -507,6 +512,9 @@ export function chatPrompt(p: ChatPromptInput): string {
       `- Never give a verdict, decide a vote, or answer an ask that waits for ${p.human}; never`,
       '  claim, start or work a task yourself: hand work to agents with `swarmup new --to` or',
       '  `swarmup assign`.',
+      `- When ${p.human} states a decision here, record it in the same turn with`,
+      '  `swarmup decision "one line" --source chat:<message id>` (the id is on the message), and',
+      '  give the new D- id and the one line in your reply, so it can be corrected.',
       '- Do not edit files, build, commit or push.',
       '- Do not start background tasks, monitors or watchers; the turn ends when you stop.',
       '- Never kill a process; never print, store or export tokens or keys.',
@@ -525,7 +533,7 @@ export function chatPrompt(p: ChatPromptInput): string {
         `\`swarmup channel post ${m.channel} "..."\`, and sum up here what you answered:`,
       );
     } else {
-      lines.push(`${m.from} writes:`);
+      lines.push(m.id ? `${m.from} writes (message ${m.id}):` : `${m.from} writes:`);
     }
     lines.push('', m.text.trim());
   }

@@ -229,6 +229,14 @@ export class Chat {
   }
 
   /**
+   * One message of the conversation by its id, for `swarmup decision --source chat:<id>`
+   * (AO-0109). The chat keeps the newest messages only, so an old id finds nothing.
+   */
+  message(id: string): ChatMessage | undefined {
+    return this.read().messages.find((m) => m.id === id);
+  }
+
+  /**
    * The live turn, by its run id: with `max_live` above 1 the agent can have other live runs,
    * such as an inbox wake, beside the turn.
    */
@@ -413,6 +421,7 @@ export class Chat {
     const session = resume ? s.session! : randomUUID();
     const def = ws.agent(this.agent);
     const messages: ChatPromptMessage[] = queued.map((m) => ({
+      id: m.id,
       from: m.from ?? 'someone',
       text: m.text,
       channel: m.channel,

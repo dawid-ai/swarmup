@@ -290,6 +290,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     }
     if (area === 'chat') {
       if (method === 'GET' && !id) return send(res, 200, sup.chat.view());
+      // One message by id: the source of a recorded decision (`--source chat:<id>`, AO-0109).
+      if (method === 'GET' && id === 'messages' && action) {
+        const m = sup.chat.message(action);
+        if (!m) throw new HttpError(404, `no message ${action} in the PM chat`);
+        return send(res, 200, m);
+      }
       // The chat is the human's conversation with the orchestrator: a run may read it, not drive it.
       if (method === 'POST') humanOnly('the orchestrator chat');
       if (method === 'POST' && !id)

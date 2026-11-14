@@ -22,7 +22,7 @@ import { lstatSync, opendirSync, statSync } from 'node:fs';
 import type { Dir } from 'node:fs';
 import { join } from 'node:path';
 import { CHANNEL_RE, readMessage } from './channels.js';
-import { parseDecisionId, readDecision } from './decisions.js';
+import { parseDecisionId, readDecisionFiles } from './decisions.js';
 import { derive, fold } from './fold.js';
 import { parseTaskId } from './ids.js';
 import { readNote } from './kb.js';
@@ -691,13 +691,16 @@ function posts(roots: Root[], budget: SearchBudget): SearchPost[] {
   return out;
 }
 
-/** Calls `readDecision` makes besides one read per ballot. */
+/** Calls `readDecisionFiles` makes besides one read per ballot and outcome. */
 const VOTE_READ_CALLS = 8;
 
+/** A cached decision: a vote, or a marker for a recorded decision, which search does not list. */
+type CachedVote = SearchVote & { record?: true };
+
 /**
- * A vote, read again when `decision.md`, `outcome.md` or any ballot changes: a ballot is
- * rewritten under the same name when its voter votes again. A warm vote costs four calls plus
- * two per ballot.
+ * A vote, read again when `decision.md`, `outcome.md`, the outcome files or any ballot changes:
+ * a ballot is rewritten under the same name when its voter votes again. A warm vote costs six
+ * calls plus two per ballot and one per outcome file.
  */
 function votes(roots: Root[], nowMs: number, budget: SearchBudget): SearchVote[] {
   const out: SearchVote[] = [];
@@ -717,16 +720,25 @@ function votes(roots: Root[], nowMs: number, budget: SearchBudget): SearchVote[]
       const md = ballots.filter((b) => b.name.endsWith('.md'));
       if (!budget.take(md.length)) return false;
       const bs = md.map((b) => ({ name: b.name, ...stampOf(join(dir, 'ballots', b.name)) }));
-      const stamp = `${head.stamp}|${outcome.stamp}|${bs.map((b) => `${b.name}=${b.stamp}`).join(',')}`;
-      const hit = cache.peek<SearchVote>(key, stamp);
+      // Outcome files are written once under a new name, so their names are their stamp.
+      const outcomes = listAll(join(dir, 'outcomes'), budget);
+      if (!outcomes) return false;
+      const os = outcomes
+        .map((o) => o.name)
+        .sort()
+        .join(',');
+      const stamp = `${head.stamp}|${outcome.stamp}|${os}|${bs.map((b) => `${b.name}=${b.stamp}`).join(',')}`;
+      const hit = cache.peek<CachedVote>(key, stamp);
       if (hit) {
-        out.push(hit);
+        if (!hit.record) out.push(hit);
         return true;
       }
       const size = head.size + outcome.size + bs.reduce((n, b) => n + b.size, 0);
-      if (!budget.take(VOTE_READ_CALLS + 2 * md.length, size)) return false;
-      const d = readDecision(root, id, nowMs);
-      const value: SearchVote = {
+      if (!budget.take(VOTE_READ_CALLS + 2 * (md.length + outcomes.length), size)) return false;
+      const d = readDecisionFiles(root, id, nowMs);
+      const value: CachedVote = {
+        // A recorded decision is not a vote: it is cached so it is not read again, never listed.
+        ...(d.meta.kind === 'record' ? { record: true as const } : {}),
         root: d.root,
         meta: d.meta,
         body: d.body,
@@ -743,7 +755,7 @@ function votes(roots: Root[], nowMs: number, budget: SearchBudget): SearchVote[]
       };
       const changed = racy(head.mtime, outcome.mtime, ...bs.map((b) => b.mtime));
       cache.put(key, stamp, value, bytesOf(value), changed);
-      out.push(value);
+      if (!value.record) out.push(value);
       return true;
     };
     walk(prefix, [join(root.dir, 'decisions')], budget, vote, prefix);

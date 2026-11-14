@@ -290,6 +290,20 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
         });
       }
     }
+    // Decisions a person should look at (AO-0109): a vote decided twice without --force, and a
+    // decision file the two sides of a mirror hold with different content.
+    for (const p of ws.decisionProblems()) {
+      add({
+        id: `decision:${p.root}/${p.id}:${p.kind}`,
+        label: `Decision ${p.root}/${p.id}`,
+        status: 'warn',
+        detail: p.detail,
+        fix:
+          p.kind === 'outcomes'
+            ? `confirm the result with \`swarmup decide ${p.root}/${p.id} <choice> --force\``
+            : 'compare the two files and make them the same by hand; the next sync mirrors the rest',
+      });
+    }
     for (const p of ws.agentProblems()) {
       add({
         id: `agent-file:${p.file}`,

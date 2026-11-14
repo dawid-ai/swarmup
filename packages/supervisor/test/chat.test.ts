@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { initRoot, Workspace } from '@swarmup/core';
+import { initRoot, OpsError, Workspace } from '@swarmup/core';
 import type { ChatView, RunRecord } from '../src/index.js';
 import {
   CHAT_DENY,
   CHAT_TOOLS,
   CLI_TOOLS,
+  chatMessage,
   chatPrompt,
   invocation,
   opsdConfig,
@@ -288,7 +289,9 @@ describe('chat', () => {
     expect(as('human:dawid').view('1').meta.created_by).toBe('claude:orchestrator');
     expect(streamed.length).toBeGreaterThan(0);
     expect(sent()[0]).toContain('Chat rules');
-    expect(sent()[0]).toContain('human:dawid writes:');
+    // A person's message carries its id, so the agent can name it as a decision's source.
+    expect(sent()[0]).toContain(`human:dawid writes (message ${v.messages[0]!.id}):`);
+    expect(sent()[0]).toContain('--source chat:<message id>');
     // The chat runs in the data root's checkout: its turns get the store-checkout rule and deny
     // list too (AO-0135).
     expect(sent()[0]).toContain('holds the task store');
@@ -556,6 +559,76 @@ describe('chat runtime', () => {
       mentions: true,
       budget: undefined,
     });
+  });
+
+  it('gives a chat message to `swarmup decision --source chat:<id>` through swarmupd (AO-0109)', async () => {
+    const { sup, as, env } = setup();
+    as('human:dawid').post('general', 'What is the state? @claude:orchestrator');
+    sup.chat.tick();
+    const turn = sup.chat.send('The design still stands. Build it as planned.');
+    await ended(sup, turn.live!.id);
+    const all = sup.chat.view().messages;
+    const said = all.find((m) => m.role === 'user' && !m.channel)!;
+    const mention = all.find((m) => m.channel === 'general')!;
+    const reply = all.find((m) => m.role === 'assistant')!;
+
+    // swarmupd is not running: there is no other place to read the chat from.
+    const stopped = await chatMessage(env, said.id).catch((e: unknown) => e);
+    expect(stopped).toBeInstanceOf(OpsError);
+    expect(stopped).toMatchObject({ code: 2, message: expect.stringMatching(/not running/) });
+
+    const api = await startApi(sup, { port: 0, token: 'chat-token', version: 't', build: '1' });
+    // What a running swarmupd leaves in its state folder for `swarmup` to find it.
+    writeFileSync(
+      join(env.SWARMUP_STATE_DIR!, 'opsd.json'),
+      JSON.stringify({
+        pid: process.pid,
+        port: api.port,
+        token: 'chat-token',
+        started_at: new Date().toISOString(),
+        version: 't',
+      }),
+    );
+    try {
+      const pm = as('claude:pm');
+      const source = `chat:${said.id}`;
+      const res = pm.recordDecision({
+        text: 'The design is the plan to build',
+        source,
+        chat: await chatMessage(env, said.id),
+      });
+      // The record holds the words, the time and the author, and stands on its own.
+      expect(res.meta).toMatchObject({
+        source,
+        created_by: 'human:dawid',
+        created_at: said.at,
+        recorded_by: 'claude:pm',
+      });
+      const body = as('human:dawid').decision(res.meta.id).body;
+      expect(body).toContain(`> human:dawid, ${said.at}, in the PM chat:`);
+      expect(body).toContain('> The design still stands. Build it as planned.');
+
+      // A reply of the PM and a channel post that mentions it are not sources.
+      for (const [m, why] of [
+        [reply, /reply of the agent/],
+        [mention, /post in #general/],
+      ] as const) {
+        const call = async () =>
+          pm.recordDecision({
+            text: 'x',
+            source: `chat:${m.id}`,
+            chat: await chatMessage(env, m.id),
+          });
+        const err = await call().catch((e: unknown) => e);
+        expect(err).toMatchObject({ code: 2, message: expect.stringMatching(why) });
+      }
+      // An id the chat does not hold.
+      const unknown = await chatMessage(env, '01AAAAAAAAAAAAAAAAAAAAAAAA').catch((e: unknown) => e);
+      expect(unknown).toMatchObject({ code: 2, message: expect.stringMatching(/no message/) });
+      expect(as('human:dawid').decisionLog()).toHaveLength(1);
+    } finally {
+      await api.close();
+    }
   });
 
   it('writes a channel message as a request to answer there', () => {
