@@ -45,6 +45,8 @@ export interface RunRecord {
   /** A helper run (`swarmup spawn`): the run that started it. It works under that run's claim. */
   parent?: string;
   schedule?: string;
+  /** A plan check (AO-0109): a PM run that compares new plans with the decisions in force. */
+  plan_check?: boolean;
   /**
    * A run with no task on the standard prompt: it reads the agent's whole inbox (AO-0128).
    * Missing for runs with their own prompt, such as a schedule's or a helper's.

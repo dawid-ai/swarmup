@@ -31,6 +31,7 @@ import {
 import type { OpsEvent } from '@swarmup/core';
 import type { ProcLister, ProcTarget, RunRecord } from '../src/index.js';
 import {
+  chatPrompt,
   daemonCall,
   processStartSync,
   codexGitDirs,
@@ -624,6 +625,139 @@ describe('runs', () => {
     await sup.tick();
     expect(h.view(t.id).status).not.toBe('blocked');
     expect(sup.runs({ live: true })).toMatchObject([{ agent: 'fake:engineer' }]);
+  });
+
+  it('starts one PM plan check for new plans, with the decisions in force for their tasks (AO-0109)', async () => {
+    // Event ids come from the real clock, so the test clock runs with it, moved ahead by hand.
+    let ahead = 0;
+    const promptFile = join(temp(), 'prompt.txt');
+    const { repo, sup, as, state } = setup({
+      now: () => Date.now() + ahead,
+      env: { FAKE_PROMPT: promptFile },
+      // Only the PM wakes: the plans come from sessions of the engineer outside swarmupd.
+      opsd: { agents: { 'fake:pm': { wake: true } } },
+    });
+    roleFiles(repo, ['fake:pm', 'fake:engineer']);
+    const h = as('human:dawid');
+    const eng = as('fake:engineer');
+    const a = h.newTask({ title: 'Merge approved branches', project: 'p', owner: 'fake:engineer' });
+    const b = h.newTask({ title: 'Tidy the docs', project: 'q', owner: 'fake:engineer' });
+    const old = h.newTask({ title: 'Started earlier', project: 'p', owner: 'fake:engineer' });
+    const rule = h.recordDecision({ text: 'swarmupd never merges; Dawid merges', project: 'p' });
+    const d = rule.meta.id;
+    eng.start(old.id, 'a plan from before swarmupd looked');
+    const checks = (): RunRecord[] => sup.runs().filter((r) => r.plan_check);
+    const settle = async (): Promise<void> => {
+      for (const r of sup.runs({ live: true })) await ended(sup, r.id);
+    };
+
+    // The first tick only notes where the events stand: earlier plans are not checked. The new
+    // record wakes an inbox run of the PM, which is no plan check.
+    await sup.tick();
+    await settle();
+    expect(checks()).toEqual([]);
+    expect(sup.runs()).toMatchObject([{ agent: 'fake:pm', inbox: true }]);
+    const inboxPrompt = readFileSync(promptFile, 'utf8');
+    expect(inboxPrompt).toContain('A `record` item in your inbox');
+    // The PM's inbox run and its chat carry the ask check; other roles get neither.
+    expect(inboxPrompt).toContain('- Before you answer an ask, compare the answer you would give');
+    expect(inboxPrompt).toContain(
+      '`swarmup ask ID "contradiction with D-NNNN (YYYY-MM-DD): <the line of the decision>.',
+    );
+    expect(inboxPrompt).toContain('--recommend "keep: <why>"`');
+    expect(runPrompt({ agent: 'claude:engineer' })).not.toContain('Before you answer an ask');
+    const chat = (agent: string): string =>
+      chatPrompt({ agent, human: 'human:dawid', first: true, messages: [] });
+    expect(chat('claude:pm')).toContain('- Before you answer an ask, compare the answer');
+    expect(chat('claude:pm')).toContain('If it conflicts\n  with a decision in force');
+    expect(chat('claude:orchestrator')).not.toContain('Before you answer an ask');
+
+    // New plans: a start and a checkpoint `--next` on a task with a decision in force, a start
+    // on a task without one, and a person's own start.
+    const started = eng.start(a.id, 'merge approved branches\nautomatically').events.at(-1)!;
+    const next = eng.checkpoint(a.id, 'merge code done', 'push main after each merge').events[0]!;
+    eng.start(b.id, 'fix the typos');
+    eng.checkpoint(old.id, 'half done');
+    await sup.tick();
+    const first = checks();
+    expect(first).toMatchObject([{ agent: 'fake:pm' }]);
+    expect(first[0]!.task).toBeUndefined();
+    expect(first[0]!.inbox).toBeUndefined();
+    expect(sup.runs({ live: true }).map((r) => r.id)).toEqual([first[0]!.id]);
+    await settle();
+    const prompt = readFileSync(promptFile, 'utf8');
+    expect(prompt).toContain(
+      [
+        'Plan check: compare each new plan below with the decisions in force for its task. Do',
+        'nothing else in this run: handle no inbox item and start no task.',
+        '',
+        `${a.id} · Merge approved branches`,
+        `- Plan by fake:engineer (event ${started.id}): merge approved branches automatically`,
+        `- Next step by fake:engineer (event ${next.id}): push main after each merge`,
+        `Decisions in force for ${a.id} (follow them; newest first):`,
+        `- ${d} (`,
+      ].join('\n'),
+    );
+    expect(prompt).toContain('): swarmupd never merges; Dawid merges\n\nFor each plan:\n');
+    expect(prompt).toContain('contradiction with D-NNNN (YYYY-MM-DD): <the line of the decision>');
+    expect(prompt).toContain('--to human:<name>');
+    // No decision is in force for the other task, and the earlier plan stays unchecked.
+    expect(prompt).not.toContain(b.id);
+    expect(prompt).not.toContain('fix the typos');
+    expect(prompt).not.toContain('a plan from before swarmupd looked');
+    // The plan check carries the rules of a supervised run, and no inbox instructions.
+    expect(prompt).toContain('Rules for supervised runs:');
+    expect(prompt).not.toContain('Run `swarmup inbox`');
+
+    // Inside 30 minutes of the last check, a new plan starts none.
+    ahead += 10 * 60_000;
+    const later = eng.checkpoint(a.id, 'pushed once', 'delete merged branches').events[0]!;
+    await sup.tick();
+    ahead += 19 * 60_000;
+    await sup.tick();
+    expect(checks()).toHaveLength(1);
+    // After it, one run with only what is new since the last check.
+    ahead += 2 * 60_000;
+    await sup.tick();
+    expect(checks()).toHaveLength(2);
+    await settle();
+    const second = readFileSync(promptFile, 'utf8');
+    expect(second).toContain(
+      `- Next step by fake:engineer (event ${later.id}): delete merged branches`,
+    );
+    expect(second).not.toContain('push main after each merge');
+
+    // Nothing new: no run, however long ago the last check was.
+    ahead += 45 * 60_000;
+    await sup.tick();
+    // New plans on a task without a decision, or by a person, start none either.
+    const unread = eng.checkpoint(b.id, 'typos fixed', 'check the links').events[0]!;
+    h.comment(a.id, 'looks fine');
+    await sup.tick();
+    expect(checks()).toHaveLength(2);
+    // The events read are not read again.
+    const mark = JSON.parse(readFileSync(join(state, 'plan-check.json'), 'utf8')) as {
+      last: string;
+    };
+    expect(mark.last > unread.id).toBe(true);
+  });
+
+  it('starts no plan check with plan_check_minutes 0', async () => {
+    let now = Date.now();
+    const { repo, sup, as } = setup({
+      now: () => now,
+      opsd: { plan_check_minutes: 0, agents: { 'fake:pm': { wake: true } } },
+    });
+    roleFiles(repo, ['fake:pm', 'fake:engineer']);
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    as('fake:pm').inbox('fake:pm', { markRead: true });
+    await sup.tick();
+    now += 60_000;
+    h.recordDecision({ text: 'swarmupd never merges', source: 'notes.md' });
+    as('fake:engineer').start(t.id, 'merge automatically');
+    await sup.tick();
+    expect(sup.runs().filter((r) => r.plan_check)).toEqual([]);
   });
 
   it('kills a run over its time or token budget, and only its own tree', async () => {
