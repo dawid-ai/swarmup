@@ -878,8 +878,9 @@ swarmupd:
   checkout counts when it has the review's branch checked out (a run without a task worktree
   works there), unless that branch is the `base` of this root's merge; the `base` of another
   root does not count. When one has
-  uncommitted changes, the commit the review names lacks part of the work. If the last run of
-  the review's author ended with a `run-end` that says swarmupd could not commit what it left,
+  uncommitted changes, the commit the review names lacks part of the work. If the run that asked
+  for the approved review ended with a `run-end` that says swarmupd could not commit what it left
+  (an earlier run of the same author does not count for a later review),
   and the worktree is still on the commit to merge, swarmupd commits the changes on a branch of
   their own (`<runtime>/<task>-<run>-merge`), restores the worktree and merges that commit; the
   `merge` event says so. A merge that starts again after that commit (the PC slept, a check
