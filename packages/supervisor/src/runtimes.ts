@@ -355,6 +355,8 @@ export interface PromptInput {
   review?: boolean;
   /** `task` is a question to the agent: the run answers it instead of working it. */
   question?: QuestionPrompt;
+  /** `task` is a milestone whose plan tasks are closed: the run checks its `done_when`. */
+  check?: MilestoneCheckPrompt;
   /**
    * The run's folder is the checkout of a data root (AO-0135): its branch carries the task store,
    * so the run makes code branches in worktrees. `branch` is the store branch, when known.
@@ -679,6 +681,89 @@ function reviewLines(task: string): string[] {
   ];
 }
 
+/** What the check run of a milestone needs from its plan (AO-0110, "Closing"). */
+export interface MilestoneCheckPrompt {
+  /** The milestone's one `done_when` line: the check. */
+  doneWhen?: string;
+  /** The failed checks so far, oldest first: each filed fix tasks. */
+  failed: Array<{ event: string; actor: string; at: string; keys: string[]; note: string }>;
+  /** The failed checks that may add fix tasks; the one after them asks instead. */
+  fixRounds: number;
+  /** The plan items whose task is parked: dropped work the result names by key. */
+  parked: Array<{ key: string; task: string }>;
+}
+
+/**
+ * The task lines of a milestone check (AO-0110, "Closing"): the `qa` run checks `done_when` on
+ * the merged work and ends in one of three ways. A pass closes the milestone. A failed check
+ * files one fix task per gap, which blocks the milestone again and ends the run's claim. After
+ * `fixRounds` failed checks the next one files none and asks, because two rounds of fixes that
+ * do not pass mean the plan or the check is wrong. The ask has no `--to`: it reaches the PM,
+ * which forwards it to the person (AO-0173).
+ */
+function checkLines(task: string, c: MilestoneCheckPrompt): string[] {
+  const lines = [
+    '',
+    `Check the milestone ${task}: every task of its plan is closed and its work is merged. Run`,
+    `\`swarmup show ${task}\` and \`swarmup plan show ${task}\`, then \`swarmup start ${task}\` with a`,
+    'one-line plan.',
+    c.doneWhen
+      ? `- The check is the milestone's \`done when:\` line: "${c.doneWhen}". Run it against the code`
+      : "- The check is the milestone's `done when:` line. Run it against the code",
+    '  and the product as they are now. You check; you change no code.',
+    `- Record the evidence before you finish: \`swarmup checkpoint ${task} "..." --next "..."\` with`,
+    '  the commands you ran and their output, the files you read and screenshots (`swarmup attach`).',
+  ];
+  if (c.parked.length > 0) {
+    lines.push(
+      `- Parked plan items, whose work was dropped: ${c.parked.map((p) => `\`${p.key}\` (${p.task})`).join(', ')}.`,
+      '  Judge whether the check holds without them, and name each by key in your result.',
+    );
+  }
+  const n = c.failed.length;
+  if (n > 0) {
+    lines.push(`- Failed checks so far: ${n}. Each filed fix tasks, which are closed now:`);
+    for (const f of c.failed) {
+      const note = f.note.split('\n')[0]?.trim();
+      lines.push(
+        `  - ${task}#${f.event} (${f.at.slice(0, 10)}, ${f.actor}): fixes ${f.keys.map((k) => `\`${k}\``).join(', ')}${note ? `; ${note}` : ''}`,
+      );
+    }
+  }
+  lines.push(
+    'Finish with exactly one of these:',
+    `- The check passes: \`swarmup done ${task} "check passed: <evidence>"\`.`,
+  );
+  if (n < c.fixRounds) {
+    lines.push(
+      '- The check fails: add one fix task per gap, and nothing else, with the plan items on stdin:',
+      `  \`swarmup plan amend ${task} --kind fix --file - -m "check failed: <what failed, evidence>"\`.`,
+      '  Each item is `key` (new, lowercase, such as `fix-signing`), `title`, `owner` (such as',
+      '  `*:engineer`), `estimate` (`30m`, `2h`, `1d`), `done_when` (one line an agent can check),',
+      '  `body` (the gap and its evidence) and, when the gap traces to a plan item, `for: <its key>`:',
+      '    items:',
+      '      - key: fix-signing',
+      '        title: Sign the build in CI',
+      "        owner: '*:engineer'",
+      '        estimate: 2h',
+      '        done_when: The CI build passes the signature check',
+      '  The amendment blocks the milestone until the fix tasks close and merge, and it ends your',
+      '  claim: stop after it, with no other finishing command. swarmupd starts the next check.',
+    );
+  } else {
+    const nth = n === 2 ? 'third' : `${n + 1}th`;
+    lines.push(
+      `- The check fails: this is the ${nth} failed check, so add no fix tasks; \`swarmup plan amend`,
+      '  --kind fix` is refused now. Fixes that do not pass twice mean the plan or the check is wrong.',
+      `  Ask, without \`--to\`: \`swarmup ask ${task} "..." --recommend "<the option you would pick>"\`.`,
+      `  The question names ${task}, says what failed in each check (the ${n} earlier ones and this`,
+      '  one, with the evidence) and gives the options: change `done_when`, add work, or park the',
+      '  milestone. It reaches the PM, which forwards it to the person.',
+    );
+  }
+  return lines;
+}
+
 /** The first line of every message about a conflict with a decision (AO-0109). */
 const CONTRADICTION = 'contradiction with D-NNNN (YYYY-MM-DD): <the line of the decision>';
 
@@ -803,6 +888,8 @@ export function runPrompt(p: PromptInput): string {
     lines.push(...reviewLines(p.task));
   } else if (p.task && p.question) {
     lines.push(...questionLines(p.task, p.question));
+  } else if (p.task && p.check) {
+    lines.push(...checkLines(p.task, p.check));
   } else if (p.task) {
     lines.push(
       '',

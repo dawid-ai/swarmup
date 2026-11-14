@@ -101,6 +101,13 @@ export const MILESTONE_TYPE = 'milestone';
 /** The owner a milestone gets on its first approved plan: the role that checks `done_when`. */
 export const PLAN_CHECKER = '*:qa';
 
+/**
+ * The failed checks of a milestone that each add fix tasks (AO-0110, "Closing"). The check after
+ * them adds none: two rounds of fixes that do not pass mean the plan or the check is wrong, so
+ * the checker asks instead.
+ */
+export const PLAN_FIX_ROUNDS = 2;
+
 /** The most items one plan file holds; a bigger goal is several milestones. */
 export const PLAN_MAX_ITEMS = 25;
 
@@ -161,6 +168,12 @@ export interface PlanState {
   diff: string[];
   /** The keys of `diff` that a `plan_skip` comment on the milestone settles. */
   skipped: string[];
+  /**
+   * The failed checks so far: the `plan-amend` events of kind `fix` since the latest
+   * `plan-approve` or `reopen`, oldest first. A person's approval or a reopen starts a new count,
+   * because the plan the check ran against has changed or the person wants the check again.
+   */
+  failedChecks: string[];
 }
 
 /** Frontmatter of `tasks/<id>/events/<ulid>-<actor>.md`, plus the id from the file name. */

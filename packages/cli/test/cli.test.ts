@@ -1517,4 +1517,48 @@ describe('swarmup plan (AO-0110)', () => {
     expect(over.err).toMatch(/use --kind change/);
     expect(swarmup(d, 'claude:pm', 'plan', 'drop', '1').code).toBe(2);
   });
+
+  it('files fix tasks from a failed check, and shows the failed checks and parked items', () => {
+    const d = milestone();
+    swarmup(d, 'claude:pm', 'plan', 'propose', '1', '--file', 'plan.yml');
+    swarmup(d, 'human:dawid', 'plan', 'approve', '1');
+    swarmup(d, 'human:dawid', 'park', '2', 'dropped');
+    swarmup(d, 'human:dawid', 'park', '3', 'dropped');
+    const fix = (key: string): string[] => {
+      writeFileSync(
+        join(d, `${key}.yml`),
+        `items:\n  - key: ${key}\n    title: Fix ${key}\n    owner: '*:engineer'\n    estimate: 1h\n`,
+      );
+      return ['plan', 'amend', '1', '--kind', 'fix', '--file', `${key}.yml`];
+    };
+    // The check, twice: each failed one files a fix task, which the person then drops.
+    for (const [key, task] of [
+      ['fix-a', '4'],
+      ['fix-b', '5'],
+    ] as const) {
+      expect(swarmup(d, 'codex:qa', 'start', '1', 'run the check').code).toBe(0);
+      const failed = swarmup(d, 'codex:qa', ...fix(key), '-m', `check failed: ${key} is missing`);
+      expect(failed.code).toBe(0);
+      expect(failed.out.split('\n')).toEqual([
+        'T-0001 blocked (owner *:qa)',
+        `created T-000${task} for '${key}'`,
+      ]);
+      swarmup(d, 'human:dawid', 'park', task, 'dropped');
+    }
+    const shown = swarmup(d, 'human:dawid', 'plan', 'show', '1').out;
+    expect(shown).toMatch(
+      /^parked: apple \(T-0002\), ci \(T-0003\), fix-a \(T-0004\), fix-b \(T-0005\)$/m,
+    );
+    expect(shown).toMatch(
+      /^failed checks: 2 of the 2 that add fix tasks; the next failed check asks instead \(swarmup ask\)$/m,
+    );
+    expect(shown).toMatch(/^ {2}\S+ codex:qa: fixes fix-a; check failed: fix-a is missing$/m);
+
+    // The third failed check adds no fix tasks.
+    swarmup(d, 'codex:qa', 'start', '1', 'run the check');
+    const third = swarmup(d, 'codex:qa', ...fix('fix-c'));
+    expect(third.code).toBe(1);
+    expect(third.err).toMatch(/has failed 2 times.*ask with swarmup ask T-0001/);
+    expect(swarmup(d, 'human:dawid', 'list', '--all').out).not.toMatch(/T-0006/);
+  });
 });
