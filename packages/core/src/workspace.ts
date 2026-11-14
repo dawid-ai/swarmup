@@ -3986,8 +3986,8 @@ export class Workspace {
     if (!human && actor === pm) {
       const nowMs = this.now();
       for (const r of this.roots) {
-        // A mirror copy holds the same records as the project root.
-        if (r.isMirror) continue;
+        // A Master Repo copy counts too: it is loaded only when its project root is not, so no
+        // record shows twice.
         const marker = markers.get(r.name) ?? '';
         const since = Math.max(
           marker ? ulidTime(marker) : 0,
