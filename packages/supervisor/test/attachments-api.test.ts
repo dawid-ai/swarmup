@@ -38,6 +38,9 @@ async function setup() {
   const repo = temp();
   execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
   const rootDir = initRoot(repo, { name: 'test', human: 'human:dawid' });
+  const web = temp();
+  execFileSync('git', ['init', '-q'], { cwd: web, windowsHide: true });
+  const webRootDir = initRoot(web, { name: 'web', prefix: 'WEB', human: 'human:dawid' });
   const config = join(temp(), 'config.yml');
   writeFileSync(config, 'me: human:dawid\nopsd:\n  sync: false\n');
   const env = {
@@ -47,7 +50,12 @@ async function setup() {
   } as NodeJS.ProcessEnv;
   delete env.SWARMUP_AGENT;
   delete env.SWARMUP_ROOTS;
-  const sup = new Supervisor({ env, cwd: repo, freeMem: () => 64 * 2 ** 30 });
+  const sup = new Supervisor({
+    env,
+    cwd: repo,
+    user: { me: 'human:dawid', roots: [web] },
+    freeMem: () => 64 * 2 ** 30,
+  });
   sups.push(sup);
   const api = await startApi(sup, { port: 0, token: 'att-token', version: 't', build: '1' });
   const url = (path: string): string => `http://127.0.0.1:${api.port}${path}`;
@@ -62,7 +70,7 @@ async function setup() {
   };
   const get = (name: string, headers: Record<string, string> = auth) =>
     fetch(url(`/api/attachments/${name}`), { headers });
-  return { sup, rootDir, post, get };
+  return { sup, rootDir, webRootDir, post, get };
 }
 
 describe('attachments API', () => {
@@ -89,6 +97,18 @@ describe('attachments API', () => {
     const up = await post({ data: PNG.toString('base64'), task: t.id });
     expect(up.status).toBe(201);
     expect(up.data.root).toBe('test');
+  });
+
+  it('puts a taskless upload in the named root and refuses an unknown root', async () => {
+    const { post, webRootDir } = await setup();
+    const up = await post({ data: PNG.toString('base64'), root: 'web' });
+    expect(up.status).toBe(201);
+    expect(up.data.root).toBe('web');
+    expect(existsSync(join(webRootDir, 'attachments', up.data.name as string))).toBe(true);
+
+    const unknown = await post({ data: PNG.toString('base64'), root: 'shop' });
+    expect(unknown.status).toBe(400);
+    expect(unknown.data.error).toBe("no root named 'shop': use one of test, web");
   });
 
   it('refuses what is not an image, bad base64 and bodies over the cap', async () => {

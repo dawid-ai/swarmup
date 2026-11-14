@@ -10,7 +10,7 @@ import type {
   RoleInput,
 } from './agents.js';
 import type { Attachment } from './attachments.js';
-import { attachmentRefs, findAttachment, saveAttachment } from './attachments.js';
+import { attachmentRefs, copyAttachment, findAttachment, saveAttachment } from './attachments.js';
 import {
   canClaimType,
   checkRole,
@@ -1589,6 +1589,9 @@ export class Workspace {
     // project name is stored as the name it maps to.
     const given = input.project?.trim();
     const project = given ? root.projectName(given) : this.projectOfTask(input.parent);
+    // A New task draft may have uploaded its images before the user picked another project.
+    // Keep the relative links valid on a machine that loads only the task's final root.
+    this.copyAttachmentsTo(root, input.body ?? '');
     return root.createTask(
       {
         title,
@@ -3677,13 +3680,22 @@ export class Workspace {
 
   // ---- Attachments ---------------------------------------------------------------------------
 
+  /** Copies attachments mentioned in `text` into the root whose task will contain that text. */
+  private copyAttachmentsTo(root: Root, text: string): void {
+    for (const name of attachmentRefs(text)) {
+      if (findAttachment([root], name)) continue;
+      const source = findAttachment(this.roots, name);
+      if (source) copyAttachment(root, source);
+    }
+  }
+
   /**
    * Stores an image for text that refers to it: in the root of `task` when given (comments and
-   * answers), else in the default root, where new tasks and channel posts go.
+   * answers), else in `root` when given, else in the default root.
    */
-  attach(data: Uint8Array, opts: { task?: string; alt?: string } = {}): Attachment {
+  attach(data: Uint8Array, opts: { task?: string; root?: Root; alt?: string } = {}): Attachment {
     this.requireActor();
-    const root = opts.task ? this.resolve(opts.task).root : this.defaultRoot();
+    const root = opts.task ? this.resolve(opts.task).root : (opts.root ?? this.defaultRoot());
     return saveAttachment(root, data, { alt: opts.alt, now: this.now() });
   }
 

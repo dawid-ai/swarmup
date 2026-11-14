@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { OpsError } from './ids.js';
 import type { Root } from './root.js';
@@ -77,6 +77,19 @@ export function saveAttachment(
   const ext = sniffImage(data);
   if (!ext) throw new OpsError('not a PNG, JPEG, WebP or GIF image', 2);
   const name = `${ulid(opts.now)}.${ext}`;
+  return writeAttachment(root, name, data, opts.alt);
+}
+
+/** Copies an existing attachment into `root`, keeping its name so Markdown links still work. */
+export function copyAttachment(root: Root, source: Attachment): Attachment {
+  const existing = findAttachment([root], source.name);
+  if (existing) return existing;
+  return writeAttachment(root, source.name, readFileSync(source.file));
+}
+
+/** Writes a checked attachment name and image into a root without following linked folders. */
+function writeAttachment(root: Root, name: string, data: Uint8Array, alt?: string): Attachment {
+  if (!ATTACHMENT_NAME_RE.test(name)) throw new OpsError(`bad attachment name '${name}'`, 2);
   const dir = attachmentsDir(root);
   mkdirSync(dir, { recursive: true });
   // A linked `attachments` folder would write the image outside the root.
@@ -85,7 +98,7 @@ export function saveAttachment(
   }
   const file = join(dir, name);
   root.writeAtomic(file, data);
-  return describe(root, name, file, data.length, opts.alt);
+  return describe(root, name, file, data.length, alt);
 }
 
 /**
