@@ -25,6 +25,7 @@ import {
   sharedElectronDist,
   withElectronDist,
 } from '../src/index.js';
+import { defaultAppAsar, electronHost } from './electron-asar.js';
 
 const dirs: string[] = [];
 function temp(): string {
@@ -57,9 +58,14 @@ function unpack(dir: string, version = '45.2.1', platform: NodeJS.Platform = 'wi
         ? join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron')
         : join(dist, 'electron');
   mkdirSync(dirname(exe), { recursive: true });
-  mkdirSync(join(dist, 'resources'), { recursive: true });
+  // The app bundle holds the resources on macOS; the dist folder has no `resources` there.
+  const resources =
+    platform === 'darwin'
+      ? join(dist, 'Electron.app', 'Contents', 'Resources')
+      : join(dist, 'resources');
+  mkdirSync(resources, { recursive: true });
   writeFileSync(exe, 'binary');
-  writeFileSync(join(dist, 'resources', 'default_app.asar'), 'asar');
+  writeFileSync(join(resources, 'default_app.asar'), 'asar');
   writeFileSync(join(dist, 'version'), version);
   // The install script writes this last, after the whole archive.
   writeFileSync(
@@ -312,6 +318,35 @@ describe('the shared Electron for a worktree without path.txt (AO-0306)', () => 
     expect(launcher).toContain('exec "$(dirname "$0")/Electron.app/Contents/MacOS/Electron" "$@"');
     // The checkout it came from holds no launcher: the copy got it, not the source.
     expect(existsSync(join(checkoutElectronDist(main), 'electron'))).toBe(false);
+  });
+
+  it('lets the AO-0244 deletion test find the asar from the macOS launcher path', () => {
+    const state = temp();
+    const main = checkout();
+    const dist = unpack(main, '45.2.1', 'darwin');
+    const worktree = checkout();
+    const env = withElectronDist({}, state, worktree, [main], MAC);
+    const shared = sharedElectronDist(state, '45.2.1', 'darwin', 'arm64');
+
+    // The launcher is beside the app bundle, so neither folder the executable's path gives fits.
+    const resolved = requireElectron(worktree, env);
+    expect(resolved).toBe(join(shared, 'electron'));
+    expect(existsSync(join(shared, 'resources'))).toBe(false);
+    const asar = join(shared, 'Electron.app', 'Contents', 'Resources', 'default_app.asar');
+    expect(defaultAppAsar(resolved)).toBe(asar);
+    // `worktree-delete.test.ts` skips its Electron test on null: it runs, with the launcher as host.
+    expect(electronHost(resolved)).toEqual({
+      host: { execPath: resolved, electron: true },
+      asar,
+    });
+
+    // A checkout's own unpack returns the executable in the bundle, as before.
+    const exe = join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+    expect(defaultAppAsar(exe)).toBe(
+      join(dist, 'Electron.app', 'Contents', 'Resources', 'default_app.asar'),
+    );
+    // No asar near the path: the test skips, it does not fail.
+    expect(electronHost(join(temp(), 'electron'))).toBeNull();
   });
 
   it.skipIf(process.platform === 'win32')('starts the executable with its arguments', () => {

@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type DeleteHost, deleteWorktree, removeTree } from '../src/worktree.js';
+import { electronHost } from './electron-asar.js';
 
 /**
  * The Electron executable the desktop package installs, and its default app's asar, if any. In a
@@ -13,13 +14,7 @@ import { type DeleteHost, deleteWorktree, removeTree } from '../src/worktree.js'
  */
 function electron(): { host: DeleteHost; asar: string } | null {
   try {
-    const exe = createRequire(import.meta.url)('electron') as unknown;
-    if (typeof exe !== 'string') return null;
-    const asar = [
-      join(dirname(exe), 'resources', 'default_app.asar'),
-      join(dirname(exe), '..', 'Resources', 'default_app.asar'),
-    ].find((p) => existsSync(p));
-    return asar ? { host: { execPath: exe, electron: true }, asar } : null;
+    return electronHost(createRequire(import.meta.url)('electron'));
   } catch {
     return null;
   }
@@ -75,6 +70,15 @@ describe('worktree deletion (AO-0244)', () => {
       await deleteWorktree(top, path, { host: ELECTRON!.host, timeoutMs: 60_000 });
       expect(existsSync(path)).toBe(false);
       expect(git(top, 'worktree', 'list')).not.toContain('wt-T-0001');
+    },
+  );
+
+  // A run swarmupd started has Electron in the shared folder, so a skip there is a lookup that
+  // broke, as on macOS where the path is a launcher beside the app bundle (AO-0306).
+  it.skipIf(!process.env.ELECTRON_OVERRIDE_DIST_PATH)(
+    'finds Electron and its asar under ELECTRON_OVERRIDE_DIST_PATH, so the test above runs',
+    () => {
+      expect(ELECTRON).not.toBeNull();
     },
   );
 
