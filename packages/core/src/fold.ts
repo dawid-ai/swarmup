@@ -584,7 +584,12 @@ function waitOnChildren(
     view.waitingOn === null &&
     view.waitEvent === null &&
     view.blockedOn.length === 0;
-  if (!byPlan && view.status !== 'todo') return;
+  if (!byPlan && view.status !== 'todo') {
+    // A question or a `block` on top keeps its own wait, but a closed dependency of that
+    // `block` never frees the milestone while its plan is unsettled.
+    if (!settled) view.unblocked = false;
+    return;
+  }
   if (merging.length > 0) view.mergeWait = merging;
   if (!settled) {
     // A reopened child or a new amendment blocks a milestone that was free for its check.
