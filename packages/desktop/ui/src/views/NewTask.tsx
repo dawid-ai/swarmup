@@ -271,9 +271,9 @@ export function NewTask({
             rows={6}
             placeholder="What to do, what done means, links (Markdown). @ mentions an agent. Paste or drop images"
             onSubmit={create}
-            // Images go to the default root whichever project is picked: the upload can come before
-            // the choice, and an image shows from any loaded root.
-            attach={{}}
+            // Upload to the current choice. If the choice changes afterwards, task creation copies
+            // every linked image into the final root so another machine can load it independently.
+            attach={{ root }}
             onUploading={setUploading}
           />
           <div className="grid grid-cols-[1fr_180px] gap-3">

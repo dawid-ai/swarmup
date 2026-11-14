@@ -19,6 +19,10 @@ import { Lightbox } from '../ui/src/ui/attach';
 import { NewTask } from '../ui/src/views/NewTask';
 
 const NAME = '01M6J3V01Z93MGX79812GGJG33.png';
+const ROOTS = [
+  { name: 'site', dir: 'C:\\dev\\site', mirror: false, isMirror: false, isMaster: false },
+  { name: 'web', dir: 'C:\\dev\\web', mirror: false, isMirror: false, isMaster: false },
+];
 const calls: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
 // While set, uploads wait for it: a slow upload.
 let gate: Promise<void> | null = null;
@@ -135,7 +139,13 @@ beforeEach(() => {
   act(() =>
     root!.render(
       createElement('div', null, [
-        createElement(NewTask, { key: 'n', me: 'human:dawid', onClose, onCreated: vi.fn() }),
+        createElement(NewTask, {
+          key: 'n',
+          me: 'human:dawid',
+          onClose,
+          onCreated: vi.fn(),
+          roots: ROOTS,
+        }),
         createElement(Lightbox, { key: 'l' }),
       ]),
     ),
@@ -150,6 +160,18 @@ afterEach(() => {
 
 function area(): HTMLTextAreaElement {
   return document.body.querySelector('textarea')!;
+}
+
+function project(): HTMLInputElement {
+  return box.querySelector('input[role="combobox"]')!;
+}
+
+function pickNextProject(): void {
+  act(() => project().click());
+  act(() =>
+    project().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })),
+  );
+  act(() => project().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
 }
 
 /** Waits until pending uploads (promises and the next frame) have settled. */
@@ -181,8 +203,44 @@ describe('New task: images', () => {
     expect(calls[0]!.method).toBe('POST');
     expect(calls[0]!.path).toBe('/api/attachments');
     expect(calls[0]!.body.data).toBe(btoa(String.fromCharCode(137, 80, 78, 71)));
+    expect(calls[0]!.body.root).toBe('site');
     expect(calls[0]!.body.alt).toBe('image');
     expect(area().value).toBe(`![shot](attachments/${NAME})\n`);
+  });
+
+  it('uploads to the chosen project root', async () => {
+    pickNextProject();
+    expect(project().value).toBe('web');
+    const shot = new File(['x'], 'header.png', { type: 'image/png' });
+    act(() => area().dispatchEvent(transfer('paste', [shot])));
+    await settle();
+    expect(calls[0]!.path).toBe('/api/attachments');
+    expect(calls[0]!.body.root).toBe('web');
+  });
+
+  it('creates in the new root when the project changes after an upload', async () => {
+    const title = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+        title,
+        'Header bug',
+      );
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+      area().dispatchEvent(
+        transfer('paste', [new File(['x'], 'header.png', { type: 'image/png' })]),
+      );
+    });
+    await settle();
+    expect(calls[0]!.body.root).toBe('site');
+
+    pickNextProject();
+    act(() =>
+      [...box.querySelectorAll('button')].find((b) => b.textContent === 'Create task')!.click(),
+    );
+    await settle();
+    const made = calls.find((c) => c.path === '/api/tasks')!;
+    expect(made.body).toMatchObject({ root: 'web' });
+    expect(made.body.body).toContain(`attachments/${NAME}`);
   });
 
   it('leaves a text paste alone', async () => {

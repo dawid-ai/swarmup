@@ -1,6 +1,6 @@
 // POST /api/tasks with `root` (AO-0323): the task goes to the named data root, not the default one.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -30,12 +30,14 @@ function temp(): string {
   return d;
 }
 
-function repo(name: string, prefix: string): string {
+function repo(name: string, prefix: string): { dir: string; rootDir: string } {
   const dir = temp();
   execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
-  initRoot(dir, { name, prefix, human: 'human:dawid' });
-  return dir;
+  const rootDir = initRoot(dir, { name, prefix, human: 'human:dawid' });
+  return { dir, rootDir };
 }
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 
 async function setup() {
   const site = repo('site', 'SITE');
@@ -51,8 +53,8 @@ async function setup() {
   delete env.SWARMUP_ROOTS;
   const sup = new Supervisor({
     env,
-    cwd: site,
-    user: { me: 'human:dawid', roots: [web] },
+    cwd: site.dir,
+    user: { me: 'human:dawid', roots: [web.dir] },
     freeMem: () => 64 * 2 ** 30,
   });
   sups.push(sup);
@@ -73,7 +75,15 @@ async function setup() {
     });
     return { status: res.status, data: (await res.json()) as Record<string, unknown> };
   };
-  return { sup, post, call };
+  const attach = async (body: unknown) => {
+    const res = await fetch(`http://127.0.0.1:${api.port}/api/attachments`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer tasks-token', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, data: (await res.json()) as Record<string, unknown> };
+  };
+  return { sup, post, call, attach, site, web };
 }
 
 describe('POST /api/tasks', () => {
@@ -102,6 +112,24 @@ describe('POST /api/tasks', () => {
     expect(res.status).toBe(400);
     expect(res.data.error).toBe("no root named 'shop': use one of site, web");
     expect(sup.ws('human:dawid').list({ all: true })).toEqual([]);
+  });
+
+  it('copies linked draft images into the task root when the project changed after upload', async () => {
+    const { post, attach, site, web } = await setup();
+    const up = await attach({ data: PNG.toString('base64'), root: 'site', alt: 'header' });
+    expect(up.status).toBe(201);
+    const name = up.data.name as string;
+    expect(existsSync(join(site.rootDir, 'attachments', name))).toBe(true);
+    expect(existsSync(join(web.rootDir, 'attachments', name))).toBe(false);
+
+    const made = await post({
+      title: 'Fix the header',
+      body: `![header](attachments/${name})`,
+      root: 'web',
+    });
+    expect(made.status).toBe(201);
+    expect(made.data).toMatchObject({ id: 'WEB-0001', root: 'web' });
+    expect(existsSync(join(web.rootDir, 'attachments', name))).toBe(true);
   });
 });
 

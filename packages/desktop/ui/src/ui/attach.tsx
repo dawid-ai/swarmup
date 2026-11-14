@@ -12,9 +12,10 @@ import {
   toBase64,
 } from '../lib/attachments';
 
-/** Where an upload goes: the task's root for a comment or answer, else the default root. */
+/** Where an upload goes: the task's root for a comment or answer, or a new task's chosen root. */
 export interface AttachTarget {
   task?: string;
+  root?: string;
 }
 
 interface Uploaded {
@@ -38,6 +39,7 @@ export function useAttach(target: AttachTarget | undefined, insert: (markdown: s
         const a = await api<Uploaded>('POST', '/api/attachments', {
           data: await toBase64(blob),
           task: target.task,
+          root: target.root,
           alt: altFor(file),
         });
         insertRef.current(a.markdown);

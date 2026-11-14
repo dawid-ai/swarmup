@@ -476,12 +476,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
         // `root` names the data root the task goes to (AO-0323): its store, code checkout, agents
         // and merge settings then handle it. Without it, the default root, as before.
-        const rootName = str(body.root)?.trim() || undefined;
-        const root = rootName ? ws.roots.find((r) => r.name === rootName) : undefined;
-        if (rootName && !root) {
-          const names = ws.roots.map((r) => r.name).join(', ');
-          throw new HttpError(400, `no root named '${rootName}': use one of ${names}`);
-        }
+        const root = requestedRoot(ws, body.root);
         const { meta, proposed } = ws.addTask(
           {
             title: need(body.title, 'title'),
@@ -818,8 +813,10 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
         const data = need(body.data, 'data');
         if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new HttpError(400, 'data: expected base64');
+        const root = requestedRoot(ws, body.root);
         const a = ws.attach(Buffer.from(data, 'base64'), {
           task: str(body.task) || undefined,
+          root,
           alt: str(body.alt) || undefined,
         });
         // The local file path stays on this machine.
@@ -942,6 +939,18 @@ function markInput(body: Json): MarkInput | undefined {
     return undefined;
   }
   return { text, scope, supersedes, narrows };
+}
+
+/** The optional data root named by a request body, with the same error on every route. */
+function requestedRoot(ws: Workspace, value: unknown) {
+  const name = str(value)?.trim() || undefined;
+  if (!name) return undefined;
+  const root = ws.roots.find((r) => r.name === name);
+  if (!root) {
+    const names = ws.roots.map((r) => r.name).join(', ');
+    throw new HttpError(400, `no root named '${name}': use one of ${names}`);
+  }
+  return root;
 }
 
 function need(v: unknown, name: string): string {
