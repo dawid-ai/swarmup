@@ -24,6 +24,10 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/tasks/AO-0001/diff')).toBe(false);
     expect(allowedCall('POST', '/api/runs/01ABC/kill')).toBe(true);
     expect(allowedCall('POST', '/api/decisions/D-0001/vote')).toBe(true);
+    // The decision log and a new record (AO-0315).
+    expect(allowedCall('GET', '/api/decisions?log&all')).toBe(true);
+    expect(allowedCall('GET', '/api/decisions?log&task=r%2FAO-0110')).toBe(true);
+    expect(allowedCall('POST', '/api/decisions')).toBe(true);
     expect(allowedCall('POST', '/api/channels/dev')).toBe(true);
   });
 

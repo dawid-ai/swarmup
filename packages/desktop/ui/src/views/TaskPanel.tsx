@@ -69,6 +69,7 @@ import type { TaskFocus } from '../ui/refs';
 import { RefText } from '../ui/refs';
 import { StatusLoop } from '../ui/statusloop';
 import { TriageActions, waitsOn } from '../ui/triage';
+import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 
 type Panel = 'delegate' | 'launch' | null;
 
@@ -133,7 +134,8 @@ export function TaskPanel({
   const reviewsMe = t?.status === 'needs-review' && (t.reviewer === nav.me || !t.reviewer);
   // The one loop of this panel: the task's state, large, next to its title.
   const loop = t ? taskLoop(t, events) : null;
-  const asker = waitsOnMe ? [...events].reverse().find((e) => e.type === 'ask')?.actor : undefined;
+  const lastAsk = waitsOnMe ? [...events].reverse().find((e) => e.type === 'ask') : undefined;
+  const asker = lastAsk?.actor;
   // A review request names the commits to look at; swarmupd reads their diff (AO-0106).
   const hasWork = events.some((e) => e.type === 'review' && !e.pending);
   const [diff, setDiff] = useState(Boolean(showDiff));
@@ -410,6 +412,7 @@ export function TaskPanel({
             nav={nav}
             answer={waitsOnMe}
             asker={asker}
+            ask={lastAsk ? `${t.title}\n${lastAsk.body}` : undefined}
             onSending={sending}
             onSent={wrote}
             onFailed={(p) => dispatch({ type: 'failed', pending: p })}
@@ -713,6 +716,15 @@ function EventRow({
           </span>
         )}
         {e.forced && <span className="text-warn">forced</span>}
+        {e.decision && (
+          <span
+            data-event-decision
+            className="rounded bg-signal/10 px-1.5 font-mono text-[11px] text-signal"
+            title="This event records a decision; the Decisions view lists it"
+          >
+            decision {e.decision}
+          </span>
+        )}
         {link &&
           (link.to ? (
             <button
@@ -775,6 +787,7 @@ function Composer({
   asker,
   reply,
   owner,
+  ask,
   onSending,
   onSent,
   onFailed,
@@ -786,6 +799,8 @@ function Composer({
   /** The task is an answered question: the primary button reopens it with the text. */
   reply?: boolean;
   owner?: string;
+  /** The open ask the task waits on you for: a contradiction it names gets **Accept change**. */
+  ask?: string;
   /** The text shows in the thread at once, as a pending event, before opsd answers. */
   onSending: (pending: OpsEvent) => void;
   /** opsd stored it: `res` holds the events it wrote, which replace the pending one. */
@@ -797,7 +812,9 @@ function Composer({
   const [to, setTo] = useState<string[]>([]);
   const act = useAction();
   const [uploading, setUploading] = useState(false);
-  const hold = !text.trim() || act.busy || uploading;
+  // The decision a comment or an answer records (AO-0109).
+  const mark = useDecisionMark(text);
+  const hold = !text.trim() || act.busy || uploading || mark.problem !== null;
   const others = useDirectory(nav.me).filter((e) => e.id !== nav.me && !e.group && e.configured);
   // The inbox takes one addressee per comment: the picked one, else the first @mention. Never the
   // writer: their own comment is not news to them.
@@ -805,8 +822,10 @@ function Composer({
   const picked = to[0] ?? mention;
   const target = picked === nav.me ? undefined : picked;
   const send = (action: 'comment' | 'answer' | 'reopen'): void => {
-    if (hold) return;
+    // A reply reopens the question; that event marks no decision.
+    if (hold || (action === 'reopen' && mark.on)) return;
     const message = text;
+    const fields = mark.fields;
     const picks = to;
     const notify = action === 'comment' ? target || undefined : undefined;
     // Shown at once, before opsd answers (AO-0171). Without `me`, opsd refuses it anyway.
@@ -814,12 +833,14 @@ function Composer({
     if (pending) onSending(pending);
     setText('');
     setTo([]);
+    mark.reset();
     act.run(async () => {
       try {
         const res = await api('POST', `/api/tasks/${q(id)}/${action}`, {
           as: nav.me,
           message,
           to: notify,
+          ...fields,
         });
         onSent(res, pending?.id);
       } catch (err) {
@@ -863,6 +884,10 @@ function Composer({
         attach={{ task: id }}
         onUploading={setUploading}
       />
+      {answer && ask && <Contradiction text={ask} task={id} mark={mark} me={nav.me} />}
+      <div className="mt-2">
+        <DecisionMark mark={mark} me={nav.me} />
+      </div>
       <div className="mt-2 flex items-center gap-2">
         {others.length > 0 && (
           <div className="w-64" title="Puts this comment in that agent's inbox">
@@ -885,9 +910,13 @@ function Composer({
             <Button
               kind="primary"
               icon={Reply}
-              disabled={hold}
+              disabled={hold || mark.on}
               onClick={() => send('reopen')}
-              title={`Reopens the question with your reply, so ${owner ?? 'its owner'} answers again`}
+              title={
+                mark.on
+                  ? 'A reply records no decision: send it as a comment, or turn Decision off'
+                  : `Reopens the question with your reply, so ${owner ?? 'its owner'} answers again`
+              }
             >
               Reply {kbd}
             </Button>

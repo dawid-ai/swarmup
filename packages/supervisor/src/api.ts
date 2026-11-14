@@ -4,6 +4,7 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { sep } from 'node:path';
 import type {
   AgentDef,
+  MarkInput,
   Priority,
   RepeatInput,
   RoleInput,
@@ -12,6 +13,7 @@ import type {
 } from '@swarmup/core';
 import {
   findAttachment,
+  listDecisionIds,
   MAX_ATTACHMENT_BYTES,
   OpsError,
   openQuestion,
@@ -481,10 +483,15 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'POST') {
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
         const msg = str(body.message) ?? '';
+        const mark = markInput(body);
+        // Only the commands whose event can mark a decision take one (AO-0109).
+        if (mark && !['comment', 'answer', 'park', 'retype', 'verdict'].includes(action ?? '')) {
+          throw new HttpError(400, `'${action}' cannot mark a decision`);
+        }
         const result = (() => {
           switch (action) {
             case 'comment':
-              return ws.comment(ref, msg, str(body.to));
+              return ws.comment(ref, msg, str(body.to), mark);
             case 'start':
               return ws.start(ref, msg);
             case 'block': {
@@ -502,7 +509,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
               return ws.review(ref, msg, str(body.to) || undefined);
             case 'answer':
               humanOnly('answering');
-              return ws.answer(ref, msg);
+              return ws.answer(ref, msg, mark);
             case 'unblock':
               return ws.unblock(ref, msg);
             case 'done':
@@ -512,7 +519,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
             case 'reopen':
               return ws.reopen(ref, msg);
             case 'park':
-              return ws.park(ref, msg);
+              return ws.park(ref, msg, mark);
             case 'assign':
               return ws.assign(ref, need(body.to, 'to'), msg);
             case 'priority':
@@ -522,12 +529,13 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
                 to: str(body.to) || undefined,
                 answer: str(body.answer) || undefined,
                 priority: (str(body.priority) || undefined) as Priority | undefined,
+                mark,
               });
             case 'verdict': {
               humanOnly('a verdict');
               const v = need(body.verdict, 'verdict');
               if (v !== 'approve' && v !== 'changes') throw new HttpError(400, 'bad verdict');
-              return ws.verdict(ref, v, msg);
+              return ws.verdict(ref, v, msg, mark);
             }
             case 'delegate':
               return ws.delegate(ref, need(body.to, 'to'), {
@@ -545,6 +553,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           task: compact(result.view),
           events: result.events,
           warnings: result.warnings,
+          // The record a `decision` in the body wrote, by id.
+          decision: result.decision?.id,
         });
       }
     }
@@ -601,7 +611,41 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     }
     if (area === 'decisions') {
       const ws = wsAs();
+      // The decision log, as `swarmup decisions --log` lists it (AO-0109): `all` adds the
+      // superseded ones; `project` or `task` narrows it.
+      if (method === 'GET' && !id && q.has('log')) {
+        return send(
+          res,
+          200,
+          ws.decisionLog({
+            all: q.has('all'),
+            project: q.get('project') || undefined,
+            task: q.get('task') || undefined,
+          }),
+        );
+      }
       if (method === 'GET' && !id) return send(res, 200, ws.decisions({ all: q.has('all') }));
+      // A new record, as `swarmup decision TEXT` writes it: the app's Supersede sends it.
+      if (method === 'POST' && !id) {
+        humanOnly('recording a decision');
+        if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+        const rec = ws.recordDecision({
+          text: need(body.text, 'text'),
+          body: str(body.message),
+          root: str(body.root) || undefined,
+          project: str(body.project) || undefined,
+          task: str(body.task) || undefined,
+          scope: str(body.scope) || undefined,
+          supersedes: idList(body.supersedes, 'supersedes'),
+          narrows: idList(body.narrows, 'narrows'),
+        });
+        return send(res, 201, {
+          root: rec.root,
+          id: rec.meta.id,
+          meta: rec.meta,
+          warnings: rec.warnings.length > 0 ? rec.warnings : undefined,
+        });
+      }
       if (method === 'GET' && id) return send(res, 200, ws.decision(id));
       if (method === 'POST' && id && action === 'decide') {
         return send(res, 200, ws.decide(id, need(body.choice, 'choice'), str(body.message) ?? ''));
@@ -793,6 +837,34 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+/** A list of ids from a request body: a list of text, or text with commas. */
+function idList(v: unknown, name: string): string[] | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const all = typeof v === 'string' ? v.split(',') : v;
+  if (!Array.isArray(all) || !all.every((x) => typeof x === 'string')) {
+    throw new HttpError(400, `${name}: use a list of text`);
+  }
+  const out = (all as string[]).map((x) => x.trim()).filter(Boolean);
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * The decision a task write marks (`--decision` of the CLI, AO-0109): `decision` is its one line;
+ * `scope`, `supersedes` and `narrows` describe it, so they are refused without one.
+ */
+function markInput(body: Json): MarkInput | undefined {
+  const text = str(body.decision);
+  const scope = str(body.scope) || undefined;
+  const supersedes = idList(body.supersedes, 'supersedes');
+  const narrows = idList(body.narrows, 'narrows');
+  if (text === undefined) {
+    const lone = scope ? 'scope' : supersedes ? 'supersedes' : narrows ? 'narrows' : null;
+    if (lone) throw new HttpError(400, `${lone} describes a decision: add decision, its one line`);
+    return undefined;
+  }
+  return { text, scope, supersedes, narrows };
+}
+
 function need(v: unknown, name: string): string {
   if (typeof v !== 'string' || !v) throw new HttpError(400, `missing ${name}`);
   return v;
@@ -960,7 +1032,9 @@ function collabSignature(ws: Workspace): string {
     .decisions({ all: true })
     .map((d) => `${d.root}/${d.meta.id}:${d.ballots.length}:${d.outcome?.choice ?? ''}`)
     .join(',');
-  return `${channels}#${votes}`;
+  // A record is never edited, so the count of decision folders says when the log grew.
+  const records = ws.roots.map((r) => `${r.name}:${listDecisionIds(r).length}`).join(',');
+  return `${channels}#${votes}#${records}`;
 }
 
 /** A role file for the page: the body as `instructions`; the local file path stays here. */

@@ -209,6 +209,8 @@ export interface RecordInput {
   scope?: string;
   supersedes?: string[];
   narrows?: string[];
+  /** The root the record goes in when no task or source names one. Default: the default root. */
+  root?: string;
   /** `ID#<event id>`, a file, or `chat:<message id>`. */
   source?: string;
   /** For a `chat:<id>` source: the message as the local swarmupd returned it. */
@@ -3051,7 +3053,13 @@ export class Workspace {
     if (named && event && named.root !== event.root) {
       throw new OpsError(`--task ${named.id} and --source ${source} are in different roots`, 2);
     }
-    const root = named?.root ?? pending?.root ?? event?.root ?? this.defaultRoot();
+    const rootName = input.root?.trim();
+    const byName = rootName ? this.roots.find((r) => r.name === rootName) : undefined;
+    if (rootName && !byName) {
+      const names = this.roots.map((r) => r.name).join(', ');
+      throw new OpsError(`no root named '${rootName}': use one of ${names}`, 2);
+    }
+    const root = named?.root ?? pending?.root ?? event?.root ?? byName ?? this.defaultRoot();
     const { entries, tasks } = decisionLog(root, this.now());
 
     // One message can hold two decisions, so only the same message with the same text is a repeat.

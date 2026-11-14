@@ -39,6 +39,7 @@ import {
 import { ago } from '../lib/format';
 import { inboxLoop, inboxWaiting } from '../lib/statusloop';
 import type { InboxItem } from '../types';
+import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 import { Markdown } from '../ui/markdown';
 import { MentionArea } from '../ui/pickers';
 import { RefText } from '../ui/refs';
@@ -405,13 +406,22 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
   const [showBlocks, setShowBlocks] = useState(false);
   const act = useAction();
   const [uploading, setUploading] = useState(false);
-  const wait = act.busy || uploading;
+  // The decision an answer or a verdict records (AO-0109); its line starts as the first sentence
+  // of the text, or of the recommendation while the box is empty.
+  const mark = useDecisionMark(text.trim() ? text : (it.recommend ?? ''));
+  const wait = act.busy || uploading || mark.problem !== null;
   const post = (action: string, body: Record<string, unknown>): void => {
     if (wait) return;
     act.run(
-      () => api('POST', `/api/tasks/${q(it.task)}/${action}`, { as: nav.me, ...body }),
+      () =>
+        api('POST', `/api/tasks/${q(it.task)}/${action}`, {
+          as: nav.me,
+          ...body,
+          ...mark.fields,
+        }),
       () => {
         setText('');
+        mark.reset();
         // The item leaves the inbox once handled: say where the reply went.
         const what =
           action === 'answer'
@@ -535,6 +545,15 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
           </div>
         )}
 
+        {it.kind === 'ask' && (
+          <Contradiction
+            text={`${it.title}\n${it.detail ?? it.summary}`}
+            task={it.task}
+            mark={mark}
+            me={nav.me}
+          />
+        )}
+
         {(it.kind === 'ask' || it.kind === 'review') && it.recommend && (
           <div
             data-recommend
@@ -586,6 +605,7 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
               attach={{ task: it.task }}
               onUploading={setUploading}
             />
+            <DecisionMark mark={mark} me={nav.me} />
             <div className="flex items-center gap-2">
               {it.kind === 'ask' ? (
                 <Button
