@@ -5,8 +5,24 @@ export interface MergeSource {
   branch?: string;
 }
 
-/** A name ends at a space, a colon, a comma, a bracket or a full stop that ends a sentence. */
-const NAME = '`?([A-Za-z0-9._/-]+?)`?(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
+/**
+ * A name ends at a space, a colon, a comma, a bracket or a full stop that ends a sentence. It may
+ * be in code font or bold.
+ */
+const NAME = '[`*]{0,3}([A-Za-z0-9._/-]+?)[`*]{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
+
+/**
+ * A commit id starts and ends where no letter or digit adjoins it. `\b` does not do: `_` is a
+ * word character, so it finds no commit in `__cc3d803__`, the underscore form of bold.
+ */
+const START = '(?<![0-9A-Za-z])';
+const END = '(?![0-9A-Za-z])';
+
+/** A name without the underscores of `_name_` or `__name__`; they are part of a name only unpaired. */
+function plain(name: string): string {
+  const m = /^(_{1,3})([^_].*?)\1$/.exec(name);
+  return m ? m[2]! : name;
+}
 
 /** What a review request names as the work to merge. */
 export interface ReviewSources {
@@ -21,18 +37,20 @@ export interface ReviewSources {
 
 /**
  * Reads what a review request names: `<commit> on branch <name>`, and each `branch <word>`. The
- * commit may be in code font or bold, as event text is Markdown: a request that wrote the commit
+ * commit and the name may be in code font or bold (`**x**` or `__x__`), as event text is Markdown: a request that wrote the commit
  * in code font named no commit before, and the merge took an older request's branch for it
  * (AO-0325).
  */
 export function reviewSources(text: string): ReviewSources {
-  const both = new RegExp(`\\b([0-9a-f]{7,40})[\`*]{0,3}\\s+on\\s+branch\\s+${NAME}`, 'm').exec(
-    text,
-  );
-  const named = both ? { commit: both[1], branch: both[2] } : undefined;
+  const both = new RegExp(
+    `${START}([0-9a-f]{7,40})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`,
+    'm',
+  ).exec(text);
+  const named = both ? { commit: both[1], branch: plain(both[2]!) } : undefined;
   const loose: string[] = [];
   for (const m of text.matchAll(new RegExp(`\\bbranch\\s+${NAME}`, 'gm'))) {
-    if (m[1] !== named?.branch && !loose.includes(m[1]!)) loose.push(m[1]!);
+    const name = plain(m[1]!);
+    if (name !== named?.branch && !loose.includes(name)) loose.push(name);
   }
   return named ? { named, loose } : { loose };
 }
@@ -44,7 +62,8 @@ export function reviewSources(text: string): ReviewSources {
  */
 export function reviewCommits(text: string): string[] {
   const out: string[] = [];
-  for (const m of text.matchAll(/\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g)) {
+  const word = new RegExp(`${START}(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}${END}`, 'g');
+  for (const m of text.matchAll(word)) {
     if (!out.includes(m[0])) out.push(m[0]);
   }
   return out;
