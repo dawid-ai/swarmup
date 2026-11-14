@@ -6763,10 +6763,11 @@ const NOT_COMMITTED = /^(cannot commit what it left in |left changes uncommitted
  * what it left; else null. Only that run's changes are swarmupd's to commit before a merge: the
  * review asked for them to be checked, and the approval covers them (AO-0300).
  *
- * A run asks for review while it works and ends after that, so its `run-end` comes after the
- * review and before the verdict, and its `run-start` (when the task has one) before the review.
- * An earlier run of the same author does not count: a later review, made by hand or by another
- * run, does not cover what that run left.
+ * The review names its run (`run`), and only the `run-end` of that run counts, between the
+ * review and its verdict. The order of events alone does not tell which run made a review: the
+ * `run-end` of an earlier run of the same author can arrive after a later run's review. A review
+ * without a run (made by hand, or written before reviews named their run) ties to no run, so
+ * nothing is committed for it.
  */
 export function uncommittedRun(events: OpsEvent[]): { id: string; agent: string } | null {
   let at = events.length - 1;
@@ -6774,14 +6775,16 @@ export function uncommittedRun(events: OpsEvent[]): { id: string; agent: string 
   let asked = at - 1;
   while (asked >= 0 && events[asked]!.type !== 'review') asked--;
   if (asked < 0) return null;
-  const author = events[asked]!.actor;
-  const after = events.slice(asked + 1, at);
-  const n = after.findIndex((e) => e.type === 'run-end' && e.actor === author);
-  const end = after[n];
-  if (!end?.run || !NOT_COMMITTED.test(end.body ?? '')) return null;
-  // A run that started after the review did not make it.
-  if (after.slice(0, n).some((e) => e.type === 'run-start' && e.run === end.run)) return null;
-  return { id: end.run, agent: author };
+  const review = events[asked]!;
+  if (!review.run) return null;
+  const ends = events
+    .slice(asked + 1, at)
+    .filter((e) => e.type === 'run-end' && e.run === review.run);
+  // A run ends once, as the review's author; any other record is not one to act on.
+  const end = ends[0];
+  if (ends.length !== 1 || !end || end.actor !== review.actor) return null;
+  if (!NOT_COMMITTED.test(end.body ?? '')) return null;
+  return { id: review.run, agent: review.actor };
 }
 
 /**

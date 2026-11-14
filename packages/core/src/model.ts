@@ -121,7 +121,7 @@ export interface OpsEvent {
   review?: string;
   /** finding: the task the finding was filed as. learn: the note, as `<topic>/<slug>`. */
   ref?: string;
-  /** run-start, run-end, renew: the supervisor's run id. */
+  /** run-start, run-end, renew: the supervisor's run id. review: the run that asked, if any. */
   run?: string;
   /** run-end: the exit code, or null when the process was killed or lost. */
   exit?: number | null;
