@@ -144,6 +144,7 @@ import { Root } from './root.js';
 import { secretKind } from './secrets.js';
 import type { SyncResult } from './sync.js';
 import { mirrorCopies, mirrorPartners, syncAll } from './mirror.js';
+import { ulidTime, ulidTimePrefix } from './ulid.js';
 import { parseDuration, parseTokens, parseWhen } from './units.js';
 
 export interface WorkspaceOptions {
@@ -398,12 +399,27 @@ export function needsHumanReview(meta: Pick<TaskMeta, 'type' | 'labels'>): boole
   );
 }
 
+/**
+ * Days a decision a person recorded stays in the PM's inbox as a `record` item (AO-0109), unless
+ * the PM marks its inbox read sooner.
+ */
+export const RECORD_INBOX_DAYS = 7;
+
 /** Events that a `coordinated` root pushes at once; others wait for the batched sync. */
 const IMMEDIATE_SYNC = new Set(['claim', 'handoff', 'delegate', 'verdict', 'ask']);
 
 export interface InboxItem {
   kind:
-    'message' | 'ask' | 'review' | 'owned' | 'mention' | 'vote' | 'decide' | 'stranded' | 'triage';
+    | 'message'
+    | 'ask'
+    | 'review'
+    | 'owned'
+    | 'mention'
+    | 'vote'
+    | 'decide'
+    | 'stranded'
+    | 'triage'
+    | 'record';
   /**
    * A task id, a channel as `#name`, or a decision id. Task and decision ids are written
    * `root/id` when more than one root is visible, so the ref is unique and resolvable.
@@ -3961,6 +3977,50 @@ export class Workspace {
           summary: m.body.split('\n')[0] ?? '',
           ...(detailText(m.body) !== undefined ? { detail: detailText(m.body) } : {}),
         });
+      }
+    }
+    // A decision a person recorded goes to the PM (AO-0109), which checks it against the ones in
+    // force and tells the person about a conflict the record does not name. A record the PM wrote
+    // down itself, from a person's words, it checked in that turn. A record has no event id, so
+    // its time stands in: it is new while it is later than the read marker, for some days.
+    if (!human && actor === pm) {
+      const nowMs = this.now();
+      for (const r of this.roots) {
+        // A mirror copy holds the same records as the project root.
+        if (r.isMirror) continue;
+        const marker = markers.get(r.name) ?? '';
+        const since = Math.max(
+          marker ? ulidTime(marker) : 0,
+          nowMs - RECORD_INBOX_DAYS * 24 * 3_600_000,
+        );
+        for (const id of listDecisionIds(r)) {
+          const m = readDecisionFiles(r, id, nowMs).meta;
+          if (m.kind !== 'record' || !isHuman(m.created_by) || m.recorded_by) continue;
+          const at = Date.parse(m.created_at);
+          if (!(at > since)) continue;
+          // Marking the inbox read moves the marker to the record's time.
+          const read = ulidTimePrefix(at) + '0'.repeat(16);
+          if (read > (newest.get(r.name) ?? '')) newest.set(r.name, read);
+          const scope =
+            m.scope === 'tree' && m.task
+              ? `tree ${m.task}`
+              : m.project
+                ? `project ${r.projectName(m.project)}`
+                : 'root';
+          const names = [
+            m.supersedes?.length ? `supersedes ${m.supersedes.join(', ')}` : '',
+            m.narrows?.length ? `narrows ${m.narrows.join(', ')}` : '',
+          ].filter(Boolean);
+          items.push({
+            kind: 'record',
+            task: ref(r.name, m.id),
+            root: r.name,
+            title: m.question,
+            from: m.created_by,
+            at: m.created_at,
+            summary: `decision recorded (${[scope, ...names].join('; ')}): ${m.question}`,
+          });
+        }
       }
     }
     for (const d of this.decisions()) {

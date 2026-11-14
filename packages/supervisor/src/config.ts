@@ -229,6 +229,12 @@ export interface OpsdConfig {
    * (AO-0288). 0 turns this off. Default 3.
    */
   review_rounds: number;
+  /**
+   * Minutes between two plan checks (AO-0109): swarmupd starts a PM run with the `start` plans
+   * and checkpoint `--next` steps written since the last one, and the decisions in force for
+   * their tasks, at most this often and only when there are any. 0 turns this off. Default 30.
+   */
+  plan_check_minutes: number;
   /** Commit, pull and push each root when its sync policy says so. */
   sync: boolean;
   /**
@@ -385,6 +391,7 @@ export function opsdConfig(
     outside_session_minutes: raw.outside_session_minutes ?? 30,
     stuck_runs: raw.stuck_runs ?? 3,
     review_rounds: raw.review_rounds ?? 3,
+    plan_check_minutes: raw.plan_check_minutes ?? 30,
     sync: raw.sync ?? true,
     seeded,
     runtimes: mergeRuntimes(raw.runtimes, seeded),
@@ -488,6 +495,7 @@ export function opsdConfig(
   count(cfg.outside_session_minutes, 'outside_session_minutes', 0);
   count(cfg.stuck_runs, 'stuck_runs', 0);
   count(cfg.review_rounds, 'review_rounds', 0);
+  count(cfg.plan_check_minutes, 'plan_check_minutes', 0);
   if (typeof cfg.sync !== 'boolean') throw new OpsError('swarmupd.sync: use true or false', 2);
   for (const [id, a] of Object.entries(cfg.agents)) {
     if (a.wake !== undefined && typeof a.wake !== 'boolean') {

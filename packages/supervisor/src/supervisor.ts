@@ -58,6 +58,7 @@ import {
   syncDue,
   storeBranch,
   ulid,
+  ulidTimePrefix,
   userConfigPath,
   Workspace,
   execOffThread,
@@ -131,8 +132,14 @@ import {
   unfinishedRuns,
 } from './stuck.js';
 import { Chat } from './chat.js';
-import type { ChatInvocation, QuestionPrompt } from './runtimes.js';
-import { CODEX_GIT_DIRS, invocation, runPrompt, withStoreCheckoutRule } from './runtimes.js';
+import type { ChatInvocation, PlanCheckTask, QuestionPrompt } from './runtimes.js';
+import {
+  CODEX_GIT_DIRS,
+  invocation,
+  planCheckPrompt,
+  runPrompt,
+  withStoreCheckoutRule,
+} from './runtimes.js';
 import type { ReviewChecks } from './review-checks.js';
 import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
@@ -536,6 +543,8 @@ export interface LaunchRequest {
   /** Token budget such as `400k`; defaults to the delegation's. */
   tokens?: string;
   schedule?: string;
+  /** The run is a plan check (AO-0109); `extra` carries the plans and the decisions. */
+  planCheck?: boolean;
   /** Review `task` (it waits for this agent's verdict) instead of claiming it. */
   review?: boolean;
   /**
@@ -570,6 +579,15 @@ interface WakeState {
   keys: string[];
   at: number;
 }
+
+/** `plan-check.json`: when the last plan check started, and the newest event it covered. */
+interface PlanCheckState {
+  at: number;
+  last: string;
+}
+
+/** The most plans one plan check reads; the rest wait for the next one. */
+const PLAN_CHECK_MAX = 40;
 
 /** A checkout's state as opsd read it; `head` is undefined until something needs it. */
 interface KnownCheckout {
@@ -3016,6 +3034,7 @@ export class Supervisor extends EventEmitter {
         question: question ? true : undefined,
         parent: parent?.id,
         schedule: req.schedule,
+        plan_check: req.planCheck || undefined,
         // Matches the prompt choice above: only the standard prompt reads the inbox.
         inbox:
           !task && req.prompt === undefined && req.extra === undefined && !req.chat
@@ -3524,6 +3543,90 @@ export class Supervisor extends EventEmitter {
         });
       }
     });
+  }
+
+  /**
+   * The plan check (AO-0109, "Contradiction checks", 3): starts one PM run with the `start` plans
+   * and checkpoint `--next` steps agents wrote since the last check, and the decisions in force
+   * for their tasks, at most once per `plan_check_minutes` and only when there are any. A task
+   * without a decision in force has nothing to compare with, so its plans start no run. Plans
+   * written before swarmupd first looked are not checked. `plan-check.json` holds when the last
+   * run started and the newest event it covered; a run that cannot start now leaves both, so the
+   * next tick tries again.
+   */
+  private planCheck(): void {
+    const every = this.config.plan_check_minutes;
+    if (every <= 0 || this.config.paused) return;
+    const now = this.now();
+    const state = this.store.readJson<PlanCheckState | null>('plan-check.json', null);
+    if (!state) {
+      // Every event written up to this millisecond sorts before the mark.
+      const first = { at: 0, last: ulidTimePrefix(now + 1) + '0'.repeat(16) };
+      return this.store.writeJson('plan-check.json', first);
+    }
+    if (now - state.at < every * 60_000) return;
+    if (this.liveRecords().some((r) => r.plan_check)) return;
+    const ws = this.ws(WATCH_ACTOR);
+    const pm = this.pmFor(ws);
+    if (!pm) return;
+    // A mirror is another clone's store: its own swarmupd checks the plans there.
+    const mirrors = new Set(ws.roots.filter((r) => r.isMirror).map((r) => r.name));
+    const qualify = ws.roots.length > 1;
+    let newest = state.last;
+    const found: Array<PlanCheckTask['plans'][number] & { ref: string; title: string }> = [];
+    const decisions = new Map<string, PlanCheckTask['decisions']>();
+    for (const v of ws.snapshot()) {
+      if (mirrors.has(v.root) || !v.lastEvent || v.lastEvent <= state.last) continue;
+      if (v.lastEvent > newest) newest = v.lastEvent;
+      // The plan of a closed task changes nothing any more.
+      if (!OPEN_STATUSES.has(v.status)) continue;
+      const ref = `${v.root}/${v.meta.id}`;
+      const plans = ws
+        .showEvents(ref)
+        .events.filter((e) => e.id > state.last && !v.lostClaims.includes(e.id))
+        // A person decides for themselves, and the PM plans no work of its own.
+        .filter((e) => !isHuman(e.actor) && roleOf(e.actor) !== 'pm')
+        .flatMap((e) => {
+          const text = e.type === 'start' ? e.body : e.type === 'checkpoint' ? e.next : undefined;
+          if (!text?.trim()) return [];
+          const kind = e.type === 'start' ? ('start' as const) : ('next' as const);
+          return [{ event: e.id, actor: e.actor, kind, text }];
+        });
+      if (plans.length === 0) continue;
+      const inForce = this.taskDecisions(ws, ref);
+      if (inForce.length === 0) continue;
+      const name = qualify ? ref : v.meta.id;
+      decisions.set(name, inForce);
+      found.push(...plans.map((p) => ({ ...p, ref: name, title: v.meta.title })));
+    }
+    if (found.length === 0) {
+      // Nothing to check: the events read are not read again.
+      if (newest !== state.last)
+        this.store.writeJson('plan-check.json', { ...state, last: newest });
+      return;
+    }
+    // Oldest first; plans past the cap wait for the next check.
+    found.sort((a, b) => (a.event < b.event ? -1 : a.event > b.event ? 1 : 0));
+    const taken = found.slice(0, PLAN_CHECK_MAX);
+    const last = found.length > taken.length ? taken.at(-1)!.event : newest;
+    const tasks: PlanCheckTask[] = [];
+    for (const { ref, title, ...plan } of taken) {
+      let t = tasks.find((x) => x.task === ref);
+      if (!t) tasks.push((t = { task: ref, title, plans: [], decisions: decisions.get(ref)! }));
+      t.plans.push(plan);
+    }
+    // A limit in the way (runs, usage, a sign-in) is no error: the check waits for room.
+    if (this.blocker(pm, this.projectOf(ws))) return;
+    const run = this.launch({
+      agent: pm,
+      extra: planCheckPrompt(tasks, this.userConfig.me),
+      planCheck: true,
+    });
+    this.store.writeJson('plan-check.json', { at: now, last });
+    this.emit(
+      'plan-check',
+      `run ${run.id}: ${pm} checks ${taken.length} plan(s) on ${tasks.length} task(s)`,
+    );
   }
 
   /**
@@ -4262,6 +4365,8 @@ export class Supervisor extends EventEmitter {
         if (!this.stopping) this.routeOwners();
         // Before wake, so the author of a task at its review limit is not started again.
         if (!this.stopping) this.stopReviewLoops();
+        // Before wake, so the check gets its run before inbox work of the same PM.
+        if (!this.stopping) this.safe(() => this.planCheck());
         this.wake();
       } finally {
         const holds = this.dirtyHolds;

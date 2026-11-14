@@ -1,5 +1,5 @@
 import type { AgentDef, LogEntry } from '@swarmup/core';
-import { actorSlug, decisionLines, runtimeOf } from '@swarmup/core';
+import { actorSlug, decisionLines, roleOf, runtimeOf } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkModel } from './config.js';
 
@@ -520,7 +520,10 @@ export function chatPrompt(p: ChatPromptInput): string {
       '  `swarmup assign`.',
       `- When ${p.human} states a decision here, record it in the same turn with`,
       '  `swarmup decision "one line" --source chat:<message id>` (the id is on the message), and',
-      '  give the new D- id and the one line in your reply, so it can be corrected.',
+      '  give the new D- id and the one line in your reply, so it can be corrected. If it conflicts',
+      '  with a decision in force (`swarmup decisions --log`), say so in the same reply and ask',
+      '  whether it supersedes that one (`--supersedes D-ID`) or both stand.',
+      ...(roleOf(p.agent) === 'pm' ? askCheckLines() : []),
       '- Do not edit files, build, commit or push.',
       '- Do not start background tasks, monitors or watchers; the turn ends when you stop.',
       '- Never kill a process; never print, store or export tokens or keys.',
@@ -676,6 +679,102 @@ function reviewLines(task: string): string[] {
   ];
 }
 
+/** The first line of every message about a conflict with a decision (AO-0109). */
+const CONTRADICTION = 'contradiction with D-NNNN (YYYY-MM-DD): <the line of the decision>';
+
+/**
+ * The PM's check before it answers an ask (AO-0109, "Contradiction checks", 2): an answer that
+ * would break a decision in force goes to the person instead, as the PM's own ask with the two
+ * ways out and a recommendation. An inbox run and the first chat turn of a PM carry it; the PM
+ * role template says the same.
+ */
+export function askCheckLines(): string[] {
+  return [
+    '- Before you answer an ask, compare the answer you would give with the decisions in force',
+    '  for its task: `swarmup decisions --log --task ID` (`swarmup answer` prints them too). If',
+    '  the answer would break one, do not give it. Forward the ask to the person:',
+    `  \`swarmup ask ID "${CONTRADICTION}. <who asks for what, ID#<event id>>.`,
+    '  keep: <what the task does then>. change: <what replaces D-NNNN>." --recommend "keep: <why>"`',
+    '  (or `change`). The answer of the person still goes to the agent that asked.',
+  ];
+}
+
+/**
+ * The PM's check of a decision a person just recorded (AO-0109, "Dawid's own changes of
+ * direction"): a `record` item in its inbox. A conflict the record names in neither
+ * `supersedes` nor `narrows` goes to the person as a comment, which blocks nothing.
+ */
+export function recordCheckLines(): string[] {
+  return [
+    '- A `record` item in your inbox is a decision a person just recorded. Compare it with the',
+    '  decisions in force in its scope (`swarmup decisions --log --project P`, or `--task ID` for',
+    '  a tree). If it conflicts with one that it names in neither `supersedes` nor `narrows`, tell',
+    '  the person and block nothing:',
+    '  `swarmup comment ID "D-0050 conflicts with D-0012 (YYYY-MM-DD): supersede D-0012, or keep',
+    '  both?" --to human:<name>`, on the task of either decision; when neither has a task, post it',
+    '  in a channel with `@human:<name>`. A record without a conflict needs nothing.',
+  ];
+}
+
+/** One task of a plan check: its new plans and the decisions in force for it. */
+export interface PlanCheckTask {
+  task: string;
+  title: string;
+  plans: Array<{
+    /** The id of the `start` or `checkpoint` event. */
+    event: string;
+    actor: string;
+    /** `start`: the plan of `swarmup start`. `next`: the `--next` step of a checkpoint. */
+    kind: 'start' | 'next';
+    text: string;
+  }>;
+  decisions: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>;
+}
+
+/** The longest plan text a plan check quotes, in characters. */
+const PLAN_TEXT_MAX = 600;
+
+/**
+ * The instructions of a plan-check run (AO-0109, "Contradiction checks", 3), passed as the
+ * prompt's `extra`: the new `start` plans and checkpoint `--next` steps of each task, with the
+ * decisions in force for it, and what the PM does on a conflict. The worker holds the task, so
+ * the PM cannot block it with `swarmup ask`: it tells the worker to stop and ask, and tells the
+ * person, who decides between `keep` and `change`.
+ */
+export function planCheckPrompt(tasks: PlanCheckTask[], human = 'human:<name>'): string {
+  const lines = [
+    'Plan check: compare each new plan below with the decisions in force for its task. Do',
+    'nothing else in this run: handle no inbox item and start no task.',
+  ];
+  for (const t of tasks) {
+    lines.push('', `${t.task} · ${t.title}`);
+    for (const p of t.plans) {
+      const text = p.text.replace(/\s+/g, ' ').trim();
+      const cut = text.length > PLAN_TEXT_MAX ? `${text.slice(0, PLAN_TEXT_MAX)}…` : text;
+      const what = p.kind === 'start' ? 'Plan' : 'Next step';
+      lines.push(`- ${what} by ${p.actor} (event ${p.event}): ${cut}`);
+    }
+    lines.push(...decisionLines(t.task, t.decisions));
+  }
+  lines.push(
+    '',
+    'For each plan:',
+    '- It fits the decisions: write nothing.',
+    '- It does what a decision rules out, or leaves out what one requires: the worker holds the',
+    '  task, so you cannot block it with `swarmup ask`. Write two comments:',
+    `  1. \`swarmup comment ID "${CONTRADICTION}.`,
+    '     Your plan (event <id>) <what conflicts>. Stop that part and finish with swarmup ask ID',
+    '     \\"contradiction with D-NNNN: ...\\"." --to <the worker>`',
+    '  2. `swarmup comment ID "ID: contradiction with D-NNNN (YYYY-MM-DD): <the line of the',
+    '     decision>. Plan by <worker> (ID#<event id>): <what it does>. keep: <what the task does',
+    `     then>. change: <what replaces D-NNNN>. Recommended: keep, <why>." --to ${human}\``,
+    '- Compare what the plan does, not its words. Read `swarmup show ID` when a plan is too short',
+    '  to judge.',
+    'When you have checked every plan, stop.',
+  );
+  return lines.join('\n');
+}
+
 /** The standard prompt for a supervised run. */
 export function runPrompt(p: PromptInput): string {
   const lines = [
@@ -716,6 +815,15 @@ export function runPrompt(p: PromptInput): string {
       '',
       'Run `swarmup inbox` and handle what waits for you, then `swarmup next` and work that task.',
     );
+    // The PM answers agents' asks and gets each new decision record in its inbox (AO-0109).
+    if (roleOf(p.agent) === 'pm') {
+      lines.push(
+        '',
+        'Check asks and new decisions against the decision log:',
+        ...askCheckLines(),
+        ...recordCheckLines(),
+      );
+    }
   }
   // Inline, not a command to run: a line in the prompt is read every time (AO-0109). A question
   // run answers and changes nothing, so it has no plan to check and gets no list.

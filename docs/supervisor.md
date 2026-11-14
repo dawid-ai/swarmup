@@ -751,6 +751,17 @@ auth status` and `codex login status` (`runtimes.<name>.sign_in_check`, the argu
   and names the task, the count, the limit, the author and the reviewers, so you can tune the
   limit from the log. Before, nothing acted on repeated change requests: AO-0110, a docs-only
   proposal, took at least six.
+- **Plan checks.** When agents wrote new `swarmup start` plans or checkpoint `--next` steps on
+  open tasks that have a decision in force, swarmupd starts one run of a waking, active PM that
+  is not signed out, at most once per `plan_check_minutes` (default 30; `0` turns it off). The
+  run's prompt lists each plan with its event id and author, and the decisions in force for its
+  task; 40 plans at most, the rest wait for the next check. The PM compares them and, for a
+  plan that conflicts, comments to the worker and to you: `contradiction with D-NNNN (date):
+<line>` with `keep` and `change` options and a recommendation. It cannot block the task, which
+  the worker holds. Plans of a person or a PM, of a closed task, and of a task without a
+  decision in force start no run, and neither do plans written before swarmupd first ran with
+  this check. A check that a limit holds back starts once there is room. The state is
+  `plan-check.json` in swarmupd's state folder.
 - Limits are per PC. A provider account spans PCs: with swarmupd on two PCs, set `usage_pause_at` or
   `max_live` on each to share it.
 - `swarmup usage` and `GET /api/usage` show each provider's windows, live runs and whether it is
@@ -783,6 +794,7 @@ swarmupd:
   outside_session_minutes: 30 # no run on a task a session outside swarmupd just worked on; 0: never
   stuck_runs: 3 # block a task for a PM after this many unfinished runs in a row; 0: never
   review_rounds: 3 # block a task for a PM after this many changes verdicts in a row; 0: never
+  plan_check_minutes: 30 # a PM checks new plans against the decisions at most this often; 0: never
   sync: true # commit, pull and push each root when its sync policy says so
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that
