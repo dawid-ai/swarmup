@@ -632,7 +632,7 @@ interface WakeCandidate {
   resume?: boolean;
   /** The task's owner: one agent, a wildcard, or null for anyone. */
   owner?: string | null;
-  /** The reviewer the task expects (a delegation); its provider never takes the task. */
+  /** The reviewer the task expects (a delegation, else its plan item); its provider never takes the task. */
   avoid?: string;
   /** Task candidates: a question to the agent, which role limits do not hold (AO-0063). */
   question?: boolean;
@@ -2458,7 +2458,7 @@ export class Supervisor extends EventEmitter {
       if (live.some((r) => r.root === v.root && r.task === v.meta.id)) continue;
       const role = roleOf(owner);
       const worktree = this.taskWorktree(ws, v);
-      const reviewer = v.delegation?.review;
+      const reviewer = v.delegation?.review ?? v.meta.review;
       const order = roleLimits(this.config, role).providers;
       const rank = (a: string): number => {
         const i = order.indexOf(runtimeOf(a));
@@ -3678,12 +3678,17 @@ export class Supervisor extends EventEmitter {
 
   /**
    * The reviewer to name for what a run left, or undefined to let `ws.review` route it. It routes a
-   * task whose type or labels need the person (AO-0173), the delegation's reviewer and the default
+   * task whose type or labels need the person (AO-0173), the reviewer of the delegation or of the plan item, and the default
    * reviewer of another provider itself; naming one here would skip the person's categories.
    * Without a reviewer role, the first active `qa` agent of another provider, else the person.
    */
   private reviewerFor(ws: Workspace, v: TaskView, author: string): string | undefined {
-    if (needsHumanReview(v.meta) || v.delegation?.review || ws.defaultReviewer(author)) {
+    if (
+      needsHumanReview(v.meta) ||
+      v.delegation?.review ||
+      v.meta.review ||
+      ws.defaultReviewer(author)
+    ) {
       return undefined;
     }
     const mine = runtimeOf(author);
@@ -6251,7 +6256,7 @@ export class Supervisor extends EventEmitter {
             priority: v.meta.priority,
             created: v.meta.created_at,
             owner: v.owner ?? null,
-            avoid: v.delegation?.review,
+            avoid: v.delegation?.review ?? v.meta.review,
             question: v.meta.type === QUESTION_TYPE || undefined,
             type: v.meta.type,
             outside: outsideOf(ws, ref, events) ?? undefined,

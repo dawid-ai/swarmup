@@ -22,7 +22,8 @@ export type Priority = (typeof PRIORITIES)[number];
 
 /**
  * Event types. The fold acts on the ones that change state; the rest (comment, finding, learn,
- * run-start, run-end, merge) are history. Unknown types from newer versions are kept and ignored.
+ * run-start, run-end, merge) are history. The four plan events carry a milestone's plan
+ * (AO-0110). Unknown types from newer versions are kept and ignored.
  */
 export const EVENT_TYPES = [
   'claim',
@@ -51,6 +52,10 @@ export const EVENT_TYPES = [
   'renew',
   'retype',
   'merge',
+  'plan',
+  'plan-approve',
+  'plan-amend',
+  'plan-reject',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -76,8 +81,86 @@ export interface TaskMeta {
   repeat?: string;
   /** The slot the repeat fired for: local time `YYYY-MM-DDTHH:MM`, or a condition key. */
   repeat_slot?: string;
+  /**
+   * The task's identity in a milestone's plan (AO-0110): `<milestone>#<key>`, such as
+   * `AO-0120#ci`. Keys are never reused, so it names one task for the milestone's life.
+   */
+  plan_item?: string;
+  /**
+   * The reviewer the plan item names: a concrete actor. `swarmup review` and swarmupd read it
+   * after a delegation's reviewer; the human routes come before both.
+   */
+  review?: string;
   created_by: string;
   created_at: string;
+}
+
+/** The type of a task that holds a goal, one `done_when` line and a plan of child tasks. */
+export const MILESTONE_TYPE = 'milestone';
+
+/** The owner a milestone gets on its first approved plan: the role that checks `done_when`. */
+export const PLAN_CHECKER = '*:qa';
+
+/** The most items one plan file holds; a bigger goal is several milestones. */
+export const PLAN_MAX_ITEMS = 25;
+
+/** The types a plan item's task may have. Not `milestone`: plans do not nest. */
+export const PLAN_ITEM_TYPES: readonly string[] = ['task', 'bug', 'docs'];
+
+/** One item of a milestone's plan: the task an approval creates for it (AO-0110). */
+export interface PlanItem {
+  /** Short id inside the milestone; `after` and `for` refer to it. Lowercase, never reused. */
+  key: string;
+  title: string;
+  /** An agent id, a role or runtime wildcard, or `human:<name>`. */
+  owner: string;
+  /** Keys this item waits for; they become the task's `blocked_by`. */
+  after?: string[];
+  /** `30m`, `2h` or `1d` (8 h). A planning number, never a budget. */
+  estimate: string;
+  /** The item's own check; the one line of the task's `done_when`. Defaults to the title. */
+  done_when?: string;
+  type?: string;
+  priority?: Priority;
+  /** Expected reviewer: a concrete actor id. */
+  review?: string;
+  body?: string;
+  /** Amendments: the approved item this one serves. */
+  for?: string;
+}
+
+/** Where an item of the effective plan came from: a human approval, or an amendment after it. */
+export type PlanOrigin = 'approve' | 'subtask' | 'fix';
+
+export interface EffectivePlanItem extends PlanItem {
+  origin: PlanOrigin;
+}
+
+/** A milestone's plan, folded from its `plan`, `plan-approve`, `plan-amend` and `plan-reject` events. */
+export interface PlanState {
+  /** The effective plan: the items of the latest `plan-approve`, then of every `plan-amend` after it. */
+  items: EffectivePlanItem[];
+  /** The latest `plan-approve` event, or null before the first approval. */
+  approval: string | null;
+  /** The latest `plan-approve` or `plan-amend` event: what a change proposal names as `base`. */
+  head: string | null;
+  /** The actor of the `plan` event that the latest `plan-approve` approved. */
+  planner: string | null;
+  /**
+   * The latest `plan` event that no `plan-approve` or `plan-reject` cites. `stale`: it revises a
+   * `base` the effective plan has moved past, so approving it would drop what came between.
+   */
+  pending: { event: string; actor: string; base?: string; stale: boolean } | null;
+  /** Every key a `plan-approve` or `plan-amend` has held, whether its task still exists or not. */
+  usedKeys: string[];
+  /**
+   * The keys of existing items that the latest approval changes: removed, or with another owner
+   * or `after`. Each needs one event with `plan_apply: <approval>#<key>` on its task, or a
+   * `plan_skip` comment on the milestone.
+   */
+  diff: string[];
+  /** The keys of `diff` that a `plan_skip` comment on the milestone settles. */
+  skipped: string[];
 }
 
 /** Frontmatter of `tasks/<id>/events/<ulid>-<actor>.md`, plus the id from the file name. */
@@ -87,7 +170,10 @@ export interface OpsEvent {
   actor: string;
   at: string;
   to?: string;
-  /** block: the tasks this one waits on. */
+  /**
+   * block: the tasks this one waits on. handoff, delegate, reopen: with a non-empty list, the task
+   * is blocked on them in the same event, so an owner change never frees it early (AO-0110).
+   */
   on?: string[];
   /** verdict: approve or changes. */
   verdict?: 'approve' | 'changes';
@@ -174,6 +260,19 @@ export interface OpsEvent {
    * decision (`D-0042`) the event marks. The record names this event as its `source`.
    */
   decision?: string;
+  /**
+   * One approval's change to one key (AO-0110): `<plan-approve event id>#<key>`. On the event
+   * that applies the change to the key's task, or with `plan_skip` on a comment of the milestone.
+   */
+  plan_apply?: string;
+  /** comment on a milestone, with `plan_apply`: the key's task closed before the change applied. */
+  plan_skip?: 'closed';
+  /** plan-approve, plan-reject: the `plan` event it approves or rejects. */
+  plan?: string;
+  /** plan of a change: the latest `plan-approve` or `plan-amend` when it was written. */
+  base?: string;
+  /** plan-amend: what the new items are. */
+  plan_kind?: 'subtask' | 'fix';
   body: string;
 }
 
@@ -252,6 +351,36 @@ export interface TaskState {
    * approved work, the work is not in the base yet (AO-0228).
    */
   awaitsMerge: boolean;
+  /** A milestone's plan; null for a task without plan events. */
+  plan: PlanState | null;
+  /**
+   * A milestone with an approved plan waits for its plan tasks (AO-0110). Set by `plan-approve`,
+   * `plan-amend` and a `reopen` with an effective plan; cleared when the milestone closes.
+   */
+  waitsOnPlan: boolean;
+  /** The `plan_apply` markers on this task's events: the plan changes that reached it. */
+  planApplied: string[];
+}
+
+/** What `derive` reads of a task's child for the plan rules. */
+export interface PlanChild {
+  id: string;
+  status: Status;
+  plan_item?: string;
+  planApplied: string[];
+}
+
+/** The lookups `derive` needs for the plan rules: a task's children, and a plan task's milestone. */
+export interface PlanLookup {
+  /** The live tasks whose `parent` is `id`. */
+  children(id: string): PlanChild[];
+  /**
+   * The archived tasks whose `parent` is `id`. Read only when a key of the plan has no live
+   * task, so a milestone whose children are all live never reads the archive.
+   */
+  archivedChildren?(id: string): PlanChild[];
+  /** The plan of milestone `id`, or null when there is none. */
+  planOf(id: string): PlanState | null;
 }
 
 /** The actor swarmupd writes merge events, notes and send-backs as. */
@@ -267,8 +396,25 @@ export interface TaskView extends TaskState {
    * the task is claimable again.
    */
   unblocked: boolean;
-  /** blocked: the tasks it waits on that are approved but not merged yet (AO-0228). */
+  /**
+   * blocked: the tasks it waits on that are approved but not merged yet (AO-0228). For a
+   * milestone that waits on its plan, its done children in that state.
+   */
   mergeWait?: string[];
+  /**
+   * Milestone that waits on its plan: effective keys that have no task yet. The application
+   * that creates them is incomplete, and each counts as open.
+   */
+  planMissing?: string[];
+  /** Milestone that waits on its plan: keys of the plan's `diff` whose task has no marker yet. */
+  planUnapplied?: string[];
+  /** Milestone that waits on its plan: its open children. */
+  planOpen?: string[];
+  /**
+   * Plan task: the `plan-approve` event whose change to this task's key is not applied yet. The
+   * task is not claimable until `swarmup plan apply` finishes it.
+   */
+  planHold?: string;
   /** The task folder is under `archive/tasks/`. */
   archived?: boolean;
 }

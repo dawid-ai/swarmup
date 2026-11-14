@@ -25,7 +25,8 @@ import { ulid, ulidAfter } from './ulid.js';
 // 10: addressed events and lastReview carry the recommended decision (`recommend`).
 // 11: task states carry awaitsMerge.
 // 12: task metas carry done_when as a list; an older build kept a hand-written text value as text.
-const INDEX_VERSION = 12;
+// 13: task states carry plan, waitsOnPlan and planApplied (AO-0110).
+const INDEX_VERSION = 13;
 
 interface IndexEntry {
   tm: number;

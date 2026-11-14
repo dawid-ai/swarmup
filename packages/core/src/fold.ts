@@ -1,5 +1,16 @@
-import type { OpsEvent, Status, TaskMeta, TaskState, TaskView } from './model.js';
-import { MERGE_ACTOR, OPEN_STATUSES } from './model.js';
+import type {
+  EffectivePlanItem,
+  OpsEvent,
+  PlanChild,
+  PlanLookup,
+  PlanState,
+  Status,
+  TaskMeta,
+  TaskState,
+  TaskView,
+} from './model.js';
+import { MERGE_ACTOR, OPEN_STATUSES, PLAN_CHECKER } from './model.js';
+import { readPlanBody } from './plan.js';
 import { reviewSources } from './review-source.js';
 import { ownerMatches } from './ids.js';
 import { ulidTime } from './ulid.js';
@@ -71,6 +82,43 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
     delegation: null,
     todoSince: meta.created_at,
     awaitsMerge: false,
+    plan: null,
+    waitsOnPlan: false,
+    planApplied: [],
+  };
+  // The `plan` events so far, by id: who proposed each.
+  const proposals = new Map<string, { actor: string; base?: string }>();
+  // The `plan` events a `plan-approve` or `plan-reject` cites.
+  const cited = new Set<string>();
+  const planState = (): PlanState =>
+    (s.plan ??= {
+      items: [],
+      approval: null,
+      head: null,
+      planner: null,
+      pending: null,
+      usedKeys: [],
+      diff: [],
+      skipped: [],
+    });
+  const useKeys = (plan: PlanState, items: EffectivePlanItem[]): void => {
+    for (const i of items) if (!plan.usedKeys.includes(i.key)) plan.usedKeys.push(i.key);
+  };
+  // A plan-approve or plan-amend blocks the milestone on its plan in the same write.
+  const waitOnPlan = (): void => {
+    if (!OPEN_STATUSES.has(s.status)) return;
+    s.waitsOnPlan = true;
+    s.status = 'blocked';
+    clearClaim();
+    clearWait();
+  };
+  // handoff, delegate, reopen with `on`: the task waits on those tasks under its new owner.
+  const blockOn = (e: OpsEvent): void => {
+    if (!e.on || e.on.length === 0 || !OPEN_STATUSES.has(s.status)) return;
+    s.status = 'blocked';
+    s.blockedOn = [...e.on];
+    s.waitEvent = e.id;
+    s.askedBy = e.actor;
   };
   // Whether a review request so far names a branch: what swarmupd looks for to merge.
   let namesBranch = false;
@@ -115,7 +163,84 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
     // merge. A note on a merge that failed leaves the work out of the base, so it settles nothing;
     // a send-back is a verdict, handled below.
     if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) s.awaitsMerge = false;
+    if (e.plan_apply) {
+      if (e.type === 'comment' && e.plan_skip) {
+        // On the milestone: the key's task closed before this approval's change reached it.
+        const [approval, key] = splitMarker(e.plan_apply);
+        if (s.plan && approval === s.plan.approval && key && !s.plan.skipped.includes(key)) {
+          s.plan.skipped.push(key);
+        }
+      } else if (!s.planApplied.includes(e.plan_apply)) {
+        s.planApplied.push(e.plan_apply);
+      }
+    }
     switch (e.type) {
+      case 'plan': {
+        // A full proposed plan. It folds no state: the first proposal's `review` event does.
+        if (!readPlanBody(e.body)) break;
+        planState();
+        proposals.set(e.id, { actor: e.actor, ...(e.base ? { base: e.base } : {}) });
+        break;
+      }
+      case 'plan-approve': {
+        const doc = readPlanBody(e.body);
+        if (!doc) break;
+        const plan = planState();
+        const first = plan.approval === null;
+        const items = doc.items.map((i): EffectivePlanItem => ({ ...i, origin: 'approve' }));
+        const approved = new Map(items.map((i) => [i.key, i] as const));
+        // Existing items this approval removes, hands to another owner or reorders. An estimate
+        // lives in the plan only, so it changes no task.
+        plan.diff = plan.items
+          .filter((old) => {
+            const next = approved.get(old.key);
+            return !next || next.owner !== old.owner || !sameKeys(next.after, old.after);
+          })
+          .map((old) => old.key);
+        plan.skipped = [];
+        plan.items = items;
+        plan.approval = e.id;
+        plan.head = e.id;
+        useKeys(plan, items);
+        if (e.plan) {
+          cited.add(e.plan);
+          plan.planner = proposals.get(e.plan)?.actor ?? plan.planner;
+        }
+        if (first && OPEN_STATUSES.has(s.status)) {
+          // The milestone now belongs to whoever checks `done_when` when its tasks close.
+          s.owner = PLAN_CHECKER;
+          s.reviewer = null;
+        }
+        waitOnPlan();
+        break;
+      }
+      case 'plan-amend': {
+        const doc = readPlanBody(e.body);
+        // New items only, after an approval; anything else is not an amendment.
+        if (!doc || !s.plan?.approval) break;
+        const plan = s.plan;
+        const origin = e.plan_kind === 'fix' ? 'fix' : 'subtask';
+        const items = doc.items
+          .filter((i) => !plan.usedKeys.includes(i.key))
+          .map((i): EffectivePlanItem => ({ ...i, origin }));
+        plan.items = [...plan.items, ...items];
+        plan.head = e.id;
+        useKeys(plan, items);
+        waitOnPlan();
+        break;
+      }
+      case 'plan-reject': {
+        if (!e.plan || !proposals.has(e.plan)) break;
+        cited.add(e.plan);
+        // Sending back the first proposal folds like `verdict changes`. A rejected change
+        // proposal leaves the milestone blocked on the plan it has.
+        if (s.plan?.approval === null && s.status === 'needs-review') {
+          s.status = 'todo';
+          s.reviewer = null;
+          clearClaim();
+        }
+        break;
+      }
       case 'claim': {
         const free =
           s.status === 'todo' || (s.status === 'claimed' && !leaseLive(s, at) && s.claimedBy);
@@ -172,12 +297,14 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         clearClaim();
         clearWait();
         s.reviewer = null;
+        if (e.type === 'handoff') blockOn(e);
         break;
       case 'delegate':
         if (e.to) s.owner = e.to;
         if (OPEN_STATUSES.has(s.status)) s.status = 'todo';
         clearClaim();
         clearWait();
+        blockOn(e);
         s.reviewer = null;
         s.delegation = {
           by: e.actor,
@@ -225,6 +352,11 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
         s.status = 'todo';
         clearClaim();
         clearWait();
+        // A plan task comes back under its plan owner and dependencies (AO-0110); a milestone
+        // with an effective plan waits on it again.
+        if (e.to) s.owner = e.to;
+        blockOn(e);
+        if (s.plan?.approval) waitOnPlan();
         break;
       case 'ask':
         // The addressee of an open ask forwards it (the PM to the person, AO-0173): the answer
@@ -267,14 +399,100 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
     }
     if (s.status !== 'todo') s.todoSince = null;
     else if (before.status !== 'todo' || before.owner !== s.owner) s.todoSince = e.at;
+    // done, park and an approving verdict close the milestone: it waits on nothing any more.
+    if (!OPEN_STATUSES.has(s.status)) s.waitsOnPlan = false;
+  }
+  if (s.plan) {
+    const plan = s.plan;
+    // The pending proposal: the latest `plan` event that no approval or rejection cites.
+    const open = [...proposals.keys()].filter((id) => !cited.has(id)).pop();
+    const p = open ? proposals.get(open)! : null;
+    plan.pending =
+      open && p
+        ? {
+            event: open,
+            actor: p.actor,
+            ...(p.base ? { base: p.base } : {}),
+            stale: p.base !== undefined && p.base !== plan.head,
+          }
+        : null;
   }
   return s;
+}
+
+/** `<plan-approve event id>#<key>` as its two parts. */
+function splitMarker(marker: string): [string, string] {
+  const at = marker.indexOf('#');
+  return at < 0 ? [marker, ''] : [marker.slice(0, at), marker.slice(at + 1)];
+}
+
+function sameKeys(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const x = new Set(a ?? []);
+  const y = new Set(b ?? []);
+  return x.size === y.size && [...x].every((k) => y.has(k));
+}
+
+/**
+ * The plan lookups of `derive` over the folded tasks of one root. `states` is the root's live
+ * tasks; `archived` reads its archived ones, and runs only for a task that has a plan or a
+ * `plan_item`, at most once.
+ */
+export function planLookup(
+  states: readonly TaskState[],
+  archived: () => readonly TaskState[] = () => [],
+): PlanLookup {
+  const index = (list: readonly TaskState[]): Map<string, PlanChild[]> => {
+    const out = new Map<string, PlanChild[]>();
+    for (const s of list) {
+      if (!s.meta.parent) continue;
+      const kids = out.get(s.meta.parent);
+      if (kids) kids.push(planChild(s));
+      else out.set(s.meta.parent, [planChild(s)]);
+    }
+    return out;
+  };
+  let old: readonly TaskState[] | undefined;
+  const archive = (): readonly TaskState[] => {
+    if (old) return old;
+    const live = new Set(states.map((s) => s.meta.id));
+    // A task in both folders is live.
+    old = archived().filter((s) => !live.has(s.meta.id));
+    return old;
+  };
+  let liveKids: Map<string, PlanChild[]> | undefined;
+  let oldKids: Map<string, PlanChild[]> | undefined;
+  let byId: Map<string, TaskState> | undefined;
+  return {
+    children: (id) => (liveKids ??= index(states)).get(id) ?? [],
+    archivedChildren: (id) => (oldKids ??= index(archive())).get(id) ?? [],
+    planOf(id) {
+      byId ??= new Map(states.map((s) => [s.meta.id, s] as const));
+      const s = byId.get(id) ?? archive().find((a) => a.meta.id === id);
+      return s?.plan ?? null;
+    },
+  };
+}
+
+/** A folded task as the plan rules of `derive` read a child. */
+export function planChild(s: TaskState): PlanChild {
+  return {
+    id: s.meta.id,
+    status: s.status,
+    ...(s.meta.plan_item ? { plan_item: s.meta.plan_item } : {}),
+    planApplied: s.planApplied,
+  };
 }
 
 /**
  * Applies the rules that need the clock or other tasks: expired leases and finished dependencies.
  * `mergePending` says whether a dependency is approved work that swarmupd on this machine still
  * has to merge; such a dependency is closed but does not free the task yet (AO-0228).
+ *
+ * `plans` gives the plan rules (AO-0110) their lookups. A milestone that waits on its plan shows
+ * `blocked` while a key of the effective plan has no task, a change of the latest approval has
+ * not reached its task, a child is open, or a done child still waits for its merge; after that
+ * it is unblocked, for the check. A plan task gets `planHold` while the latest approval's change
+ * to its key is not applied. Without `plans`, neither rule runs.
  */
 export function derive(
   state: TaskState,
@@ -282,6 +500,7 @@ export function derive(
   nowMs: number,
   statusOf: (id: string) => Status | undefined,
   mergePending: (id: string) => boolean = () => false,
+  plans?: PlanLookup,
 ): TaskView {
   const view: TaskView = { ...state, root, stale: false, unblocked: false };
   if (
@@ -303,10 +522,73 @@ export function derive(
     if (unmerged.length > 0) view.mergeWait = unmerged;
     else if (allClosed) view.unblocked = true;
   }
+  if (plans && state.waitsOnPlan && state.plan)
+    waitOnChildren(view, state.plan, plans, mergePending);
+  // Only an open task can be claimed, so only an open one is held.
+  if (plans && state.meta.plan_item && OPEN_STATUSES.has(state.status)) {
+    const [milestone, key] = splitMarker(state.meta.plan_item);
+    const plan = plans.planOf(milestone);
+    if (
+      plan?.approval &&
+      plan.diff.includes(key) &&
+      !plan.skipped.includes(key) &&
+      !state.planApplied.includes(`${plan.approval}#${key}`)
+    ) {
+      view.planHold = plan.approval;
+    }
+  }
   return view;
+}
+
+/** The milestone rule of `derive`: what of its plan a milestone still waits for. */
+function waitOnChildren(
+  view: TaskView,
+  plan: PlanState,
+  plans: PlanLookup,
+  mergePending: (id: string) => boolean,
+): void {
+  let kids = plans.children(view.meta.id);
+  const byItem = new Map<string, PlanChild>();
+  for (const k of kids) if (k.plan_item) byItem.set(k.plan_item, k);
+  const item = (key: string): string => `${view.meta.id}#${key}`;
+  // A key without a live task: its task may be archived, which is closed, not missing.
+  if (plans.archivedChildren && plan.items.some((i) => !byItem.has(item(i.key)))) {
+    kids = [...kids, ...plans.archivedChildren(view.meta.id)];
+    for (const k of kids) if (k.plan_item && !byItem.has(k.plan_item)) byItem.set(k.plan_item, k);
+  }
+  const missing = plan.items.filter((i) => !byItem.has(item(i.key))).map((i) => i.key);
+  // A diff key without a task has nothing to change: a removed item whose task was never made.
+  const unapplied = plan.diff.filter((key) => {
+    const kid = byItem.get(item(key));
+    return (
+      !!kid && !plan.skipped.includes(key) && !kid.planApplied.includes(`${plan.approval}#${key}`)
+    );
+  });
+  const open = kids.filter((k) => OPEN_STATUSES.has(k.status)).map((k) => k.id);
+  // A parked child is closed for good; a done one counts as open until its merge wait settles.
+  const merging = kids.filter((k) => k.status === 'done' && mergePending(k.id)).map((k) => k.id);
+  if (missing.length > 0) view.planMissing = missing;
+  if (unapplied.length > 0) view.planUnapplied = unapplied;
+  if (open.length > 0) view.planOpen = open;
+  const settled = missing.length + unapplied.length + open.length + merging.length === 0;
+  // Blocked by the plan itself, not by a question or a `block` written on top of it.
+  const byPlan =
+    view.status === 'blocked' &&
+    view.waitingOn === null &&
+    view.waitEvent === null &&
+    view.blockedOn.length === 0;
+  if (!byPlan && view.status !== 'todo') return;
+  if (merging.length > 0) view.mergeWait = merging;
+  if (!settled) {
+    // A reopened child or a new amendment blocks a milestone that was free for its check.
+    view.status = 'blocked';
+    view.unblocked = false;
+    view.todoSince = null;
+  } else if (byPlan) view.unblocked = true;
 }
 
 /** True when anyone allowed to own the task may claim it now. */
 export function isClaimable(v: TaskView): boolean {
+  if (v.planHold) return false;
   return v.status === 'todo' || v.stale || v.unblocked;
 }

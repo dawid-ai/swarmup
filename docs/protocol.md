@@ -365,9 +365,15 @@ branch the work came from, the base), `no_merge` (comment by `opsd:merge`: swarm
 merge for the approved task, so tasks blocked on it go on), `keep_wait` (assign: a blocked task keeps its open question
 or task wait under the new owner; `assign` writes it whenever the task is blocked, and triage when
 it assigns without answering; `answer` or `unblock` drop the wait on purpose, and `handoff` always
-clears it). Types that change state:
+clears it), `on` (block: the tasks the task waits on; on a `handoff`, `delegate` or `reopen` with a
+non-empty list, the task is blocked on those tasks in the same event, after the old wait is
+cleared, and a `reopen` with `to` also sets the owner), `plan_apply` and `plan_skip` (the markers
+of a milestone's plan change on one plan item). Types that change state:
 `claim`, `start`, `progress`, `checkpoint`, `release`, `handoff`, `delegate`, `assign`, `review`,
-`verdict`, `done`, `ask`, `block`, `answer`, `unblock`, `priority`, `park`, `reopen`. Other types (`comment`,
+`verdict`, `done`, `ask`, `block`, `answer`, `unblock`, `priority`, `park`, `reopen`, and on a
+milestone `plan-approve`, `plan-amend` and the `plan-reject` of its first proposal (the fold reads
+the plan itself from these and from `plan` events; the `swarmup plan` commands that write them are
+not built yet). Other types (`comment`,
 `finding`, `learn`, `run-start`, `run-end`, `merge`) are history. Unknown types are kept and
 ignored, so older `swarmup` versions read newer data. swarmupd writes `merge` events, and the `changes`
 verdict that sends back approved work it could not merge, as `opsd:merge`.

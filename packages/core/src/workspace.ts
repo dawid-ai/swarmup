@@ -70,7 +70,7 @@ import {
   writeBallot,
   writeOutcome,
 } from './decisions.js';
-import { derive, detailText, isClaimable, summaryLine } from './fold.js';
+import { derive, detailText, isClaimable, planChild, planLookup, summaryLine } from './fold.js';
 import {
   assertActor,
   assertOwner,
@@ -97,8 +97,17 @@ import { parseQuery, runSearch, wantedKinds } from './search.js';
 import { searchBudget, searchSources } from './search-index.js';
 import type { Timeline, TimelineTask } from './timeline.js';
 import { buildTimeline } from './timeline.js';
-import type { OpsEvent, Priority, Status, TaskMeta, TaskView } from './model.js';
-import { MERGE_ACTOR, OPEN_STATUSES, PRIORITIES } from './model.js';
+import type {
+  OpsEvent,
+  PlanChild,
+  PlanLookup,
+  Priority,
+  Status,
+  TaskMeta,
+  TaskState,
+  TaskView,
+} from './model.js';
+import { MERGE_ACTOR, MILESTONE_TYPE, OPEN_STATUSES, PRIORITIES } from './model.js';
 import { reviewSources } from './review-source.js';
 import type {
   Condition,
@@ -176,6 +185,10 @@ export interface NewTaskInput {
   blockedBy?: string[];
   /** Checks that say when the task is done: one command or observable behavior per line. */
   doneWhen?: string[];
+  /** The plan item the task is created for: `<milestone>#<key>` (AO-0110). */
+  planItem?: string;
+  /** The reviewer the plan item names: a concrete actor. */
+  review?: string;
 }
 
 export interface DelegateInput {
@@ -1019,7 +1032,7 @@ export class Workspace {
    * owner is empty or reaches no configured agent. Each names the role group `roleGroupFor` its
    * type and labels picks, and whether swarmupd may route it there: a waking agent answers to that
    * group, is one of the role's providers (`takesGroupWork`), is not the provider of the reviewer
-   * a delegation expects, may claim the task's type, and for a question the group is not the
+   * a delegation or the plan item expects, may claim the task's type, and for a question the group is not the
    * asker's. These are the checks swarmupd's wake planner makes, so a
    * routed task has an agent that starts it. swarmupd passes the agents its config wakes and its
    * parsed role limits.
@@ -1037,8 +1050,8 @@ export class Workspace {
       const answering = waking.filter((a) => ownerMatches(to, a));
       const providers = answering.filter((a) => takesGroupWork(a, limits(a)));
       // A routing `assign` keeps the delegation, and swarmupd never wakes the provider of the
-      // reviewer the task expects.
-      const avoid = v.delegation?.review;
+      // reviewer the task expects: the delegation's, else the plan item's.
+      const avoid = v.delegation?.review ?? v.meta.review;
       const eligible =
         avoid && !isHuman(avoid)
           ? providers.filter((a) => runtimeOf(a) !== runtimeOf(avoid))
@@ -1200,7 +1213,16 @@ export class Workspace {
 
   /** Every task in every root, for callers such as activity and inbox that are not root-scoped. */
   private allViews(opts: { archived?: boolean } = {}): TaskView[] {
-    const all = this.roots.flatMap((r) => r.states().map((s) => ({ root: r, s, archived: false })));
+    const live = this.roots.map((root) => ({ root, states: root.states() }));
+    const all = live.flatMap(({ root, states }) =>
+      states.map((s) => ({ root, s, archived: false })),
+    );
+    // The plan rules look up a milestone's children and a plan task's milestone in its own root.
+    const plans = new Map(
+      live.map(
+        ({ root, states }) => [root.name, planLookup(states, () => root.archivedStates())] as const,
+      ),
+    );
     if (opts.archived) {
       for (const r of this.roots) {
         for (const s of r.archivedStates()) all.push({ root: r, s, archived: true });
@@ -1220,7 +1242,7 @@ export class Workspace {
         const dep = this.depTarget(root, ref, status);
         return !!dep && merges.has(dep.root.name) && dep.root.foldTask(dep.id).awaitsMerge;
       };
-      const v = derive(s, root.name, nowMs, statusOf, mergePending);
+      const v = derive(s, root.name, nowMs, statusOf, mergePending, plans.get(root.name));
       if (archived) v.archived = true;
       return v;
     });
@@ -1312,7 +1334,15 @@ export class Workspace {
       const dep = this.depTarget(root, ref);
       return !!dep && merges.has(dep.root.name) && dep.root.foldTask(dep.id).awaitsMerge;
     };
-    const v = derive(state, root.name, this.now(), (d) => known.get(d), mergePending);
+    // Read only for a milestone that waits on its plan, or a plan task.
+    const kids = (list: readonly TaskState[], parent: string): PlanChild[] =>
+      list.filter((s) => s.meta.parent === parent).map(planChild);
+    const plans: PlanLookup = {
+      children: (parent) => kids(root.states(), parent),
+      archivedChildren: (parent) => kids(root.archivedStates(), parent),
+      planOf: (milestone) => (root.hasTask(milestone) ? root.foldTask(milestone).plan : null),
+    };
+    const v = derive(state, root.name, this.now(), (d) => known.get(d), mergePending, plans);
     if (root.isArchived(id)) v.archived = true;
     return v;
   }
@@ -1378,6 +1408,7 @@ export class Workspace {
     if (!title) throw new OpsError('a task needs a title', 2);
     const doneWhen = doneWhenLines(input.doneWhen);
     assertNoSecret(title, input.body, ...(doneWhen ?? []));
+    if (input.type === MILESTONE_TYPE) assertMilestoneCheck(doneWhen);
     if (input.owner) assertOwner(input.owner);
     if (input.type === QUESTION_TYPE) assertQuestionTo(input.owner, actor, actor);
     const why = input.owner ? this.ownerRefusal(input.owner) : null;
@@ -1406,6 +1437,8 @@ export class Workspace {
         labels: input.labels && input.labels.length > 0 ? input.labels : undefined,
         blocked_by: blocked && blocked.length > 0 ? blocked : undefined,
         done_when: doneWhen,
+        plan_item: input.planItem,
+        review: input.review ? assertActor(input.review, 'reviewer') : undefined,
         created_by: actor,
         created_at: new Date(this.now()).toISOString(),
       },
@@ -1665,6 +1698,7 @@ export class Workspace {
     ctx: ActCtx,
     root: Root,
   ): Array<Omit<OpsEvent, 'id' | 'actor' | 'at'>> {
+    refusePlanHold(v);
     if (!isClaimable(v)) {
       const who = v.claimedBy ? ` by ${v.claimedBy}` : '';
       throw new OpsError(`${v.meta.id} is ${v.status}${who}; not claimable`);
@@ -1676,8 +1710,13 @@ export class Workspace {
     if (!eligible) ctx.needPrivilege(`${v.meta.id} is owned by ${v.owner ?? 'nobody'}`);
     this.requireTriaged(v, ctx);
     const out: Array<Omit<OpsEvent, 'id' | 'actor' | 'at'>> = [];
-    if (v.unblocked)
-      out.push({ type: 'unblock', body: `Dependencies done: ${v.blockedOn.join(', ')}` });
+    if (v.unblocked) {
+      // A milestone that waited on its plan has no dependency list: its plan tasks closed.
+      const body = v.waitsOnPlan
+        ? 'Plan tasks closed'
+        : `Dependencies done: ${v.blockedOn.join(', ')}`;
+      out.push({ type: 'unblock', body });
+    }
     out.push({
       type: 'claim',
       token: randomBytes(6).toString('hex'),
@@ -1704,6 +1743,7 @@ export class Workspace {
       this.requireTriaged(v, ctx);
       const out = [];
       let holder = v.claimToken ?? undefined;
+      if (!ctx.holds) refusePlanHold(v);
       if (isClaimable(v) && !ctx.holds) {
         out.push(...this.claimEvents(v, ctx, root));
         holder = out.find((e) => e.type === 'claim')?.token;
@@ -1863,7 +1903,9 @@ export class Workspace {
    *
    * Without `to`, the review goes to an agent reviewer of another provider than the author
    * (AO-0173), or to the person when `human` is set or the task's type or labels name a category
-   * only the person reviews (`HUMAN_REVIEW_LABELS`), or when no such reviewer is configured.
+   * only the person reviews (`HUMAN_REVIEW_LABELS`), or when no such reviewer is configured. A
+   * reviewer named by a delegation, else by the task's plan item (`review` in `task.md`), comes
+   * after those human routes and before the default reviewer.
    */
   review(
     ref: string,
@@ -1890,6 +1932,8 @@ export class Workspace {
         reviewer = ctx.human;
         routed = `sent to ${ctx.human ?? 'a person'}: the task's type or labels name a category only the person reviews`;
       } else if (v.delegation?.review) reviewer = v.delegation.review;
+      // The reviewer a plan item names (AO-0110), after the human routes and a delegation.
+      else if (v.meta.review) reviewer = v.meta.review;
       else {
         reviewer = this.defaultReviewer(author) ?? ctx.human;
         if (reviewer && !isHuman(reviewer)) {
@@ -1953,6 +1997,14 @@ export class Workspace {
           : this.freedBy(ref, false);
     return this.markAct(ref, mark, (v, ctx) => {
       ctx.requireStatus(['needs-review'], 'give a verdict on');
+      // A plain approval would close the milestone without creating its tasks, and a plain
+      // rejection would not mark the plan rejected (AO-0110).
+      if (v.meta.type === MILESTONE_TYPE && v.plan?.pending) {
+        const verb = verdict === 'approve' ? 'approve' : 'reject';
+        throw new OpsError(
+          `${v.meta.id} is a milestone with a plan that waits for approval: use swarmup plan ${verb} ${v.meta.id}`,
+        );
+      }
       if (!v.reviewer || !ownerMatches(v.reviewer, ctx.actor)) {
         ctx.needPrivilege(`${v.meta.id} waits for ${v.reviewer ?? 'a human'}'s review`);
       }
@@ -2269,6 +2321,7 @@ export class Workspace {
     return this.markAct(ref, opts.mark, (v, ctx) => {
       ctx.needTriager('only a person, the orchestrator or the PM changes a task type');
       if (v.meta.type === type) throw new OpsError(`${v.meta.id} is already a ${type}`, 1);
+      if (type === MILESTONE_TYPE) assertMilestoneCheck(v.meta.done_when);
       if (type === QUESTION_TYPE) {
         assertQuestionTo(opts.to ?? v.owner, v.meta.created_by, ctx.actor);
       }
@@ -3951,6 +4004,33 @@ export class Workspace {
  * group the asker belongs to, or it would sit in the asker's own queue. Checked when the question
  * is filed and whenever its owner or type changes.
  */
+/**
+ * A milestone has exactly one `done_when` line (AO-0110): the check that closes it. Without one
+ * nobody can check it, so it never closes; with several, the check has no single answer.
+ */
+function assertMilestoneCheck(doneWhen: readonly string[] | undefined): void {
+  const n = doneWhen?.length ?? 0;
+  if (n === 1) return;
+  throw new OpsError(
+    n === 0
+      ? 'a milestone needs one done-when line that an agent can check: pass --done-when "..."'
+      : `a milestone has exactly one done-when line, not ${n}: join them into one check`,
+    2,
+  );
+}
+
+/**
+ * Refuses a claim on a plan task that an approved plan change has not reached yet (AO-0110): a
+ * claim now would run it under the old owner or dependencies.
+ */
+function refusePlanHold(v: TaskView): void {
+  if (!v.planHold) return;
+  const milestone = v.meta.plan_item?.split('#')[0] ?? 'its milestone';
+  throw new OpsError(
+    `${v.meta.id} waits for ${milestone}'s plan to apply; run swarmup plan apply ${milestone}`,
+  );
+}
+
 function assertQuestionTo(owner: string | null | undefined, asker: string, actor: string): void {
   if (!owner) throw new OpsError('a question needs the agent it goes to: --to codex:qa', 2);
   if (isHuman(owner)) {
