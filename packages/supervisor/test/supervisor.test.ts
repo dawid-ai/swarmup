@@ -4484,6 +4484,84 @@ describe('Master Repo', () => {
     const run = sup.launch({ agent: 'fake:engineer', task: 'test/T-0001', cwd: work });
     expect(realpathSync(run.cwd).toLowerCase()).toBe(realpathSync(work).toLowerCase());
   });
+
+  it('checks the plans of a project known only from the Master Repo (AO-0109)', async () => {
+    const { repo: projectRepo, state } = setup();
+    const hubRepo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: hubRepo, windowsHide: true });
+    initRoot(hubRepo, { name: 'hub', prefix: 'HUB', human: 'human:dawid' });
+    const agents = join(projectRepo, '.swarmup', 'agents');
+    mkdirSync(agents, { recursive: true });
+    for (const id of ['fake:pm', 'fake:engineer']) {
+      writeFileSync(
+        join(agents, `${id.replace(':', '-')}.md`),
+        ['---', `id: ${id}`, 'status: active', '---', ''].join('\n'),
+      );
+    }
+    new Workspace({
+      cwd: projectRepo,
+      env: { SWARMUP_CONFIG: join(projectRepo, 'none.yml') },
+      actor: 'human:dawid',
+      user: {},
+    }).newTask({ title: 'Merge approved branches', owner: 'fake:engineer' });
+    mirrorPair(new Root(join(projectRepo, '.swarmup')), new Root(join(hubRepo, '.swarmup')));
+    const agentFile = join(temp(), 'fake-agent.mjs');
+    writeFileSync(agentFile, FAKE_AGENT);
+    const promptFile = join(temp(), 'prompt.txt');
+    const env = {
+      ...process.env,
+      SWARMUP_CONFIG: join(hubRepo, 'none.yml'),
+      SWARMUP_STATE_DIR: state,
+      FAKE_MODE: 'done',
+      FAKE_PROMPT: promptFile,
+    } as NodeJS.ProcessEnv;
+    delete env.SWARMUP_AGENT;
+    delete env.SWARMUP_ROOTS;
+    // This machine has only the Master Repo: the project is its mirror root.
+    const user = { master: hubRepo };
+    const sup = new Supervisor({
+      env,
+      cwd: hubRepo,
+      user,
+      config: opsdConfig({
+        opsd: {
+          sync: false,
+          task_worktrees: false,
+          runtimes: { fake: { command: process.execPath, args: [agentFile] } },
+          agents: { 'fake:pm': { wake: true } },
+        },
+      }),
+      freeMem: () => 64 * 2 ** 30,
+    });
+    sups.push(sup);
+    expect(sup.ws().roots.find((r) => r.name === 'test')?.isMirror).toBe(true);
+    const d = sup.ws('human:dawid').comment('test/T-0001', 'Never merge for me.', undefined, {
+      text: 'swarmupd never merges; Dawid merges',
+    }).decision!.id;
+    const settle = async (): Promise<void> => {
+      for (const r of sup.runs({ live: true })) await ended(sup, r.id);
+    };
+    // The first tick notes where the events stand; the record wakes an inbox run of the PM.
+    await sup.tick();
+    await settle();
+    expect(sup.runs().filter((r) => r.plan_check)).toEqual([]);
+    const plan = sup
+      .ws('fake:engineer')
+      .start('test/T-0001', 'merge approved branches automatically')
+      .events.at(-1)!;
+    await sup.tick();
+    expect(sup.runs().filter((r) => r.plan_check)).toMatchObject([{ agent: 'fake:pm' }]);
+    await settle();
+    const prompt = readFileSync(promptFile, 'utf8');
+    expect(prompt).toContain(
+      [
+        'test/T-0001 · Merge approved branches',
+        `- Plan by fake:engineer (event ${plan.id}): merge approved branches automatically`,
+        'Decisions in force for test/T-0001 (follow them; newest first):',
+        `- ${d} (`,
+      ].join('\n'),
+    );
+  });
 });
 
 describe('machine presence', () => {

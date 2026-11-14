@@ -3569,14 +3569,14 @@ export class Supervisor extends EventEmitter {
     const ws = this.ws(WATCH_ACTOR);
     const pm = this.pmFor(ws);
     if (!pm) return;
-    // A mirror is another clone's store: its own swarmupd checks the plans there.
-    const mirrors = new Set(ws.roots.filter((r) => r.isMirror).map((r) => r.name));
+    // A project known only from the Master Repo is checked like any other: its copy is loaded
+    // only when the project root is not, so no plan is read twice.
     const qualify = ws.roots.length > 1;
     let newest = state.last;
     const found: Array<PlanCheckTask['plans'][number] & { ref: string; title: string }> = [];
     const decisions = new Map<string, PlanCheckTask['decisions']>();
     for (const v of ws.snapshot()) {
-      if (mirrors.has(v.root) || !v.lastEvent || v.lastEvent <= state.last) continue;
+      if (!v.lastEvent || v.lastEvent <= state.last) continue;
       if (v.lastEvent > newest) newest = v.lastEvent;
       // The plan of a closed task changes nothing any more.
       if (!OPEN_STATUSES.has(v.status)) continue;

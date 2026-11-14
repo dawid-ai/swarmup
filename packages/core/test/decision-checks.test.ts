@@ -3,9 +3,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { RECORD_INBOX_DAYS, TEMPLATES_DIR } from '../src/index.js';
-import type { InboxItem, Workspace } from '../src/index.js';
-import { setup } from './helpers.js';
+import {
+  initRoot,
+  mirrorPair,
+  RECORD_INBOX_DAYS,
+  Root,
+  TEMPLATES_DIR,
+  Workspace,
+} from '../src/index.js';
+import type { InboxItem } from '../src/index.js';
+import { gitRepo, setup } from './helpers.js';
 
 function team(...slugs: string[]) {
   const s = setup();
@@ -73,6 +80,36 @@ describe('a recorded decision reaches the PM inbox', () => {
     const later = Date.now() + (RECORD_INBOX_DAYS + 1) * 24 * 3_600_000;
     const pmLater = as('claude:pm', { now: () => later });
     expect(records(pmLater)).toEqual([]);
+  });
+
+  it('lists a record in a project known only from the Master Repo', () => {
+    const { as, rootDir } = team('claude-pm', 'claude-engineer');
+    const t = as('human:dawid').newTask({ title: 'merge approved work', owner: 'claude:engineer' });
+    const hubRepo = gitRepo();
+    const hubDir = initRoot(hubRepo, { name: 'hub', prefix: 'HUB', human: 'human:dawid' });
+    mirrorPair(new Root(rootDir), new Root(hubDir));
+    // This machine has only the Master Repo: the project is its mirror root.
+    const hub = (actor: string): Workspace =>
+      new Workspace({
+        cwd: hubRepo,
+        env: { SWARMUP_CONFIG: join(hubRepo, 'no-user-config.yml') } as NodeJS.ProcessEnv,
+        actor,
+        user: { master: hubRepo },
+      });
+    const h = hub('human:dawid');
+    expect(h.roots.map((r) => `${r.name}${r.isMirror ? ' (mirror)' : ''}`).sort()).toEqual([
+      'hub',
+      'test (mirror)',
+    ]);
+    const marked = h.comment(`test/${t.id}`, 'Merge it for me from now on.', undefined, {
+      text: 'swarmupd merges approved work',
+    }).decision!.id;
+    const items = records(hub('claude:pm'));
+    expect(items).toMatchObject([{ kind: 'record', root: 'test', from: 'human:dawid' }]);
+    expect(items[0]!.task).toBe(`test/${marked}`);
+    expect(items[0]!.summary).toBe(
+      `decision recorded (tree ${t.id}): swarmupd merges approved work`,
+    );
   });
 
   it('sends nothing without a PM', () => {
