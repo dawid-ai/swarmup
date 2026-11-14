@@ -4406,6 +4406,69 @@ describe('runtime backoff (AO-0150)', () => {
     expect(h.view(port.id).owner).toBe('other:engineer');
   });
 
+  it('reads the plan of a closed or archived milestone for the signed-out handoff (AO-0327)', async () => {
+    let now = Date.now();
+    const { sup, as } = setup({
+      mode: 'hang',
+      now: () => now,
+      opsd: {
+        agents: { 'fake:engineer': { wake: true }, 'other:engineer': { wake: true } },
+        runtimes: { other: HANG_RUNTIME },
+        roles: { engineer: { providers: ['fake', 'other'], writes: false, per_project: 2 } },
+      },
+    });
+    const h = as('human:dawid');
+    const root = h.defaultRoot();
+    const body = planBody(
+      parsePlan(
+        "items:\n  - key: build\n    title: Item build\n    owner: 'fake:engineer'\n    estimate: 1h\n",
+      ),
+    );
+    // A milestone with an approved plan and one open plan task its plan gives to fake:engineer.
+    const planned = (title: string) => {
+      const milestone = h.newTask({
+        title,
+        type: 'milestone',
+        owner: 'human:dawid',
+        doneWhen: ['A signed build installs'],
+      });
+      const write = (type: string, extra: object = {}) =>
+        root.appendEvent(milestone.id, {
+          type,
+          actor: 'human:dawid',
+          at: new Date(now).toISOString(),
+          body,
+          ...extra,
+        });
+      write('plan-approve', { plan: write('plan').id });
+      const task = h.newTask({
+        title: `Build for ${title}`,
+        owner: 'fake:engineer',
+        parent: milestone.id,
+        planItem: `${milestone.id}#build`,
+      });
+      return { milestone, task };
+    };
+    const closed = planned('Closed milestone');
+    const archived = planned('Archived milestone');
+    h.done(closed.milestone.id, 'closed with a plan task open');
+    root.archiveTask(archived.milestone.id);
+    // Neither milestone is among the open tasks the handoff loop lists.
+    const open = h.list().map((v) => v.meta.id);
+    expect(open).not.toContain(closed.milestone.id);
+    expect(open).not.toContain(archived.milestone.id);
+    sup['markSignedOut']('fake', 'check');
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    now += 15 * 60_000;
+    for (let i = 0; i < 3; i++) await sup.tick();
+    for (const { task } of [closed, archived]) {
+      expect(h.view(task.id).owner).toBe('fake:engineer');
+      expect(h.showEvents(task.id).events.some((e) => e.type === 'handoff')).toBe(false);
+      expect(warns.filter((w) => w.includes(task.id))).toEqual([]);
+    }
+  });
+
   it('hands send-backs to Codex with or without a worktree, since it commits there (AO-0175, AO-0234)', () => {
     let now = Date.now();
     const { sup, as, repo } = setup({

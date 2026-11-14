@@ -393,16 +393,18 @@ export interface SignInState {
 
 /**
  * The owner the approved plan gives a plan task (AO-0110), or null for a task without a plan
- * item or whose milestone is not among `tasks`.
+ * item. The milestone is read from the task's root, not from the open tasks: a closed or
+ * archived milestone still binds its plan tasks, and the handoff's own check reads it there.
  */
-function planOwnerOf(v: TaskView, tasks: readonly TaskView[]): string | null {
+function planOwnerOf(v: TaskView, roots: readonly Root[]): string | null {
   const marker = v.meta.plan_item;
   if (!marker) return null;
   const at = marker.indexOf('#');
   const milestone = marker.slice(0, at);
   const key = marker.slice(at + 1);
-  const plan = tasks.find((t) => t.root === v.root && t.meta.id === milestone)?.plan;
-  return plan?.items.find((i) => i.key === key)?.owner ?? null;
+  const root = roots.find((r) => r.name === v.root);
+  if (!root?.hasTask(milestone)) return null;
+  return root.foldTask(milestone).plan?.items.find((i) => i.key === key)?.owner ?? null;
 }
 
 /** A signed-out provider as `GET /api/usage`, `swarmup usage` and the app's banner show it. */
@@ -2482,8 +2484,7 @@ export class Supervisor extends EventEmitter {
     const ws = this.ws(RUNTIME_ACTOR);
     const waking = this.wakingAgents().filter((a) => !roleInactive(ws.agent(a)));
     const live = this.liveRecords();
-    const tasks = ws.list();
-    for (const v of tasks) {
+    for (const v of ws.list()) {
       const owner = v.owner;
       if (v.status !== 'todo' || v.claimedBy || !owner || isHuman(owner) || isWildcard(owner))
         continue;
@@ -2498,7 +2499,7 @@ export class Supervisor extends EventEmitter {
       const role = roleOf(owner);
       const worktree = this.taskWorktree(ws, v);
       const reviewer = v.delegation?.review ?? v.meta.review;
-      const planOwner = planOwnerOf(v, tasks);
+      const planOwner = planOwnerOf(v, ws.roots);
       const order = roleLimits(this.config, role).providers;
       const rank = (a: string): number => {
         const i = order.indexOf(runtimeOf(a));
