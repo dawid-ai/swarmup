@@ -11,6 +11,7 @@ import {
   Hourglass,
   Inbox as InboxIcon,
   Lightbulb,
+  ListChecks,
   MessageCircleQuestion,
   MessageSquare,
   PenLine,
@@ -18,6 +19,7 @@ import {
   ScanEye,
   Send,
   ThumbsUp,
+  Undo2,
   UserCheck,
   UserX,
   Vote,
@@ -37,6 +39,7 @@ import {
   cx,
 } from '../components';
 import { ago } from '../lib/format';
+import { planSize } from '../lib/plan';
 import { inboxLoop, inboxWaiting } from '../lib/statusloop';
 import type { InboxItem } from '../types';
 import { Markdown } from '../ui/markdown';
@@ -50,8 +53,15 @@ interface Group {
   title: string;
   hint: string;
   kinds: InboxItem['kind'][];
+  /** Of the items of `kinds`, the ones this group takes; all of them without it. */
+  only?: (it: InboxItem) => boolean;
   icon: LucideIcon;
   color: string;
+}
+
+/** Whether `it` is a milestone's plan that waits for approval (AO-0110). */
+function isPlan(it: InboxItem): boolean {
+  return it.kind === 'review' && it.plan !== undefined;
 }
 
 const GROUPS: Group[] = [
@@ -80,10 +90,20 @@ const GROUPS: Group[] = [
     color: '#ff8a5c',
   },
   {
+    key: 'plan',
+    title: 'Plans',
+    hint: 'Milestone plans to approve, edit or send back; approval creates the tasks.',
+    kinds: ['review'],
+    only: isPlan,
+    icon: ListChecks,
+    color: '#ff7eb6',
+  },
+  {
     key: 'review',
     title: 'Reviews for you',
     hint: 'Work handed to you for a verdict.',
     kinds: ['review'],
+    only: (it) => !isPlan(it),
     icon: ScanEye,
     color: '#b18cff',
   },
@@ -137,7 +157,7 @@ export function Inbox({
   const markRead = useAction();
   const groups = GROUPS.map((g) => ({
     g,
-    list: (items ?? []).filter((it) => g.kinds.includes(it.kind)),
+    list: (items ?? []).filter((it) => g.kinds.includes(it.kind) && (g.only?.(it) ?? true)),
   }));
   // The one loop of this view: knocking while something waits for you, settled at inbox zero.
   const loop = inboxLoop(items);
@@ -194,7 +214,7 @@ export function Inbox({
         )}
 
         {items && items.length > 0 && (
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             {groups.map(({ g, list }) => {
               const Icon = g.icon;
               const has = list.length > 0;
@@ -251,7 +271,19 @@ export function Inbox({
           ({ g, list }) =>
             list.length > 0 && (
               <section key={g.key} id={`inbox-${g.key}`} className="scroll-mt-4">
-                <GroupHeader g={g} count={list.length} />
+                <GroupHeader
+                  g={g}
+                  count={list.length}
+                  // Plans: the items and the estimate of every plan that waits, summed.
+                  total={
+                    g.key === 'plan'
+                      ? planSize(
+                          list.reduce((n, it) => n + (it.plan?.items ?? 0), 0),
+                          list.reduce((n, it) => n + (it.plan?.minutes ?? 0), 0),
+                        )
+                      : undefined
+                  }
+                />
                 <div className="flex flex-col gap-2">
                   {list.map((it, i) => (
                     <Item
@@ -374,7 +406,7 @@ export function BlockedList({
   );
 }
 
-function GroupHeader({ g, count }: { g: Group; count: number }) {
+function GroupHeader({ g, count, total }: { g: Group; count: number; total?: string }) {
   const Icon = g.icon;
   return (
     <div className="mb-2 flex items-center gap-2.5">
@@ -394,6 +426,15 @@ function GroupHeader({ g, count }: { g: Group; count: number }) {
       >
         {count}
       </span>
+      {total && (
+        <span
+          className="shrink-0 font-mono text-[11px]"
+          style={{ color: g.color }}
+          data-group-total
+        >
+          {total}
+        </span>
+      )}
       <span className="truncate text-xs text-fg-4">{g.hint}</span>
       <div className="ml-2 h-px flex-1 bg-gradient-to-r from-white/8 to-transparent" />
     </div>
@@ -425,6 +466,34 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
         refreshSoon();
       },
     );
+  };
+  const plan = isPlan(it) ? it.plan : undefined;
+  // Approve plan and Send back: the routes behind `swarmup plan approve` and `plan reject`.
+  const approvePlan = (): void => {
+    if (wait) return;
+    act.run(async () => {
+      const res = await api<{ created?: unknown[] }>(
+        'POST',
+        `/api/tasks/${q(it.task)}/plan-approve`,
+        { as: nav.me },
+      );
+      const n = res.created?.length ?? 0;
+      toast(`Plan of ${it.task} approved: ${n} task${n === 1 ? '' : 's'} created`, {
+        action: { label: 'Open milestone', run: () => nav.openTask(it.task) },
+      });
+      refreshSoon();
+    });
+  };
+  const sendPlanBack = (): void => {
+    if (wait || !text.trim()) return;
+    act.run(async () => {
+      await api('POST', `/api/tasks/${q(it.task)}/plan-reject`, { as: nav.me, message: text });
+      setText('');
+      toast(`Plan of ${it.task} sent back${it.from ? ` to ${it.from}` : ''}`, {
+        action: { label: 'Open milestone', run: () => nav.openTask(it.task) },
+      });
+      refreshSoon();
+    });
   };
   const isDecision = it.kind === 'vote' || it.kind === 'decide';
   const isChannel = it.task.startsWith('#');
@@ -462,7 +531,11 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
             }}
           >
             {/* An agent closing your question with its answer (AO-0063). */}
-            {it.kind === 'message' && it.type === 'done' ? 'Answer' : KIND_LABEL[it.kind]}
+            {plan
+              ? 'Plan'
+              : it.kind === 'message' && it.type === 'done'
+                ? 'Answer'
+                : KIND_LABEL[it.kind]}
           </span>
           <span className="row-link flex min-w-0 items-center gap-2.5 font-medium text-fg transition hover:text-signal">
             <button
@@ -508,6 +581,23 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
           <div className="mt-1.5">
             <StatusTag status={it.summary} />
           </div>
+        ) : plan ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs" data-plan-item>
+            {it.from && <Who id={it.from} label size="xs" />}
+            <span className="text-fg-4">
+              {plan.change ? 'proposes a change to the plan' : 'proposes a plan'}
+              {it.at ? `, ${ago(it.at)}` : ''}
+            </span>
+            <span
+              className="rounded-md px-1.5 py-0.5 font-mono"
+              style={{
+                color: g.color,
+                background: `color-mix(in oklab, ${g.color} 12%, transparent)`,
+              }}
+            >
+              {planSize(plan.items, plan.minutes)}
+            </span>
+          </div>
         ) : it.kind === 'review' ? (
           <ReviewRequest it={it} />
         ) : it.kind === 'triage' ? (
@@ -535,7 +625,55 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
           </div>
         )}
 
-        {(it.kind === 'ask' || it.kind === 'review') && it.recommend && (
+        {plan && (
+          <div className="mt-3 flex flex-col gap-2">
+            <MentionArea
+              value={text}
+              onChange={setText}
+              me={nav.me}
+              rows={2}
+              placeholder="What to change in the plan, to send it back"
+              attach={{ task: it.task }}
+              onUploading={setUploading}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                kind="primary"
+                size="sm"
+                icon={Check}
+                disabled={wait}
+                title="Creates one task per item; the milestone then waits for them"
+                onClick={approvePlan}
+              >
+                Approve plan
+              </Button>
+              <Button
+                size="sm"
+                icon={PenLine}
+                title="Opens the milestone with the plan's items, to edit them before you approve"
+                onClick={() => nav.openTask(it.task)}
+              >
+                Review and edit
+              </Button>
+              <Button
+                size="sm"
+                icon={Undo2}
+                disabled={!text.trim() || wait}
+                title={
+                  text.trim()
+                    ? `Returns the plan${it.from ? ` to ${it.from}` : ''} with your note`
+                    : 'Write what to change first'
+                }
+                onClick={sendPlanBack}
+              >
+                Send back
+              </Button>
+            </div>
+            <ErrorLine error={act.error} />
+          </div>
+        )}
+
+        {!plan && (it.kind === 'ask' || it.kind === 'review') && it.recommend && (
           <div
             data-recommend
             className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg bg-ok/8 px-2.5 py-2 text-sm"
@@ -570,7 +708,7 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
           </div>
         )}
 
-        {(it.kind === 'ask' || it.kind === 'review') && (
+        {!plan && (it.kind === 'ask' || it.kind === 'review') && (
           <div className="mt-3 flex flex-col gap-2">
             <MentionArea
               value={text}

@@ -63,6 +63,7 @@ import type { OpsEvent, Status, Task, TaskDetail } from '../types';
 import { DiffDialog } from '../ui/diff';
 import { Markdown } from '../ui/markdown';
 import { useMover } from '../ui/move';
+import { MilestonePlan } from '../ui/plan';
 import type { Due } from '../ui/pickers';
 import { AgentPicker, DuePicker, dueToApi, MentionArea, Menu, useDirectory } from '../ui/pickers';
 import type { TaskFocus } from '../ui/refs';
@@ -79,12 +80,15 @@ export function TaskPanel({
   id,
   focus,
   showDiff,
+  editPlan,
   nav,
   onClose,
   onBack,
   onForward,
 }: {
   id: string;
+  /** Opens a milestone with its waiting plan in edit mode, as the screenshot run asks. */
+  editPlan?: boolean;
   /** Opens with the diff of the task's work shown, as the screenshot run asks. */
   showDiff?: boolean;
   /** An event to scroll to and highlight, from an `AO-0014#<event id>` reference. */
@@ -130,7 +134,11 @@ export function TaskPanel({
     });
   const open = t && !['done', 'parked'].includes(t.status);
   const waitsOnMe = t?.status === 'blocked' && !t.blockedOn && t.waitingOn === nav.me;
-  const reviewsMe = t?.status === 'needs-review' && (t.reviewer === nav.me || !t.reviewer);
+  // A milestone's review is its plan's: Approve plan and Send back in the plan section create
+  // the tasks or mark the plan rejected, which a plain verdict does not (AO-0110).
+  const milestone = t?.type === 'milestone';
+  const reviewsMe =
+    !milestone && t?.status === 'needs-review' && (t.reviewer === nav.me || !t.reviewer);
   // The one loop of this panel: the task's state, large, next to its title.
   const loop = t ? taskLoop(t, events) : null;
   const asker = waitsOnMe ? [...events].reverse().find((e) => e.type === 'ask')?.actor : undefined;
@@ -306,6 +314,17 @@ export function TaskPanel({
             </div>
           )}
 
+          {milestone && data && (
+            <MilestonePlan
+              id={id}
+              goal={data.body}
+              events={events}
+              nav={nav}
+              edit={editPlan}
+              onWrote={wrote}
+            />
+          )}
+
           {open && t && TRIAGED.has(t.type) && (
             <div className="mt-4 rounded-xl border border-warn/20 bg-warn/[0.04] p-3">
               <div className="label-caps mb-2 !text-warn">
@@ -374,7 +393,8 @@ export function TaskPanel({
             <LaunchForm id={id} owner={t.owner ?? ''} nav={nav} onDone={() => nav.go('runs')} />
           )}
 
-          {data?.body.trim() && (
+          {/* A milestone's body is its goal, shown with the plan. */}
+          {!milestone && data?.body.trim() && (
             <>
               <h3 className="label-caps mt-6 mb-2 flex items-center gap-1.5">
                 <FileText size={12} /> Description
@@ -573,6 +593,10 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; label?: str
   ask: { icon: MessageCircleQuestion, color: '#ffb547', label: 'asked' },
   answer: { icon: Reply, color: '#3ddc97', label: 'answered' },
   retype: { icon: ListChecks, color: '#ffd166', label: 'changed the type' },
+  plan: { icon: ListChecks, color: '#ff7eb6', label: 'proposed a plan' },
+  'plan-approve': { icon: Check, color: '#3ddc97', label: 'approved the plan' },
+  'plan-amend': { icon: ListChecks, color: '#ff7eb6', label: 'added to the plan' },
+  'plan-reject': { icon: Undo2, color: '#ffb547', label: 'sent the plan back' },
 };
 
 /**

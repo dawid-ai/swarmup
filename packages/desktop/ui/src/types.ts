@@ -59,6 +59,10 @@ export interface OpsEvent {
   minutes?: number;
   tokens?: number;
   forced?: boolean;
+  /** plan-approve, plan-reject: the `plan` event it approves or rejects. */
+  plan?: string;
+  /** plan-amend: what the new items are. */
+  plan_kind?: 'subtask' | 'fix';
   body: string;
   /** Shown while its write is out; opsd has not stored it yet (AO-0171). */
   pending?: boolean;
@@ -106,6 +110,73 @@ export interface InboxItem {
   recommend?: string;
   /** ask, review, triage: the open tasks that wait on this one (AO-0066). */
   blocks?: { direct: string[]; indirect: string[] };
+  /**
+   * review of a milestone whose plan waits for approval (AO-0110): the `plan` event, its item
+   * count and estimate sum in minutes, and whether it revises an approved plan.
+   */
+  plan?: { event: string; items: number; minutes: number; change: boolean };
+}
+
+/** One item of a milestone's plan (mirrors `PlanRow` in `packages/core/src/workspace.ts`). */
+export interface PlanRow {
+  key: string;
+  title: string;
+  owner: string;
+  after: string[];
+  estimate: string;
+  origin?: 'approve' | 'subtask' | 'fix';
+  for?: string;
+  review?: string;
+  done_when?: string;
+  type?: string;
+  priority?: Task['priority'];
+  body?: string;
+  /** The item's task, once created, with its current status and owner and its runs' minutes. */
+  task?: string;
+  status?: Status;
+  taskOwner?: string | null;
+  spent?: number;
+}
+
+/** `GET /api/tasks/<id>/plan`: a milestone's plan, as `swarmup plan show` reports it. */
+export interface PlanReport {
+  id: string;
+  root: string;
+  title: string;
+  doneWhen?: string;
+  status: Status;
+  approval: string | null;
+  planner: string | null;
+  /** The effective plan, its estimate sum and the minutes its tasks' runs took. */
+  items: PlanRow[];
+  minutes: number;
+  spent: number;
+  /** The plan that waits for approval; `changes` is its diff against the effective plan. */
+  pending: {
+    event: string;
+    actor: string;
+    stale: boolean;
+    base?: string;
+    notes?: string;
+    items: PlanRow[];
+    minutes: number;
+    changes: string[];
+  } | null;
+  incomplete: { missing: string[]; unapplied: string[] } | null;
+  yaml: string;
+}
+
+/** One milestone from `GET /api/milestones`: its progress, for the board's card. */
+export interface PlanProgress {
+  root: string;
+  id: string;
+  title: string;
+  total: number;
+  done: number;
+  parked: number;
+  minutes: number;
+  spent: number;
+  pending: { items: number; minutes: number } | null;
 }
 
 export interface RunRecord {

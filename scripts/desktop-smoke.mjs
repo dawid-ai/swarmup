@@ -153,6 +153,72 @@ swarmup(
   '+48h',
 );
 
+// Two milestones (AO-0110, AO-0321). One has an approved plan with a task done, for the board's
+// milestone card (`1/3 done`) and its Milestone lanes. The other has a plan that waits, for the
+// inbox's Plans group, the milestone panel and its edit mode.
+const taskId = (out) => /SMK-\d+/.exec(out)?.[0];
+const planFile = (name, items) => {
+  const file = join(base, name);
+  writeFileSync(
+    file,
+    [
+      'notes: Signing needs an account, so the first item asks the person.',
+      'items:',
+      ...items.flatMap(([key, title, owner, estimate, after, review]) => [
+        `  - key: ${key}`,
+        `    title: ${title}`,
+        `    owner: '${owner}'`,
+        `    estimate: ${estimate}`,
+        ...(after ? [`    after: [${after}]`] : []),
+        ...(review ? [`    review: ${review}`] : []),
+      ]),
+      '',
+    ].join('\n'),
+  );
+  return file;
+};
+const milestone = (title, doneWhen, goal, file) => {
+  const id = taskId(
+    swarmup(
+      'human:smoke',
+      ...['new', title, '--type', 'milestone', '--to', 'claude:pm'],
+      ...['--done-when', doneWhen, '-m', goal],
+    ),
+  );
+  if (!id) throw new Error(`no task id for the milestone '${title}'`);
+  swarmup('claude:pm', 'start', id, 'write the plan');
+  swarmup('claude:pm', 'plan', 'propose', id, '--file', file);
+  return id;
+};
+const shipped = milestone(
+  'Installer ships on Windows',
+  'The installer from CI runs on a clean PC',
+  'Goal: a person installs the app from a release, without a checkout.',
+  planFile('plan-installer.yml', [
+    ['build', 'Build the installer in CI', '*:engineer', '4h'],
+    ['sign', 'Sign the installer', 'claude:engineer', '2h', 'build', 'codex:qa'],
+    ['check', 'Check the installer on a clean PC', '*:qa', '1h', 'sign'],
+  ]),
+);
+const made = swarmup('human:smoke', 'plan', 'approve', shipped);
+// The first task the approval created: the `build` item, which nothing blocks.
+const built = [...made.matchAll(/SMK-\d+/g)].map((m) => m[0]).find((id) => id !== shipped);
+if (!built) throw new Error(`plan approve named no task: ${made}`);
+swarmup('claude:engineer', 'start', built, 'build it');
+swarmup('claude:engineer', 'done', built, 'the workflow uploads the installer');
+const planned = milestone(
+  'Desktop app ships on macOS',
+  'A signed .dmg from CI installs on a clean Mac',
+  'Goal: a person installs the app on a Mac from a release.',
+  planFile('plan-mac.yml', [
+    ['apple', 'Apple Developer account and signing certificate', 'human:smoke', '1h'],
+    ['ci', 'Build and sign the .dmg in CI', '*:engineer', '4h', 'apple', 'codex:qa'],
+    ['smoke', 'Smoke check on a clean Mac', '*:qa', '1h', 'ci'],
+  ]),
+);
+// The milestone panel with the plan that waits, the same in edit mode, and the Milestone lanes.
+const planViews = [`task:${planned}`, `plan-edit:${planned}`, 'board:lanes:milestone'];
+
 // A repo without a data root, for Add project's proposal (AO-0274).
 const adoptable = join(base, 'shop');
 mkdirSync(adoptable);
@@ -216,9 +282,15 @@ try {
       // The diff of SMK-0002 comes first: it covers the window until the next view closes its task.
       // New task opens with its project list open and `smo` typed in it (AO-0323); the next view
       // closes the form.
-      SWARMUP_VIEWS: ['diff:SMK-0002', ...views, 'repeating', 'new-task:smo', 'add-project'].join(
-        ',',
-      ),
+      // The plan views follow the plain ones: `board:lanes:milestone` closes the milestone panel.
+      SWARMUP_VIEWS: [
+        'diff:SMK-0002',
+        ...views,
+        ...planViews,
+        'repeating',
+        'new-task:smo',
+        'add-project',
+      ].join(','),
       SWARMUP_SCREENSHOT_PICKS: adoptable,
       ELECTRON_ENABLE_LOGGING: '1',
     },
@@ -243,7 +315,8 @@ try {
     }).status === 0;
 }
 
-const missing = [...views, 'diff-SMK-0002', 'new-task:smo', 'add-project'].filter((v) => {
+const expected = [...views, ...planViews, 'diff-SMK-0002', 'new-task:smo', 'add-project'];
+const missing = expected.filter((v) => {
   // The app names the file of `view:id` with a dash.
   const png = join(shots, `${v.replace(/[:/]/g, '-')}.png`);
   return !existsSync(png) || statSync(png).size < 1024;
@@ -263,7 +336,7 @@ if (failed) {
   if (log) console.error(`app output (last 60 lines):\n${log.split('\n').slice(-60).join('\n')}`);
   process.exit(1);
 }
-console.log(`desktop smoke: ${views.length} views rendered with no errors`);
+console.log(`desktop smoke: ${expected.length} views rendered with no errors`);
 // --keep keeps the screenshots to look at.
 if (process.argv.includes('--keep')) console.log(`  screenshots in ${shots}`);
 else rmSync(base, { recursive: true, force: true, maxRetries: 5 });

@@ -497,6 +497,12 @@ export interface InboxItem {
   recommend?: string;
   /** ask, review, triage: the open tasks that wait on this one (AO-0066). */
   blocks?: BlockedSet;
+  /**
+   * review of a milestone whose plan waits for approval (AO-0110): the `plan` event, its item
+   * count and estimate sum in minutes, and whether it revises an approved plan. The verdict on
+   * it is `swarmup plan approve` or `swarmup plan reject`, never `swarmup verdict`.
+   */
+  plan?: { event: string; items: number; minutes: number; change: boolean };
 }
 
 /**
@@ -3140,6 +3146,10 @@ export class Workspace {
         ...(item.origin ? { origin: item.origin } : {}),
         ...(item.for ? { for: item.for } : {}),
         ...(item.review ? { review: item.review } : {}),
+        ...(item.done_when ? { done_when: item.done_when } : {}),
+        ...(item.type ? { type: item.type } : {}),
+        ...(item.priority ? { priority: item.priority } : {}),
+        ...(item.body ? { body: item.body } : {}),
         ...(task && s ? { task, status: s.status, taskOwner: s.owner, spent } : {}),
       };
     };
@@ -3182,6 +3192,30 @@ export class Workspace {
       incomplete: missing.length + unapplied.length > 0 ? { missing, unapplied } : null,
       yaml: source ? planYaml(source) : '',
     };
+  }
+
+  /**
+   * The progress of every live milestone that has a plan, from `planShow`, so the board's card
+   * (`4/7 done, 9 h of 14 h`) and `swarmup plan show` say the same numbers.
+   */
+  planProgress(): PlanProgress[] {
+    const out: PlanProgress[] = [];
+    for (const v of this.allViews()) {
+      if (v.meta.type !== MILESTONE_TYPE || !v.plan) continue;
+      const p = this.planShow(`${v.root}/${v.meta.id}`);
+      out.push({
+        root: p.root,
+        id: p.id,
+        title: p.title,
+        total: p.items.length,
+        done: p.items.filter((r) => r.status === 'done').length,
+        parked: p.items.filter((r) => r.status === 'parked').length,
+        minutes: p.minutes,
+        spent: p.spent,
+        pending: p.pending ? { items: p.pending.items.length, minutes: p.pending.minutes } : null,
+      });
+    }
+    return out;
   }
 
   /**
@@ -4568,6 +4602,22 @@ export class Workspace {
 
   // ---- Inbox ---------------------------------------------------------------------------------
 
+  /** The plan of milestone `v` that waits for approval, as the inbox shows it; else undefined. */
+  private pendingPlan(v: TaskView): InboxItem['plan'] {
+    const pending = v.meta.type === MILESTONE_TYPE ? v.plan?.pending : undefined;
+    if (!pending || v.status === 'done' || v.status === 'parked') return undefined;
+    const root = this.roots.find((r) => r.name === v.root);
+    const event = root?.readEvents(v.meta.id).find((e) => e.id === pending.event);
+    const doc = event ? readPlanBody(event.body) : null;
+    if (!doc) return undefined;
+    return {
+      event: pending.event,
+      items: doc.items.length,
+      minutes: planMinutes(doc.items),
+      change: v.plan?.approval != null,
+    };
+  }
+
   /** What waits for the actor: unread messages, asks, reviews and, for humans, owned tasks. */
   inbox(
     actor = this.requireActor(),
@@ -4594,7 +4644,9 @@ export class Workspace {
       const task = ref(v.root, v.meta.id);
       const root = v.root;
       const forMe = (who: string | null): boolean => (who ? ownerMatches(who, actor) : human);
-      const waits = v.status === 'blocked' && v.blockedOn.length === 0 && forMe(v.waitingOn);
+      // A milestone blocked on its plan waits for its tasks, not for an answer (AO-0110).
+      const waits =
+        v.status === 'blocked' && v.blockedOn.length === 0 && !v.waitsOnPlan && forMe(v.waitingOn);
       // The ask or block that started the current wait shows once, as the ask item below.
       const question = waits ? v.addressed.find((a) => a.event === v.waitEvent) : undefined;
       // An untriaged finding is one triage item: triage comes first, so its question rides on
@@ -4621,6 +4673,9 @@ export class Workspace {
         // A review request is the review item while open, and handled after the verdict: as a
         // message too, it said the same thing twice and stayed after the verdict.
         if (a.type === 'review') continue;
+        // A plan change sent to a person is the plan item below while it waits, and handled
+        // after the approval or the send-back.
+        if (a.type === 'plan') continue;
         if (a.event <= marker) continue;
         items.push({
           kind: 'message',
@@ -4674,6 +4729,23 @@ export class Workspace {
           ...blocks(v),
         });
       }
+      // A milestone's plan that waits for a person (AO-0110): the first proposal is the
+      // milestone's review; a change leaves the milestone blocked on its plan, so it has no
+      // review of its own and gets this item.
+      const plan = human ? this.pendingPlan(v) : undefined;
+      if (plan?.change) {
+        items.push({
+          kind: 'review',
+          task,
+          root,
+          title: v.meta.title,
+          event: plan.event,
+          from: v.plan?.pending?.actor,
+          summary: `Plan change for ${v.meta.id}: ${planCount(plan)}`,
+          plan,
+          ...blocks(v),
+        });
+      }
       if (v.status === 'needs-review' && forMe(v.reviewer)) {
         // Say who asked for what, with the PR or commit, instead of a bare "waits for review".
         const req = v.lastReview;
@@ -4693,6 +4765,7 @@ export class Workspace {
                 ...(req.recommend ? { recommend: req.recommend } : {}),
               }
             : { summary: 'waits for your review' }),
+          ...(plan && !plan.change ? { plan } : {}),
           ...blocks(v),
         });
       }
@@ -4842,6 +4915,11 @@ function refusePlanHold(v: TaskView): void {
   );
 }
 
+/** `3 items, 6 h`: a plan's size as the inbox and the review request say it. */
+function planCount(plan: { items: number; minutes: number }): string {
+  return `${plan.items} item${plan.items === 1 ? '' : 's'}, ${minutesText(plan.minutes)}`;
+}
+
 /** A plan task's item in the effective plan of its milestone, with the tasks it waits for. */
 interface PlanRule {
   task: string;
@@ -4888,11 +4966,35 @@ export interface PlanRow {
   origin?: PlanOrigin;
   for?: string;
   review?: string;
+  /**
+   * The plan's own values of the fields that live in `task.md`: an edited plan built from the
+   * rows, as the desktop's edit mode sends it, keeps them and so passes the in-place check.
+   */
+  done_when?: string;
+  type?: string;
+  priority?: Priority;
+  body?: string;
   /** The item's task, once created, with its current status and owner and its runs' minutes. */
   task?: string;
   status?: Status;
   taskOwner?: string | null;
   spent?: number;
+}
+
+/** A milestone's progress on its plan, for a card: items done of all, minutes spent of estimated. */
+export interface PlanProgress {
+  root: string;
+  id: string;
+  title: string;
+  /** The items of the effective plan, and how many of their tasks are done or parked. */
+  total: number;
+  done: number;
+  parked: number;
+  /** The estimate sum of the effective plan, and the minutes its tasks' runs took, in minutes. */
+  minutes: number;
+  spent: number;
+  /** The plan that waits for approval: its item count and estimate sum. */
+  pending: { items: number; minutes: number } | null;
 }
 
 /** A milestone's plan as `swarmup plan show` reports it. */

@@ -22,6 +22,14 @@ describe('IPC allowlist', () => {
     // The diff of a task's work is read-only (AO-0106).
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/diff')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/AO-0001/diff')).toBe(false);
+    // A milestone's plan (AO-0321): read it, approve it, send it back; progress for the board.
+    expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/plan')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-approve')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-reject')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan')).toBe(false);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-apply')).toBe(false);
+    expect(allowedCall('GET', '/api/milestones')).toBe(true);
+    expect(allowedCall('POST', '/api/milestones')).toBe(false);
     expect(allowedCall('POST', '/api/runs/01ABC/kill')).toBe(true);
     expect(allowedCall('POST', '/api/decisions/D-0001/vote')).toBe(true);
     expect(allowedCall('POST', '/api/channels/dev')).toBe(true);

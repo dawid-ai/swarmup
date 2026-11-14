@@ -2,6 +2,7 @@
 // they are tested without a browser.
 import type { Task } from '../types';
 import { identity, PRIORITIES } from './identity';
+import { milestoneOf } from './plan';
 
 export interface TaskFilter {
   text?: string;
@@ -21,13 +22,14 @@ export interface TaskFilter {
   ideas?: boolean;
 }
 
-export type Lanes = 'none' | 'agent' | 'project' | 'priority';
+export type Lanes = 'none' | 'agent' | 'project' | 'priority' | 'milestone';
 
 export const LANES: Array<[Lanes, string]> = [
   ['none', 'No lanes'],
   ['agent', 'By agent'],
   ['project', 'By project'],
   ['priority', 'By priority'],
+  ['milestone', 'Milestone'],
 ];
 
 /** Who a card belongs to: the claim holder, else the owner. */
@@ -106,12 +108,19 @@ const UNASSIGNED = '';
 /** Splits tasks into lanes in a fixed order: priorities high to low, others by name, empty last. */
 export function lanesOf(tasks: Task[], mode: Lanes): Lane[] {
   if (mode === 'none') return [{ key: 'all', tasks }];
+  // By root too: two roots may each hold a milestone with the same id.
+  const milestoneKey = (t: Task): string => {
+    const id = milestoneOf(t);
+    return id === null ? UNASSIGNED : `${t.root}/${id}`;
+  };
   const keyOf = (t: Task): string =>
     mode === 'agent'
       ? (whoOf(t) ?? UNASSIGNED)
       : mode === 'project'
         ? (t.project ?? UNASSIGNED)
-        : t.priority;
+        : mode === 'milestone'
+          ? milestoneKey(t)
+          : t.priority;
   const groups = new Map<string, Task[]>();
   for (const t of tasks) {
     const k = keyOf(t);

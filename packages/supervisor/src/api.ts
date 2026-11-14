@@ -477,6 +477,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           throw err;
         }
       }
+      // A milestone's plan as `swarmup plan show` reports it (AO-0110).
+      if (method === 'GET' && action === 'plan') return send(res, 200, ws.planShow(ref));
       if (method === 'GET' && !action) {
         const { body: text, events } = ws.showEvents(ref);
         return send(res, 200, { task: compact(ws.view(ref)), body: text, events });
@@ -484,6 +486,23 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'POST') {
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
         const msg = str(body.message) ?? '';
+        // The app's Approve plan and Send back: the functions behind `swarmup plan approve` and
+        // `swarmup plan reject`, so the rules live in one place (AO-0110).
+        if (action === 'plan-approve' || action === 'plan-reject') {
+          humanOnly(action === 'plan-approve' ? 'approving a plan' : 'sending a plan back');
+          const done =
+            action === 'plan-approve'
+              ? ws.planApprove(ref, { source: planSource(body.plan), message: msg })
+              : ws.planReject(ref, msg);
+          return send(res, 200, {
+            task: compact(done.view),
+            events: done.events,
+            warnings: done.warnings,
+            created: done.created,
+            applied: done.applied,
+            skipped: done.skipped,
+          });
+        }
         const result = (() => {
           switch (action) {
             case 'comment':
@@ -552,6 +571,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       }
     }
 
+    // Each milestone's progress on its plan, for the board's cards and its Milestone lanes.
+    if (method === 'GET' && area === 'milestones') return send(res, 200, wsAs().planProgress());
     if (method === 'GET' && area === 'agents') {
       // Role files, plus agents only the swarmupd config names; `wake` from the config.
       const defined = sup
@@ -922,6 +943,19 @@ export function readTail(file: string, bytes: number): string {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * The edited plan of a `plan-approve` call as the text of a plan file: `{ notes?, items }`, which
+ * is YAML as it stands, so core parses and checks it as it does `--file`. Undefined without one:
+ * the plan is approved as proposed.
+ */
+function planSource(plan: unknown): string | undefined {
+  if (plan === undefined || plan === null) return undefined;
+  if (typeof plan !== 'object' || Array.isArray(plan)) {
+    throw new HttpError(400, 'plan: expected an object with `items`');
+  }
+  return JSON.stringify(plan);
 }
 
 export function compact(v: TaskView): Json {
