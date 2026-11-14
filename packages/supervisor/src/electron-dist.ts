@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /**
@@ -89,22 +97,48 @@ export function electronVersionOf(dir: string): string | null {
   }
 }
 
-/** Where the `electron` package looks for its executable inside a dist folder. */
-function executableIn(dist: string, platform: NodeJS.Platform): string {
-  if (platform === 'win32') return join(dist, 'electron.exe');
-  if (platform === 'darwin') return join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron');
-  return join(dist, 'electron');
+/** The executable inside a dist folder, as the `electron` package writes it to its `path.txt`. */
+function platformPath(platform: NodeJS.Platform): string {
+  if (platform === 'win32') return 'electron.exe';
+  if (platform === 'darwin') return 'Electron.app/Contents/MacOS/Electron';
+  return 'electron';
 }
 
-/** Whether `dist` holds an unpacked Electron `version`: its `version` file is written last. */
+/** Whether `dist` names `version` and holds the executable. True for half an unpack too. */
+function looksUnpacked(dist: string, version: string, platform: NodeJS.Platform): boolean {
+  const has = read(join(dist, 'version'));
+  if (has === null || has.trim().replace(/^v/, '') !== version) return false;
+  return existsSync(join(dist, platformPath(platform)));
+}
+
+/**
+ * The file swarmupd writes into a shared folder as the last step of a copy or a move. The
+ * archive holds `version` and the executable before other files it needs, so those two prove no
+ * complete unpack.
+ */
+export const ELECTRON_DIST_COMPLETE = '.swarmup-complete';
+
+/** Whether the shared folder `dist` holds a complete Electron `version`: swarmupd marked it. */
 export function electronDistReady(
   dist: string,
   version: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  const has = read(join(dist, 'version'));
-  if (has === null || has.trim().replace(/^v/, '') !== version) return false;
-  return existsSync(executableIn(dist, platform));
+  return looksUnpacked(dist, version, platform) && existsSync(join(dist, ELECTRON_DIST_COMPLETE));
+}
+
+/**
+ * Whether the `electron` package in the checkout `dir` finished unpacking `version`: its
+ * install script writes `path.txt` next to `dist` after the last file of the archive, and
+ * removes nothing when it fails, so a download that stopped halfway leaves `dist` without it.
+ */
+export function checkoutElectronReady(
+  dir: string,
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!looksUnpacked(checkoutElectronDist(dir), version, platform)) return false;
+  return read(join(dir, 'node_modules', 'electron', 'path.txt')) === platformPath(platform);
 }
 
 /** `<state>/electron/<version>-<platform>-<arch>`: the one copy of that version on this machine. */
@@ -131,7 +165,7 @@ export interface ElectronDistOptions {
  * The shared Electron folder for the checkout `dir`, or null when the checkout installs no
  * Electron or no copy of its version is at hand. Makes the shared copy when it is missing, from
  * the first of `dir` and `sources` (other checkouts of the repo) that holds that version
- * unpacked. A copy, never a link: an install that unpacks a new version over a checkout's `dist`
+ * unpacked to the end. A copy, never a link: an install that unpacks a new version over a checkout's `dist`
  * writes through a hard link.
  *
  * Synchronous, and the copy is some 350 MB: it happens once per version and machine.
@@ -148,13 +182,14 @@ export function electronDistFor(
   const shared = sharedElectronDist(stateDir, version, platform, opts.arch);
   if (electronDistReady(shared, version, platform)) return shared;
   for (const from of [dir, ...sources]) {
+    if (!checkoutElectronReady(from, version, platform)) continue;
     const dist = checkoutElectronDist(from);
-    if (!electronDistReady(dist, version, platform)) continue;
     // Complete under another name first, so a reader never finds half a copy.
     const part = `${shared}.part-${randomBytes(4).toString('hex')}`;
     try {
       mkdirSync(dirname(shared), { recursive: true });
       cpSync(dist, part, { recursive: true });
+      writeFileSync(join(part, ELECTRON_DIST_COMPLETE), `${version}\n`);
       place(part, shared, version, platform);
     } catch {
       // Unreadable source, full disk: the next source, or the package's own download.
@@ -190,15 +225,19 @@ export function shareElectronDist(
   const dist = checkoutElectronDist(dir);
   const has = read(join(dist, 'version'));
   const version = valid(has?.trim().replace(/^v/, ''));
-  if (!version || !electronDistReady(dist, version, platform)) return null;
+  if (!version || !checkoutElectronReady(dir, version, platform)) return null;
   const shared = sharedElectronDist(stateDir, version, platform, opts.arch);
   if (electronDistReady(shared, version, platform)) return null;
+  // Marked before the rename: another swarmupd removes a shared folder that has no mark.
+  const mark = join(dist, ELECTRON_DIST_COMPLETE);
   try {
     mkdirSync(dirname(shared), { recursive: true });
+    writeFileSync(mark, `${version}\n`);
     place(dist, shared, version, platform);
   } catch {
-    return null;
+    // The checkout keeps its copy, as the package left it.
   }
+  rmSync(mark, { force: true });
   return electronDistReady(shared, version, platform) ? shared : null;
 }
 

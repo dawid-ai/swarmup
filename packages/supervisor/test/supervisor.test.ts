@@ -216,6 +216,7 @@ else if (mode === 'stray') {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'binary');
     fs.writeFileSync(path.join('node_modules', 'electron', 'dist', 'version'), process.env.FAKE_ELECTRON_UNPACK);
+    fs.writeFileSync(path.join('node_modules', 'electron', 'path.txt'), exe);
   }
   if (task) ws.done(task, 'left a stray file');
 }
@@ -5927,6 +5928,7 @@ describe('task worktrees (AO-0168)', () => {
       mkdirSync(dirname(join(distOf(repo), exe)), { recursive: true });
       writeFileSync(join(distOf(repo), exe), 'binary');
       writeFileSync(join(distOf(repo), 'version'), VERSION);
+      writeFileSync(join(dirname(distOf(repo)), 'path.txt'), exe.replaceAll('\\', '/'));
       const run = sup.launch({ agent: 'fake:engineer', task: '1' });
       expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
       await ended(sup, run.id);

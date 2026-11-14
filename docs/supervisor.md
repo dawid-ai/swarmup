@@ -459,6 +459,13 @@ checks.
   shared place with one rename. It moves only out of a linked worktree, never out of the checkout
   itself, and deletes nothing: a worktree that unpacked a copy while the shared one existed keeps
   it.
+- swarmupd takes a `dist` folder only from a checkout whose package finished unpacking: the
+  package writes `node_modules/electron/path.txt` after the last file of the archive, and a
+  download that stopped halfway leaves none. The version file and the executable are no proof,
+  because the archive holds both before other files Electron needs.
+- A shared folder counts only with the file `.swarmup-complete` in it, which swarmupd writes as the
+  last step of the copy and before the rename of a move. swarmupd replaces a shared folder
+  without it from the next complete checkout.
 - A value you set yourself stays: swarmupd never replaces an `ELECTRON_OVERRIDE_DIST_PATH` that is
   already in its environment.
 - A run that changes the Electron version in its lockfile still has the earlier version's folder

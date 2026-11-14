@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   checkoutElectronDist,
+  checkoutElectronReady,
+  ELECTRON_DIST_COMPLETE,
   ELECTRON_DIST_ENV,
   electronDistFor,
   electronDistReady,
@@ -56,6 +58,15 @@ function unpack(dir: string, version = '45.2.1', platform: NodeJS.Platform = 'wi
   writeFileSync(exe, 'binary');
   writeFileSync(join(dist, 'resources', 'default_app.asar'), 'asar');
   writeFileSync(join(dist, 'version'), version);
+  // The install script writes this last, after the whole archive.
+  writeFileSync(
+    join(dirname(dist), 'path.txt'),
+    platform === 'win32'
+      ? 'electron.exe'
+      : platform === 'darwin'
+        ? 'Electron.app/Contents/MacOS/Electron'
+        : 'electron',
+  );
   return dist;
 }
 
@@ -149,7 +160,8 @@ describe('the shared Electron (AO-0306)', () => {
     expect(shared).toBe(join(state, 'electron', '45.2.1-win32-x64'));
     expect(electronDistReady(shared, '45.2.1', 'win32')).toBe(true);
     expect(readFileSync(join(shared, 'resources', 'default_app.asar'), 'utf8')).toBe('asar');
-    expect(electronDistReady(mainDist, '45.2.1', 'win32')).toBe(true);
+    expect(checkoutElectronReady(main, '45.2.1', 'win32')).toBe(true);
+    expect(readdirNames(mainDist)).toEqual(['electron.exe', 'resources', 'version']);
     // The worktree holds no Electron, and no part of a copy is left next to the shared one.
     expect(existsSync(join(worktree, 'node_modules'))).toBe(false);
     expect(readdirNames(join(state, 'electron'))).toEqual(['45.2.1-win32-x64']);
@@ -194,8 +206,49 @@ describe('the shared Electron (AO-0306)', () => {
     const other = checkout();
     const otherDist = unpack(other);
     expect(shareElectronDist(state, other, WIN)).toBeNull();
-    expect(electronDistReady(otherDist, '45.2.1', 'win32')).toBe(true);
+    expect(checkoutElectronReady(other, '45.2.1', 'win32')).toBe(true);
+    expect(readdirNames(otherDist)).toEqual(['electron.exe', 'resources', 'version']);
     expect(shareElectronDist(state, temp(), WIN)).toBeNull();
+  });
+
+  it('takes no Electron from a checkout whose download stopped halfway', () => {
+    const state = temp();
+    const shared = sharedElectronDist(state, '45.2.1', 'win32', 'x64');
+    // The archive holds `version` and the executable before later files: both are there.
+    const main = checkout();
+    const mainDist = unpack(main);
+    rmSync(join(main, 'node_modules', 'electron', 'path.txt'));
+    expect(checkoutElectronReady(main, '45.2.1', 'win32')).toBe(false);
+    expect(electronDistFor(state, checkout(), [main], WIN)).toBeNull();
+    expect(shareElectronDist(state, main, WIN)).toBeNull();
+    expect(existsSync(join(state, 'electron'))).toBe(false);
+    expect(readdirNames(mainDist)).toEqual(['electron.exe', 'resources', 'version']);
+    // A `path.txt` for another platform's executable is no proof either.
+    writeFileSync(join(main, 'node_modules', 'electron', 'path.txt'), 'electron');
+    expect(electronDistFor(state, main, [], WIN)).toBeNull();
+    // After the install finishes, the same checkout is a source.
+    writeFileSync(join(main, 'node_modules', 'electron', 'path.txt'), 'electron.exe');
+    expect(electronDistFor(state, checkout(), [main], WIN)).toBe(shared);
+  });
+
+  it('trusts a shared folder only with its completion mark', () => {
+    const state = temp();
+    const shared = sharedElectronDist(state, '45.2.1', 'win32', 'x64');
+    // Version file and executable, as half an unpack or a copy from before the mark leaves them.
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, 'electron.exe'), 'half');
+    writeFileSync(join(shared, 'version'), '45.2.1');
+    expect(electronDistReady(shared, '45.2.1', 'win32')).toBe(false);
+    expect(electronDistFor(state, checkout(), [], WIN)).toBeNull();
+    const env = { KEEP: 'yes' };
+    expect(withElectronDist(env, state, checkout(), [], WIN)).toBe(env);
+    // A complete source replaces it, and the copy carries the mark.
+    const main = checkout();
+    unpack(main);
+    expect(electronDistFor(state, checkout(), [main], WIN)).toBe(shared);
+    expect(readFileSync(join(shared, 'electron.exe'), 'utf8')).toBe('binary');
+    expect(existsSync(join(shared, ELECTRON_DIST_COMPLETE))).toBe(true);
+    expect(electronDistReady(shared, '45.2.1', 'win32')).toBe(true);
   });
 
   it('names the shared folder in the environment and keeps a value already set', () => {
