@@ -4927,7 +4927,7 @@ export class Supervisor extends EventEmitter {
    * describes, and a run that could not commit leaves part of that as files there (AO-0300).
    *
    * - Clean, or no such worktree: null, and the merge takes the commit the review names.
-   * - Changes there, the last run of the review's author ended with swarmupd unable to commit
+   * - Changes there, the run that asked for the approved review ended with swarmupd unable to commit
    *   what it left ({@link uncommittedRun}), and the worktree is on the commit to merge: swarmupd
    *   commits them on a branch of their own on top of it, and the merge takes that commit.
    *   When a file changed again during that commit (`kept`), the commit is not all of what the
@@ -4994,7 +4994,8 @@ export class Supervisor extends EventEmitter {
       }
       if (changes.length === 0) continue;
       const run = uncommittedRun(ws.showEvents(ref).events);
-      let why = "no run-end of the review's author says that swarmupd could not commit them";
+      let why =
+        'no run-end of the run that asked for this review says that swarmupd could not commit them';
       let left = changes;
       if (run && taken) {
         why = 'swarmupd committed the changes of another worktree of the task already';
@@ -6326,18 +6327,28 @@ export function straysNote(paths: string[]): string {
 const NOT_COMMITTED = /^(cannot commit what it left in |left changes uncommitted: )/m;
 
 /**
- * The last run of the author of the approved review, when its `run-end` says that swarmupd could
- * not commit what it left; else null. Only that run's changes are swarmupd's to commit before a
- * merge: the review asked for them to be checked, and the approval covers them (AO-0300).
+ * The run that made the approved review, when its `run-end` says that swarmupd could not commit
+ * what it left; else null. Only that run's changes are swarmupd's to commit before a merge: the
+ * review asked for them to be checked, and the approval covers them (AO-0300).
+ *
+ * A run asks for review while it works and ends after that, so its `run-end` comes after the
+ * review and before the verdict, and its `run-start` (when the task has one) before the review.
+ * An earlier run of the same author does not count: a later review, made by hand or by another
+ * run, does not cover what that run left.
  */
 export function uncommittedRun(events: OpsEvent[]): { id: string; agent: string } | null {
   let at = events.length - 1;
   while (at >= 0 && events[at]!.type !== 'verdict') at--;
-  const before = events.slice(0, Math.max(at, 0)).reverse();
-  const author = before.find((e) => e.type === 'review')?.actor;
-  if (!author) return null;
-  const end = before.find((e) => e.type === 'run-end' && e.actor === author);
+  let asked = at - 1;
+  while (asked >= 0 && events[asked]!.type !== 'review') asked--;
+  if (asked < 0) return null;
+  const author = events[asked]!.actor;
+  const after = events.slice(asked + 1, at);
+  const n = after.findIndex((e) => e.type === 'run-end' && e.actor === author);
+  const end = after[n];
   if (!end?.run || !NOT_COMMITTED.test(end.body ?? '')) return null;
+  // A run that started after the review did not make it.
+  if (after.slice(0, n).some((e) => e.type === 'run-start' && e.run === end.run)) return null;
   return { id: end.run, agent: author };
 }
 

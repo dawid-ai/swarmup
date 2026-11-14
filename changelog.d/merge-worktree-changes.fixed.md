@@ -3,4 +3,6 @@
   author with the list of files. A reviewer is told when a run asks for review with changes
   swarmupd could not commit. While git cannot read the task's worktree or swarmupd cannot look at its folder, or when a file there
   changes while swarmupd commits, or stays changed after that commit, nothing is merged. The
-  repo's own checkout is looked at too when it has the review's branch checked out.
+  repo's own checkout is looked at too when it has the review's branch checked out. Only the run
+  that asked for the approved review counts for that commit: what an earlier run of the same
+  author left is not committed or merged for a later review.
