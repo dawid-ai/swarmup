@@ -602,6 +602,53 @@ describe('merging approved work', () => {
     expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
   });
 
+  /** A branch `feature` checked out in the repo's own checkout, as a run without a task worktree leaves it. */
+  const featureInRepo = (repo: string): string => {
+    git(repo, 'checkout', '-q', '-b', 'feature');
+    writeFileSync(join(repo, 'code.txt'), 'two\n');
+    git(repo, 'commit', '-qam', 'Change the code');
+    return git(repo, 'rev-parse', 'HEAD');
+  };
+
+  it("sends the task back when the repo's own checkout is on the reviewed branch with changes (AO-0300)", async () => {
+    const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = featureInRepo(s.repo);
+    writeFileSync(join(s.repo, 'stray.txt'), 'whose?\n');
+    s.approve(commit);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(text(join(s.repo, 'stray.txt'))).toBe('whose?\n');
+  });
+
+  it("takes what a run could not commit in the repo's own checkout on the reviewed branch (AO-0300)", async () => {
+    const s = mergeSetup();
+    const commit = featureInRepo(s.repo);
+    writeFileSync(join(s.repo, 'extra.txt'), 'staged\n');
+    git(s.repo, 'add', 'extra.txt');
+    approveAfterRun(
+      s,
+      commit,
+      `cannot commit what it left in ${s.repo}: HEAD moved during the run`,
+    );
+    await s.merged();
+    // The run's file is in a commit on top of the reviewed one, and the merge works with that.
+    const left = git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
+    expect(git(s.repo, 'rev-parse', `${left}^`)).toBe(commit);
+    expect(git(s.repo, 'show', `${left}:extra.txt`)).toBe('staged');
+    expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
+    expect(git(s.repo, 'status', '--porcelain', '--', 'extra.txt')).toBe('');
+  });
+
   it('sends the task back when the worktree with the changes is not on the commit to merge (AO-0300)', async () => {
     const s = mergeSetup();
     const start = git(s.repo, 'rev-parse', 'main');

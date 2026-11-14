@@ -5306,7 +5306,8 @@ export class Supervisor extends EventEmitter {
 
   /**
    * Looks, before a merge, at the worktrees that hold the task's work: the one with the review's
-   * branch checked out and the task's own (`out/wt-<id>`). An approval covers what the review
+   * branch checked out (the repo's own checkout too, when a run worked there) and the task's own
+   * (`out/wt-<id>`). An approval covers what the review
    * describes, and a run that could not commit leaves part of that as files there (AO-0300).
    *
    * - Clean, or no such worktree: null, and the merge takes the commit the review names.
@@ -5344,7 +5345,8 @@ export class Supervisor extends EventEmitter {
     const bases = new Set(Object.values(this.config.merge).map((m) => m.base));
     const mine: WorktreeEntry[] = [];
     for (const w of list) {
-      if (samePath(w.path, job.top)) continue;
+      // The repo's own checkout counts too when it has the review's branch checked out: a run
+      // without a task worktree (`task_worktrees: false`, an agent's own `cwd`) works there.
       if (
         !(w.branch !== null && w.branch === job.src.branch && !bases.has(w.branch)) &&
         taskIdOfWorktree(job.top, w.path)?.toLowerCase() !== id.toLowerCase()
