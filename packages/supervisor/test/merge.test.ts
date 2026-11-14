@@ -314,6 +314,8 @@ function mergeSetup(
     userMerge?: boolean;
     /** When swarmupd first saw the merge setting; default long ago. */
     since?: string;
+    /** `swarmupd.merge` of other roots, by root name. */
+    otherMerge?: Record<string, { base: string }>;
   } = {},
 ) {
   const repo = temp();
@@ -365,7 +367,10 @@ function mergeSetup(
       // The writing run holds the store checkout, as the merge hold tests need (AO-0168).
       task_worktrees: false,
       runtimes: { fake: { command: process.execPath, args: [runFile] } },
-      merge: { test: { base: 'main', checks: ['node check.mjs'], build: ['node build.mjs'] } },
+      merge: {
+        ...opts.otherMerge,
+        test: { base: 'main', checks: ['node check.mjs'], build: ['node build.mjs'] },
+      },
     },
   });
   if (opts.timeoutMinutes !== undefined) config.merge.test!.timeout_minutes = opts.timeoutMinutes;
@@ -612,6 +617,27 @@ describe('merging approved work', () => {
 
   it("sends the task back when the repo's own checkout is on the reviewed branch with changes (AO-0300)", async () => {
     const s = mergeSetup();
+    const start = git(s.repo, 'rev-parse', 'main');
+    const commit = featureInRepo(s.repo);
+    writeFileSync(join(s.repo, 'stray.txt'), 'whose?\n');
+    s.approve(commit);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({
+      type: 'verdict',
+      verdict: 'changes',
+      actor: MERGE_ACTOR,
+      to: 'fake:engineer',
+    });
+    expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(text(join(s.repo, 'stray.txt'))).toBe('whose?\n');
+  });
+
+  it("looks at the repo's own checkout when another root's base has the reviewed branch's name (AO-0300)", async () => {
+    // A second root merges into a branch named `feature` in a repo of its own. That name says
+    // nothing about this repo, where `feature` is the reviewed branch.
+    const s = mergeSetup({ otherMerge: { other: { base: 'feature' } } });
     const start = git(s.repo, 'rev-parse', 'main');
     const commit = featureInRepo(s.repo);
     writeFileSync(join(s.repo, 'stray.txt'), 'whose?\n');
