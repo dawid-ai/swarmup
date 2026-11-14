@@ -930,7 +930,8 @@ swarmupd:
   repo has, and merges that branch's tip. The commit may be in code font or bold
   (`` `abc1234` on branch `x` ``), and so may the name; a name in code font is read as written, so
   `` `__wip__` `` is the branch `__wip__`, while a bold `__wip__` is `wip`. A code span that a
-  longer word runs on from, as in `` `feature`-old `` or `` `feature`/next ``, names no branch. A commit the repo lacks gets a note to the human, never an
+  longer word runs on from, as in `` `feature`-old `` or `` `feature`/next ``, names no branch; that holds for `` `feature`_ `` too,
+  where the underscore closes no emphasis that opened before the span. A commit the repo lacks gets a note to the human, never an
   earlier review's work. Only verdicts after swarmupd first saw the root's
   setting count (`merge.json` in the state folder), so turning it on merges no old work.
 - **Nothing to merge.** Work that is already in the base gets a merge event that says so, and

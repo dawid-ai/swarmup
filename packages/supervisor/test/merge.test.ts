@@ -568,6 +568,26 @@ describe('merging approved work', () => {
       commit: 'cc3d803',
       branch: 'feature',
     });
+    // A mark after the span closes emphasis only when the same mark opened it before the span.
+    for (const tail of ['_', '__', '___', '*', '_*']) {
+      expect(reviewSources(`cc3d803 on branch \`feature\`${tail} is rebased.`)).toEqual({
+        loose: [],
+      });
+      expect(reviewSources(`The fix is on branch \`feature\`${tail}, rebased.`).loose).toEqual([]);
+    }
+    expect(
+      reviewSources('branch _`feature`__ and branch __`feature`_ and branch *`feature`_').loose,
+    ).toEqual([]);
+    expect(
+      reviewSources('branch ***`a`***, branch **_`b`_** and branch _**`c`**_. branch ___`d`___')
+        .loose,
+    ).toEqual(['a', 'b', 'c', 'd']);
+    expect(
+      pickMergeSource(['The fix is on branch `feature`_.', 'abc1234 on branch feature_'], {
+        branch: (b) => b === 'feature' || b === 'feature_',
+        commit: () => false,
+      }),
+    ).toEqual({ branch: 'feature_' });
     expect(
       pickMergeSource(['The fix is on branch `feature`-old.', 'abc1234 on branch feature-old'], {
         branch: (b) => b === 'feature' || b === 'feature-old',
@@ -2838,6 +2858,48 @@ describe('merging approved work', () => {
       s.as('human:dawid').verdict('1', 'approve', 'looks right');
       await s.merged();
       expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature-old' });
+      expect(s.last().body).not.toContain('nothing to merge');
+      expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+      expect(s.as('human:dawid').view('2').unblocked).toBe(true);
+    },
+  );
+
+  it.each(
+    ['_', '__', '___'].flatMap((tail) => [
+      [
+        'named',
+        tail,
+        (sha: string) => `T-0001: \`${sha}\` on branch \`feature\`${tail} is rebased.`,
+      ] as const,
+      [
+        'loose',
+        tail,
+        () => `T-0001: the fix is on branch \`feature\`${tail}, rebased onto \`main\`.`,
+      ] as const,
+    ]),
+  )(
+    'does not take the branch a code span names when unpaired underscores follow the span: %s, %s (AO-0325)',
+    async (_form, tail, request) => {
+      const s = mergeSetup({ userMerge: true });
+      const commit = s.branch('two\n');
+      git(s.repo, 'branch', '-m', 'feature', `feature${tail}`);
+      // The stale branch whose name the code span holds: it is already in `main`.
+      git(s.repo, 'branch', 'feature', 'main');
+      const eng = s.as('fake:engineer');
+      eng.start('2', 'plan');
+      eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+      eng.start('1', 'plan');
+      eng.review('1', `T-0001: the work is on branch feature${tail} for now.`, 'human:dawid');
+      s.as('human:dawid').verdict('1', 'changes', 'rebase it');
+      eng.start('1', 'plan');
+      eng.review('1', request(commit.slice(0, 7)), 'human:dawid');
+      s.as('human:dawid').verdict('1', 'approve', 'looks right');
+      await s.merged();
+      expect(s.last()).toMatchObject({
+        type: 'merge',
+        actor: MERGE_ACTOR,
+        branch: `feature${tail}`,
+      });
       expect(s.last().body).not.toContain('nothing to merge');
       expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
       expect(s.as('human:dawid').view('2').unblocked).toBe(true);

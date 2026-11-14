@@ -13,15 +13,18 @@ export interface MergeSource {
 const CODE_END = '(?=[\\s:,;)\\]}>!?\'"]|\\.(?:\\s|$)|$)';
 /**
  * A name in code font, whole: a code span holds its text as written, so `__wip__` there is the
- * branch `__wip__` and no bold `wip` (AO-0325). Bold may stand around the span.
+ * branch `__wip__` and no bold `wip` (AO-0325). Bold may stand around the span: up to three marks
+ * open it (`o1` to `o3`) and the same marks close it, innermost first. A mark after the span that
+ * closes nothing goes on with a longer word: in `` `feature`_ `` the span names no branch
+ * `feature`.
  */
-const CODE_NAME = `[*_]{0,3}\`([^\`\\s]+)\`[*_]{0,3}${CODE_END}`;
+const CODE_NAME = `(?<o1>[*_])?(?<o2>[*_])?(?<o3>[*_])?\`(?<code>[^\`\\s]+)\`\\k<o3>\\k<o2>\\k<o1>${CODE_END}`;
 /**
  * A name outside code font ends at a space, a colon, a comma, a bracket or a full stop that ends
  * a sentence. It may be bold.
  */
-const BARE_NAME = '[`*]{0,3}([A-Za-z0-9._/-]+?)[`*]{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
-/** Two groups: the name of a code span, else the bare name. Read them with `nameOf`. */
+const BARE_NAME = '\\*{0,3}(?<bare>[A-Za-z0-9._/-]+?)\\*{0,3}(?=[\\s:,;)]|\\.(?:\\s|$)|$)';
+/** Two named groups: `code`, the name of a code span, else `bare`. Read them with `nameOf`. */
 const NAME = `(?:${CODE_NAME}|${BARE_NAME})`;
 
 /**
@@ -47,8 +50,8 @@ function plain(name: string): string {
  * The name `NAME` matched: a code span's text as it is, a bare name without the underscores of
  * emphasis.
  */
-function nameOf(code: string | undefined, bare: string | undefined): string {
-  return code ?? plain(bare!);
+function nameOf(m: RegExpExecArray): string {
+  return m.groups!.code ?? plain(m.groups!.bare!);
 }
 
 /** What a review request names as the work to merge. */
@@ -68,16 +71,14 @@ export interface ReviewSources {
  * Markdown: a request that wrote the commit in code font named no commit before, and the merge
  * took an older request's branch for it (AO-0325). A name in code font keeps its text as written,
  * underscores included: `` `__wip__` `` is the branch `__wip__`. A span that a longer word runs on
- * from (`` `feature`-old ``) names no branch.
+ * from (`` `feature`-old ``, `` `feature`_ ``) names no branch.
  */
 export function reviewSources(text: string): ReviewSources {
   const both = new RegExp(`${START}(${HEX})[\`*_]{0,3}\\s+on\\s+branch\\s+${NAME}`, 'm').exec(text);
-  const named = both
-    ? { commit: both[1]!.toLowerCase(), branch: nameOf(both[2], both[3]) }
-    : undefined;
+  const named = both ? { commit: both[1]!.toLowerCase(), branch: nameOf(both) } : undefined;
   const loose: string[] = [];
   for (const m of text.matchAll(new RegExp(`\\bbranch\\s+${NAME}`, 'gm'))) {
-    const name = nameOf(m[1], m[2]);
+    const name = nameOf(m);
     if (name !== named?.branch && !loose.includes(name)) loose.push(name);
   }
   return named ? { named, loose } : { loose };
