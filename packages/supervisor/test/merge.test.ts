@@ -1954,8 +1954,6 @@ describe('merging approved work', () => {
 
   it("reads the registry of a scope from npm's configuration (AO-0229)", () => {
     const dir = temp();
-    // `pnpm run` gives its scripts `npm_config_registry`, and npm takes that over an `.npmrc`.
-    vi.stubEnv('npm_config_registry', undefined);
     writeFileSync(join(dir, 'package.json'), '{"name":"app"}');
     writeFileSync(
       join(dir, '.npmrc'),

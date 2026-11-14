@@ -13,7 +13,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type DeleteHost, deleteWorktree, removeTree } from '../src/worktree.js';
 import { electronHost } from './electron-asar.js';
