@@ -188,9 +188,15 @@ const views = [
   'chat',
   'channels',
   'knowledge',
-  'settings',
-  // The Cleanup section is below the first screen: `settings:cleanup` scrolls to it (AO-0298).
+  // Every Settings category gets its own screenshot and the app checks that the link selected it.
+  'settings:general',
+  'settings:projects',
+  'settings:agents',
+  'settings:runs',
   'settings:cleanup',
+  'settings:updates',
+  'settings:notifications',
+  'settings:health',
 ];
 
 // --packaged: the unpacked installer build (pnpm run dist), with its bundled swarmupd and swarmup command,
