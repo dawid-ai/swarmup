@@ -174,6 +174,7 @@ import { repairRoot, type SandboxLister, staleTempFiles } from './store-repair.j
 import { gitAsync } from './git.js';
 import { gitIn, NoDiff, reviewRange, taskDiff } from './diff.js';
 import { readTestChanges, testChangesNote } from './test-changes.js';
+import { readReleases, RELEASES_TTL_MS, type ReleaseSnapshot, releasesNote } from './releases.js';
 import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
@@ -299,6 +300,8 @@ export interface SupervisorOptions {
    * Without it swarmupd repairs nothing; `startDaemon` passes `listSandboxOwned`.
    */
   sandboxOwned?: SandboxLister;
+  /** Reads the releases and tags of a code checkout (AO-0350); defaults to `readReleases`. */
+  readReleases?: (top: string) => Promise<ReleaseSnapshot>;
 }
 
 /** Kill rounds for what an ended run left behind before swarmupd gives up and warns. */
@@ -907,6 +910,13 @@ export class Supervisor extends EventEmitter {
     string,
     { request: string; last: string | null; note: string }
   >();
+  /**
+   * The releases and tags of each code checkout, for the prompt of a Codex PM run, whose sandbox
+   * has no network (AO-0350). `releasesAt` is when swarmupd last read them.
+   */
+  private releases: ReleaseSnapshot[] = [];
+  private releasesAt = 0;
+  private readonly readReleasesOf: (top: string) => Promise<ReleaseSnapshot>;
   /** The review checks under way; one at a time, and no merge beside them. */
   private reviewChecking: {
     key: string;
@@ -1027,6 +1037,9 @@ export class Supervisor extends EventEmitter {
     // that tick has repaired pre-existing sandbox-owned entries (AO-0287).
     this.repairPending = Boolean(this.sandboxOwned && this.cfg.repair_stores);
     this.freeMem = opts.freeMem ?? freemem;
+    this.readReleasesOf =
+      opts.readReleases ??
+      ((top) => readReleases(top, { env: this.commandEnv(), now: () => this.now() }));
     this.build = opts.build;
     this.version = opts.version;
     this.self = opts.self;
@@ -3008,6 +3021,7 @@ export class Supervisor extends EventEmitter {
         // The launch names what is wrong with the task; the run starts without the list.
       }
     }
+    if (needsReleases(req.agent)) await this.releasesTick();
     const states = await this.readCheckouts();
     // A tick's launches run without an await, so none is under way here.
     this.tickStates = states;
@@ -3310,6 +3324,8 @@ export class Supervisor extends EventEmitter {
             decisions,
           })) +
       (inv.note ?? '') +
+      // The releases and tags a Codex PM run cannot read itself (AO-0350).
+      (needsReleases(agent) ? releasesNote(this.releases) : '') +
       checksNote +
       // What the work changes in tests and check configuration, for the reviewer (AO-0291).
       (req.review && ref && !req.chat ? this.testChangesNoteOf(ws, ref) : '');
@@ -4693,6 +4709,8 @@ export class Supervisor extends EventEmitter {
       // Before the wake plan, off the event loop, so a review run that starts in this tick has
       // the list in its prompt.
       await this.testChangesTick();
+      // Before the wake plan too, so a Codex PM run that starts in this tick has the releases.
+      await this.releasesTick();
       const states = await this.readCheckouts();
       this.tickStates = states;
       this.dirtyHolds = new Map();
@@ -5465,6 +5483,52 @@ export class Supervisor extends EventEmitter {
     if (!known?.note) return '';
     const request = [...ws.showEvents(ref).events].reverse().find((e) => e.type === 'review');
     return request?.id === known.request ? known.note : '';
+  }
+
+  // ---- Releases and tags, for Codex PM runs (AO-0350) ------------------------------------------
+
+  private readingReleases: Promise<void> | undefined;
+
+  /**
+   * Reads the releases and tags of every root's code checkout, off the event loop, when a Codex
+   * provider is set up and the last read is older than `RELEASES_TTL_MS`. A Codex run has no
+   * network, so its PM gets them in the prompt instead of running `gh`. Read-only.
+   */
+  private releasesTick(): Promise<void> {
+    if (this.stopping || !this.config.runtimes.codex) return Promise.resolve();
+    if (this.releasesAt && this.now() - this.releasesAt < RELEASES_TTL_MS) {
+      return Promise.resolve();
+    }
+    if (!this.readingReleases) {
+      const reading = this.readReleasesNow().finally(() => {
+        if (this.readingReleases === reading) this.readingReleases = undefined;
+      });
+      this.readingReleases = reading;
+    }
+    return this.readingReleases;
+  }
+
+  private async readReleasesNow(): Promise<void> {
+    try {
+      const tops: string[] = [];
+      for (const root of this.ws().roots) {
+        const cfg = this.config.merge[root.name];
+        const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+        if (top && !tops.some((t) => samePath(t, top))) tops.push(top);
+      }
+      const snaps: ReleaseSnapshot[] = [];
+      for (const top of tops) {
+        if (this.stopping) return;
+        snaps.push(await this.readReleasesOf(top));
+      }
+      this.releases = snaps;
+      this.releasesAt = this.now();
+    } catch (err) {
+      const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+      this.emit('warn', `releases: ${firstLines(msg)}`);
+      // Read again after the TTL, not at every tick.
+      this.releasesAt = this.now();
+    }
   }
 
   /** Whether a top-level writing run is live in the checkout `top`. */
@@ -7316,6 +7380,18 @@ function sameProcess(r: RunRecord): boolean | 'unknown' {
   const now = processStartSync(r.pid);
   if (now === null) return isAlive(r.pid) ? 'unknown' : false;
   return now === r.proc_start;
+}
+
+/**
+ * Whether a run of `agent` gets the releases and tags swarmupd read (AO-0350): a Codex PM, whose
+ * sandbox has no network for `gh`. A Claude PM runs `gh` itself (AO-0349).
+ */
+function needsReleases(agent: string): boolean {
+  try {
+    return runtimeOf(agent) === 'codex' && roleOf(agent) === 'pm';
+  } catch {
+    return false;
+  }
 }
 
 function gitTop(dir: string): string | null {
