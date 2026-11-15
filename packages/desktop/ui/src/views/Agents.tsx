@@ -38,6 +38,8 @@ import {
 } from '../components';
 import { ago, minutes, tokens } from '../lib/format';
 import { identity } from '../lib/identity';
+// Known providers first; humans last; anything else alphabetically between.
+import { byProvider } from '../lib/usage';
 import type {
   Agent,
   DirectoryItem,
@@ -54,19 +56,6 @@ import { Markdown } from '../ui/markdown';
 import { MergeUnderWay } from '../ui/merge';
 import { RefText } from '../ui/refs';
 import { RoleEditor } from '../ui/roles';
-
-// Known providers first, in this order; humans last; anything else alphabetically between.
-const PROVIDER_ORDER = ['claude', 'codex', 'gemini', 'grok', 'cursor'];
-
-function providerRank(rt: string): number {
-  if (rt === 'human') return 1000;
-  const i = PROVIDER_ORDER.indexOf(rt);
-  return i === -1 ? 100 : i;
-}
-
-function byProvider(a: string, b: string): number {
-  return providerRank(a) - providerRank(b) || a.localeCompare(b);
-}
 
 /** Re-renders every `ms` so elapsed times on live runs keep moving. */
 function useNow(ms: number): number {
@@ -115,7 +104,8 @@ function Chip({
   );
 }
 
-export function Agents({ nav }: { nav: Nav }) {
+/** `selected`: a provider to scroll to and highlight, from the status bar. */
+export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
   const agents = useData<Agent[]>('/api/agents');
   const runs = useData<RunRecord[]>('/api/runs?live');
   const tasks = useData<Task[]>('/api/tasks');
@@ -218,6 +208,7 @@ export function Agents({ nav }: { nav: Nav }) {
             <Providers
               providers={waits.data.providers}
               agents={[...ids, ...runnable.map((d) => d.id)]}
+              selected={selected}
             />
           ) : (
             <div className="text-sm text-fg-4">Reading usage…</div>
@@ -397,11 +388,20 @@ function WaitsUnavailable({ error }: { error: string }) {
 function Providers({
   providers,
   agents,
+  selected,
 }: {
   providers: Record<string, ProviderUsage>;
   agents: string[];
+  selected?: string;
 }) {
   const names = Object.keys(providers).sort(byProvider);
+  const shown = selected !== undefined && names.includes(selected);
+  useEffect(() => {
+    if (!shown || !selected) return;
+    document
+      .querySelector(`[data-provider-card="${CSS.escape(selected)}"]`)
+      ?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, [selected, shown]);
   if (names.length === 0) {
     return <div className="text-sm text-fg-4">swarmupd reports no providers yet.</div>;
   }
@@ -415,9 +415,12 @@ function Providers({
         return (
           <div
             key={name}
+            data-provider-card={name}
+            data-selected={name === selected || undefined}
             className={cx(
               'panel animate-rise relative overflow-hidden p-4',
               p.paused && 'ring-1 ring-warn/40',
+              name === selected && 'ring-2 ring-signal/60',
             )}
           >
             <div
