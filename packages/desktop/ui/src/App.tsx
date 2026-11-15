@@ -32,6 +32,7 @@ import type { SetupStatus } from './api';
 import { api, bridge, refreshSoon, useData, useUpdate } from './api';
 import { Avatar, Toaster, cx, toast } from './components';
 import { Mark } from './ui/brand';
+import { ProviderStatusBar } from './ui/provider-status';
 import { Lightbox } from './ui/attach';
 import type { SavedView } from './lib/filters';
 import { loadViews, storeViews, viewProject, VIEWS_CHANGED } from './lib/filters';
@@ -516,251 +517,259 @@ export function App() {
   };
 
   return (
-    <div className="flex h-screen">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-white/6 bg-ink-950">
-        <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
-          <Mark size={30} />
-          <div>
-            <div className="font-display text-[17px] leading-none font-bold tracking-[0.08em] uppercase">
-              SwarmUp
-            </div>
-            <div className="mt-1 text-[10px] tracking-[0.2em] text-fg-4 uppercase">
-              control room
-            </div>
-          </div>
-        </div>
-        <div className="px-3 pb-2">
-          <button
-            onClick={() => setCreating(true)}
-            className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-signal text-sm font-semibold text-ink-950 shadow-[0_0_24px_-6px_rgba(92,225,230,0.8)] transition hover:bg-[#7debef] active:translate-y-px"
-          >
-            <Plus size={16} strokeWidth={2.6} /> New task
-          </button>
-          {/* The conversation with the PM, one click from every view (AO-0134). */}
-          <button
-            type="button"
-            data-chat-button
-            onClick={() => nav.go('chat')}
-            title="One conversation with the project's PM; an answer never closes it"
-            className={cx(
-              'mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-lg border text-sm font-medium transition active:translate-y-px',
-              view === 'chat'
-                ? 'border-signal/50 bg-signal/10 text-signal'
-                : 'border-white/10 text-fg-2 hover:border-white/20 hover:bg-white/4 hover:text-fg',
-            )}
-          >
-            <MessageSquare size={16} /> Chat with the PM
-          </button>
-        </div>
-        <SearchBox nav={nav} />
-        <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-2 py-2">
-          {/* First, so Add project shows without scrolling in a window of the smallest size. */}
-          <div data-projects>
-            <SectionHeader
-              title="Projects"
-              section="projects"
-              folded={folded.projects}
-              onToggle={toggleSection}
-            />
-            <div id="sidebar-section-projects">
-              {projects
-                .filter((p) => !folded.projects || isProjectActive(p.name))
-                .map((p) => (
-                  <NavItem
-                    key={p.dir}
-                    active={isProjectActive(p.name)}
-                    icon={FolderGit2}
-                    label={p.name}
-                    title={p.dir}
-                    onClick={() => nav.go('list', `project:${p.name}`)}
-                  />
-                ))}
-              {!folded.projects && (
-                <NavItem
-                  active={false}
-                  icon={FolderPlus}
-                  label="Add project"
-                  onClick={addProject}
-                />
-              )}
-            </div>
-          </div>
-          {GROUPS.map((g) => {
-            const section = g.section;
-            return (
-              <div key={g.title}>
-                <SectionHeader
-                  title={g.title}
-                  section={section}
-                  folded={folded[section]}
-                  onToggle={toggleSection}
-                />
-                <div id={`sidebar-section-${section}`}>
-                  {g.items
-                    .filter(([v]) => !folded[section] || isGroupItemActive(v))
-                    .map(([v, label, Icon]) => (
-                      <NavItem
-                        key={v}
-                        // A project from the list above shows the task list; the mark stays on it.
-                        active={isGroupItemActive(v)}
-                        icon={Icon}
-                        label={label}
-                        count={counts[v]}
-                        onClick={() => nav.go(v)}
-                      />
-                    ))}
-                </div>
-              </div>
-            );
-          })}
-          {saved.length > 0 && (
+    <div className="flex h-screen flex-col">
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-60 shrink-0 flex-col border-r border-white/6 bg-ink-950">
+          <div className="flex items-center gap-2.5 px-4 pt-4 pb-3">
+            <Mark size={30} />
             <div>
-              <div className="label-caps px-3 pb-1.5 !text-[10px]">Saved views</div>
-              {saved.map((v) => (
-                <div key={v.name} className="group/view relative">
-                  <NavItem
-                    active={view === v.view && arg === `saved:${v.name}`}
-                    icon={v.view === 'board' ? Kanban : Bookmark}
-                    label={v.name}
-                    onClick={() => nav.go(v.view, `saved:${v.name}`)}
-                  />
-                  <button
-                    type="button"
-                    aria-label={`Delete the view ${v.name}`}
-                    title="Delete this view"
-                    onClick={() => storeViews(saved.filter((x) => x.name !== v.name))}
-                    className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-fg-4 opacity-0 transition group-hover/view:opacity-100 hover:bg-white/10 hover:text-fg"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </nav>
-        <div className="border-t border-white/6 px-2 py-2">
-          <NavItem
-            active={view === 'settings'}
-            icon={SettingsIcon}
-            label="Settings"
-            onClick={() => nav.go('settings')}
-          />
-        </div>
-        <div className="flex items-center gap-2.5 border-t border-white/6 px-4 py-3">
-          {me ? (
-            <Avatar id={me} size={30} />
-          ) : (
-            <span className="h-[30px] w-[30px] rounded-[30%] bg-ink-700" />
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-mono text-xs text-fg-2">{me ?? 'no me set'}</div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-fg-4">
-              <span
-                className={cx(
-                  'h-1.5 w-1.5 rounded-full',
-                  status.connected ? 'animate-pulse-dot bg-ok text-ok' : 'bg-bad',
-                )}
-              />
-              {status.connected ? `swarmupd · pid ${info?.pid ?? '-'}` : 'swarmupd offline'}
-              {status.connected && halted && <span className="text-warn">· paused</span>}
+              <div className="font-display text-[17px] leading-none font-bold tracking-[0.08em] uppercase">
+                SwarmUp
+              </div>
+              <div className="mt-1 text-[10px] tracking-[0.2em] text-fg-4 uppercase">
+                control room
+              </div>
             </div>
           </div>
-        </div>
-        {(restartNote || (!status.connected && status.error)) && (
-          <div className="px-4 pb-3 text-[11px] text-warn">
-            {restartNote ? (
-              <button
-                type="button"
-                className="text-left hover:text-fg"
-                onClick={() => nav.go('settings', 'general')}
-              >
-                swarmupd runs agents: open Settings &gt; General to restart and load the new config
-              </button>
-            ) : (
-              status.error
-            )}
-          </div>
-        )}
-      </aside>
-      <main className="stage flex min-w-0 flex-1 flex-col">
-        {signedOut.map(([p, s]) => (
-          <SignedOutBanner key={p} provider={p} state={s} onResumed={usage.reload} />
-        ))}
-        {update?.status === 'ready' && (
-          <div className="flex items-center gap-3 border-b border-signal/25 bg-signal/8 px-6 py-2 text-sm text-signal">
-            <Download size={16} />
-            <span className="min-w-0 flex-1">
-              SwarmUp {update.version} is ready. It installs on its own once no agent run is live
-              and this window is closed.
-            </span>
+          <div className="px-3 pb-2">
+            <button
+              onClick={() => setCreating(true)}
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-signal text-sm font-semibold text-ink-950 shadow-[0_0_24px_-6px_rgba(92,225,230,0.8)] transition hover:bg-[#7debef] active:translate-y-px"
+            >
+              <Plus size={16} strokeWidth={2.6} /> New task
+            </button>
+            {/* The conversation with the PM, one click from every view (AO-0134). */}
             <button
               type="button"
-              onClick={() => nav.go('settings', 'updates')}
-              className="rounded-md px-2.5 py-1 text-xs font-medium hover:bg-signal/10"
+              data-chat-button
+              onClick={() => nav.go('chat')}
+              title="One conversation with the project's PM; an answer never closes it"
+              className={cx(
+                'mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-lg border text-sm font-medium transition active:translate-y-px',
+                view === 'chat'
+                  ? 'border-signal/50 bg-signal/10 text-signal'
+                  : 'border-white/10 text-fg-2 hover:border-white/20 hover:bg-white/4 hover:text-fg',
+              )}
             >
-              Settings &gt; Updates
-            </button>
-            <button
-              onClick={() => void bridge().update('install')}
-              className="inline-flex items-center gap-1.5 rounded-md bg-signal/15 px-2.5 py-1 text-xs font-medium hover:bg-signal/25"
-            >
-              <RefreshCw size={13} /> Restart and install
-            </button>
-          </div>
-        )}
-        {info?.stale && (
-          <div className="flex items-center gap-3 border-b border-warn/25 bg-warn/8 px-6 py-2 text-sm text-warn">
-            <TriangleAlert size={16} />
-            <span className="min-w-0 flex-1">
-              swarmupd runs an older build than this app
-              {info.live ? ` and ${info.live} run${info.live === 1 ? ' is' : 's are'} live` : ''}.
-              It restarts on its own once no run is live; until then some views may lack data.
-            </span>
-            {restarting && <span className="text-xs">{restarting}</span>}
-            <button
-              onClick={restart}
-              className="inline-flex items-center gap-1.5 rounded-md bg-warn/15 px-2.5 py-1 text-xs font-medium hover:bg-warn/25"
-            >
-              <RefreshCw size={13} /> Restart now if idle
+              <MessageSquare size={16} /> Chat with the PM
             </button>
           </div>
-        )}
-        <div className="min-h-0 flex-1">
-          {view === 'inbox' && <Inbox nav={nav} items={inbox.data} error={inbox.error} />}
-          {/* Keyed on the saved view, so leaving one starts from the default filters. */}
-          {view === 'board' && <Board key={arg ?? ''} nav={nav} preset={arg} />}
-          {view === 'list' && <List key={arg ?? ''} nav={nav} preset={arg} />}
-          {view === 'findings' && <Findings nav={nav} />}
-          {view === 'knowledge' && <Knowledge key={arg ?? ''} nav={nav} selected={arg} />}
-          {view === 'search' && <Search nav={nav} initial={arg} />}
-          {view === 'standups' && <Standups nav={nav} />}
-          {view === 'activity' && <ActivityView nav={nav} />}
-          {view === 'reports' && <Reports nav={nav} />}
-          {view === 'replay' && <Replay />}
-          {view === 'agents' && <Agents nav={nav} />}
-          {view === 'runs' && <Runs nav={nav} selected={arg} />}
-          {view === 'schedules' && <Schedules nav={nav} selected={arg} />}
-          {view === 'repeating' && <Repeating nav={nav} />}
-          {view === 'decisions' && <Decisions key={arg ?? ''} nav={nav} selected={arg} />}
-          {view === 'chat' && <Chat nav={nav} />}
-          {view === 'channels' && <Channels nav={nav} selected={arg} />}
-          {view === 'settings' && (
-            <Settings nav={nav} info={info} onRestarted={loadInfo} section={arg} />
+          <SearchBox nav={nav} />
+          <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-2 py-2">
+            {/* First, so Add project shows without scrolling in a window of the smallest size. */}
+            <div data-projects>
+              <SectionHeader
+                title="Projects"
+                section="projects"
+                folded={folded.projects}
+                onToggle={toggleSection}
+              />
+              <div id="sidebar-section-projects">
+                {projects
+                  .filter((p) => !folded.projects || isProjectActive(p.name))
+                  .map((p) => (
+                    <NavItem
+                      key={p.dir}
+                      active={isProjectActive(p.name)}
+                      icon={FolderGit2}
+                      label={p.name}
+                      title={p.dir}
+                      onClick={() => nav.go('list', `project:${p.name}`)}
+                    />
+                  ))}
+                {!folded.projects && (
+                  <NavItem
+                    active={false}
+                    icon={FolderPlus}
+                    label="Add project"
+                    onClick={addProject}
+                  />
+                )}
+              </div>
+            </div>
+            {GROUPS.map((g) => {
+              const section = g.section;
+              return (
+                <div key={g.title}>
+                  <SectionHeader
+                    title={g.title}
+                    section={section}
+                    folded={folded[section]}
+                    onToggle={toggleSection}
+                  />
+                  <div id={`sidebar-section-${section}`}>
+                    {g.items
+                      .filter(([v]) => !folded[section] || isGroupItemActive(v))
+                      .map(([v, label, Icon]) => (
+                        <NavItem
+                          key={v}
+                          // A project from the list above shows the task list; the mark stays on it.
+                          active={isGroupItemActive(v)}
+                          icon={Icon}
+                          label={label}
+                          count={counts[v]}
+                          onClick={() => nav.go(v)}
+                        />
+                      ))}
+                  </div>
+                </div>
+              );
+            })}
+            {saved.length > 0 && (
+              <div>
+                <div className="label-caps px-3 pb-1.5 !text-[10px]">Saved views</div>
+                {saved.map((v) => (
+                  <div key={v.name} className="group/view relative">
+                    <NavItem
+                      active={view === v.view && arg === `saved:${v.name}`}
+                      icon={v.view === 'board' ? Kanban : Bookmark}
+                      label={v.name}
+                      onClick={() => nav.go(v.view, `saved:${v.name}`)}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Delete the view ${v.name}`}
+                      title="Delete this view"
+                      onClick={() => storeViews(saved.filter((x) => x.name !== v.name))}
+                      className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-fg-4 opacity-0 transition group-hover/view:opacity-100 hover:bg-white/10 hover:text-fg"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </nav>
+          <div className="border-t border-white/6 px-2 py-2">
+            <NavItem
+              active={view === 'settings'}
+              icon={SettingsIcon}
+              label="Settings"
+              onClick={() => nav.go('settings')}
+            />
+          </div>
+          <div className="flex items-center gap-2.5 border-t border-white/6 px-4 py-3">
+            {me ? (
+              <Avatar id={me} size={30} />
+            ) : (
+              <span className="h-[30px] w-[30px] rounded-[30%] bg-ink-700" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-mono text-xs text-fg-2">{me ?? 'no me set'}</div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-fg-4">
+                <span
+                  className={cx(
+                    'h-1.5 w-1.5 rounded-full',
+                    status.connected ? 'animate-pulse-dot bg-ok text-ok' : 'bg-bad',
+                  )}
+                />
+                {status.connected ? `swarmupd · pid ${info?.pid ?? '-'}` : 'swarmupd offline'}
+                {status.connected && halted && <span className="text-warn">· paused</span>}
+              </div>
+            </div>
+          </div>
+          {(restartNote || (!status.connected && status.error)) && (
+            <div className="px-4 pb-3 text-[11px] text-warn">
+              {restartNote ? (
+                <button
+                  type="button"
+                  className="text-left hover:text-fg"
+                  onClick={() => nav.go('settings', 'general')}
+                >
+                  swarmupd runs agents: open Settings &gt; General to restart and load the new
+                  config
+                </button>
+              ) : (
+                status.error
+              )}
+            </div>
           )}
-        </div>
-      </main>
-      {task && (
-        <TaskPanel
-          key={task}
-          id={task}
-          focus={focus ?? undefined}
-          showDiff={diffOf === task}
-          nav={nav}
-          onClose={() => setTask(null)}
-          onBack={back ?? undefined}
-          onForward={forward ?? undefined}
-        />
-      )}
+        </aside>
+        <main className="stage flex min-w-0 flex-1 flex-col">
+          {signedOut.map(([p, s]) => (
+            <SignedOutBanner key={p} provider={p} state={s} onResumed={usage.reload} />
+          ))}
+          {update?.status === 'ready' && (
+            <div className="flex items-center gap-3 border-b border-signal/25 bg-signal/8 px-6 py-2 text-sm text-signal">
+              <Download size={16} />
+              <span className="min-w-0 flex-1">
+                SwarmUp {update.version} is ready. It installs on its own once no agent run is live
+                and this window is closed.
+              </span>
+              <button
+                type="button"
+                onClick={() => nav.go('settings', 'updates')}
+                className="rounded-md px-2.5 py-1 text-xs font-medium hover:bg-signal/10"
+              >
+                Settings &gt; Updates
+              </button>
+              <button
+                onClick={() => void bridge().update('install')}
+                className="inline-flex items-center gap-1.5 rounded-md bg-signal/15 px-2.5 py-1 text-xs font-medium hover:bg-signal/25"
+              >
+                <RefreshCw size={13} /> Restart and install
+              </button>
+            </div>
+          )}
+          {info?.stale && (
+            <div className="flex items-center gap-3 border-b border-warn/25 bg-warn/8 px-6 py-2 text-sm text-warn">
+              <TriangleAlert size={16} />
+              <span className="min-w-0 flex-1">
+                swarmupd runs an older build than this app
+                {info.live ? ` and ${info.live} run${info.live === 1 ? ' is' : 's are'} live` : ''}.
+                It restarts on its own once no run is live; until then some views may lack data.
+              </span>
+              {restarting && <span className="text-xs">{restarting}</span>}
+              <button
+                onClick={restart}
+                className="inline-flex items-center gap-1.5 rounded-md bg-warn/15 px-2.5 py-1 text-xs font-medium hover:bg-warn/25"
+              >
+                <RefreshCw size={13} /> Restart now if idle
+              </button>
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            {view === 'inbox' && <Inbox nav={nav} items={inbox.data} error={inbox.error} />}
+            {/* Keyed on the saved view, so leaving one starts from the default filters. */}
+            {view === 'board' && <Board key={arg ?? ''} nav={nav} preset={arg} />}
+            {view === 'list' && <List key={arg ?? ''} nav={nav} preset={arg} />}
+            {view === 'findings' && <Findings nav={nav} />}
+            {view === 'knowledge' && <Knowledge key={arg ?? ''} nav={nav} selected={arg} />}
+            {view === 'search' && <Search nav={nav} initial={arg} />}
+            {view === 'standups' && <Standups nav={nav} />}
+            {view === 'activity' && <ActivityView nav={nav} />}
+            {view === 'reports' && <Reports nav={nav} />}
+            {view === 'replay' && <Replay />}
+            {view === 'agents' && <Agents nav={nav} selected={arg} />}
+            {view === 'runs' && <Runs nav={nav} selected={arg} />}
+            {view === 'schedules' && <Schedules nav={nav} selected={arg} />}
+            {view === 'repeating' && <Repeating nav={nav} />}
+            {view === 'decisions' && <Decisions key={arg ?? ''} nav={nav} selected={arg} />}
+            {view === 'chat' && <Chat nav={nav} />}
+            {view === 'channels' && <Channels nav={nav} selected={arg} />}
+            {view === 'settings' && (
+              <Settings nav={nav} info={info} onRestarted={loadInfo} section={arg} />
+            )}
+          </div>
+        </main>
+        {task && (
+          <TaskPanel
+            key={task}
+            id={task}
+            focus={focus ?? undefined}
+            showDiff={diffOf === task}
+            nav={nav}
+            onClose={() => setTask(null)}
+            onBack={back ?? undefined}
+            onForward={forward ?? undefined}
+          />
+        )}
+      </div>
+      <ProviderStatusBar
+        usage={usage.data}
+        pause={settings.data?.opsd}
+        onOpen={(provider) => nav.go('agents', provider)}
+      />
       <Toaster />
       <Lightbox />
       {palette && (

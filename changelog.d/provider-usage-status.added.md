@@ -1,0 +1,1 @@
+- The desktop window has no menu bar; a status bar at its bottom shows each provider's usage and time to reset, in the warning color at the pause threshold or when signed out. Click a provider to open it in Agents.

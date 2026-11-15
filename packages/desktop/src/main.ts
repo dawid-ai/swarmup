@@ -47,6 +47,7 @@ import { allowedCall, attachmentName, ATTACHMENT_SCHEME } from './allow.js';
 import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
 import { gifFile, writeGif } from './gifs.js';
+import { appMenuTemplate, devShortcut } from './menu.js';
 import { migrateUserData } from './migrate.js';
 import { cliModels } from './models.js';
 import { inboxTarget } from './route.js';
@@ -792,6 +793,7 @@ async function createWindow(): Promise<void> {
     minHeight: 600,
     title: 'SwarmUp',
     backgroundColor: '#0f1115',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -819,6 +821,17 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // No application menu (AO-0340), so its accelerators are gone: copy, paste and the other edit
+  // keys still work in the page, and reload and DevTools stay for development builds.
+  if (!packaged) {
+    win.webContents.on('before-input-event', (e, input) => {
+      const action = devShortcut(input);
+      if (!action) return;
+      e.preventDefault();
+      if (action === 'reload') win?.webContents.reload();
+      else win?.webContents.toggleDevTools();
+    });
+  }
   await win.loadFile(join(here, 'ui', 'index.html'));
 }
 
@@ -868,6 +881,15 @@ async function screenshots(dir: string): Promise<void> {
     const img = lastFrame ?? (await win!.webContents.capturePage());
     writeFileSync(join(dir, `${v.replace(/[:/]/g, '-')}.png`), img.toPNG());
   }
+  // The window has no menu bar and shows the usage status bar instead (AO-0340).
+  if (process.platform !== 'darwin' && Menu.getApplicationMenu() !== null) {
+    problems.push('the window has an application menu');
+  }
+  const bar = (await win!.webContents.executeJavaScript(
+    `(() => { const f = document.querySelector('footer[aria-label="Provider usage"]'); return f ? Array.from(f.querySelectorAll('span'), (s) => s.textContent).join(' ') : null; })()`,
+  )) as string | null;
+  if (!bar?.startsWith('Used')) problems.push(`no provider usage status bar (found ${bar})`);
+  else process.stdout.write(`[smoke] status bar: ${bar}\n`);
   writeFileSync(join(dir, 'problems.json'), JSON.stringify(problems, null, 2));
   // A smoke check reads the exit code: any page error or failed call fails it.
   if (problems.length > 0) app.exit(1);
@@ -1394,6 +1416,8 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
       }
     }
     protocol.handle(ATTACHMENT_SCHEME, (req) => attachmentResponse(req.url));
+    const menu = appMenuTemplate(process.platform);
+    Menu.setApplicationMenu(menu ? Menu.buildFromTemplate(menu) : null);
     setupPermissions();
     createTray();
     setupUpdates();

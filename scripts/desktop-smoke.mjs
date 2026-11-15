@@ -177,6 +177,8 @@ const views = [
   'reports',
   'replay',
   'agents',
+  // A status bar item opens its provider in Agents, scrolled to and highlighted (AO-0340).
+  'agents:codex',
   // The active Agents item stays visible while its section folds (AO-0333).
   'sidebar-fold:agents',
   'runs',
@@ -276,6 +278,11 @@ if (failed) {
   process.exit(1);
 }
 console.log(`desktop smoke: ${views.length} views rendered with no errors`);
+// The usage status bar's text, which the app checks and prints (AO-0340).
+const barLine = readFileSync(appLogFile, 'utf8')
+  .split('\n')
+  .find((l) => l.startsWith('[smoke] status bar:'));
+if (barLine) console.log(`  ${barLine.slice('[smoke] '.length).trim()}`);
 // --keep keeps the screenshots to look at.
 if (process.argv.includes('--keep')) console.log(`  screenshots in ${shots}`);
 else rmSync(base, { recursive: true, force: true, maxRetries: 5 });
