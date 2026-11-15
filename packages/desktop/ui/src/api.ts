@@ -56,9 +56,9 @@ interface Bridge {
   transcribe: (
     wav: Uint8Array,
   ) => Promise<{ ok: boolean; data?: { text: string }; error?: string }>;
-  /** The update state; `check` looks now, `install` installs a downloaded update (asks first while runs are live). */
+  /** The update state; `manual` and `auto` change how downloaded updates install. */
   update: (
-    action?: 'check' | 'install',
+    action?: 'check' | 'install' | 'manual' | 'auto',
   ) => Promise<{ ok: boolean; data?: UpdateState; error?: string }>;
   onUpdate: (fn: (m: unknown) => void) => () => void;
   /**

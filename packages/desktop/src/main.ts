@@ -51,6 +51,7 @@ import { inboxTarget } from './route.js';
 import { runtimeDetail } from './runtime-dialog.js';
 import type { UpdateState } from './updates.js';
 import {
+  autoUpdate,
   installPrompt,
   installUpdate as runInstall,
   notesText,
@@ -64,6 +65,7 @@ import type {
   ServiceAction,
   ServiceState,
   TrayCommand,
+  TrayUpdate,
 } from './service.js';
 import {
   APPROVED_KEY,
@@ -401,10 +403,21 @@ async function refreshTray(): Promise<void> {
   // The window follows changes made elsewhere, such as `swarmup daemon pause`.
   send('swarmup:service', st);
   const notify = desktopSettings(readUserConfig()).notify;
-  const ready = update.status === 'ready' ? update.version : undefined;
+  const updateProgress: TrayUpdate | undefined =
+    update.status === 'downloading' ||
+    update.status === 'ready' ||
+    update.status === 'waiting' ||
+    update.status === 'installing'
+      ? {
+          status: update.status,
+          version: update.version,
+          percent: update.percent,
+          live: update.live,
+        }
+      : undefined;
   tray.setContextMenu(
     Menu.buildFromTemplate(
-      trayMenu(st, notify, ready).map((it) =>
+      trayMenu(st, notify, updateProgress).map((it) =>
         it.separator
           ? { type: 'separator' as const }
           : {
@@ -544,12 +557,70 @@ async function service(action: ServiceAction): Promise<ServiceState & { note?: s
 
 /** Updates come from GitHub Releases, for the installed app only and never in screenshot mode. */
 const updatable = packaged && !offscreen;
-let update: UpdateState = { status: updatable ? 'idle' : 'off', current: app.getVersion() };
+let update: UpdateState = {
+  status: updatable ? 'idle' : 'off',
+  mode: desktopSettings(readUserConfig()).updates,
+  current: app.getVersion(),
+};
+let autoInstall: Promise<void> | null = null;
 
 function setUpdate(patch: Partial<UpdateState>): void {
   update = { ...update, ...patch };
   send('swarmup:update', update);
   refreshTraySoon();
+}
+
+/** A system-authored channel mention is a durable Inbox item for the person on this machine. */
+async function updateNotice(message: string, resumed = true): Promise<void> {
+  const human = readUserConfig().me ?? defaultHumanId();
+  const pause = resumed ? 'The automatic pause was cleared' : 'Your existing pause was kept';
+  await call('POST', '/api/channels/updates', {
+    as: 'opsd:update',
+    message: `SwarmUp automatic update needs attention: ${message}. ${pause}; open Settings > Updates to try again. @${human}`,
+  });
+}
+
+/** Runs at most one Auto install for the downloaded version. */
+function startAutoUpdate(): void {
+  if (!updatable || update.mode !== 'auto' || update.status !== 'ready' || autoInstall) return;
+  autoInstall = autoUpdate({
+    state: async () => {
+      const s = await serviceState();
+      return { paused: s.paused, live: s.live };
+    },
+    pause: async () => void (await service('pause')),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    install: async (resume) => {
+      try {
+        await stopDaemon({ env: process.env, killRuns: false, ifIdle: true });
+        info = null;
+        writeRelaunch(
+          app.getPath('userData'),
+          !(win && !win.isDestroyed() && win.isVisible()),
+          Date.now(),
+          resume,
+          update.version,
+        );
+        electronUpdater.autoUpdater.quitAndInstall(true, true);
+      } catch (err) {
+        // A failed installer call must not leave swarmupd stopped.
+        takeRelaunch(app.getPath('userData'));
+        if (!readDaemon()) await daemon(true).catch(() => undefined);
+        throw err;
+      }
+    },
+    recover: async (resume) => {
+      if (resume) await service('resume');
+      if (!readDaemon()) await daemon(true);
+    },
+    notice: updateNotice,
+    status: (status, live, error) => setUpdate({ status, live, error }),
+    now: Date.now,
+  })
+    .then(() => undefined)
+    .finally(() => {
+      autoInstall = null;
+    });
 }
 
 /** Looks for a new version now; electron-updater downloads it in the background. */
@@ -588,19 +659,22 @@ function setupUpdates(): void {
   );
   u.on('download-progress', (p) => setUpdate({ status: 'downloading', percent: p.percent }));
   u.on('update-downloaded', (i) => {
-    setUpdate({ status: 'ready', version: i.version, percent: 100 });
+    setUpdate({ status: 'ready', version: i.version, percent: 100, live: undefined });
     if (Notification.isSupported()) {
       new Notification({
         title: `SwarmUp ${i.version} is ready`,
         body: 'It installs once no agent run is live and the window is closed, or now from Settings or the tray.',
       }).show();
     }
+    startAutoUpdate();
   });
   u.on('error', (err) => setUpdate({ status: 'error', error: err.message }));
   setTimeout(() => void checkUpdate(), 20_000).unref();
   setInterval(() => void checkUpdate(), 4 * 3_600_000).unref();
   // A downloaded update installs on its own when nothing would be cut off.
-  setInterval(() => void installUpdate(false).catch(() => undefined), 60_000).unref();
+  setInterval(() => {
+    if (update.mode === 'manual') void installUpdate(false).catch(() => undefined);
+  }, 60_000).unref();
 }
 
 /**
@@ -652,7 +726,7 @@ async function installUpdate(asked: boolean): Promise<UpdateState> {
 }
 
 /** Writes the desktop's own settings under `desktop:` in the user config. */
-function setDesktop(patch: { notify?: boolean }): void {
+function setDesktop(patch: { notify?: boolean; updates?: 'manual' | 'auto' }): void {
   editUserConfig(
     process.env,
     (doc) => {
@@ -660,6 +734,12 @@ function setDesktop(patch: { notify?: boolean }): void {
       if (patch.notify !== undefined) {
         if (patch.notify) doc.deleteIn(['desktop', 'notify']);
         else doc.setIn(['desktop', 'notify'], false);
+        const d = doc.get('desktop') as { items?: unknown[] } | undefined;
+        if (d && Array.isArray(d.items) && d.items.length === 0) doc.delete('desktop');
+      }
+      if (patch.updates !== undefined) {
+        if (patch.updates === 'manual') doc.deleteIn(['desktop', 'updates']);
+        else doc.setIn(['desktop', 'updates'], 'auto');
         const d = doc.get('desktop') as { items?: unknown[] } | undefined;
         if (d && Array.isArray(d.items) && d.items.length === 0) doc.delete('desktop');
       }
@@ -1094,6 +1174,12 @@ ipcMain.handle('swarmup:update', async (e, action: unknown) => {
   try {
     if (action === 'check') return { ok: true, data: await checkUpdate() };
     if (action === 'install') return { ok: true, data: await installUpdate(true) };
+    if (action === 'manual' || action === 'auto') {
+      setDesktop({ updates: action });
+      setUpdate({ mode: action });
+      if (action === 'auto') startAutoUpdate();
+      return { ok: true, data: update };
+    }
     return { ok: true, data: update };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
@@ -1339,7 +1425,23 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => void openWindow());
   app.whenReady().then(async () => {
-    if (!offscreen && takeRelaunch(app.getPath('userData'))) background = true;
+    let relaunchNotice: string | undefined;
+    let updateRelaunched = false;
+    if (!offscreen) {
+      const relaunch = takeRelaunch(app.getPath('userData'));
+      if (relaunch) {
+        updateRelaunched = true;
+        if (relaunch.background) background = true;
+        if (relaunch.resume) {
+          // Auto owns this pause. Clear it only in the relaunched app, once the installer has
+          // handed control to the version it started.
+          setPaused(process.env, false);
+          if (relaunch.version && relaunch.version !== app.getVersion()) {
+            relaunchNotice = `the installer relaunched ${app.getVersion()} instead of ${relaunch.version}`;
+          }
+        }
+      }
+    }
     if (!offscreen) {
       try {
         moveLoginEntry();
@@ -1361,6 +1463,8 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
     } else {
       await createWindow();
     }
+    if (updateRelaunched) await daemon(true).catch(() => undefined);
+    if (relaunchNotice) void updateNotice(relaunchNotice).catch(() => undefined);
     void stream();
     const shots = screenshotDir();
     // A failed capture ends the run with an error instead of leaving the app open.

@@ -268,7 +268,9 @@ const UPDATE_TEXT: Record<string, string> = {
   none: 'You have the newest version.',
   downloading: 'Downloading',
   ready: 'Downloaded. It installs on its own once no agent run is live and the window is closed.',
-  error: 'The last check failed',
+  waiting: 'Auto paused new runs',
+  installing: 'Installing the update and restarting SwarmUp…',
+  error: 'The update needs attention',
 };
 
 /** The installed app's version and its updates from GitHub Releases. */
@@ -279,9 +281,12 @@ function UpdatesCard() {
   const text =
     u.status === 'downloading'
       ? `${UPDATE_TEXT.downloading} ${u.version ?? ''}: ${Math.round(u.percent ?? 0)}%`
-      : u.status === 'error'
-        ? `${UPDATE_TEXT.error}: ${u.error ?? 'unknown error'}`
-        : UPDATE_TEXT[u.status];
+      : u.status === 'waiting'
+        ? `${UPDATE_TEXT.waiting}; waiting for ${u.live ?? 0} live ${(u.live ?? 0) === 1 ? 'run' : 'runs'} to finish.`
+        : u.status === 'error'
+          ? `${UPDATE_TEXT.error}: ${u.error ?? 'unknown error'}`
+          : UPDATE_TEXT[u.status];
+  const changing = u.status === 'waiting' || u.status === 'installing';
   return (
     <Card
       icon={Download}
@@ -299,6 +304,29 @@ function UpdatesCard() {
             <div className="mt-1 font-mono text-xs text-signal">{u.version}</div>
           </div>
         )}
+        <Field
+          label="Mode"
+          hint={
+            u.mode === 'auto'
+              ? 'Pauses new runs, waits up to 3 hours for live runs, then installs and resumes.'
+              : 'Installs when idle with the window closed, or when you choose Install.'
+          }
+        >
+          <Select
+            value={u.mode}
+            disabled={act.busy || changing}
+            options={[
+              ['manual', 'Manual'],
+              ['auto', 'Auto'],
+            ]}
+            onChange={(mode) =>
+              act.run(async () => {
+                const res = await bridge().update(mode as 'manual' | 'auto');
+                if (!res.ok) throw new Error(res.error ?? 'could not change update mode');
+              })
+            }
+          />
+        </Field>
         <div className="min-w-0 flex-1 text-xs text-fg-3">{text}</div>
         {u.status !== 'off' && (
           <div className="flex gap-2">
