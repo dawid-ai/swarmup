@@ -641,6 +641,10 @@ export interface RootInfo {
   mirror: boolean;
   isMirror: boolean;
   isMaster: boolean;
+  archived?: boolean;
+  listed?: string;
+  code?: string;
+  base?: string;
 }
 
 export interface Settings {

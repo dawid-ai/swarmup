@@ -179,8 +179,10 @@ export function NewTask({
   const [due, setDue] = useState<Due | null>(null);
   // The sidebar's projects: every root but the Master Repo, which stays only when it is the
   // default root, so the choice the form opens with is in the list.
-  const fallback = roots?.[0]?.name;
-  const names = (roots ?? []).filter((r) => !r.isMaster || r.name === fallback).map((r) => r.name);
+  const fallback = roots?.find((r) => !r.archived)?.name;
+  const names = (roots ?? [])
+    .filter((r) => !r.archived && (!r.isMaster || r.name === fallback))
+    .map((r) => r.name);
   // A filter names a project, and a root's tasks may carry another name than the root's: the
   // tasks say which root the filter stands for.
   const shownRoot = rootOfProject(shownProject, tasks ?? [], names);

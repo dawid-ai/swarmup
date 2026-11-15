@@ -242,6 +242,24 @@ If the folder already has a data root (`.swarmup/` or `.agent-ops/`), **Add proj
 proposal and only adds the folder to `roots`. Errors, such as a folder that is not a git repo or
 has no write access, show in the dialog. A project in the sidebar opens **Tasks** filtered to it.
 
+### Project actions
+
+Right-click a project in the sidebar for actions scoped to that project:
+
+- **Add new** opens New task with the project selected.
+- **Edit** changes the project name, the registered task-store folder, and an optional separate
+  code checkout and merge branch. It changes where SwarmUp looks; it does not move folders or
+  check out a branch.
+- **Archive** moves the project under the folded **Archived** group. An archived project remains
+  registered in `archived_roots`, but this PC does not load, sync or mirror it, start runs or
+  task-bound schedules for it, or merge its approved work. Live runs are not killed. **Restore**
+  in the archived project's menu puts it back with its code and merge settings unchanged. A
+  Master Repo copy is hidden while its project is archived; no mirror files are removed.
+- **Remove** first confirms that it only removes SwarmUp's registration. It removes the project
+  from `roots`, `archived_roots`, and its `swarmupd.code` and `swarmupd.merge` entries. The task
+  store, code checkout and Master Repo copy remain on disk. A retained Master Repo copy is hidden
+  on this PC until the project is added again.
+
 ## Security
 
 - The page talks to `swarmupd` only through Electron's main process, which holds the API token; the

@@ -23,8 +23,11 @@ import {
 import {
   agentDirectory,
   applySettings,
+  archiveRoot,
   deleteSchedule,
+  editRoot,
   mirrorRoot,
+  removeRoot,
   saveSchedule,
   schedulesView,
   settingsView,
@@ -322,6 +325,18 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (method === 'POST' && area === 'roots' && id && action === 'mirror') {
       humanOnly(`changing mirroring for root ${id}`);
       return send(res, 200, mirrorRoot(sup, id, body.on));
+    }
+    if (method === 'POST' && area === 'roots' && id && action === 'archive') {
+      humanOnly(`archiving or restoring root ${id}`);
+      return send(res, 200, archiveRoot(sup, id, body.on));
+    }
+    if (method === 'POST' && area === 'roots' && id && action === 'edit') {
+      humanOnly(`editing root ${id}`);
+      return send(res, 200, editRoot(sup, id, body));
+    }
+    if (method === 'POST' && area === 'roots' && id && action === 'remove') {
+      humanOnly(`removing root ${id}`);
+      return send(res, 200, removeRoot(sup, id));
     }
     if (method === 'GET' && area === 'doctor') {
       const { env, cwd } = sup.context;

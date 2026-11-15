@@ -418,6 +418,20 @@ describe('claims and ownership', () => {
     expect(samePath(discoverRoots(copy, bare, {})[0]!, join(copy, '.swarmup'))).toBe(true);
   });
 
+  it('does not discover archived or explicitly removed projects', () => {
+    const { repo, env } = setup();
+    const other = gitRepo();
+    initRoot(other, { name: 'beta', human: 'human:dawid' });
+    const archived = discoverRoots(repo, env, {
+      roots: [other],
+      archived_roots: [other],
+    });
+    expect(archived.map((d) => new Root(d).name)).toEqual(['test']);
+    // The folder found from cwd is inactive too, not only an entry in `roots`.
+    expect(discoverRoots(other, env, { archived_roots: [other] })).toEqual([]);
+    expect(discoverRoots(repo, env, { removed_projects: ['test'] })).toEqual([]);
+  });
+
   it('keeps a dependency on its own root when two roots hold the same id', () => {
     const { repo, env } = setup();
     const betaDir = gitRepo();

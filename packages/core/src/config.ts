@@ -74,6 +74,16 @@ export interface UserConfig {
   /** Data roots to read besides the one found from the working directory. */
   roots?: string[];
   /**
+   * Project roots kept on disk but inactive on this machine. Archived roots are not loaded,
+   * synced, mirrored, merged or offered to swarmupd for runs until they are restored.
+   */
+  archived_roots?: string[];
+  /**
+   * Root names explicitly removed on this machine. This also hides a copy that remains in the
+   * Master Repo, without deleting that copy from disk.
+   */
+  removed_projects?: string[];
+  /**
    * The SwarmUp Master Repo: one data root for every project. It is read like any root, its
    * mirror roots show the projects that mirror into it, and mirrored project roots sync with it.
    */
@@ -183,6 +193,33 @@ export function readRootConfig(dir: string): RootConfig {
     sync: { ...base.sync, ...(raw.sync ?? {}) },
     leases: { ...base.leases, ...(raw.leases ?? {}) },
   } as RootConfig;
+}
+
+/**
+ * Changes the project-facing name of one data root without moving it. Tasks that explicitly
+ * carry the old default project keep resolving to the new name through `project_aliases`.
+ */
+export function renameRootConfig(dir: string, name: string): RootConfig {
+  const next = name.trim();
+  if (!next || next.length > 80 || /[\\/:\r\n]/.test(next)) {
+    throw new OpsError('project name: at most 80 characters, without / \\ or :', 2);
+  }
+  const file = join(dir, 'config.yml');
+  const doc = YAML.parseDocument(readFileSync(file, 'utf8'));
+  if (doc.errors.length > 0) {
+    throw new OpsError(`${file}: ${doc.errors[0]!.message}; fix the file by hand first`, 2);
+  }
+  const old = String(doc.get('name') ?? '').trim();
+  if (old === next) return readRootConfig(dir);
+  doc.set('name', next);
+  const aliases = ((doc.toJS() ?? {}) as RootConfig).project_aliases ?? {};
+  if (old && !Object.hasOwn(aliases, old)) {
+    doc.setIn(['project_aliases', old], next);
+  }
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, doc.toString());
+  renameSync(tmp, file);
+  return readRootConfig(dir);
 }
 
 /** The user config folder for `slug`: `%APPDATA%\<slug>` or `~/.config/<slug>`. */
@@ -542,6 +579,14 @@ export function discoverRoots(
   env: NodeJS.ProcessEnv = process.env,
   user: UserConfig = readUserConfig(env),
 ): string[] {
+  const archived = (user.archived_roots ?? []).map((p) => rootDirOf(String(p)));
+  const hiddenNames = new Set((user.removed_projects ?? []).map(String));
+  for (const dir of archived) {
+    const name = rootNameOf(dir);
+    if (name) hiddenNames.add(name);
+  }
+  const hidden = (dir: string): boolean =>
+    archived.some((p) => samePath(p, dir)) || hiddenNames.has(rootNameOf(dir) ?? '');
   const found: string[] = [];
   const rootsEnv = envVar(env, 'ROOTS');
   const local = rootsEnv && envVar(env, ROOTS_ONLY_NAME) === '1' ? null : findRootUp(cwd);
@@ -552,6 +597,7 @@ export function discoverRoots(
   for (const r of listed) found.push(rootDirOf(r));
   const seen = new Set<string>();
   const roots = found.filter((p) => {
+    if (hidden(p)) return false;
     const key = pathKey(p);
     if (seen.has(key)) return false;
     seen.add(key);
@@ -564,7 +610,7 @@ export function discoverRoots(
     if (isMirrorDir(dir)) continue;
     for (const m of mirrorDirs(dir)) {
       const name = rootNameOf(m);
-      if (!name || names.has(name) || seen.has(pathKey(m))) continue;
+      if (!name || hiddenNames.has(name) || names.has(name) || seen.has(pathKey(m))) continue;
       names.add(name);
       seen.add(pathKey(m));
       roots.push(m);

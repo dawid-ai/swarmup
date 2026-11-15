@@ -2,13 +2,19 @@ import type { ChannelMessage, UserConfig } from '@swarmup/core';
 import {
   assertActor,
   checkRoot,
+  currentBranch,
   daemonKeyIn,
   daemonSection,
   editUserConfig,
+  inGitRepo,
   isHuman,
+  isMirrorDir,
   masterRoot,
   OpsError,
   parseDuration,
+  readRootConfig,
+  renameRootConfig,
+  rootDirOf,
   samePath,
   sameRoot,
   setRootMirror,
@@ -802,19 +808,193 @@ export interface RootInfo {
   /** A Master Repo copy of a project this machine does not have. */
   isMirror: boolean;
   isMaster: boolean;
+  /** Kept in the user config but not loaded by swarmupd. */
+  archived?: boolean;
+  /** The spelling kept in `roots` or `archived_roots`. */
+  listed: string;
+  /** A separate code checkout for a dedicated task store. */
+  code?: string;
+  /** The branch approved work merges into. */
+  base?: string;
 }
 
 /** Every root swarmupd loads, with its part in the Master Repo setup. */
 export function rootList(sup: Supervisor): RootInfo[] {
   const ws = sup.ws();
   const master = masterRoot(ws.roots, ws.user);
-  return ws.roots.map((r) => ({
+  const listed = (ws.user.roots ?? []).map(String);
+  const active = ws.roots.map((r) => ({
     name: r.name,
     dir: r.dir,
     mirror: r.config.mirror === true,
     isMirror: r.isMirror,
     isMaster: master !== undefined && r === master,
+    listed: listed.find((p) => sameRoot(p, r.dir)) ?? r.dir,
+    code: sup.config.code[r.name],
+    base: sup.config.merge[r.name]?.base,
   }));
+  const archived = (ws.user.archived_roots ?? []).flatMap((p): RootInfo[] => {
+    const listedRoot = String(p);
+    const dir = rootDirOf(listedRoot);
+    try {
+      const cfg = readRootConfig(dir);
+      return [
+        {
+          name: cfg.name,
+          dir,
+          mirror: cfg.mirror === true,
+          isMirror: isMirrorDir(dir),
+          isMaster: false,
+          archived: true,
+          listed: listedRoot,
+          code: sup.config.code[cfg.name],
+          base: sup.config.merge[cfg.name]?.base,
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+  return [...active, ...archived];
+}
+
+function configList(doc: Document, key: 'roots' | 'archived_roots' | 'removed_projects'): string[] {
+  const value = (doc.toJS() ?? {}) as UserConfig;
+  return (value[key] ?? []).map(String);
+}
+
+function setList(doc: Document, key: string, values: string[]): void {
+  if (values.length > 0) doc.set(key, values);
+  else doc.delete(key);
+}
+
+/** Archives or restores one project without moving or deleting either of its folders. */
+export function archiveRoot(sup: Supervisor, name: string, on: unknown): RootInfo[] {
+  if (typeof on !== 'boolean') throw new OpsError('on: use true or false', 2);
+  const info = rootList(sup).find((r) => r.name === name && Boolean(r.archived) !== on);
+  if (!info) {
+    throw new OpsError(
+      on ? `no active project named '${name}'` : `no archived project named '${name}'`,
+      2,
+    );
+  }
+  if (info.isMaster) throw new OpsError('the Master Repo is not a project to archive', 2);
+  sup.editConfig((doc) => {
+    const roots = configList(doc, 'roots').filter((p) => !sameRoot(p, info.dir));
+    const archived = configList(doc, 'archived_roots').filter((p) => !sameRoot(p, info.dir));
+    if (on) archived.push(info.listed);
+    else if (!info.isMirror && !roots.some((p) => sameRoot(p, info.dir))) roots.push(info.listed);
+    setList(doc, 'roots', roots);
+    setList(doc, 'archived_roots', archived);
+  });
+  return rootList(sup);
+}
+
+/**
+ * Removes one project from this machine's roots and swarmupd settings. Its task store, code
+ * checkout and Master Repo copy stay on disk; a removed name is hidden if the copy still exists.
+ */
+export function removeRoot(sup: Supervisor, name: string): RootInfo[] {
+  const info = rootList(sup).find((r) => r.name === name);
+  if (!info) throw new OpsError(`no project named '${name}'`, 2);
+  if (info.isMaster) throw new OpsError('remove the Master Repo in Settings instead', 2);
+  sup.editConfig((doc) => {
+    setList(
+      doc,
+      'roots',
+      configList(doc, 'roots').filter((p) => !sameRoot(p, info.dir)),
+    );
+    setList(
+      doc,
+      'archived_roots',
+      configList(doc, 'archived_roots').filter((p) => !sameRoot(p, info.dir)),
+    );
+    const removed = configList(doc, 'removed_projects').filter((project) => project !== name);
+    removed.push(name);
+    setList(doc, 'removed_projects', removed);
+    const daemon = daemonKeyIn(doc);
+    if (doc.hasIn([daemon, 'code', name])) doc.deleteIn([daemon, 'code', name]);
+    if (doc.hasIn([daemon, 'merge', name])) doc.deleteIn([daemon, 'merge', name]);
+  });
+  return rootList(sup);
+}
+
+/** Edits the project name, registered task-store folder and optional separate code checkout. */
+export function editRoot(sup: Supervisor, oldName: string, input: unknown): RootInfo[] {
+  const info = rootList(sup).find((r) => r.name === oldName && !r.archived);
+  if (!info) throw new OpsError(`no active project named '${oldName}'`, 2);
+  if (info.isMaster || info.isMirror) {
+    throw new OpsError('edit the project root, not its Master Repo copy', 2);
+  }
+  const i = obj(input, 'project');
+  for (const key of Object.keys(i)) {
+    if (key !== 'name' && key !== 'root' && key !== 'code' && key !== 'base') {
+      throw new OpsError(`project: '${key}' is not editable`, 2);
+    }
+  }
+  const name = typeof i.name === 'string' ? i.name.trim() : oldName;
+  if (!name || name.length > 80 || /[\\/:\r\n]/.test(name)) {
+    throw new OpsError('project name: at most 80 characters, without / \\ or :', 2);
+  }
+  if (name !== oldName && info.mirror) {
+    throw new OpsError('turn mirroring off before renaming this project', 2);
+  }
+  const listed = typeof i.root === 'string' && i.root.trim() ? checkRoot(i.root) : info.listed;
+  const dir = rootDirOf(listed);
+  const target = readRootConfig(dir);
+  if (target.name !== oldName && target.name !== name) {
+    throw new OpsError(`${listed} is project '${target.name}', not '${oldName}'`, 2);
+  }
+  let code: string | null | undefined;
+  if (i.code !== undefined) {
+    if (i.code !== null && typeof i.code !== 'string') {
+      throw new OpsError('code: use a git checkout folder, or null', 2);
+    }
+    code = typeof i.code === 'string' && i.code.trim() ? i.code.trim() : null;
+    if (code && !inGitRepo(code)) throw new OpsError(`${code} is not a git repo`, 2);
+  }
+  let base: string | null | undefined;
+  if (i.base !== undefined) {
+    if (i.base !== null && typeof i.base !== 'string') {
+      throw new OpsError('base: use a branch name, or null', 2);
+    }
+    base = typeof i.base === 'string' && i.base.trim() ? i.base.trim() : null;
+  }
+  if (code && base === undefined && !sup.config.merge[oldName]?.base) {
+    base = currentBranch(code);
+    if (!base) throw new OpsError(`${code} has no branch checked out`, 2);
+  }
+
+  sup.editConfig((doc) => {
+    const roots = configList(doc, 'roots');
+    const at = roots.findIndex((p) => sameRoot(p, info.dir));
+    if (at >= 0) roots[at] = listed;
+    setList(doc, 'roots', roots);
+    const daemon = daemonKeyIn(doc);
+    const oldCode = sup.config.code[oldName];
+    const oldMerge = sup.config.merge[oldName];
+    if (name !== oldName) {
+      if (doc.hasIn([daemon, 'code', oldName])) doc.deleteIn([daemon, 'code', oldName]);
+      if (doc.hasIn([daemon, 'merge', oldName])) doc.deleteIn([daemon, 'merge', oldName]);
+    }
+    const nextCode = code === undefined ? oldCode : code;
+    if (nextCode) doc.setIn([daemon, 'code', name], nextCode);
+    else if (doc.hasIn([daemon, 'code', name])) doc.deleteIn([daemon, 'code', name]);
+    const nextBase = base === undefined ? oldMerge?.base : base;
+    if (nextBase) {
+      const nextMerge = { ...oldMerge, base: nextBase };
+      if (code === null) delete nextMerge.checkout;
+      else if (nextCode) nextMerge.checkout = nextCode;
+      doc.setIn([daemon, 'merge', name], doc.createNode(nextMerge));
+    } else if (doc.hasIn([daemon, 'merge', name])) doc.deleteIn([daemon, 'merge', name]);
+    const removed = configList(doc, 'removed_projects').filter(
+      (project) => project !== oldName && project !== name,
+    );
+    setList(doc, 'removed_projects', removed);
+  });
+  if (name !== target.name) renameRootConfig(dir, name);
+  sup.reloadConfig();
+  return rootList(sup);
 }
 
 /** Turns mirroring on or off for a project root, then reloads swarmupd's view of it. */

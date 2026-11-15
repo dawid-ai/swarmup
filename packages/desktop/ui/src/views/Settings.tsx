@@ -927,8 +927,8 @@ function MasterCard({ data, onSaved }: { data: SettingsData; onSaved: () => void
   const s = useSave(onSaved);
   const toggle = useAction();
   const dirty = master.trim() !== (data.master ?? '');
-  const projects = data.rootList.filter((r) => !r.isMirror && !r.isMaster);
-  const copies = data.rootList.filter((r) => r.isMirror);
+  const projects = data.rootList.filter((r) => !r.isMirror && !r.isMaster && !r.archived);
+  const copies = data.rootList.filter((r) => r.isMirror && !r.archived);
   return (
     <Card
       icon={Library}

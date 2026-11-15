@@ -829,6 +829,28 @@ export function addRootToUserConfig(
         doc.setIn([key, 'merge', code.name, 'base'], code.base);
         doc.setIn([key, 'merge', code.name, 'checkout'], code.checkout);
       }
+      // Adding a project again is also how a removed or archived project comes back. Keep the
+      // existing spelling of unrelated entries, but drop every entry that names this root.
+      const archived = doc.get('archived_roots') as { items?: Array<{ value?: unknown }> } | null;
+      if (archived?.items) {
+        const keep = archived.items
+          .map((item) => String(item.value ?? ''))
+          .filter((p) => p && !sameRoot(p, r));
+        if (keep.length > 0) doc.set('archived_roots', keep);
+        else doc.delete('archived_roots');
+      }
+      if (name) {
+        const removed = doc.get('removed_projects') as {
+          items?: Array<{ value?: unknown }>;
+        } | null;
+        if (removed?.items) {
+          const keep = removed.items
+            .map((item) => String(item.value ?? ''))
+            .filter((project) => project !== name);
+          if (keep.length > 0) doc.set('removed_projects', keep);
+          else doc.delete('removed_projects');
+        }
+      }
     },
     check,
   );

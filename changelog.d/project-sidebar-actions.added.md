@@ -1,0 +1,1 @@
+- Right-click projects in the desktop sidebar to add a task, edit project settings, archive and restore projects, or remove their SwarmUp registration without deleting files.

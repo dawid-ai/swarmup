@@ -201,6 +201,48 @@ describe('desktop admin api', () => {
     }
   });
 
+  it('edits, archives, restores and removes a project without deleting its folders', async () => {
+    const { repo, sup, api, call, userConfig } = await setup();
+    const rootFile = join(repo, '.swarmup', 'config.yml');
+    try {
+      let res = await call('POST', '/api/roots/test/edit', {
+        name: 'renamed',
+        root: repo,
+        code: repo,
+        base: 'main',
+      });
+      expect(res.status).toBe(200);
+      expect(readFileSync(rootFile, 'utf8')).toMatch(/^name: renamed$/m);
+      expect(readFileSync(userConfig, 'utf8')).toMatch(/code:\s*\n\s+renamed:/);
+      expect(sup.ws().roots.map((r) => r.name)).toEqual(['renamed']);
+
+      res = await call('POST', '/api/roots/renamed/archive', { on: true });
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual([expect.objectContaining({ name: 'renamed', archived: true })]);
+      expect(sup.ws().roots).toEqual([]);
+      expect(readFileSync(userConfig, 'utf8')).toContain('archived_roots:');
+
+      res = await call('POST', '/api/roots/renamed/archive', { on: false });
+      expect(res.status).toBe(200);
+      expect((res.data as unknown as Array<{ archived?: boolean }>)[0]!.archived).toBeUndefined();
+      expect(sup.ws().roots.map((r) => r.name)).toEqual(['renamed']);
+
+      res = await call('POST', '/api/roots/renamed/remove');
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual([]);
+      expect(sup.ws().roots).toEqual([]);
+      const config = readFileSync(userConfig, 'utf8');
+      expect(config).not.toMatch(/code:\s*\n\s+renamed:/);
+      expect(config).not.toMatch(/merge:\s*\n\s+renamed:/);
+      expect(config).toContain('removed_projects:');
+      // Remove only changes registration. Both the repo and its task store are untouched.
+      expect(existsSync(repo)).toBe(true);
+      expect(existsSync(rootFile)).toBe(true);
+    } finally {
+      await api.close();
+    }
+  });
+
   it('searches learn notes and retypes a finding', async () => {
     const { api, call, as } = await setup();
     try {

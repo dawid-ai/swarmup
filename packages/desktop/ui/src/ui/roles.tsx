@@ -48,7 +48,7 @@ export function RoleEditor({
     [notes.data],
   );
   const runtimes = Object.keys(settings.data?.opsd.runtimes ?? { claude: 1, codex: 1 });
-  const roots = (settings.data?.rootList ?? []).filter((r) => !r.isMirror);
+  const roots = (settings.data?.rootList ?? []).filter((r) => !r.isMirror && !r.archived);
 
   const [runtime, setRuntime] = useState(preset?.runtime ?? 'claude');
   const [role, setRole] = useState(preset?.role ?? '');

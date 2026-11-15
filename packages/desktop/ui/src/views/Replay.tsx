@@ -44,11 +44,11 @@ const SEP = '\u001f';
  * the roots of the tasks stand in.
  */
 export function projectChoices(
-  roots: Array<Pick<RootInfo, 'name' | 'isMaster'>> | undefined,
+  roots: Array<Pick<RootInfo, 'name' | 'isMaster' | 'archived'>> | undefined,
   tasks: Array<Pick<Task, 'root' | 'project'>>,
 ): ProjectChoice[] {
   const names = roots
-    ? roots.filter((r) => !r.isMaster).map((r) => r.name)
+    ? roots.filter((r) => !r.isMaster && !r.archived).map((r) => r.name)
     : tasks.flatMap((t) => (t.root ? [t.root] : [])).sort();
   const out: ProjectChoice[] = [{ value: '', label: 'All projects', root: '', project: '' }];
   for (const root of new Set(names)) {

@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
+  Archive,
   History,
   BarChart3,
   BookOpen,
@@ -8,6 +9,7 @@ import {
   Bot,
   CalendarClock,
   Clapperboard,
+  ChevronRight,
   FolderGit2,
   FolderPlus,
   Hash,
@@ -26,6 +28,7 @@ import {
   X,
   Download,
 } from 'lucide-react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SetupStatus } from './api';
 import { api, bridge, refreshSoon, useData, useUpdate } from './api';
@@ -42,7 +45,16 @@ import { useMover } from './ui/move';
 import { Palette, ShortcutHelp } from './ui/palette';
 import { setRefTasks } from './lib/refs';
 import { useRefTasks, useTaskFocus } from './ui/refs';
-import type { Decision, InboxItem, Info, ProviderUsage, RunRecord, SignedOut, Task } from './types';
+import type {
+  Decision,
+  InboxItem,
+  Info,
+  ProviderUsage,
+  RootInfo,
+  RunRecord,
+  SignedOut,
+  Task,
+} from './types';
 import type { Settings as SettingsData } from './types';
 import { Activity as ActivityView } from './views/Activity';
 import type { AddProjectState } from './views/AddProject';
@@ -68,6 +80,7 @@ import { Search } from './views/Search';
 import { Standups } from './views/Standups';
 import { SEARCH_INPUT_ID, SearchBox } from './ui/search';
 import { TaskPanel } from './views/TaskPanel';
+import { EditProjectDialog, ProjectMenu, RemoveProjectDialog } from './views/ProjectMenu';
 
 export type View =
   | 'inbox'
@@ -223,6 +236,8 @@ export function App() {
   }, []);
   const update = useUpdate();
   const [creating, setCreating] = useState(false);
+  /** A project action's New task starts with that project selected. */
+  const [newProject, setNewProject] = useState<string | undefined>();
   /** The project Add project created while New task was open: the form selects it (AO-0323). */
   const [addedProject, setAddedProject] = useState<string | undefined>(undefined);
   /** The screenshot run opens New task with its project list open and this text typed. */
@@ -230,6 +245,7 @@ export function App() {
   const shotForm = useRef(false);
   const closeForm = useCallback((): void => {
     setCreating(false);
+    setNewProject(undefined);
     setAddedProject(undefined);
     setFormSearch(undefined);
   }, []);
@@ -332,7 +348,26 @@ export function App() {
   const tasks = useData<Task[]>(info ? '/api/tasks' : null);
   // The loaded data roots, for the sidebar's project list.
   const settings = useData<SettingsData>(info ? '/api/settings' : null);
-  const projects = (settings.data?.rootList ?? []).filter((r) => !r.isMaster);
+  const projects = (settings.data?.rootList ?? []).filter((r) => !r.isMaster && !r.archived);
+  const archivedProjects = (settings.data?.rootList ?? []).filter((r) => r.archived);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [projectMenu, setProjectMenu] = useState<{
+    project: RootInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [projectDialog, setProjectDialog] = useState<{
+    project: RootInfo;
+    kind: 'edit' | 'remove';
+  } | null>(null);
+  const openProjectMenu = (e: ReactMouseEvent, project: RootInfo): void => {
+    e.preventDefault();
+    setProjectMenu({
+      project,
+      x: Math.max(8, Math.min(e.clientX, window.innerWidth - 200)),
+      y: Math.max(8, Math.min(e.clientY, window.innerHeight - 260)),
+    });
+  };
   // Signed-out providers (AO-0154): a banner on every view until each is signed in again.
   const usage = useData<Record<string, ProviderUsage>>(info ? '/api/usage' : null);
   const signedOut = Object.entries(usage.data ?? {}).flatMap(([p, u]) =>
@@ -507,9 +542,40 @@ export function App() {
                 label={p.name}
                 title={p.dir}
                 onClick={() => nav.go('list', `project:${p.name}`)}
+                onContextMenu={(e) => openProjectMenu(e, p)}
               />
             ))}
             <NavItem active={false} icon={FolderPlus} label="Add project" onClick={addProject} />
+            {archivedProjects.length > 0 && (
+              <div data-archived-projects className="mt-1 border-t border-white/6 pt-1">
+                <button
+                  type="button"
+                  aria-expanded={archivedOpen}
+                  onClick={() => setArchivedOpen((open) => !open)}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-[7px] text-left text-sm text-fg-4 transition hover:bg-white/4 hover:text-fg-2"
+                >
+                  <ChevronRight
+                    size={14}
+                    className={cx('transition-transform', archivedOpen && 'rotate-90')}
+                  />
+                  <Archive size={15} />
+                  <span className="min-w-0 flex-1 truncate">Archived</span>
+                  <span className="font-mono text-[10px]">{archivedProjects.length}</span>
+                </button>
+                {archivedOpen &&
+                  archivedProjects.map((p) => (
+                    <NavItem
+                      key={p.dir}
+                      active={false}
+                      icon={Archive}
+                      label={p.name}
+                      title={`${p.dir} · right-click to restore`}
+                      onClick={() => {}}
+                      onContextMenu={(e) => openProjectMenu(e, p)}
+                    />
+                  ))}
+              </div>
+            )}
           </div>
           {GROUPS.map((g) => (
             <div key={g.title}>
@@ -694,7 +760,7 @@ export function App() {
           roots={settings.data?.rootList}
           tasks={allTasks.data ?? tasks.data ?? undefined}
           // The project the Board or List is filtered to, whichever way the form opened.
-          project={viewProject()}
+          project={newProject ?? viewProject()}
           added={addedProject}
           search={formSearch}
           onClose={closeForm}
@@ -735,6 +801,44 @@ export function App() {
           id={addAgent.id}
           onAdded={addAgent.onAdded}
           onClose={() => setAddAgent(null)}
+        />
+      )}
+      {projectMenu && (
+        <ProjectMenu
+          project={projectMenu.project}
+          at={{ x: projectMenu.x, y: projectMenu.y }}
+          onClose={() => setProjectMenu(null)}
+          onNew={() => {
+            setNewProject(projectMenu.project.name);
+            setCreating(true);
+            setProjectMenu(null);
+          }}
+          onEdit={() => {
+            setProjectDialog({ project: projectMenu.project, kind: 'edit' });
+            setProjectMenu(null);
+          }}
+          onRemove={() => {
+            setProjectDialog({ project: projectMenu.project, kind: 'remove' });
+            setProjectMenu(null);
+          }}
+          onChanged={settings.reload}
+        />
+      )}
+      {projectDialog?.kind === 'edit' && (
+        <EditProjectDialog
+          project={projectDialog.project}
+          onClose={() => setProjectDialog(null)}
+          onSaved={settings.reload}
+        />
+      )}
+      {projectDialog?.kind === 'remove' && (
+        <RemoveProjectDialog
+          project={projectDialog.project}
+          onClose={() => setProjectDialog(null)}
+          onRemoved={() => {
+            if (arg === `project:${projectDialog.project.name}`) nav.go('list');
+            settings.reload();
+          }}
         />
       )}
     </div>
@@ -814,11 +918,13 @@ function NavItem(props: {
   count?: { n: number; tone: string };
   title?: string;
   onClick: () => void;
+  onContextMenu?: (e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
   const Icon = props.icon;
   return (
     <button
       onClick={props.onClick}
+      onContextMenu={props.onContextMenu}
       title={props.title}
       className={cx(
         'group relative flex w-full items-center gap-2.5 rounded-lg px-3 py-[7px] text-left text-sm transition',
