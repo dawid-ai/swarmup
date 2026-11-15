@@ -3,6 +3,22 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.5 (2026-11-15)
+
+- **Settings in categories.** **Settings** has a side list of categories instead of one long
+  page, and `settings:<category>` links open one directly.
+- **Model suggestions.** The model fields in **Settings** and **Agents** suggest the known Claude
+  and Codex models as you type and warn on a name they don't know; it still saves, for newer
+  models. Codex models come from your installed Codex CLI.
+- **Work goes on when a provider is paused.** A provider paused for usage or signed out no longer
+  holds up new work. After `review_fallback_hours` (default 2, in **Settings**), its waiting
+  reviews move to a reviewer of the author's own provider, and you get one Inbox note with when the
+  pause ends.
+- **Fold the sidebar.** The Projects, Work, Agents and Talk sections fold and unfold, and keep
+  their state.
+- **Replay exports.** **Replay** saves GIFs, can show or hide the project name in PNG, MP4 and GIF
+  exports, and keeps the export buttons together.
+
 ## v0.3.0-beta.4 (2026-11-14)
 
 - **New task picks the project.** **New task** has a project dropdown: type to filter, or choose

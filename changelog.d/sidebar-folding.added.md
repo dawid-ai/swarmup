@@ -1,1 +1,0 @@
-- Fold or unfold the Projects, Work, Agents and Talk sections in the desktop sidebar; each section remembers its state.
