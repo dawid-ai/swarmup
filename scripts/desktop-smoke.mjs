@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { desktopSmokeElectronArgs } from './desktop-smoke-args.mjs';
 
 const top = join(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = join(top, 'packages', 'cli', 'dist', 'main.js');
@@ -282,11 +283,7 @@ if (packaged && !existsSync(exe)) {
   console.error(`no packaged build at ${exe}: run pnpm run dist first`);
   process.exit(1);
 }
-const electronArgs = packaged
-  ? [`--user-data-dir=${join(base, 'userdata')}`]
-  : [join(top, 'packages', 'desktop')];
-// Linux runners have no setuid sandbox helper.
-if (process.platform === 'linux') electronArgs.push('--no-sandbox');
+const electronArgs = desktopSmokeElectronArgs(packaged, base, top);
 // The electron package exports the path to its binary, so no shell is needed.
 const electron = packaged ? exe : createRequire(import.meta.url)('electron');
 let code = 1;
