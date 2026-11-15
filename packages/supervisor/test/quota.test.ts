@@ -157,6 +157,13 @@ describe('provider usage', () => {
     ).toThrow(/runtimes.claude.max_live/);
     expect(opsdConfig({ opsd: { max_runs: 0 } }).max_runs).toBe(0);
     expect(() => opsdConfig({ opsd: { review_backlog: 0 } })).toThrow(/review_backlog/);
+    // The review fallback (AO-0341): 2 hours by default, 0 turns it off.
+    expect(opsdConfig({}).review_fallback_hours).toBe(2);
+    expect(opsdConfig({ opsd: { review_fallback_hours: 0 } }).review_fallback_hours).toBe(0);
+    expect(opsdConfig({ opsd: { review_fallback_hours: 0.5 } }).review_fallback_hours).toBe(0.5);
+    expect(() => opsdConfig({ opsd: { review_fallback_hours: -1 } })).toThrow(
+      /review_fallback_hours/,
+    );
     expect(() =>
       opsdConfig({ opsd: { roles: { qa: { burst: 'x' as unknown as number } } } }),
     ).toThrow(/roles.qa.burst/);

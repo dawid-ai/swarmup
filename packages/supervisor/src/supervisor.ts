@@ -108,6 +108,7 @@ import {
   findRollout,
   lastCodexLimits,
   mergeUsage,
+  usageHold,
   usagePause,
 } from './quota.js';
 import type { Launch, Spawned } from './proc.js';
@@ -394,6 +395,29 @@ export interface KeptWorktree {
 }
 /** The file in the state folder that keeps each provider's `SignInState`. */
 export const SIGN_IN_FILE = 'signin.json';
+
+/** Per provider that cannot run now, when swarmupd first saw it (AO-0341). */
+export const HOLDS_FILE = 'holds.json';
+
+/** `1 review`, `4 reviews`. */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** What `holds.json` keeps per provider that cannot run now (AO-0341). */
+export interface ProviderHoldState {
+  since: number;
+  /** The person got the Inbox note for this spell. */
+  told?: boolean;
+}
+
+/** Why a provider cannot run now: paused for usage, or signed out (AO-0341). */
+export interface ProviderHold {
+  text: string;
+  /** When the pause ends; unset while signed out. */
+  until?: number;
+  signedOut: boolean;
+}
 
 /** A provider swarmupd saw signed out (AO-0154). */
 export interface SignedOut {
@@ -771,6 +795,18 @@ export interface WaitItem {
   reason: string;
   /** Set when the merge under way holds the checkout this work would start in (AO-0161). */
   merge?: true;
+  /** The provider that cannot run and is all this work waits for; see `WaitStall` (AO-0341). */
+  stall?: string;
+}
+
+/** A provider that cannot run and the work it leaves waiting, as one line (AO-0341). */
+export interface WaitStall {
+  provider: string;
+  /** Reviews that wait, as task ids. */
+  reviews: string[];
+  /** Tasks that wait, as task ids. */
+  tasks: string[];
+  text: string;
 }
 
 /** What the merge under way does now (AO-0161). */
@@ -917,6 +953,12 @@ export class Supervisor extends EventEmitter {
   private readonly freeMem: () => number;
   private usage: UsageState;
   /**
+   * Per provider that cannot run now (paused for usage, or signed out), when swarmupd first saw it
+   * and whether the person heard of it (AO-0341). Kept in `holds.json`, so the review fallback
+   * counts from the start of the spell across restarts.
+   */
+  private holds: Record<string, ProviderHoldState>;
+  /**
    * Per runtime, its failed starts in a row (AO-0150). Kept in memory: a restart of swarmupd tries
    * the runtime again.
    */
@@ -986,6 +1028,7 @@ export class Supervisor extends EventEmitter {
     this.runsOutlive = opts.runsOutlive ?? RUNS_OUTLIVE_OPSD;
     this.usage = this.store.readJson<UsageState>('usage.json', {});
     this.signIn = this.store.readJson<Record<string, SignInState>>(SIGN_IN_FILE, {});
+    this.holds = this.store.readJson<Record<string, ProviderHoldState>>(HOLDS_FILE, {});
     this.chat = new Chat(this, this.now);
   }
 
@@ -2491,7 +2534,10 @@ export class Supervisor extends EventEmitter {
         `${provider} is signed out on this PC: ${how}. swarmupd starts no ${provider} runs until you ` +
         `sign in again: ${signInSteps(provider)}. ${resume}; to resume now, click **Resume** in ` +
         'the app or run `swarmup daemon resume`.' +
-        (reviews.length > 0 ? ` Reviews that wait for ${provider}: ${reviews.join(', ')}.` : '');
+        (reviews.length > 0
+          ? ` Reviews that wait for ${provider}: ${reviews.join(', ')}. Options: ` +
+            `${this.holdOptions(provider, { text: '', signedOut: true }, reviews.length)}.`
+          : '');
       ws.post(DIRTY_CHANNEL, text, { to: [human], task: out.task });
     });
   }
@@ -2557,6 +2603,192 @@ export class Supervisor extends EventEmitter {
         this.emit(
           'warn',
           `${v.root}/${v.meta.id}: handed from ${owner} to ${to}; ${from} is signed out`,
+        );
+      });
+    }
+  }
+
+  // ---- Providers that cannot run (AO-0341) ---------------------------------------------------
+
+  /**
+   * Why no run of the provider can start for a while, or null: paused for usage or signed out.
+   * A pause in Settings, a full `max_live` or a start backoff are not holds: a person chose the
+   * first, and the others clear on their own within minutes.
+   */
+  providerHold(provider: string): ProviderHold | null {
+    const now = this.now();
+    const out = this.signIn[provider]?.out;
+    if (out) return { text: signedOutText(provider, out, now), signedOut: true };
+    const rc = this.config.runtimes[provider];
+    if (!rc) return null;
+    const usage = usageHold(
+      provider,
+      this.usage[provider],
+      rc.pause_at ?? this.config.usage_pause_at,
+      now,
+    );
+    return usage ? { text: usage.text, until: usage.until, signedOut: false } : null;
+  }
+
+  /** When the provider's hold began: its sign-out, else when swarmupd first saw the pause. */
+  private holdSince(provider: string, hold: ProviderHold): number {
+    const out = this.signIn[provider]?.out;
+    if (hold.signedOut && out) return out.since;
+    return this.holds[provider]?.since ?? this.now();
+  }
+
+  /** `fallback: claude paused until 2026-11-18 17:00 UTC`, without the `fallback: ` part. */
+  private holdReason(provider: string, hold: ProviderHold): string {
+    if (hold.signedOut)
+      return `${provider} signed out since ${clock(this.holdSince(provider, hold))}`;
+    return `${provider} paused${hold.until ? ` until ${clock(hold.until)}` : ''}`;
+  }
+
+  /**
+   * Notes when each provider's hold began and ends it once the provider can run again, then
+   * tells the person of a new usage pause that leaves work waiting (`tellHold`).
+   */
+  private trackHolds(): void {
+    let changed = false;
+    const now = this.now();
+    const providers = new Set([...Object.keys(this.config.runtimes), ...Object.keys(this.holds)]);
+    for (const p of providers) {
+      const hold = this.providerHold(p);
+      if (!hold && this.holds[p]) {
+        delete this.holds[p];
+        changed = true;
+      } else if (hold && !this.holds[p]) {
+        const out = this.signIn[p]?.out;
+        this.holds[p] = { since: hold.signedOut && out ? out.since : now };
+        changed = true;
+      }
+    }
+    for (const p of Object.keys(this.holds)) {
+      const hold = this.providerHold(p);
+      if (hold && !this.holds[p]!.told && this.tellHold(p, hold)) changed = true;
+    }
+    if (changed) this.store.writeJson(HOLDS_FILE, this.holds);
+  }
+
+  /** Open reviews that wait for an agent reviewer of the provider, as task ids. */
+  private reviewsWaitingOn(views: TaskView[], provider: string): string[] {
+    return views
+      .filter(
+        (v) =>
+          v.status === 'needs-review' &&
+          v.reviewer !== null &&
+          !isHuman(v.reviewer) &&
+          runtimeOf(v.reviewer) === provider,
+      )
+      .map((v) => v.meta.id);
+  }
+
+  /** Open work owned by name by an agent of the provider, which no other provider takes. */
+  private workWaitingOn(views: TaskView[], provider: string): string[] {
+    return views
+      .filter(
+        (v) =>
+          v.status === 'todo' &&
+          !v.claimedBy &&
+          v.owner !== null &&
+          !isHuman(v.owner) &&
+          !isWildcard(v.owner) &&
+          runtimeOf(v.owner) === provider,
+      )
+      .map((v) => v.meta.id);
+  }
+
+  /** What the person can do about a hold, and when the review fallback moves its reviews. */
+  private holdOptions(provider: string, hold: ProviderHold, reviews: number): string {
+    const hours = this.config.review_fallback_hours;
+    const pauseAt = this.config.runtimes[provider]?.pause_at ?? this.config.usage_pause_at;
+    const wait = hold.signedOut
+      ? `sign ${provider} in again (${signInSteps(provider)})`
+      : `wait until ${hold.until ? clock(hold.until) : 'the window resets'}`;
+    const raise = hold.signedOut
+      ? null
+      : `raise \`pause_at\` for ${provider} in Settings (now ${Math.round(pauseAt * 100)}%)`;
+    const fallback =
+      reviews === 0
+        ? null
+        : hours > 0
+          ? `let swarmupd move the reviews to a reviewer of the author's provider, which it does ` +
+            `${hours} h after the pause or the request, whichever is later (\`review_fallback_hours\` is ${hours}; 0 turns it off)`
+          : 'fall back: set **Review fallback (h)** (`review_fallback_hours`) above 0 in Settings, ' +
+            "and swarmupd moves the reviews to a reviewer of the author's provider";
+    return [wait, raise, fallback].filter((o): o is string => o !== null).join('; ');
+  }
+
+  /**
+   * Tells the person once per usage pause, in their Inbox, when the pause leaves reviews or work
+   * waiting: which provider, until when, which tasks, and the options. A sign-out has its own
+   * note (`tellSignedOut`). True once told.
+   */
+  private tellHold(provider: string, hold: ProviderHold): boolean {
+    if (hold.signedOut) return false;
+    const ws = this.ws(RUNTIME_ACTOR);
+    const human = this.user.me ?? ws.roots[0]?.config.human;
+    if (!human) return false;
+    const views = ws.list();
+    const reviews = this.reviewsWaitingOn(views, provider);
+    const work = this.workWaitingOn(views, provider);
+    if (reviews.length === 0 && work.length === 0) return false;
+    const waiting = [
+      reviews.length > 0 ? `${count(reviews.length, 'review')} (${reviews.join(', ')})` : null,
+      work.length > 0 ? `${count(work.length, 'task')} for its agents (${work.join(', ')})` : null,
+    ]
+      .filter((w): w is string => w !== null)
+      .join(' and ');
+    const text =
+      `${hold.text}. ${waiting} wait for ${provider} and do not hold other work. ` +
+      `Options: ${this.holdOptions(provider, hold, reviews.length)}.`;
+    ws.post(DIRTY_CHANNEL, text, { to: [human] });
+    this.holds[provider]!.told = true;
+    this.emit('warn', text);
+    return true;
+  }
+
+  /**
+   * Moves a review that waits for an agent reviewer of a provider that cannot run to the same
+   * role on the author's provider, once the provider has been held for `review_fallback_hours`
+   * and the review has waited as long. A reviewer the task names (its delegation's or its plan
+   * item's) stays: a person chose it.
+   */
+  private reviewFallbacks(): void {
+    const hours = this.config.review_fallback_hours;
+    if (!(hours > 0)) return;
+    const grace = hours * 3_600_000;
+    const now = this.now();
+    const ws = this.ws(RUNTIME_ACTOR);
+    const waking = this.wakingAgents().filter((a) => !roleInactive(ws.agent(a)));
+    for (const v of ws.list()) {
+      const reviewer = v.reviewer;
+      const req = v.lastReview;
+      if (v.status !== 'needs-review' || !reviewer || !req || req.fallback) continue;
+      if (isHuman(reviewer) || isWildcard(reviewer)) continue;
+      if (v.delegation?.review || v.meta.review) continue;
+      const from = runtimeOf(reviewer);
+      const hold = this.providerHold(from);
+      if (!hold) continue;
+      const asked = Date.parse(req.at);
+      const since = Math.max(this.holdSince(from, hold), Number.isFinite(asked) ? asked : 0);
+      if (now - since < grace) continue;
+      if (isHuman(req.actor)) continue;
+      const mine = runtimeOf(req.actor);
+      if (mine === from || this.providerHold(mine)) continue;
+      const to = waking.find((a) => roleOf(a) === roleOf(reviewer) && runtimeOf(a) === mine);
+      if (!to) continue;
+      const reason = this.holdReason(from, hold);
+      const body =
+        `fallback: ${reason}. ${v.meta.id} waited ${hours} h for ${reviewer}, so swarmupd moves ` +
+        `the review to ${to}, a reviewer of the author's provider. The request stays ` +
+        `${v.meta.id}#${req.event} by ${req.actor}; the verdict notes the fallback. ` +
+        '`review_fallback_hours: 0` turns this off.';
+      this.safe(() => {
+        ws.reviewFallback(`${v.root}/${v.meta.id}`, to, reason, body);
+        this.emit(
+          'warn',
+          `${v.root}/${v.meta.id}: review moved from ${reviewer} to ${to}; ${reason}`,
         );
       });
     }
@@ -4416,6 +4648,9 @@ export class Supervisor extends EventEmitter {
         this.safe(() => this.signInTick());
         // Before wake, so work handed over from a signed-out provider starts this tick.
         if (!this.stopping) this.safe(() => this.signedOutHandoffs());
+        // Before wake, so a review moved to the author's provider starts this tick (AO-0341).
+        if (!this.stopping) this.safe(() => this.trackHolds());
+        if (!this.stopping) this.safe(() => this.reviewFallbacks());
         this.runSchedules();
         // Before wake, so a task a repeat creates now can start this tick.
         this.safe(() => this.runRepeats());
@@ -6322,13 +6557,21 @@ export class Supervisor extends EventEmitter {
    */
   private reviewBacklog(views: TaskView[], project: string): number {
     const agents = Object.keys(this.config.agents);
+    const held = new Map<string, boolean>();
+    const canRun = (reviewer: string): boolean => {
+      const p = runtimeOf(reviewer);
+      if (!held.has(p)) held.set(p, this.providerHold(p) !== null);
+      return !held.get(p);
+    };
     return views.filter(
       (v) =>
         v.status === 'needs-review' &&
         (v.meta.project ?? v.root) === project &&
         v.reviewer !== null &&
         !isHuman(v.reviewer) &&
-        agents.some((a) => ownerMatches(v.reviewer, a)),
+        agents.some((a) => ownerMatches(v.reviewer, a)) &&
+        // A review whose reviewer cannot start does not catch up by holding work (AO-0341).
+        canRun(v.reviewer),
     ).length;
   }
 
@@ -6847,7 +7090,62 @@ export class Supervisor extends EventEmitter {
         agents: [],
         reason: `${r.why}${routeNote(r)}`,
       }));
-    return [...planned, ...stranded, ...unrouted];
+    const all = [...planned, ...stranded, ...unrouted];
+    // Work that waits only for a provider that cannot run is one line of `stalls` (AO-0341).
+    for (const p of Object.keys(this.config.runtimes)) {
+      if (!this.providerHold(p)) continue;
+      for (const w of all) {
+        if (
+          !w.stall &&
+          w.agents.length > 0 &&
+          w.agents.every((a) => runtimeOf(a) === p) &&
+          !w.reason.startsWith('starts ')
+        ) {
+          w.stall = p;
+        }
+      }
+    }
+    return all;
+  }
+
+  /**
+   * One line per provider that cannot run and leaves work waiting (AO-0341): the pause, the
+   * reviews and tasks it holds, and when the review fallback moves the reviews. `waits` marks
+   * those items with `stall`, so `swarmup waits` and the app show this line instead of one each.
+   */
+  stalls(items: WaitItem[] = this.waits()): WaitStall[] {
+    const out: WaitStall[] = [];
+    for (const p of Object.keys(this.config.runtimes)) {
+      const hold = this.providerHold(p);
+      if (!hold) continue;
+      const mine = items.filter((w) => w.stall === p);
+      if (mine.length === 0) continue;
+      const ids = (ws: WaitItem[]): string[] => ws.map((w) => (w.task ?? '').split('/').pop()!);
+      const reviews = ids(mine.filter((w) => w.kind === 'review'));
+      const tasks = ids(mine.filter((w) => w.kind === 'task'));
+      const inbox = mine.filter((w) => w.kind === 'inbox').length;
+      const waiting = [
+        reviews.length > 0 ? `${count(reviews.length, 'review')} (${reviews.join(', ')})` : null,
+        tasks.length > 0 ? `${count(tasks.length, 'task')} (${tasks.join(', ')})` : null,
+        inbox > 0 ? `${count(inbox, 'inbox run')}` : null,
+      ]
+        .filter((w): w is string => w !== null)
+        .join(', ');
+      const hours = this.config.review_fallback_hours;
+      const fallback =
+        reviews.length === 0
+          ? ''
+          : hours > 0
+            ? `; reviews move to the author's provider from ${clock(this.holdSince(p, hold) + hours * 3_600_000)}`
+            : '; review fallback is off (`review_fallback_hours: 0`)';
+      out.push({
+        provider: p,
+        reviews,
+        tasks,
+        text: `${hold.text}: ${waiting} wait${fallback}`,
+      });
+    }
+    return out;
   }
 
   /** Starts the runs `planWake` plans, recording reviews and inbox items only once started. */

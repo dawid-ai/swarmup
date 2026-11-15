@@ -38,7 +38,7 @@ const COUNTS: Record<string, number> = {
   wake_cooldown_minutes: 0,
   usage_cooldown_minutes: 1,
 };
-const AMOUNTS = ['min_free_gb', 'reclaim_after_minutes', 'scratch_days'];
+const AMOUNTS = ['min_free_gb', 'reclaim_after_minutes', 'scratch_days', 'review_fallback_hours'];
 const ROLE_COUNTS = ['per_project', 'max_live', 'burst', 'max_children'] as const;
 /** Provider keys the API sets: limits and the model, never what program starts. */
 const RUNTIME_KEYS = ['max_live', 'pause_at', 'paused', 'model'];
@@ -61,6 +61,7 @@ export interface SettingsView {
     | 'min_free_gb'
     | 'usage_pause_at'
     | 'review_backlog'
+    | 'review_fallback_hours'
     | 'budget_minutes'
     | 'wake_cooldown_minutes'
     | 'usage_cooldown_minutes'
@@ -150,6 +151,7 @@ export function settingsView(sup: Supervisor): SettingsView {
       min_free_gb: cfg.min_free_gb,
       usage_pause_at: cfg.usage_pause_at,
       review_backlog: cfg.review_backlog,
+      review_fallback_hours: cfg.review_fallback_hours,
       budget_minutes: cfg.budget_minutes,
       wake_cooldown_minutes: cfg.wake_cooldown_minutes,
       usage_cooldown_minutes: cfg.usage_cooldown_minutes,

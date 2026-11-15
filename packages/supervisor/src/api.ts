@@ -308,9 +308,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     }
     if (method === 'GET' && area === 'waits') {
       // The merge under way goes with what waits: a merge can hold every writing run (AO-0161).
+      const waits = sup.waits();
       return send(res, 200, {
         providers: sup.usageReport(),
-        waits: sup.waits(),
+        waits,
+        // A provider that cannot run is one line, not one per task it holds (AO-0341).
+        stalls: sup.stalls(waits),
         merge: sup.mergeStatus(),
       });
     }

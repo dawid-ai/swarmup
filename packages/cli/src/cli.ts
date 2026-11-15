@@ -69,6 +69,7 @@ import type {
   SignInState,
   UsageState,
   WaitItem,
+  WaitStall,
 } from '@swarmup/supervisor';
 import {
   buildReport,
@@ -608,7 +609,20 @@ function printApplied(ctx: Ctx, res: AppliedPlan): void {
 /** What `GET /api/waits` answers. `merge` is missing from a swarmupd older than AO-0161. */
 interface WaitsAnswer {
   waits: WaitItem[];
+  /** Missing from a swarmupd older than AO-0341. */
+  stalls?: WaitStall[];
   merge?: MergeStatus | null;
+}
+
+/**
+ * One line per provider that cannot run, then what else waits: the work such a provider holds is
+ * in its line, not listed task by task (AO-0341). `limit` caps the other items.
+ */
+function printStalledWaits(ctx: Ctx, res: WaitsAnswer, waits: WaitItem[], limit = Infinity): void {
+  const stalls = res.stalls ?? [];
+  const stalled = new Set(stalls.map((s) => s.provider));
+  for (const s of stalls) ctx.io.out(`stalled        ${s.text}`);
+  printWaits(ctx, waits.filter((w) => !(w.stall && stalled.has(w.stall))).slice(0, limit));
 }
 
 /** The merge under way: the task, the base, the step and its command, with their times. */
@@ -1308,6 +1322,7 @@ const COMMANDS: Record<string, Command> = {
         );
         for (const line of more) o(line.trim() ? `    ${line.trimEnd()}` : '');
         if (e.recommend) o(`    recommend: ${e.recommend}`);
+        if (e.fallback) o(`    fallback: ${e.fallback}`);
         for (const d of marks.get(e.id) ?? []) {
           const by = d.recorded_by ? `; recorded by ${d.recorded_by} from ${d.by}` : '';
           o(`    decision: ${d.id} (${d.scope}${by}): ${d.text}`);
@@ -2225,7 +2240,7 @@ const COMMANDS: Record<string, Command> = {
         ctx.io.out('');
       }
       if (res.waits.length === 0) return void ctx.io.out('nothing waits');
-      printWaits(ctx, res.waits);
+      printStalledWaits(ctx, res, res.waits);
     },
   },
   runs: {
@@ -2259,7 +2274,7 @@ const COMMANDS: Record<string, Command> = {
         if (waiting.length === 0) return;
         ctx.io.out('');
         ctx.io.out('waiting:');
-        printWaits(ctx, waiting.slice(0, 10));
+        printStalledWaits(ctx, res, waiting, 10);
       } catch {
         // swarmupd went away between the lookup and the call.
       }

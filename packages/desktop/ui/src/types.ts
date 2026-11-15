@@ -221,6 +221,16 @@ export interface WaitItem {
   reason: string;
   /** Set when the merge under way holds the checkout this work would start in. */
   merge?: true;
+  /** The provider that cannot run and is all this work waits for; see `WaitStall`. */
+  stall?: string;
+}
+
+/** A provider that cannot run and the work it leaves waiting, as one line (AO-0341). */
+export interface WaitStall {
+  provider: string;
+  reviews: string[];
+  tasks: string[];
+  text: string;
 }
 
 /** One file of a task's diff; see `DiffFile` in the supervisor. */
@@ -268,6 +278,8 @@ export interface MergeStatus {
 export interface WaitsAnswer {
   providers: Record<string, ProviderUsage>;
   waits: WaitItem[];
+  /** Missing from a swarmupd older than AO-0341. */
+  stalls?: WaitStall[];
   merge?: MergeStatus | null;
 }
 
@@ -657,6 +669,8 @@ export interface Settings {
     min_free_gb: number;
     usage_pause_at: number;
     review_backlog: number;
+    /** Hours before a review whose reviewer cannot run moves to the author's provider; 0: never. */
+    review_fallback_hours: number;
     budget_minutes: number;
     wake_cooldown_minutes: number;
     usage_cooldown_minutes: number;

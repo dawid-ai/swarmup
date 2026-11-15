@@ -34,6 +34,7 @@ export const EVENT_TYPES = [
   'handoff',
   'assign',
   'review',
+  'review-fallback',
   'verdict',
   'done',
   'ask',
@@ -250,6 +251,12 @@ export interface OpsEvent {
    */
   recommend?: string;
   /**
+   * review-fallback (by swarmupd): why it moved the open review to a reviewer of the author's
+   * provider, such as `claude paused until 2026-11-18 17:00 UTC` (AO-0341). The request it moves
+   * stays the task's last review. verdict: the same text, when the verdict closes such a review.
+   */
+  fallback?: string;
+  /**
    * answer, unblock, approving verdict: the open tasks that waited on this decision when it was
    * written (AO-0068). For an answer or unblock the task itself comes first, then the tasks that
    * wait on it directly; for a verdict only those. Older events have none.
@@ -309,6 +316,8 @@ export interface ReviewRequest {
   body: string;
   /** The recommended decision (AO-0065). */
   recommend?: string;
+  /** Set when swarmupd moved the request to a reviewer of the author's provider (AO-0341). */
+  fallback?: string;
 }
 
 /** Limits recorded by `swarmup delegate`; they stay with the task until the next delegation. */

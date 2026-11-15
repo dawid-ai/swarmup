@@ -2066,6 +2066,24 @@ export class Workspace {
     return this.noteInactive(withNotes(res, notes), sentTo);
   }
 
+  /**
+   * Moves an open review to `to`, a reviewer of the author's provider, because the reviewer it
+   * waits for cannot run (AO-0341): swarmupd only, with `reason` such as
+   * `claude paused until 2026-11-18 17:00 UTC`. The review request stays the task's last review;
+   * the verdict that closes it carries `reason` too.
+   */
+  reviewFallback(ref: string, to: string, reason: string, message: string): ActResult {
+    assertActor(to, 'reviewer');
+    return this.act(ref, (v, ctx) => {
+      ctx.requireStatus(['needs-review'], 'move the review of');
+      if (!this.actor || runtimeOf(this.actor) !== 'opsd') {
+        ctx.needPrivilege('only swarmupd moves a review to a reviewer of the same provider');
+      }
+      this.checkTarget(ctx, to, 'reviewer');
+      return [{ type: 'review-fallback', to, fallback: reason, body: message }];
+    });
+  }
+
   verdict(
     ref: string,
     verdict: 'approve' | 'changes',
@@ -2106,6 +2124,8 @@ export class Workspace {
           ...freed,
           ...(waited !== undefined && !Number.isNaN(waited) ? { waited_minutes: waited } : {}),
           ...(req?.recommend ? { accepted: verdict === 'approve' } : {}),
+          // A review swarmupd moved to the author's provider says so on its verdict (AO-0341).
+          ...(req?.fallback ? { fallback: req.fallback } : {}),
         },
       ];
     });
@@ -4675,7 +4695,7 @@ export class Workspace {
         if (a.actor === actor) continue;
         // A review request is the review item while open, and handled after the verdict: as a
         // message too, it said the same thing twice and stayed after the verdict.
-        if (a.type === 'review') continue;
+        if (a.type === 'review' || a.type === 'review-fallback') continue;
         if (a.event <= marker) continue;
         items.push({
           kind: 'message',

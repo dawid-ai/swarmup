@@ -48,6 +48,7 @@ import type {
   Task,
   WaitItem,
   WaitsAnswer,
+  WaitStall,
 } from '../types';
 import { ProviderMark, ROLE_ICONS } from '../ui/identity';
 import { Markdown } from '../ui/markdown';
@@ -272,7 +273,7 @@ export function Agents({ nav }: { nav: Nav }) {
             >
               Waiting
             </Caps>
-            <Waiting waits={waits.data.waits} nav={nav} />
+            <Waiting waits={waits.data.waits} stalls={waits.data.stalls} nav={nav} />
           </section>
         )}
 
@@ -518,9 +519,22 @@ const WAIT_LOOK: Record<WaitItem['kind'], { color: string; icon: LucideIcon; lab
   task: { color: '#5ce1e6', icon: CircleDot, label: 'task' },
 };
 
-/** Work waking agents could take, and why no run has started on it. */
-function Waiting({ waits, nav }: { waits: WaitItem[]; nav: Nav }) {
-  if (waits.length === 0) {
+/**
+ * Work waking agents could take, and why no run has started on it. Work that waits only for a
+ * provider that cannot run is one line per provider (`stalls`), not one row per task (AO-0341).
+ */
+function Waiting({
+  waits: all,
+  stalls = [],
+  nav,
+}: {
+  waits: WaitItem[];
+  stalls?: WaitStall[];
+  nav: Nav;
+}) {
+  const stalled = new Set(stalls.map((s) => s.provider));
+  const waits = all.filter((w) => !(w.stall && stalled.has(w.stall)));
+  if (waits.length === 0 && stalls.length === 0) {
     return (
       <div className="text-sm text-fg-4">
         Nothing waits. Every piece of work for waking agents has a run, or there is none.
@@ -529,6 +543,20 @@ function Waiting({ waits, nav }: { waits: WaitItem[]; nav: Nav }) {
   }
   return (
     <div className="panel divide-y divide-white/5 overflow-hidden">
+      {stalls.map((s) => (
+        <div key={`stall-${s.provider}`} className="flex items-start gap-3 px-4 py-3">
+          <span
+            className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+            style={{ background: 'color-mix(in oklab, #ffb547 13%, transparent)' }}
+            title="provider cannot run"
+          >
+            <PauseCircle size={14} color="#ffb547" />
+          </span>
+          <div className="min-w-0 flex-1 text-sm text-fg">
+            <RefText text={s.text} />
+          </div>
+        </div>
+      ))}
       {waits.map((w) => {
         const l = WAIT_LOOK[w.kind] ?? WAIT_LOOK.task;
         const Icon = l.icon;

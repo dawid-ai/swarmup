@@ -658,7 +658,25 @@ wake and schedules wait for room.
   run counts against the limits before the next is planned. When a project has `review_backlog`
   (default 3) tasks waiting for review, swarmupd starts no new work there for roles that write, and
   its reviewers may run up to `roles.<role>.burst` (default twice `per_project`), so reviews catch
-  up before more work piles on.
+  up before more work piles on. A review whose reviewer cannot run now (its provider is paused for
+  usage or signed out) does not count: holding work does not make it start (AO-0341).
+- **Review fallback.** A review waits for a reviewer of another provider than its author. When that
+  provider cannot run (paused for usage or signed out) for `review_fallback_hours` (default 2;
+  `0` turns it off; **Review fallback (h)** in **Settings**), counted from the later of the pause
+  and the review request, swarmupd moves the review to the same role on the author's provider,
+  such as `codex:reviewer` for Codex work while Claude is paused. It writes a `review-fallback`
+  event whose text starts with `fallback: claude paused until 2026-11-18 17:00 UTC` (or
+  `claude signed out since ...`); the review request stays the author's, and the verdict that
+  closes it carries the same `fallback` text (`swarmup show` prints it). A reviewer the task names
+  (its delegation's, else its plan item's) stays, as does a review whose author is a person or
+  whose own provider cannot run either.
+- **One note per pause.** When a usage pause leaves reviews or work owned by that provider's
+  agents waiting, you get one Inbox note for the spell: until when, which tasks, and the options
+  (wait, raise `pause_at` for that provider, or the review fallback and when it moves them). A
+  sign-out's notice lists the same options. The spell is kept in `holds.json` in the state folder,
+  so a restart neither repeats the note nor restarts the fallback's clock. `swarmup waits`,
+  `swarmup runs` and the **Agents** view show the work such a provider holds as one `stalled`
+  line per provider (`stalls` in `GET /api/waits`), not one line per task.
 - **Helper runs.** A run that works on a task and still holds its claim starts helpers with
   `swarmup spawn [AGENT] -m PROMPT` (`POST /api/runs` with `parent`). A helper works on the parent's
   task, always in the parent's folder, under its claim. It may comment on tasks but never change
@@ -811,6 +829,7 @@ swarmupd:
     other: { command: other, sign_in_check: [whoami] }
   # Without `seeded`, entries merge into the default claude and codex key by key, as before.
   review_backlog: 3 # reviews waiting in a project that hold new work there
+  review_fallback_hours: 2 # move reviews of a paused or signed-out provider to the author's; 0: never
   roles:
     engineer: { per_project: 1, providers: [claude, codex], overflow: true, max_children: 2 }
     qa: { per_project: 3, burst: 6 } # qa and reviewer only read

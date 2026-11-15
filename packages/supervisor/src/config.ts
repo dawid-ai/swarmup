@@ -207,6 +207,12 @@ export interface OpsdConfig {
    * that write, and lets reviewers burst, so reviews catch up before more work piles on.
    */
   review_backlog: number;
+  /**
+   * Hours a review waits for a reviewer of the other provider that cannot run (paused for usage,
+   * or signed out) before swarmupd moves it to a reviewer of the author's provider (AO-0341).
+   * Counted from the later of the pause and the review request. 0 never moves it.
+   */
+  review_fallback_hours: number;
   /** Default run budget in minutes when neither the task nor the agent sets one. */
   budget_minutes: number;
   /** Minutes before the same agent is woken again for the same items. */
@@ -384,6 +390,7 @@ export function opsdConfig(
     usage_pause_at: raw.usage_pause_at ?? 0.9,
     roles: raw.roles ?? {},
     review_backlog: raw.review_backlog ?? 3,
+    review_fallback_hours: raw.review_fallback_hours ?? 2,
     usage_cooldown_minutes: raw.usage_cooldown_minutes ?? 30,
     signed_out_handoff_minutes: raw.signed_out_handoff_minutes ?? 15,
     budget_minutes: raw.budget_minutes ?? 180,
@@ -490,6 +497,7 @@ export function opsdConfig(
     }
   }
   count(cfg.review_backlog, 'review_backlog', 1);
+  amount(cfg.review_fallback_hours, 'review_fallback_hours');
   count(cfg.budget_minutes, 'budget_minutes', 1);
   count(cfg.wake_cooldown_minutes, 'wake_cooldown_minutes', 0);
   count(cfg.outside_session_minutes, 'outside_session_minutes', 0);

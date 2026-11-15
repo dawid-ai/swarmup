@@ -117,17 +117,32 @@ export function usagePause(
   pauseAt: number,
   now: number,
 ): string | null {
+  return usageHold(provider, usage, pauseAt, now)?.text ?? null;
+}
+
+/** Why `usagePause` pauses the provider, with when that ends (AO-0341). */
+export function usageHold(
+  provider: string,
+  usage: ProviderUsage | undefined,
+  pauseAt: number,
+  now: number,
+): { text: string; until: number } | null {
   if (!usage) return null;
   if (usage.limited_until && usage.limited_until > now) {
-    return `${provider} refused work (usage limit) until ${clock(usage.limited_until)}`;
+    return {
+      text: `${provider} refused work (usage limit) until ${clock(usage.limited_until)}`,
+      until: usage.limited_until,
+    };
   }
   for (const [name, w] of Object.entries(usage.windows)) {
     if (w.resets_at <= now) continue;
     if (w.utilization >= pauseAt || w.status === 'rejected') {
-      return (
-        `${provider} usage at ${Math.round(w.utilization * 100)}% of the ${name} window ` +
-        `(pause at ${Math.round(pauseAt * 100)}%) until ${clock(w.resets_at)}`
-      );
+      return {
+        text:
+          `${provider} usage at ${Math.round(w.utilization * 100)}% of the ${name} window ` +
+          `(pause at ${Math.round(pauseAt * 100)}%) until ${clock(w.resets_at)}`,
+        until: w.resets_at,
+      };
     }
   }
   return null;

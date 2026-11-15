@@ -1006,6 +1006,12 @@ const LIMITS: Array<{ key: string; label: string; hint: string; step?: string }>
     hint: 'Reviews waiting in a project before writers pause there',
   },
   {
+    key: 'review_fallback_hours',
+    label: 'Review fallback (h)',
+    hint: "When the other provider's reviewer is paused or signed out, move its reviews to the author's provider after this; 0 turns it off",
+    step: '0.5',
+  },
+  {
     key: 'budget_minutes',
     label: 'Default budget (min)',
     hint: 'When neither the task nor the agent sets one',

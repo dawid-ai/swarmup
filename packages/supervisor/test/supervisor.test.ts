@@ -34,6 +34,7 @@ import type { OpsEvent } from '@swarmup/core';
 import type { ProcLister, ProcTarget, RunRecord } from '../src/index.js';
 import {
   chatPrompt,
+  clock,
   daemonCall,
   processStartSync,
   codexGitDirs,
@@ -6717,5 +6718,138 @@ describe('routing ownerless work (AO-0140)', () => {
     expect(wait?.reason).toMatch(
       /swarmupd cannot route it: every waking provider of \*:engineer is the provider of the expected reviewer fake:qa$/,
     );
+  });
+});
+
+describe('reviews of a provider that cannot run (AO-0341)', () => {
+  const HOUR = 3_600_000;
+  /** fake stands for the paused provider (Claude), other for the author's (Codex). */
+  function paused(opsd: Record<string, unknown> = {}) {
+    let now = Date.now();
+    const env = setup({
+      mode: 'hang',
+      now: () => now,
+      opsd: {
+        agents: {
+          'fake:reviewer': { wake: true },
+          'other:reviewer': { wake: true },
+          'other:engineer': { wake: true },
+        },
+        runtimes: { other: HANG_RUNTIME },
+        roles: { engineer: { providers: ['other'] } },
+        ...opsd,
+      },
+    });
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const meta = env.as('human:dawid').newTask({
+        title: `built ${i}`,
+        owner: 'other:engineer',
+        project: 'a',
+      });
+      env.as('other:engineer').start(meta.id, 'plan');
+      env.as('other:engineer').review(meta.id, `ready ${i}`, 'fake:reviewer');
+      ids.push(meta.id);
+    }
+    const work = env
+      .as('human:dawid')
+      .newTask({ title: 'new work', owner: 'other:engineer', project: 'a' });
+    const resets = now + 3 * 24 * HOUR;
+    const pause = (): void => {
+      env.sup['usage'].fake = {
+        windows: { seven_day: { utilization: 0.92, resets_at: resets } },
+        updated_at: now,
+      };
+      env.sup['waitsMemo'] = null;
+    };
+    const advance = (ms: number): void => {
+      now += ms;
+    };
+    const notes = () =>
+      env
+        .as('human:dawid')
+        .inbox('human:dawid')
+        .filter((i) => i.kind === 'mention' && i.from === 'opsd:runtime');
+    return { ...env, ids, work, resets, pause, advance, notes };
+  }
+  const byTask = (sup: Supervisor) =>
+    new Map(sup.waits().map((w) => [(w.task ?? '').split('/').pop(), w]));
+
+  it('holds no work for reviews whose reviewer is paused or signed out', () => {
+    const { sup, work, pause } = paused();
+    expect(byTask(sup).get(work.id)?.reason).toMatch(/3 reviews wait in a; new work there waits/);
+    pause();
+    expect(byTask(sup).get(work.id)?.reason).toBe('starts at the next tick');
+    delete sup['usage'].fake;
+    sup['markSignedOut']('fake', 'check');
+    sup['waitsMemo'] = null;
+    expect(byTask(sup).get(work.id)?.reason).toBe('starts at the next tick');
+  });
+
+  it('moves the reviews to the author provider after review_fallback_hours, and the verdict notes it', async () => {
+    const { sup, as, ids, resets, pause, advance } = paused();
+    pause();
+    await sup.tick();
+    const reviewerOf = (id: string) => as('human:dawid').view(id).reviewer;
+    expect(ids.map(reviewerOf)).toEqual(['fake:reviewer', 'fake:reviewer', 'fake:reviewer']);
+    advance(2 * HOUR - 60_000);
+    await sup.tick();
+    expect(reviewerOf(ids[0]!)).toBe('fake:reviewer');
+    advance(60_000);
+    await sup.tick();
+    expect(ids.map(reviewerOf)).toEqual(['other:reviewer', 'other:reviewer', 'other:reviewer']);
+    const reason = `fake paused until ${clock(resets)}`;
+    const moved = as('human:dawid')
+      .showEvents(ids[0]!)
+      .events.find((e) => e.type === 'review-fallback')!;
+    expect(moved).toMatchObject({ actor: 'opsd:runtime', to: 'other:reviewer', fallback: reason });
+    expect(moved.body.startsWith(`fallback: ${reason}. `)).toBe(true);
+    // The request stays the author's: the reviewer reads it, not the fallback note.
+    expect(as('human:dawid').view(ids[0]!).lastReview).toMatchObject({
+      actor: 'other:engineer',
+      body: 'ready 0',
+      fallback: reason,
+    });
+    expect(sup.runs({ live: true }).some((r) => r.agent === 'other:reviewer')).toBe(true);
+    as('other:reviewer').verdict(ids[0]!, 'approve', 'looks right');
+    const verdict = as('human:dawid')
+      .showEvents(ids[0]!)
+      .events.find((e) => e.type === 'verdict')!;
+    expect(verdict.fallback).toBe(reason);
+    // Only swarmupd moves a review to a reviewer of the author's provider.
+    expect(() =>
+      as('other:engineer').reviewFallback(ids[1]!, 'other:reviewer', reason, 'x'),
+    ).toThrow();
+  });
+
+  it('never moves a review with review_fallback_hours 0', async () => {
+    const { sup, as, ids, pause, advance } = paused({ review_fallback_hours: 0 });
+    pause();
+    await sup.tick();
+    advance(48 * HOUR);
+    await sup.tick();
+    expect(as('human:dawid').view(ids[0]!).reviewer).toBe('fake:reviewer');
+    expect(sup.stalls()[0]?.text).toMatch(/review fallback is off/);
+  });
+
+  it('tells the person once per pause, and shows the stall as one line', async () => {
+    const { sup, ids, resets, pause, advance, notes } = paused({ review_fallback_hours: 0 });
+    pause();
+    await sup.tick();
+    advance(10 * 60_000);
+    await sup.tick();
+    await sup.tick();
+    const told = notes();
+    expect(told).toHaveLength(1);
+    const text = told[0]!.detail ?? told[0]!.summary;
+    expect(text).toContain(`until ${clock(resets)}`);
+    expect(text).toContain(`3 reviews (${ids.join(', ')})`);
+    expect(text).toContain('raise `pause_at` for fake');
+    expect(text).toContain('review_fallback_hours');
+    const stalls = sup.stalls();
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]).toMatchObject({ provider: 'fake', reviews: ids, tasks: [] });
+    expect(stalls[0]!.text).toMatch(/^fake usage at 92% .*: 3 reviews \(/);
+    expect(sup.waits().filter((w) => w.stall === 'fake')).toHaveLength(3);
   });
 });

@@ -315,6 +315,13 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
           review: e.review,
         };
         break;
+      case 'review-fallback':
+        // swarmupd moves an open review to another reviewer (AO-0341): the request stays.
+        if (s.status === 'needs-review' && s.lastReview && e.to) {
+          s.reviewer = e.to;
+          s.lastReview = { ...s.lastReview, fallback: e.fallback ?? e.body.trim() };
+        }
+        break;
       case 'review':
         s.status = 'needs-review';
         s.reviewer = e.to ?? null;
