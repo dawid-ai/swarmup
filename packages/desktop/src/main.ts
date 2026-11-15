@@ -56,6 +56,7 @@ import { runtimeDetail } from './runtime-dialog.js';
 import type { UpdateState } from './updates.js';
 import {
   installPrompt,
+  installSkillsOnce,
   installUpdate as runInstall,
   notesText,
   plainNotes,
@@ -1417,7 +1418,9 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
       }
       if (packaged) {
         try {
-          installUserSkills({ env: process.env });
+          installSkillsOnce(app.getPath('userData'), app.getVersion(), () => {
+            installUserSkills({ env: process.env });
+          });
         } catch (err) {
           logMigration(
             migrationLogDir(),

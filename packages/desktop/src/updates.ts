@@ -5,7 +5,7 @@
 // is live, since a run's `swarmup` calls fail while the files are replaced; the person can install
 // sooner and is asked first.
 
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type UpdateStatus = 'off' | 'idle' | 'checking' | 'none' | 'downloading' | 'ready' | 'error';
@@ -142,6 +142,29 @@ const MARKER = 'relaunch.json';
 
 export function writeRelaunch(dir: string, background: boolean, now = Date.now()): void {
   writeFileSync(join(dir, MARKER), JSON.stringify({ background, at: now }));
+}
+
+/** The app version that last installed the user-level skills, so a plain restart leaves them be. */
+const SKILLS_MARKER = 'skills-installed.json';
+
+/**
+ * Runs `install` once per app version: on the first start after an install or update. A plain
+ * restart of the same version skips it, so a person's edits to the user-level SKILL.md survive.
+ * The version is recorded only after `install` succeeds, so a failed install retries next start.
+ * Returns true when `install` ran.
+ */
+export function installSkillsOnce(dir: string, version: string, install: () => void): boolean {
+  const file = join(dir, SKILLS_MARKER);
+  try {
+    const m = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown };
+    if (m.version === version) return false;
+  } catch {
+    // No marker or an unreadable one: install.
+  }
+  install();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, JSON.stringify({ version }));
+  return true;
 }
 
 /** True when a recent update asked the next start to stay in the tray. */

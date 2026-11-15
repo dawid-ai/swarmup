@@ -187,8 +187,10 @@ export function installUserSkills(opts: SkillInstallOptions = {}): SkillInstallR
   const locations = userSkillLocations(env, home);
   const installed: string[] = [];
   for (const location of locations) {
-    if (!location.install) continue;
     const file = join(location.dir, SKILL_PATH);
+    // A location that is not installed by default (`~/.agents`) is only refreshed when a copy
+    // already exists there, so its health warning clears without adding a second Codex copy.
+    if (!location.install && !existsSync(file)) continue;
     mkdirSync(dirname(file), { recursive: true });
     copyFileSync(bundled, file);
     installed.push(file);

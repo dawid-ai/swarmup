@@ -18,7 +18,9 @@ needed:
   leaves PATH as it is, so remove the entry yourself. Agent runs always get it first on their PATH
   from swarmupd.
 - On its first start and after every update, the packaged app copies its bundled `swarmup` skill to
-  Claude Code and Codex's user skill folders. **Settings > Health checks > Fix** does the same. It
+  Claude Code and Codex's user skill folders, and refreshes a copy in `~\.agents\skills\swarmup`
+  when one exists. A restart of the same version leaves the copies as they are, so your edits
+  stay until the next update. **Settings > Health checks > Fix** does the same at once. It
   removes a leftover `skills\agent-ops` folder only when `SKILL.md` is its sole entry; when the
   folder contains anything else, Health checks keeps it and says so.
 

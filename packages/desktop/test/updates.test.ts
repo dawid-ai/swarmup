@@ -7,6 +7,7 @@ import type { InstallSteps } from '../src/updates';
 import {
   installDecision,
   installPrompt,
+  installSkillsOnce,
   installUpdate,
   notesText,
   plainNotes,
@@ -155,6 +156,49 @@ describe('relaunch after an update', () => {
     writeFileSync(join(d, 'relaunch.json'), '{not json');
     expect(takeRelaunch(d)).toBe(false);
     expect(existsSync(join(d, 'relaunch.json'))).toBe(false);
+  });
+});
+
+describe('user-level skill install on start', () => {
+  const temp = (): string => {
+    const d = mkdtempSync(join(tmpdir(), 'swarmup-skills-'));
+    dirs.push(d);
+    return d;
+  };
+
+  it('installs on the first start and skips a restart of the same version', () => {
+    const d = temp();
+    let runs = 0;
+    const install = (): void => {
+      runs++;
+    };
+    expect(installSkillsOnce(d, '0.3.0-beta.4', install)).toBe(true);
+    expect(installSkillsOnce(d, '0.3.0-beta.4', install)).toBe(false);
+    expect(runs).toBe(1);
+  });
+
+  it('installs again after the version changes or when the marker is unreadable', () => {
+    const d = temp();
+    let runs = 0;
+    const install = (): void => {
+      runs++;
+    };
+    installSkillsOnce(d, '0.3.0-beta.4', install);
+    expect(installSkillsOnce(d, '0.3.0-beta.5', install)).toBe(true);
+    writeFileSync(join(d, 'skills-installed.json'), '{not json');
+    expect(installSkillsOnce(d, '0.3.0-beta.5', install)).toBe(true);
+    expect(runs).toBe(3);
+  });
+
+  it('retries on the next start when the install fails', () => {
+    const d = temp();
+    expect(() =>
+      installSkillsOnce(d, '0.3.0-beta.4', () => {
+        throw new Error('no skill');
+      }),
+    ).toThrow('no skill');
+    expect(existsSync(join(d, 'skills-installed.json'))).toBe(false);
+    expect(installSkillsOnce(d, '0.3.0-beta.4', () => undefined)).toBe(true);
   });
 });
 

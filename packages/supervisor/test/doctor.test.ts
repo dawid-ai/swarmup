@@ -292,6 +292,39 @@ describe('swarmup doctor', () => {
     expect(result.kept).toEqual([]);
   });
 
+  it('refreshes an existing ~/.agents copy so Fix clears its warning, and never creates one', async () => {
+    const bundled = join(temp(), 'SKILL.md');
+    writeFileSync(bundled, '# SwarmUp\n\n## Rules\n\nr\n');
+    const claudeDir = temp();
+    const codexHome = temp();
+    const env = { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome };
+
+    // No ~/.agents copy: the install leaves that folder alone.
+    const bare = temp();
+    installUserSkills({ env, home: bare, skillFile: bundled });
+    expect(existsSync(join(bare, '.agents'))).toBe(false);
+
+    // A stale ~/.agents copy: Fix copies over it and the check turns ok.
+    const home = temp();
+    const agents = join(home, '.agents', 'skills', 'swarmup', 'SKILL.md');
+    mkdirSync(dirname(agents), { recursive: true });
+    writeFileSync(agents, '# SwarmUp\n\nolder\n');
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    const doctorEnv = envFor(config, env);
+    const before = await doctor({ env: doctorEnv, cwd: temp(), home, skillFile: bundled });
+    expect(byId(before, `skill:${agents}`)).toMatchObject({
+      status: 'warn',
+      action: 'install-skills',
+    });
+
+    const result = installUserSkills({ env, home, skillFile: bundled });
+    expect(result.installed).toContain(agents);
+    expect(readFileSync(agents, 'utf8')).toBe('# SwarmUp\n\n## Rules\n\nr\n');
+    const after = await doctor({ env: doctorEnv, cwd: temp(), home, skillFile: bundled });
+    expect(byId(after, `skill:${agents}`)?.status).toBe('ok');
+  });
+
   it('keeps and warns about an old agent-ops skill folder that contains another file', async () => {
     const bundled = join(temp(), 'SKILL.md');
     writeFileSync(bundled, '# SwarmUp\n');
