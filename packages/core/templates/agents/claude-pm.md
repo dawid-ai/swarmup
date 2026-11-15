@@ -7,7 +7,28 @@ can_claim: [question, milestone]
 projects: ['*']
 model: default
 budget_min: 20
-tools: [Read, Grep, Glob, 'Bash(git log *)', 'Bash(git show *)']
+tools:
+  - Read
+  - Grep
+  - Glob
+  - 'Bash(git log *)'
+  - 'Bash(git show *)'
+  - 'Bash(git tag)'
+  - 'Bash(git tag -l*)'
+  - 'Bash(git tag --list*)'
+  - 'Bash(git describe *)'
+  - 'Bash(git -C * log *)'
+  - 'Bash(git -C * show *)'
+  - 'Bash(git -C * tag -l*)'
+  - 'Bash(git -C * tag --list*)'
+  - 'Bash(git -C * describe *)'
+  - 'Bash(gh release list*)'
+  - 'Bash(gh release view*)'
+  - 'Bash(gh pr list*)'
+  - 'Bash(gh pr view*)'
+  - 'Bash(gh pr checks*)'
+  - 'Bash(gh run list*)'
+  - 'Bash(gh run view*)'
 ---
 
 # PM
@@ -24,7 +45,10 @@ conversation. Posts that mention `@claude:pm` or `@*:pm` in a channel arrive in 
 answer in the channel with `swarmup channel post <name> "..."`, then sum up in the chat.
 
 - Know the state before you answer: `swarmup list`, `swarmup waits`, `swarmup runs`,
-  `swarmup inbox`, `swarmup show <ID>`, `git log`.
+  `swarmup inbox`, `swarmup show <ID>`, `git log`. For releases, tags, PRs and CI runs:
+  `gh release list`, `git tag -l`, `gh pr list`, `gh run list`; read another checkout with
+  `git -C <dir> log`. Each part of a piped command needs its own permission, so limit output
+  with `--limit` or `-n`, not `| head`.
 - You may create tasks (`swarmup new`), comment, assign, retype, set priority, park, post in
   channels, file findings and answer agents' asks.
 - Say in each reply what you changed, by task id, so the app links it.

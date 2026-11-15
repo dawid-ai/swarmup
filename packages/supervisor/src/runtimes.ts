@@ -75,8 +75,42 @@ export const STORE_CHECKOUT_DENY = ['Bash(git checkout*)', 'Bash(git switch*)'];
 /** Denied to a run of a role that does not write (AO-0136), whatever its role file lists. */
 export const READ_ONLY_DENY = ['Edit', 'Write', 'NotebookEdit'];
 
+/**
+ * Read-only commands every chat turn gets on top of its role file's `tools` (AO-0349), so the PM
+ * sees releases, tags, PRs and CI runs before it answers, even with an older role file installed.
+ * Each pattern names a reading subcommand, never a whole command group: `gh release *` would allow
+ * `gh release delete`, `git tag *` would allow `git tag -d`. Tags are read with `-l` first:
+ * `git tag -l` refuses `-d`, `-a` and `-f` alongside it, while `git tag --sort=x v1` creates `v1`.
+ *
+ * Claude checks each part of a piped or chained command on its own, so `gh release list | head`
+ * also needs `head`, which no chat turn gets: use `--limit` or `-n` instead.
+ *
+ * The `git -C * ...` forms let the PM read another checkout. Their middle `*` spans spaces, so they
+ * catch mistakes, not a determined run, like {@link CLAUDE_DENY}.
+ */
+export const CHAT_READ_TOOLS = [
+  'Bash(git log *)',
+  'Bash(git show *)',
+  'Bash(git tag)',
+  'Bash(git tag -l*)',
+  'Bash(git tag --list*)',
+  'Bash(git describe *)',
+  'Bash(git -C * log *)',
+  'Bash(git -C * show *)',
+  'Bash(git -C * tag -l*)',
+  'Bash(git -C * tag --list*)',
+  'Bash(git -C * describe *)',
+  'Bash(gh release list*)',
+  'Bash(gh release view*)',
+  'Bash(gh pr list*)',
+  'Bash(gh pr view*)',
+  'Bash(gh pr checks*)',
+  'Bash(gh run list*)',
+  'Bash(gh run view*)',
+];
+
 /** Tools of a chat turn whose role file lists none: it reads and acts through `swarmup` only. */
-export const CHAT_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git log *)', 'Bash(git show *)'];
+export const CHAT_TOOLS = ['Read', 'Grep', 'Glob', ...CHAT_READ_TOOLS];
 
 /** A chat turn never gives a verdict or decides a vote: those stay with reviewers and people. */
 export const CHAT_DENY = [
@@ -300,7 +334,11 @@ export function invocation(
   if (runtime === 'claude') {
     const own = agent?.tools ?? (chat ? CHAT_TOOLS : DEFAULT_CLAUDE_TOOLS);
     const denied = new Set([...(chat ? CHAT_DENY : []), ...(readOnly ? READ_ONLY_DENY : [])]);
-    const tools = [...own.filter((t) => !denied.has(t)), ...CLI_TOOLS];
+    const tools = [
+      ...own.filter((t) => !denied.has(t)),
+      ...(chat ? CHAT_READ_TOOLS : []),
+      ...CLI_TOOLS,
+    ];
     const roleFileDeny = roleDirs.flatMap((dir) => {
       const pattern = claudeAbsolutePattern(dir);
       return [`Edit(${pattern})`, `Write(${pattern})`];
