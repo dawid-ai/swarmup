@@ -24,20 +24,22 @@ const usage: Record<string, ProviderUsage> = {
     five_hour: { utilization: 0.05, resets_at: NOW + 2 * HOUR },
     seven_day: { utilization: 0.12, resets_at: NOW + 75 * HOUR },
   }),
-  claude: provider({ five_hour: { utilization: 0.92, resets_at: 0 } }),
+  claude: provider({ five_hour: { utilization: 0.92, resets_at: NOW + HOUR } }),
 };
 
 describe('usageItems', () => {
   it('shows the fullest window and its reset, in provider order', () => {
     const items = usageItems(usage, { usage_pause_at: 0.9 }, NOW);
     expect(items.map((i) => [i.provider, i.state, i.pct, i.reset])).toEqual([
-      ['claude', 'warning', 92, undefined],
+      ['claude', 'warning', 92, '1h'],
       ['codex', 'normal', 12, '3d 3h'],
     ]);
   });
 
   it('warns at the provider pause threshold, which wins over the global one', () => {
-    const near = { claude: provider({ five_hour: { utilization: 0.85, resets_at: 0 } }) };
+    const near = {
+      claude: provider({ five_hour: { utilization: 0.85, resets_at: NOW + HOUR } }),
+    };
     expect(usageItems(near, { usage_pause_at: 0.9 }, NOW)[0]!.state).toBe('normal');
     expect(
       usageItems(near, { usage_pause_at: 0.9, runtimes: { claude: { pause_at: 0.8 } } }, NOW)[0]!
@@ -45,6 +47,23 @@ describe('usageItems', () => {
     ).toBe('warning');
     // Without settings yet, swarmupd's default of 90% applies.
     expect(usageItems(usage, undefined, NOW)[0]!.state).toBe('warning');
+  });
+
+  it('ignores cached windows at or past their reset boundary', () => {
+    const stale = {
+      claude: provider({
+        five_hour: { utilization: 0.92, resets_at: NOW },
+        seven_day: { utilization: 0.12, resets_at: NOW + 75 * HOUR },
+      }),
+      codex: provider({ five_hour: { utilization: 0.95, resets_at: NOW - 1 } }),
+    };
+
+    const items = usageItems(stale, { usage_pause_at: 0.9 }, NOW);
+    expect(items.map((i) => [i.provider, i.state, i.pct, i.reset])).toEqual([
+      ['claude', 'normal', 12, '3d 3h'],
+      ['codex', 'empty', undefined, undefined],
+    ]);
+    expect(items[1]!.title).toBe('Codex: no current usage window');
   });
 
   it('tells a signed-out provider from an expired sign-in and drops stale usage', () => {
@@ -110,7 +129,7 @@ describe('ProviderStatusBar', () => {
 
   it('shows each provider with its figure, warning near the threshold', () => {
     render({ usage, pause: { usage_pause_at: 0.9 }, onOpen: () => {} });
-    expect(text(box.querySelector('footer')!)).toBe('Used Claude 92% Codex 12% · 3d 3h');
+    expect(text(box.querySelector('footer')!)).toBe('Used Claude 92% · 1h Codex 12% · 3d 3h');
     expect(item('claude').dataset.state).toBe('warning');
     expect(item('claude').className).toContain('text-warn');
     expect(item('codex').dataset.state).toBe('normal');
