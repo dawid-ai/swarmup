@@ -89,6 +89,43 @@ describe('usageItems', () => {
     ]);
   });
 
+  it('warns on a rejected window under the pause share and shows that window', () => {
+    const rejected = {
+      claude: provider({
+        five_hour: { utilization: 0.4, resets_at: NOW + HOUR, status: 'rejected' },
+        seven_day: { utilization: 0.6, resets_at: NOW + 75 * HOUR },
+      }),
+    };
+    const [item] = usageItems(rejected, { usage_pause_at: 0.9 }, NOW);
+    expect([item!.state, item!.pct, item!.reset]).toEqual(['warning', 40, '1h']);
+    expect(item!.title).toBe(
+      'Claude: 40% used, resets in 1h; Claude rejected work in the five_hour window, swarmupd pauses its runs until it resets',
+    );
+  });
+
+  it('warns while limited_until is ahead, with or without a current window', () => {
+    const limited = {
+      codex: provider(
+        { five_hour: { utilization: 0.2, resets_at: NOW + 2 * HOUR } },
+        { limited_until: NOW + 3 * HOUR },
+      ),
+      claude: provider({}, { limited_until: NOW + 30 * 60_000 }),
+      gemini: provider({}, { limited_until: NOW - 1 }),
+    };
+    const items = usageItems(limited, { usage_pause_at: 0.9 }, NOW);
+    expect(items.map((i) => [i.provider, i.state, i.pct, i.reset])).toEqual([
+      ['claude', 'warning', undefined, '30m'],
+      ['codex', 'warning', 20, '2h'],
+      ['gemini', 'empty', undefined, undefined],
+    ]);
+    expect(items[0]!.title).toBe(
+      'Claude: refused work (usage limit); swarmupd starts no Claude run for 30m',
+    );
+    expect(items[1]!.title).toBe(
+      'Codex: 20% used, resets in 2h; refused work (usage limit), swarmupd starts no Codex run for 3h',
+    );
+  });
+
   it('formats the time to the reset', () => {
     expect(resetIn(30_000)).toBe('<1m');
     expect(resetIn(42 * 60_000)).toBe('42m');
@@ -151,6 +188,16 @@ describe('ProviderStatusBar', () => {
     });
     expect(text(item('claude'))).toBe('Claude Sign-in expired');
     expect(text(item('codex'))).toBe('Codex Signed out');
+    expect(item('codex').className).toContain('text-warn');
+  });
+
+  it('shows Limited for a usage-limit refusal without a current window', () => {
+    render({
+      usage: { codex: provider({}, { limited_until: NOW + 30 * 60_000 }) },
+      pause: undefined,
+      onOpen: () => {},
+    });
+    expect(text(item('codex'))).toBe('Codex Limited · 30m');
     expect(item('codex').className).toContain('text-warn');
   });
 
