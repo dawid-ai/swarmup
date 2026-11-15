@@ -17,6 +17,11 @@ export interface ProviderUsage {
   windows: Record<string, UsageWindow>;
   /** Set when the provider refused work: no new runs until then. */
   limited_until?: number;
+  /**
+   * The window the refusal in `limited_until` is about, when the provider named one. A window
+   * that applies to one model (see {@link windowModel}) pauses only that model's runs.
+   */
+  limited_by?: string;
   plan?: string;
   updated_at: number;
 }
@@ -57,6 +62,7 @@ export function claudeUsage(info: unknown, now: number): ProviderUsage | null {
   const usage: ProviderUsage = { windows, updated_at: now, limited_until: undefined };
   if (i.status === 'rejected' && typeof i.resetsAt === 'number') {
     usage.limited_until = i.resetsAt * 1000;
+    if (i.rateLimitType) usage.limited_by = i.rateLimitType;
   }
   return Object.keys(windows).length > 0 || usage.limited_until ? usage : null;
 }
@@ -108,16 +114,68 @@ function windowName(minutes: number | undefined): string {
 }
 
 /**
+ * Windows that apply to one model, by provider. Claude Code's `rate_limit_event` names no model;
+ * `seven_day_overage_included` is the weekly allowance of Fable, Claude Code's default model, by
+ * the account owner's reading of 2026-11-15 (AO-0342). `runtimes.<name>.model_windows` overrides
+ * these, and an empty value there makes a window count for every model again.
+ */
+export const DEFAULT_MODEL_WINDOWS: Record<string, Record<string, string>> = {
+  claude: { seven_day_overage_included: 'fable' },
+};
+
+/** Model families a window name ends with, such as `seven_day_opus`. */
+const MODEL_SUFFIX_RE = /_(opus|sonnet|haiku|fable)$/;
+
+/**
+ * The model a usage window applies to, as a word to find in a model name (`fable` for
+ * `claude-fable-5-2`), or undefined for a window that counts every run of the provider. `map` is
+ * the provider's map from {@link modelWindows}.
+ */
+export function windowModel(
+  name: string,
+  map: Record<string, string | null | undefined> = {},
+): string | undefined {
+  if (Object.hasOwn(map, name)) return map[name] ? map[name].toLowerCase() : undefined;
+  return MODEL_SUFFIX_RE.exec(name)?.[1];
+}
+
+/** The window-to-model map of a provider: its defaults with `model_windows` over them. */
+export function modelWindows(
+  provider: string,
+  own?: Record<string, string | null>,
+): Record<string, string | null> {
+  return { ...DEFAULT_MODEL_WINDOWS[provider], ...own };
+}
+
+/**
+ * True when a run of `model` uses the window of `token`. A run with no model, or a role file's
+ * `default`, uses the provider's default model, which may be any: it counts, as before AO-0342.
+ */
+export function modelUses(model: string | undefined, token: string): boolean {
+  if (!model || model === 'default') return true;
+  return model.toLowerCase().includes(token);
+}
+
+export interface PauseScope {
+  /** The model the run would use; undefined for the provider's default. */
+  model?: string;
+  /** The provider's window-to-model map, from {@link modelWindows}. */
+  windows?: Record<string, string | null>;
+}
+
+/**
  * Why no new run should start on the provider now, or null. A window counts once it reaches
- * `pauseAt` (the rest stays for the human's own sessions) and until it resets.
+ * `pauseAt` (the rest stays for the human's own sessions) and until it resets. A window that
+ * applies to one model (`scope.windows`) counts only for runs of that model (`scope.model`).
  */
 export function usagePause(
   provider: string,
   usage: ProviderUsage | undefined,
   pauseAt: number,
   now: number,
+  scope: PauseScope = {},
 ): string | null {
-  return usageHold(provider, usage, pauseAt, now)?.text ?? null;
+  return usageHold(provider, usage, pauseAt, now, scope)?.text ?? null;
 }
 
 /** Why `usagePause` pauses the provider, with when that ends (AO-0341). */
@@ -126,26 +184,80 @@ export function usageHold(
   usage: ProviderUsage | undefined,
   pauseAt: number,
   now: number,
+  scope: PauseScope = {},
 ): { text: string; until: number } | null {
   if (!usage) return null;
+  const tied = (name: string | undefined): string | undefined =>
+    name === undefined ? undefined : windowModel(name, scope.windows);
+  const applies = (token: string | undefined): boolean =>
+    token === undefined || modelUses(scope.model, token);
+  const only = (token: string | undefined): string => (token ? `, ${token} runs only` : '');
   if (usage.limited_until && usage.limited_until > now) {
-    return {
-      text: `${provider} refused work (usage limit) until ${clock(usage.limited_until)}`,
-      until: usage.limited_until,
-    };
+    const token = tied(usage.limited_by);
+    if (applies(token)) {
+      return {
+        text: `${provider} refused work (usage limit${only(token)}) until ${clock(usage.limited_until)}`,
+        until: usage.limited_until,
+      };
+    }
   }
   for (const [name, w] of Object.entries(usage.windows)) {
     if (w.resets_at <= now) continue;
+    const token = tied(name);
+    if (!applies(token)) continue;
     if (w.utilization >= pauseAt || w.status === 'rejected') {
       return {
         text:
           `${provider} usage at ${Math.round(w.utilization * 100)}% of the ${name} window ` +
-          `(pause at ${Math.round(pauseAt * 100)}%) until ${clock(w.resets_at)}`,
+          `(pause at ${Math.round(pauseAt * 100)}%${only(token)}) until ${clock(w.resets_at)}`,
         until: w.resets_at,
       };
     }
   }
   return null;
+}
+
+/** The model of each window of a reading that applies to one model only. */
+export function windowModels(
+  usage: ProviderUsage | undefined,
+  windows: Record<string, string | null>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of Object.keys(usage?.windows ?? {})) {
+    const token = windowModel(name, windows);
+    if (token) out[name] = token;
+  }
+  return out;
+}
+
+/** How `swarmup usage` and the app show a provider's usage pause. */
+export interface PauseReport {
+  /** Why runs of the provider's own model (`runtimes.<name>.model`) wait, or null. */
+  paused: string | null;
+  /** The model of each window that applies to one model only. */
+  window_models: Record<string, string>;
+  /** Per model, why its runs wait while runs of other models go on. */
+  model_paused: Record<string, string>;
+}
+
+/** {@link PauseReport} for a provider whose runs use `model` unless an agent sets its own. */
+export function pauseReport(
+  provider: string,
+  usage: ProviderUsage | undefined,
+  pauseAt: number,
+  now: number,
+  model: string | undefined,
+  windows: Record<string, string | null>,
+): PauseReport {
+  const paused = usagePause(provider, usage, pauseAt, now, { model, windows });
+  const window_models = windowModels(usage, windows);
+  const model_paused: Record<string, string> = {};
+  for (const token of new Set(Object.values(window_models))) {
+    const why = usagePause(provider, usage, pauseAt, now, { model: token, windows });
+    // Listed only when it differs: else `paused` already says it for every model.
+    if (why && why !== paused) model_paused[token] = why;
+  }
+  return { paused, window_models, model_paused };
 }
 
 /** A time for messages: `2026-11-06 13:10 UTC`. */
@@ -162,6 +274,7 @@ export function mergeUsage(prev: ProviderUsage | undefined, next: ProviderUsage)
   return {
     windows: { ...(prev?.windows ?? {}), ...next.windows },
     limited_until: 'limited_until' in next ? next.limited_until : prev?.limited_until,
+    limited_by: 'limited_until' in next ? next.limited_by : prev?.limited_by,
     plan: next.plan ?? prev?.plan,
     updated_at: next.updated_at,
   };

@@ -26,6 +26,18 @@ export interface RuntimeConfig {
    * `model` overrides it. Other providers get no model flag: their `args` are the whole line.
    */
   model?: string;
+  /**
+   * Reasoning effort for this provider's runs, passed as `--effort` (Claude) or
+   * `-c model_reasoning_effort=` (Codex). An agent's `effort` overrides it. Other providers get
+   * no effort flag.
+   */
+  effort?: string;
+  /**
+   * Usage windows that apply to one model, as window name to a word of the model's name, such as
+   * `seven_day_overage_included: fable`. Such a window pauses only runs of that model. Merged over
+   * the built-in map (`DEFAULT_MODEL_WINDOWS`); an empty value makes a window count for every run.
+   */
+  model_windows?: Record<string, string | null>;
   /** Environment variables removed for this runtime's runs. */
   unset_env?: string[];
   /** Most live runs of this provider on this PC; no limit when unset. */
@@ -103,6 +115,8 @@ export interface AgentRunConfig {
   budget?: string;
   /** Model for this agent's runs; overrides the role file's and the provider's. */
   model?: string;
+  /** Reasoning effort for this agent's runs; overrides the role file's and the provider's. */
+  effort?: string;
 }
 
 /** The desktop chat with the PM. */
@@ -347,6 +361,35 @@ export function checkModel(v: unknown, where: string): string {
   return v;
 }
 
+const EFFORT_RE = /^[a-z][a-z0-9_-]{0,19}$/;
+
+/**
+ * Checks a reasoning effort: one lowercase word that cannot read as a flag, such as `medium`.
+ * Each provider names its own levels, so the provider refuses a level it does not know when the
+ * run starts.
+ */
+export function checkEffort(v: unknown, where: string): string {
+  if (typeof v !== 'string' || !EFFORT_RE.test(v)) {
+    throw new OpsError(
+      `${where}: name an effort level such as low, medium or high (lowercase letters, digits, _ and -)`,
+      2,
+    );
+  }
+  return v;
+}
+
+const WINDOW_RE = /^[A-Za-z0-9_-]{1,60}$/;
+
+function checkModelWindows(v: unknown, where: string): void {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    throw new OpsError(`${where}: use window names, each with a model such as fable`, 2);
+  }
+  for (const [name, model] of Object.entries(v as Record<string, unknown>)) {
+    if (!WINDOW_RE.test(name)) throw new OpsError(`${where}: bad window name '${name}'`, 2);
+    if (model !== null && model !== '') checkModel(model, `${where}.${name}`);
+  }
+}
+
 /**
  * The runtimes swarmupd starts. A seeded config lists every provider itself, so a removed one stays
  * removed. An older config gets the defaults with its entries merged into each by key, as
@@ -467,6 +510,10 @@ export function opsdConfig(
       throw new OpsError(`swarmupd.runtimes.${name}.paused: use true or false`, 2);
     }
     if (rc.model !== undefined) checkModel(rc.model, `swarmupd.runtimes.${name}.model`);
+    if (rc.effort !== undefined) checkEffort(rc.effort, `swarmupd.runtimes.${name}.effort`);
+    if (rc.model_windows !== undefined) {
+      checkModelWindows(rc.model_windows, `swarmupd.runtimes.${name}.model_windows`);
+    }
     const check = rc.sign_in_check;
     if (
       check !== undefined &&
@@ -517,6 +564,7 @@ export function opsdConfig(
       parseDuration(a.budget);
     }
     if (a.model !== undefined) checkModel(a.model, `swarmupd.agents.${id}.model`);
+    if (a.effort !== undefined) checkEffort(a.effort, `swarmupd.agents.${id}.effort`);
   }
   count(cfg.usage_cooldown_minutes, 'usage_cooldown_minutes', 1);
   count(cfg.signed_out_handoff_minutes, 'signed_out_handoff_minutes', 0);

@@ -347,6 +347,7 @@ export function Agents({ nav }: { nav: Nav }) {
                         config={settings.data ? (agentCfg[id] ?? {}) : undefined}
                         defaultBudget={settings.data?.opsd.budget_minutes}
                         providerModel={runtimes[identity(id).runtime]?.model}
+                        providerEffort={runtimes[identity(id).runtime]?.effort}
                         configBusy={wakeAct.busy}
                         onConfig={(patch) => setAgent(id, patch)}
                         onRemove={Object.hasOwn(agentCfg, id) ? () => removeAgent(id) : undefined}
@@ -480,6 +481,14 @@ function Providers({
                   <div key={w}>
                     <div className="mb-1 flex items-baseline gap-2 text-xs">
                       <span className="text-fg-2 capitalize">{w.replace(/_/g, ' ')}</span>
+                      {p.window_models?.[w] && (
+                        <span
+                          className="rounded bg-white/6 px-1.5 text-fg-3"
+                          title={`Pauses only runs of ${p.window_models[w]} models`}
+                        >
+                          {p.window_models[w]}
+                        </span>
+                      )}
                       {u.resets_at > 0 && (
                         <span className="text-fg-4">
                           resets {ago(new Date(u.resets_at).toISOString())}
@@ -509,6 +518,18 @@ function Providers({
                 <span>{p.paused}</span>
               </div>
             )}
+            {!p.paused &&
+              Object.entries(p.model_paused ?? {}).map(([model, why]) => (
+                <div
+                  key={model}
+                  className="relative mt-3 flex items-start gap-2 rounded-lg bg-warn/10 px-2.5 py-2 text-xs text-warn"
+                >
+                  <PauseCircle size={14} className="mt-px shrink-0" />
+                  <span>
+                    {model} runs wait: {why}
+                  </span>
+                </div>
+              ))}
             {!p.paused && limited && (
               <div className="relative mt-3 text-xs text-warn">
                 Limited until{' '}
@@ -616,7 +637,13 @@ const STATUS_COLOR: Record<Agent['status'], string> = {
   proposed: '#5aa9ff',
 };
 
-type AgentPatch = { wake?: boolean; budget?: string | null; model?: string | null };
+type AgentPatch = {
+  wake?: boolean;
+  budget?: string | null;
+  model?: string | null;
+  effort?: string | null;
+};
+type AgentConfig = { wake?: boolean; budget?: string; model?: string; effort?: string };
 
 function AgentCard(props: {
   agent?: Agent;
@@ -626,10 +653,12 @@ function AgentCard(props: {
   nav: Nav;
   now: number;
   /** The agent's `swarmupd.agents.<id>` settings; undefined until Settings loads. */
-  config?: { wake?: boolean; budget?: string; model?: string };
+  config?: AgentConfig;
   defaultBudget?: number;
   /** The model its provider sets, if any. */
   providerModel?: string;
+  /** The effort its provider sets, if any. */
+  providerEffort?: string;
   configBusy: boolean;
   onConfig: (patch: AgentPatch) => void;
   /** Takes it out of the swarmupd config; only for agents listed there. */
@@ -748,6 +777,7 @@ function AgentCard(props: {
           }
           runtime={who.runtime}
           modelPlaceholder={agent?.model ?? props.providerModel ?? `${who.runtime} default`}
+          effortPlaceholder={agent?.effort ?? props.providerEffort ?? 'default'}
           busy={props.configBusy}
           onChange={props.onConfig}
         />
@@ -881,26 +911,32 @@ function AgentSettings({
   placeholder,
   runtime,
   modelPlaceholder,
+  effortPlaceholder,
   busy,
   onChange,
 }: {
-  config: { wake?: boolean; budget?: string; model?: string };
+  config: AgentConfig;
   placeholder: string;
   /** The agent's provider, whose known models the Model field suggests. */
   runtime: string;
   modelPlaceholder: string;
+  effortPlaceholder: string;
   busy: boolean;
   onChange: (patch: AgentPatch) => void;
 }) {
   const savedBudget = config.budget ?? '';
   const savedModel = config.model ?? '';
+  const savedEffort = config.effort ?? '';
   const [budget, setBudget] = useState(savedBudget);
   const [model, setModel] = useState(savedModel);
+  const [effort, setEffort] = useState(savedEffort);
   useEffect(() => setBudget(savedBudget), [savedBudget]);
   useEffect(() => setModel(savedModel), [savedModel]);
+  useEffect(() => setEffort(savedEffort), [savedEffort]);
   const patch: AgentPatch = {};
   if (budget.trim() !== savedBudget) patch.budget = budget.trim() || null;
   if (model.trim() !== savedModel) patch.model = model.trim() || null;
+  if (effort.trim() !== savedEffort) patch.effort = effort.trim() || null;
   const dirty = Object.keys(patch).length > 0;
   const save = (): void => {
     if (dirty && !busy) onChange(patch);
@@ -926,6 +962,19 @@ function AgentSettings({
         className="w-28"
         onEnter={save}
         compact
+      />
+      <span
+        className="text-fg-4"
+        title="Reasoning effort for this agent's runs, such as medium; over its role file's and its provider's"
+      >
+        Effort
+      </span>
+      <Input
+        value={effort}
+        onChange={setEffort}
+        placeholder={effortPlaceholder}
+        className="w-20 font-mono"
+        onEnter={save}
       />
       <span
         className="text-fg-4"

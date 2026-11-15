@@ -1378,13 +1378,20 @@ export function CleanupCard({ data, onSaved }: { data: SettingsData; onSaved: ()
  */
 function ProvidersCard({ data, onSaved }: { data: SettingsData; onSaved: () => void }) {
   const toStr = (v?: number): string => (v === undefined ? '' : String(v));
-  type Row = { model: string; max_live: string; pause_at: string; paused: boolean };
+  type Row = {
+    model: string;
+    effort: string;
+    max_live: string;
+    pause_at: string;
+    paused: boolean;
+  };
   const initial = (): Record<string, Row> =>
     Object.fromEntries(
       Object.entries(data.opsd.runtimes).map(([n, r]) => [
         n,
         {
           model: r.model ?? '',
+          effort: r.effort ?? '',
           max_live: toStr(r.max_live),
           pause_at: r.pause_at === undefined ? '' : String(Math.round(r.pause_at * 100)),
           paused: r.paused,
@@ -1405,6 +1412,7 @@ function ProvidersCard({ data, onSaved }: { data: SettingsData; onSaved: () => v
     if (!v) continue;
     const p: Patch = {};
     if (v.model.trim() !== (r.model ?? '')) p.model = v.model.trim() || null;
+    if (v.effort.trim() !== (r.effort ?? '')) p.effort = v.effort.trim() || null;
     if (v.max_live !== toStr(r.max_live)) p.max_live = num(v.max_live);
     const pa = r.pause_at === undefined ? '' : String(Math.round(r.pause_at * 100));
     if (v.pause_at !== pa) p.pause_at = v.pause_at === '' ? null : Number(v.pause_at) / 100;
@@ -1488,6 +1496,18 @@ function ProvidersCard({ data, onSaved }: { data: SettingsData; onSaved: () => v
                     value={v.model}
                     onChange={(x) => setVals({ ...vals, [n]: { ...v, model: x } })}
                     placeholder="its default"
+                  />
+                </Field>
+                <Field
+                  label="Effort"
+                  className="w-28"
+                  hint={n === 'claude' || n === 'codex' ? undefined : 'Claude and Codex only'}
+                >
+                  <Input
+                    value={v.effort}
+                    onChange={(x) => setVals({ ...vals, [n]: { ...v, effort: x } })}
+                    placeholder="its default"
+                    className="font-mono"
                   />
                 </Field>
                 <Field label="Most live runs" className="w-28">

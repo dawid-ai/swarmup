@@ -40,8 +40,8 @@ const COUNTS: Record<string, number> = {
 };
 const AMOUNTS = ['min_free_gb', 'reclaim_after_minutes', 'scratch_days', 'review_fallback_hours'];
 const ROLE_COUNTS = ['per_project', 'max_live', 'burst', 'max_children'] as const;
-/** Provider keys the API sets: limits and the model, never what program starts. */
-const RUNTIME_KEYS = ['max_live', 'pause_at', 'paused', 'model'];
+/** Provider keys the API sets: limits, the model and effort, never what program starts. */
+const RUNTIME_KEYS = ['max_live', 'pause_at', 'paused', 'model', 'effort'];
 const NAME_RE = /^[a-z][a-z0-9-]{0,39}$/;
 
 export interface SettingsView {
@@ -74,7 +74,7 @@ export interface SettingsView {
   > & {
     runtimes: Record<string, RuntimeView>;
     roles: Record<string, ReturnType<typeof roleLimits>>;
-    agents: Record<string, { wake?: boolean; budget?: string; model?: string }>;
+    agents: Record<string, { wake?: boolean; budget?: string; model?: string; effort?: string }>;
     /** The default providers were written into the file; see `seedUserConfig`. */
     seeded: boolean;
   };
@@ -95,6 +95,7 @@ export interface RuntimeView {
   args?: string[];
   unset_env?: string[];
   model?: string;
+  effort?: string;
   max_live?: number;
   pause_at?: number;
   paused: boolean;
@@ -169,6 +170,7 @@ export function settingsView(sup: Supervisor): SettingsView {
             args: r.args,
             unset_env: r.unset_env,
             model: r.model,
+            effort: r.effort,
             max_live: r.max_live,
             pause_at: r.pause_at,
             paused: r.paused === true,
@@ -182,7 +184,7 @@ export function settingsView(sup: Supervisor): SettingsView {
       agents: Object.fromEntries(
         Object.entries(cfg.agents).map(([id, a]) => [
           id,
-          { wake: a.wake, budget: a.budget, model: a.model },
+          { wake: a.wake, budget: a.budget, model: a.model, effort: a.effort },
         ]),
       ),
       seeded: cfg.seeded,
@@ -376,7 +378,7 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
               doc.setIn([daemonKeyIn(doc), 'agents', id], doc.createNode({}));
             }
             for (const [ak, av] of Object.entries(obj(a, `swarmupd.agents.${id}`))) {
-              if (ak !== 'wake' && ak !== 'budget' && ak !== 'model') {
+              if (!['wake', 'budget', 'model', 'effort'].includes(ak)) {
                 throw new OpsError(`swarmupd.agents.${id}.${ak} is not editable here`, 2);
               }
               // Wake off is the default, so turning it off removes the key; the agent stays.

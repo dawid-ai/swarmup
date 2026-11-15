@@ -21,6 +21,7 @@ import {
   startApi,
   Supervisor,
 } from '../src/index.js';
+import type { UsageState } from '../src/index.js';
 
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
@@ -351,12 +352,25 @@ describe('agents from Settings and the Agents view', () => {
     ).toEqual({ wake: true, budget: '45m', model: 'gpt-5-codex' });
 
     res = await call('POST', '/api/settings', {
-      patch: { opsd: { agents: { 'codex:writer': { budget: '2h', model: 'o3' } } } },
+      patch: {
+        opsd: { agents: { 'codex:writer': { budget: '2h', model: 'o3', effort: 'low' } } },
+      },
     });
-    expect(sup.config.agents['codex:writer']).toMatchObject({ budget: '2h', model: 'o3' });
+    expect(sup.config.agents['codex:writer']).toMatchObject({
+      budget: '2h',
+      model: 'o3',
+      effort: 'low',
+    });
+    expect(
+      (res.data as { opsd: { agents: Record<string, unknown> } }).opsd.agents['codex:writer'],
+    ).toMatchObject({ effort: 'low' });
     // An empty value or null clears a field; the agent stays.
     await call('POST', '/api/settings', {
-      patch: { opsd: { agents: { 'codex:writer': { budget: null, model: '', wake: false } } } },
+      patch: {
+        opsd: {
+          agents: { 'codex:writer': { budget: null, model: '', effort: '', wake: false } },
+        },
+      },
     });
     expect(sup.config.agents['codex:writer']).toEqual({});
 
@@ -364,6 +378,7 @@ describe('agents from Settings and the Agents view', () => {
       ['hermes:engineer', { wake: true }],
       ['codex:writer', { model: '--dangerously-bypass' }],
       ['codex:writer', { model: 'a b' }],
+      ['codex:writer', { effort: '-c evil' }],
       ['codex:writer', { budget: 'soon' }],
       ['codex:writer', { cwd: 'C:\\' }],
       ['human:dawid', { wake: true }],
@@ -378,6 +393,40 @@ describe('agents from Settings and the Agents view', () => {
       patch: { opsd: { agents: { 'hermes:engineer': { wake: true } } } },
     });
     expect(String(refused.data.error)).toMatch(/no provider 'hermes'/);
+  });
+});
+
+describe('usage windows of one model (AO-0342)', () => {
+  it("holds only the runs of the window's model, and the usage report names it", async () => {
+    const { sup } = await setup(
+      'me: human:dawid\nopsd:\n  sync: false\n  runtimes:\n    claude:\n      command: claude\n' +
+        '      model: claude-opus-5-5\n  agents:\n    claude:qa:\n      model: claude-fable-5-2\n',
+    );
+    const resets = Date.now() + 3_600_000;
+    (sup as unknown as { usage: UsageState }).usage = {
+      claude: {
+        windows: {
+          seven_day: { utilization: 0.47, resets_at: resets },
+          seven_day_overage_included: { utilization: 0.92, resets_at: resets },
+        },
+        updated_at: Date.now(),
+      },
+    };
+    // claude:engineer runs the provider's Opus; claude:qa runs Fable.
+    expect(sup.blocker('claude:engineer', 'test')).toBeNull();
+    expect(sup.blocker('claude:qa', 'test')).toMatch(
+      /92% of the seven_day_overage_included window \(pause at 90%, fable runs only\)/,
+    );
+    const report = sup.usageReport().claude!;
+    expect(report.paused).toBeNull();
+    expect(report.window_models).toEqual({ seven_day_overage_included: 'fable' });
+    expect(report.model_paused?.fable).toMatch(/fable runs only/);
+    // A role file's model counts when Settings sets none.
+    expect(
+      sup.blocker('claude:pm', 'test', {
+        def: { id: 'claude:pm', status: 'active', file: '', body: '', model: 'fable' },
+      }),
+    ).toMatch(/fable runs only/);
   });
 });
 
@@ -452,7 +501,15 @@ describe('providers from Settings', () => {
     let res = await call('POST', '/api/settings', {
       patch: {
         opsd: {
-          runtimes: { codex: { model: 'gpt-5-codex', max_live: 3, pause_at: 0.8, paused: true } },
+          runtimes: {
+            codex: {
+              model: 'gpt-5-codex',
+              effort: 'high',
+              max_live: 3,
+              pause_at: 0.8,
+              paused: true,
+            },
+          },
         },
       },
     });
@@ -461,6 +518,7 @@ describe('providers from Settings', () => {
       .opsd.runtimes.codex;
     expect(codexView).toMatchObject({
       model: 'gpt-5-codex',
+      effort: 'high',
       max_live: 3,
       pause_at: 0.8,
       paused: true,
@@ -470,12 +528,22 @@ describe('providers from Settings', () => {
     // The next run uses the new model without a restart: swarmupd reloaded the config.
     expect(sup.config.runtimes.codex!.model).toBe('gpt-5-codex');
     const args = invocation(sup.config.runtimes.codex!, 'codex:qa', undefined, '/w', []).args;
-    expect(args.slice(0, 3)).toEqual(['exec', '-m', 'gpt-5-codex']);
+    expect(args.slice(0, 5)).toEqual([
+      'exec',
+      '-m',
+      'gpt-5-codex',
+      '-c',
+      'model_reasoning_effort=high',
+    ]);
 
     // Each field clears back to its default.
     await call('POST', '/api/settings', {
       patch: {
-        opsd: { runtimes: { codex: { model: '', max_live: null, pause_at: null, paused: null } } },
+        opsd: {
+          runtimes: {
+            codex: { model: '', effort: '', max_live: null, pause_at: null, paused: null },
+          },
+        },
       },
     });
     expect(sup.config.runtimes.codex).toEqual({ command: 'codex' });
@@ -484,6 +552,8 @@ describe('providers from Settings', () => {
     for (const r of [
       { model: '-c evil' },
       { model: 7 },
+      { effort: '--max' },
+      { effort: 'x=y z' },
       { max_live: -1 },
       { pause_at: 2 },
       { paused: 'yes' },

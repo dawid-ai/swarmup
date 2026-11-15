@@ -108,6 +108,8 @@ import {
   findRollout,
   lastCodexLimits,
   mergeUsage,
+  modelWindows,
+  pauseReport,
   usageHold,
   usagePause,
 } from './quota.js';
@@ -480,6 +482,10 @@ export interface SignedOutView {
 /** One provider in `usageReport`. */
 export type ProviderReport = ProviderUsage & {
   paused: string | null;
+  /** The model of each window that applies to one model only (AO-0342). */
+  window_models?: Record<string, string>;
+  /** Per model, why its runs wait while runs of other models go on. */
+  model_paused?: Record<string, string>;
   live: number;
   signed_out?: SignedOutView;
 };
@@ -1205,6 +1211,8 @@ export class Supervisor extends EventEmitter {
       cwd?: string;
       /** The task the run would work on: named when a checkout's changes hold it. */
       task?: string;
+      /** The agent's role file, whose `model` a usage window of one model is checked against. */
+      def?: AgentDef | null;
     } = {},
   ): string | null {
     // Helper runs belong to a live run, which a pause lets finish.
@@ -1228,11 +1236,16 @@ export class Supervisor extends EventEmitter {
       const n = live.filter((r) => runtimeOf(r.agent) === provider).length;
       if (n >= rc.max_live) return `${n} ${provider} runs live; max_live is ${rc.max_live}`;
     }
+    // A window of one model holds only the runs of that model (AO-0342).
     const paused = usagePause(
       provider,
       this.usage[provider],
       rc.pause_at ?? this.config.usage_pause_at,
       this.now(),
+      {
+        model: this.runModelOf(agent, opts.def),
+        windows: modelWindows(provider, rc.model_windows),
+      },
     );
     if (paused) return paused;
     // The human sends a chat turn: it tries the runtime whatever its failed starts.
@@ -2264,7 +2277,8 @@ export class Supervisor extends EventEmitter {
 
   /** Why a schedule's run cannot start now, or null. */
   private scheduleBlocker(ws: Workspace, s: ScheduleConfig): string | null {
-    const inactive = roleInactive(ws.agent(s.agent));
+    const def = ws.agent(s.agent);
+    const inactive = roleInactive(def);
     if (inactive) return inactive;
     const found = s.task ? ws.resolve(s.task) : undefined;
     const root = found?.root.name;
@@ -2275,7 +2289,21 @@ export class Supervisor extends EventEmitter {
     return this.blocker(s.agent, this.projectOf(ws, s.task), {
       cwd: wt ? wt.path : this.checkoutOf(ws, s.agent, root),
       task: s.task,
+      def,
     });
+  }
+
+  /**
+   * The model a run of `agent` would use, unchecked, for the usage pause: the agent's in Settings,
+   * else its role file's, else the provider's; undefined for the provider's default.
+   */
+  runModelOf(agent: string, def?: AgentDef | null): string | undefined {
+    return (
+      this.config.agents[agent]?.model ||
+      def?.model ||
+      this.config.runtimes[runtimeOf(agent)]?.model ||
+      undefined
+    );
   }
 
   /** The project a run counts against: the task's project, else its root's default project. */
@@ -2297,15 +2325,24 @@ export class Supervisor extends EventEmitter {
     const live = this.liveRecords();
     for (const p of providers) {
       const u = this.usage[p] ?? { windows: {}, updated_at: 0 };
-      const pauseAt = this.config.runtimes[p]?.pause_at ?? this.config.usage_pause_at;
+      const rc = this.config.runtimes[p];
+      const pauseAt = rc?.pause_at ?? this.config.usage_pause_at;
       const so = this.signIn[p]?.out;
+      const usage = pauseReport(
+        p,
+        this.usage[p],
+        pauseAt,
+        this.now(),
+        rc?.model,
+        modelWindows(p, rc?.model_windows),
+      );
       out[p] = {
         ...u,
-        paused: this.config.runtimes[p]?.paused
+        window_models: usage.window_models,
+        model_paused: usage.model_paused,
+        paused: rc?.paused
           ? `${p} is paused in Settings`
-          : (this.signedOutPause(p, live) ??
-            usagePause(p, this.usage[p], pauseAt, this.now()) ??
-            this.backoffPause(p)),
+          : (this.signedOutPause(p, live) ?? usage.paused ?? this.backoffPause(p)),
         live: live.filter((r) => runtimeOf(r.agent) === p).length,
         ...(so ? { signed_out: signedOutView(p, so) } : {}),
       };
@@ -2621,13 +2658,16 @@ export class Supervisor extends EventEmitter {
     if (out) return { text: signedOutText(provider, out, now), signedOut: true };
     const rc = this.config.runtimes[provider];
     if (!rc) return null;
+    // A window of one model holds the provider only when its own model is that one (AO-0342);
+    // an agent set to that model still waits in `blocker`.
     const usage = usageHold(
       provider,
       this.usage[provider],
       rc.pause_at ?? this.config.usage_pause_at,
       now,
+      { model: rc.model, windows: modelWindows(provider, rc.model_windows) },
     );
-    return usage ? { text: usage.text, until: usage.until, signedOut: false } : null;
+    return usage ?{ text: usage.text, until: usage.until, signedOut: false } : null;
   }
 
   /** When the provider's hold began: its sign-out, else when swarmupd first saw the pause. */
@@ -3075,6 +3115,7 @@ export class Supervisor extends EventEmitter {
         question: question !== undefined,
         chat: req.chat !== undefined,
         cwd: dir,
+        def,
       });
     // Whatever chose the folder (an explicit `cwd`, the agent's folder, a helper's parent), no run
     // starts inside a worktree swarmupd is checking or deleting (AO-0230). Checked before
@@ -3169,13 +3210,16 @@ export class Supervisor extends EventEmitter {
     if (req.chat && (req.task || req.parent)) {
       throw new OpsError('a chat turn works on no task', 2);
     }
-    // The agent's model in Settings wins over its role file's, which wins over the provider's.
-    const runDef = agentCfg.model
-      ? ({
-          ...(def ?? { id: agent, status: 'active', file: '', body: '' }),
-          model: agentCfg.model,
-        } as AgentDef)
-      : def;
+    // The agent's model and effort in Settings win over its role file's, which win over the
+    // provider's.
+    const runDef =
+      agentCfg.model || agentCfg.effort
+        ? ({
+            ...(def ?? { id: agent, status: 'active', file: '', body: '' }),
+            ...(agentCfg.model ? { model: agentCfg.model } : {}),
+            ...(agentCfg.effort ? { effort: agentCfg.effort } : {}),
+          } as AgentDef)
+        : def;
     const readOnly = !roleLimits(this.config, roleOf(agent)).writes;
     // A run in a data root's checkout makes code branches in worktrees (AO-0135).
     const storeCheckout = this.storeCheckoutOf(ws, cwd) ?? undefined;
@@ -3736,6 +3780,10 @@ export class Supervisor extends EventEmitter {
             this.usage[provider],
             rc.pause_at ?? this.config.usage_pause_at,
             this.now(),
+            {
+              model: this.runModelOf(r.agent),
+              windows: modelWindows(provider, rc.model_windows),
+            },
           )
         : null) ??
       this.backoffPause(provider);
@@ -6897,6 +6945,7 @@ export class Supervisor extends EventEmitter {
           live,
           cwd,
           task: c.kind === 'inbox' ? undefined : c.ref,
+          def: role,
         });
         if (!why) {
           chosen = agent;

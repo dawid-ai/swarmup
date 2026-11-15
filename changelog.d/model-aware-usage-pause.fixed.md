@@ -1,0 +1,1 @@
+- A usage window that counts one model only, such as Claude's `seven_day_overage_included` (Fable), now holds only the runs that would use that model; runs of other models go on. The pause text, `swarmup usage` and the provider cards in **Agents** name the model. `runtimes.<name>.model_windows` maps more windows to models.

@@ -407,7 +407,11 @@ export class Chat {
     const ws = this.host.ws(this.agent);
     const cwd = this.host.checkoutOf(ws, this.agent);
     // The same limits `launch` checks for a chat turn: no checkout hold and no runtime backoff.
-    const why = this.host.blocker(this.agent, this.host.projectOf(ws), { cwd, chat: true });
+    const why = this.host.blocker(this.agent, this.host.projectOf(ws), {
+      cwd,
+      chat: true,
+      def: ws.agent(this.agent),
+    });
     if (why) {
       const told = this.tellSignedOut(s);
       if (why !== this.waitReason || told) {
