@@ -2667,7 +2667,7 @@ export class Supervisor extends EventEmitter {
       now,
       { model: rc.model, windows: modelWindows(provider, rc.model_windows) },
     );
-    return usage ?{ text: usage.text, until: usage.until, signedOut: false } : null;
+    return usage ? { text: usage.text, until: usage.until, signedOut: false } : null;
   }
 
   /** When the provider's hold began: its sign-out, else when swarmupd first saw the pause. */

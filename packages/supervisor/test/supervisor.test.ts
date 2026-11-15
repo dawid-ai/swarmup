@@ -803,6 +803,22 @@ describe('runs', () => {
     for (const r of sup.runs({ live: true })) await ended(sup, r.id);
   });
 
+  it("holds a provider for a window of one model only when the provider's model is that one (AO-0342)", () => {
+    const { sup } = setup();
+    fableWindowFull(sup);
+    const fake = sup.config.runtimes.fake!;
+    const model = (m: string | undefined): void =>
+      sup.editConfig((doc) =>
+        doc.setIn(['opsd'], { sync: false, runtimes: { fake: { ...fake, model: m } } }),
+      );
+    // No model: the provider's default may be Fable, so the window holds it, as before.
+    expect(sup.providerHold('fake')?.text).toMatch(/seven_day_fable window .*fable runs only/);
+    model('claude-opus-5-5');
+    expect(sup.providerHold('fake')).toBeNull();
+    model('claude-fable-5-2');
+    expect(sup.providerHold('fake')).toMatchObject({ signedOut: false });
+  });
+
   it('starts no plan check with plan_check_minutes 0', async () => {
     let now = Date.now();
     const { repo, sup, as } = setup({
