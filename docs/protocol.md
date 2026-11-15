@@ -699,6 +699,8 @@ question blocks nothing; it is its own task.
   `can_claim`, a role takes any type, except the read-only roles `qa`, `reviewer`, `pm`
   and `orchestrator`, which take only `question` tasks: they review and answer, and leave work that
   changes files to roles that write. A task owned by such a role by name stays its to claim.
+  A `milestone` is the exception: it reaches only a role whose `can_claim` names `milestone`,
+  whoever owns it. A role with no list, or with `*`, never gets one from `swarmup next`.
 - An agent's `swarmup review` of a `task`, `bug` or `feature` must name `<commit> on branch <name>` or
   a PR while the git checkout it runs in has changes outside task stores; otherwise it exits 1
   and asks to commit first, so a reviewer never approves work with nothing to merge. A swarmupd run

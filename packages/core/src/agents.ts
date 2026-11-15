@@ -2,6 +2,7 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseDoc, stringifyDoc } from './frontmatter.js';
 import { actorSlug, isActorId, isHuman, OpsError, slugToActor } from './ids.js';
+import { MILESTONE_TYPE } from './model.js';
 import type { Root } from './root.js';
 
 /** Frontmatter of `agents/<runtime>-<role>.md`. */
@@ -136,9 +137,12 @@ export function isReadOnlyRole(id: string): boolean {
 /**
  * True when the role's `can_claim` list allows the task type. A role with no list takes any type,
  * except a read-only role (`READ_ONLY_ROLES`, named by `id`), which takes only questions: a qa or
- * reviewer run that claims unowned work writes it with nobody to commit it (AO-0136).
+ * reviewer run that claims unowned work writes it with nobody to commit it (AO-0136). A milestone
+ * goes only to a role whose list names `milestone` (AO-0110, "The milestone"): engineers never
+ * claim one, and `*` does not cover it.
  */
 export function canClaimType(agent: AgentDef | undefined, type: string, id?: string): boolean {
+  if (type === MILESTONE_TYPE) return agent?.can_claim?.includes(MILESTONE_TYPE) ?? false;
   if (!agent?.can_claim || agent.can_claim.length === 0) {
     const who = agent?.id ?? id;
     return who !== undefined && isReadOnlyRole(who) ? READ_ONLY_CAN_CLAIM.includes(type) : true;

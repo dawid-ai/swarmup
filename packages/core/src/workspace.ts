@@ -1461,6 +1461,13 @@ export class Workspace {
             ? ownerMatches(v.owner, actor)
             : canClaimType(agent, v.meta.type, actor) && !isHuman(actor),
         )
+        // A milestone reaches only roles that list it in can_claim, even when it names its owner.
+        .filter(
+          (v) =>
+            v.meta.type !== MILESTONE_TYPE ||
+            isHuman(actor) ||
+            canClaimType(agent, v.meta.type, actor),
+        )
         .sort(byQueueOrder)
     );
   }

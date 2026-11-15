@@ -243,6 +243,31 @@ describe('queue', () => {
     expect(as('codex:reviewer').claim('2').view.claimedBy).toBe('codex:reviewer');
   });
 
+  it('gives a milestone only to roles that list it in can_claim (AO-0110)', () => {
+    const { as, rootDir } = setup();
+    const role = (slug: string, claim: string) =>
+      writeFileSync(
+        join(rootDir, 'agents', `${slug}.md`),
+        `---\nid: ${slug.replace('-', ':')}\n${claim}---\n`,
+      );
+    role('claude-pm', 'can_claim: [question, milestone]\n');
+    role('codex-pm', 'can_claim: [question]\n');
+    role('claude-engineer', '');
+    role('codex-engineer', "can_claim: ['*']\n");
+    const h = as('human:dawid');
+    h.newTask({ title: 'goal', type: 'milestone', doneWhen: ['npm test passes'] });
+    h.newTask({ title: 'owned goal', type: 'milestone', owner: '*:engineer', doneWhen: ['x'] });
+    const titles = (id: string) =>
+      as(id)
+        .queue()
+        .map((v) => v.meta.title);
+    expect(titles('claude:pm')).toEqual(['goal']);
+    expect(as('claude:pm').next()?.meta.title).toBe('goal');
+    expect(as('codex:pm').next()).toBeUndefined();
+    expect(titles('claude:engineer')).toEqual([]);
+    expect(titles('codex:engineer')).toEqual([]);
+  });
+
   it('skips paused agents', () => {
     const { as, rootDir } = setup();
     writeFileSync(join(rootDir, 'agents', 'claude-qa.md'), '---\nstatus: paused\n---\n');
