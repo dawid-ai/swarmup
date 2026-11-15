@@ -3512,7 +3512,11 @@ export class Supervisor extends EventEmitter {
           .filter(Boolean)
           .join('\n\n');
         const streak = unfinishedRuns(ws.showEvents(ref).events) + 1;
-        if (this.isStuck(r, streak) && this.stopStuck(r, ws, ref, streak, failure)) return;
+        if (
+          this.isStuck(r, streak, ws.agent(r.agent)) &&
+          this.stopStuck(r, ws, ref, streak, failure)
+        )
+          return;
         ws.release(ref, note);
       } else if (left && !r.review && v.status === 'needs-review') {
         // The run asked for review naming files it could not commit: tell the reviewer where
@@ -3531,7 +3535,7 @@ export class Supervisor extends EventEmitter {
    * a person stopped, and a provider that is paused for a sign-in, a usage limit or failed starts,
    * say nothing about the task: those have their own pause and message.
    */
-  private isStuck(r: RunRecord, streak: number): boolean {
+  private isStuck(r: RunRecord, streak: number, def?: AgentDef | null): boolean {
     const limit = this.config.stuck_runs;
     if (limit <= 0 || streak < limit || r.review || r.chat) return false;
     if (!['exit', 'budget', 'tokens'].includes(r.reason ?? '')) return false;
@@ -3546,7 +3550,7 @@ export class Supervisor extends EventEmitter {
             rc.pause_at ?? this.config.usage_pause_at,
             this.now(),
             {
-              model: this.runModelOf(r.agent),
+              model: this.runModelOf(r.agent, def),
               windows: modelWindows(provider, rc.model_windows),
             },
           )
@@ -3721,7 +3725,7 @@ export class Supervisor extends EventEmitter {
       t.plans.push(plan);
     }
     // A limit in the way (runs, usage, a sign-in) is no error: the check waits for room.
-    if (this.blocker(pm, this.projectOf(ws))) return;
+    if (this.blocker(pm, this.projectOf(ws), { def: ws.agent(pm) })) return;
     const run = this.launch({
       agent: pm,
       extra: planCheckPrompt(tasks, this.userConfig.me),

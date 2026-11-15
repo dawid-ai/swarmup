@@ -31,7 +31,7 @@ import {
   Workspace,
 } from '@swarmup/core';
 import type { OpsEvent } from '@swarmup/core';
-import type { ProcLister, ProcTarget, RunRecord } from '../src/index.js';
+import type { ProcLister, ProcTarget, RunRecord, UsageState } from '../src/index.js';
 import {
   chatPrompt,
   daemonCall,
@@ -452,17 +452,55 @@ describe('runs', () => {
     expect(as('human:dawid').view('1').status).toBe('todo');
   });
 
-  /** Active role files for `ids` in the task repo. */
-  function roleFiles(repo: string, ids: string[]): void {
+  /** Active role files for `ids` in the task repo, with the `model` of each in `models`. */
+  function roleFiles(repo: string, ids: string[], models: Record<string, string> = {}): void {
     const agents = join(repo, '.swarmup', 'agents');
     mkdirSync(agents, { recursive: true });
     for (const id of ids) {
+      const model = models[id] ? [`model: ${models[id]}`] : [];
       writeFileSync(
         join(agents, `${id.replace(':', '-')}.md`),
-        ['---', `id: ${id}`, 'status: active', '---', ''].join('\n'),
+        ['---', `id: ${id}`, 'status: active', ...model, '---', ''].join('\n'),
       );
     }
   }
+
+  /** Puts the fake provider's Fable window at 95%, past the default pause_at. */
+  function fableWindowFull(sup: Supervisor): void {
+    (sup as unknown as { usage: UsageState }).usage = {
+      fake: {
+        windows: { seven_day_fable: { utilization: 0.95, resets_at: Date.now() + 3_600_000 } },
+        updated_at: Date.now(),
+      },
+    };
+  }
+
+  it("counts a stuck run against the window of its role file's model only (AO-0342)", async () => {
+    const { repo, sup, as } = setup({ mode: 'sandbox-fail' });
+    roleFiles(repo, ['fake:engineer', 'fake:qa'], {
+      'fake:engineer': 'opus',
+      'fake:qa': 'fable',
+    });
+    const h = as('human:dawid');
+    const opus = h.newTask({ title: 'opus', owner: 'fake:engineer' });
+    const fable = h.newTask({ title: 'fable', owner: 'fake:qa' });
+    for (const [agent, task] of [
+      ['fake:engineer', opus.id],
+      ['fake:qa', fable.id],
+    ] as const) {
+      for (let i = 0; i < 2; i++) await ended(sup, sup.launch({ agent, task }).id);
+    }
+    // The third runs end while the Fable window is past pause_at.
+    const third = [opus.id, fable.id].map((task, i) =>
+      sup.launch({ agent: i === 0 ? 'fake:engineer' : 'fake:qa', task }),
+    );
+    fableWindowFull(sup);
+    for (const r of third) await ended(sup, r.id);
+    // The Opus run is not paused: its task is stuck and stopped. The Fable run is paused: its
+    // task is freed for when the window resets.
+    expect(h.view(opus.id).status).toBe('blocked');
+    expect(h.view(fable.id).status).toBe('todo');
+  });
 
   it('stops a task whose runs keep ending without finishing, and tells a PM (AO-0173)', async () => {
     // A token in the run log: the excerpts must not carry it, or every write that quotes them
@@ -742,6 +780,26 @@ describe('runs', () => {
       last: string;
     };
     expect(mark.last > unread.id).toBe(true);
+  });
+
+  it("starts a plan check when only a window of another model than the PM's is full (AO-0342)", async () => {
+    let ahead = 0;
+    const { repo, sup, as } = setup({
+      now: () => Date.now() + ahead,
+      opsd: { agents: { 'fake:pm': { wake: true } } },
+    });
+    roleFiles(repo, ['fake:pm', 'fake:engineer'], { 'fake:pm': 'opus' });
+    const h = as('human:dawid');
+    const t = h.newTask({ title: 'x', owner: 'fake:engineer' });
+    h.recordDecision({ text: 'swarmupd never merges', source: 'notes.md' });
+    fableWindowFull(sup);
+    await sup.tick();
+    for (const r of sup.runs({ live: true })) await ended(sup, r.id);
+    ahead += 60_000;
+    as('fake:engineer').start(t.id, 'merge automatically');
+    await sup.tick();
+    expect(sup.runs().filter((r) => r.plan_check)).toMatchObject([{ agent: 'fake:pm' }]);
+    for (const r of sup.runs({ live: true })) await ended(sup, r.id);
   });
 
   it('starts no plan check with plan_check_minutes 0', async () => {
