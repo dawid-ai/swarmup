@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   MERGE_ACTOR,
@@ -24,7 +26,22 @@ function plan(...rows: string[]): string {
 }
 
 function world(user: UserConfig = MERGES) {
-  const { repo, env } = setup();
+  const { repo, rootDir, env } = setup();
+  /**
+   * Writes the role files of this root. Only the PM and the checker list `milestone` in
+   * `can_claim`, so only they get one from `swarmup next`.
+   */
+  const roles = () => {
+    const role = (slug: string, claim: string) =>
+      writeFileSync(
+        join(rootDir, 'agents', `${slug}.md`),
+        `---\nid: ${slug.replace('-', ':')}\ncan_claim: ${claim}\n---\n`,
+      );
+    role('claude-pm', '[question, milestone]');
+    role('codex-qa', '[question, milestone]');
+    role('claude-engineer', '[task, bug]');
+    role('codex-engineer', '[task, bug]');
+  };
   const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user });
   const h = as('human:dawid');
   const root = h.defaultRoot();
@@ -39,7 +56,7 @@ function world(user: UserConfig = MERGES) {
       .find(({ view: v }) => v.meta.id === id)!;
     return [h.view(id), h.views({ archived: true }).find((v) => v.meta.id === id)!, found.view];
   };
-  return { as, h, root, write, seen };
+  return { as, h, root, write, seen, roles };
 }
 
 /**
@@ -155,6 +172,7 @@ describe('a milestone and its plan in the workspace (AO-0110)', () => {
   it('stays blocked until every key has a task and every child is closed', () => {
     const w = approvedMilestone({});
     const { as, h, seen, approve, tasks } = w;
+    w.roles();
     approve();
     for (const v of seen('T-0001')) {
       expect(v).toMatchObject({
@@ -202,6 +220,7 @@ describe('a milestone and its plan in the workspace (AO-0110)', () => {
   it("stays blocked until its last child's merge event", () => {
     const w = approvedMilestone();
     const { as, h, seen, approve, tasks } = w;
+    w.roles();
     approve();
     tasks();
     approveWork(w, '2', 'claude:engineer', 'feature');
