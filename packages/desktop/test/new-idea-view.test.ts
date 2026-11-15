@@ -55,7 +55,9 @@ afterEach(() => {
 });
 
 function button(text: string): HTMLButtonElement {
-  const b = [...box.querySelectorAll('button')].find((x) => x.textContent?.trim() === text);
+  const b = [...document.body.querySelectorAll('button')].find(
+    (x) => x.textContent?.trim() === text,
+  );
   if (!b) throw new Error(`no ${text} button`);
   return b;
 }
@@ -67,7 +69,7 @@ function click(b: Element): void {
 }
 
 function typeTitle(text: string): void {
-  const input = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+  const input = document.body.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   act(() => {
     set.call(input, text);
@@ -83,12 +85,12 @@ async function settle(): Promise<void> {
 
 describe('New task: Idea type', () => {
   it('offers Idea and hides the owner and due pickers for it', () => {
-    expect(box.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
     expect(button('Due date')).toBeDefined();
     click(button('Idea'));
-    expect(box.querySelector('input[placeholder="Unassigned"]')).toBeNull();
-    expect(box.textContent).not.toContain('Due date');
-    expect(box.textContent).toContain('Ideas have no owner');
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Due date');
+    expect(document.body.textContent).toContain('Ideas have no owner');
     expect(button('Create idea')).toBeDefined();
   });
 

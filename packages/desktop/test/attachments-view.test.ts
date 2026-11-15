@@ -149,7 +149,7 @@ afterEach(() => {
 });
 
 function area(): HTMLTextAreaElement {
-  return box.querySelector('textarea')!;
+  return document.body.querySelector('textarea')!;
 }
 
 /** Waits until pending uploads (promises and the next frame) have settled. */
@@ -209,7 +209,9 @@ describe('New task: images', () => {
     let release = (): void => {};
     gate = new Promise((r) => (release = r));
     try {
-      const title = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+      const title = document.body.querySelector<HTMLInputElement>(
+        'input[placeholder="Task title"]',
+      )!;
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
           title,
@@ -223,7 +225,7 @@ describe('New task: images', () => {
       });
       await settle();
       const create = (): HTMLButtonElement =>
-        [...box.querySelectorAll('button')].find((b) => b.textContent === 'Create task')!;
+        [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'Create task')!;
       expect(create().disabled).toBe(true);
       act(() => {
         area().dispatchEvent(
@@ -249,8 +251,8 @@ describe('New task: images', () => {
   });
 
   it('has an attach button', () => {
-    expect(box.querySelector('button[aria-label="Attach an image"]')).not.toBeNull();
-    expect(box.querySelector('input[type="file"]')?.getAttribute('accept')).toBe(
+    expect(document.body.querySelector('button[aria-label="Attach an image"]')).not.toBeNull();
+    expect(document.body.querySelector('input[type="file"]')?.getAttribute('accept')).toBe(
       'image/png,image/jpeg,image/webp,image/gif',
     );
   });
@@ -267,16 +269,16 @@ describe('lightbox', () => {
     act(() => {
       thumb.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    const dialog = box.querySelector('[role="dialog"][aria-label="Image"]');
+    const dialog = document.body.querySelector('[role="dialog"][aria-label="Image"]');
     expect(dialog?.querySelector('img')?.getAttribute('src')).toBe(`swarmup-att://file/${NAME}`);
     act(() => {
       area().dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
       );
     });
-    expect(box.querySelector('[aria-label="Image"]')).toBeNull();
+    expect(document.body.querySelector('[aria-label="Image"]')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     // The New task dialog is still open.
-    expect(box.querySelector('input[placeholder="Task title"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Task title"]')).not.toBeNull();
   });
 });

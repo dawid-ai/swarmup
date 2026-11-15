@@ -176,7 +176,9 @@ function press(target: Element, key: string): void {
 }
 
 function rows(): string[] {
-  return [...box.querySelectorAll('[role="listbox"] button')].map((b) => b.textContent ?? '');
+  return [...document.body.querySelectorAll('[role="listbox"] button')].map(
+    (b) => b.textContent ?? '',
+  );
 }
 
 describe('New task: # picker', () => {
@@ -189,13 +191,13 @@ describe('New task: # picker', () => {
         createElement(NewTask, { me: 'human:dawid', onClose: vi.fn(), onCreated: vi.fn() }),
       ),
     );
-    body = box.querySelector('textarea')!;
+    body = document.body.querySelector('textarea')!;
   });
 
   it('opens on #, filters, and inserts the plain id in place of the #', async () => {
     typeIn(body, 'Follows #');
     expect(rows().length).toBeGreaterThan(0);
-    expect(box.textContent).toContain('Projects');
+    expect(document.body.textContent).toContain('Projects');
     typeIn(body, 'Follows #compo');
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toContain('AO-0060');
@@ -230,10 +232,10 @@ describe('New task: # picker', () => {
 describe('RefText chips', () => {
   it('draws a status dot and the title on hover, and updates when the index loads', () => {
     act(() => root!.render(createElement(RefText, { text: 'After AO-0060.' })));
-    let link = box.querySelector('a[data-task-ref="AO-0060"]')!;
+    let link = document.body.querySelector('a[data-task-ref="AO-0060"]')!;
     expect(link.getAttribute('data-status')).toBeNull();
     act(() => setRefTasks(TASKS));
-    link = box.querySelector('a[data-task-ref="AO-0060"]')!;
+    link = document.body.querySelector('a[data-task-ref="AO-0060"]')!;
     expect(link.getAttribute('data-status')).toBe('in-progress');
     expect(link.querySelector('.ref-dot')).not.toBeNull();
     expect(link.getAttribute('title')).toBe(
