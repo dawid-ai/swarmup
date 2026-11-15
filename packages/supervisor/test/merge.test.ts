@@ -2615,7 +2615,9 @@ describe('merging approved work', () => {
     git(repo, 'checkout', '-q', 'main');
     const beat = join(state, 'beat.txt').split(sep).join('/');
     const go = join(state, 'go.txt').split(sep).join('/');
-    // Hangs while git updates main, and leaves a mark every 100 ms until `go.txt` exists.
+    const left = join(state, 'left.txt').split(sep).join('/');
+    // Hangs while git updates main, leaves a mark every 100 ms until `go.txt` exists, and writes
+    // `left.txt` as it leaves the loop.
     writeFileSync(
       join(repo, '.git', 'hooks', 'reference-transaction'),
       [
@@ -2623,6 +2625,7 @@ describe('merging approved work', () => {
         '[ "$1" = prepared ] || exit 0',
         "grep -q 'refs/heads/main' || exit 0",
         `while [ ! -f '${go}' ]; do printf x >> '${beat}'; sleep 0.1; done`,
+        `: > '${left}'`,
         'exit 1',
         '',
       ].join('\n'),
@@ -2651,19 +2654,19 @@ describe('merging approved work', () => {
       expect(message).toContain(refused);
       expect(message).not.toContain('swarmupd stopped it');
       // The hook did outlive the merge's git: its marks go on.
+      await until(() => existsSync(beat), 15_000);
       const size = statSync(beat).size;
-      await until(() => statSync(beat).size > size, 5_000);
+      await until(() => statSync(beat).size > size, 15_000);
     } finally {
-      // Ends the hook, so nothing has to kill it; waits for its marks to stop.
+      // Ends the hook, so nothing has to kill it. Under full-suite load Git Bash forks slowly, so
+      // a pause in the marks does not mean the hook ended, and its `sh` still held the repo when
+      // the cleanup removed it (EPERM, AO-0351). Waits for the hook to leave its loop and to let go
+      // of both folders.
       writeFileSync(go, 'go\n');
-      let size = -1;
-      const end = Date.now() + 10_000;
-      while (Date.now() < end && existsSync(beat) && size !== statSync(beat).size) {
-        size = statSync(beat).size;
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      await until(() => existsSync(left), 30_000);
+      await until(() => removed(repo) && removed(state), 30_000);
     }
-  }, 60_000);
+  }, 120_000);
 
   it('rebases again when the base moves during the checks, and checks again only for code', async () => {
     const s = mergeSetup();
