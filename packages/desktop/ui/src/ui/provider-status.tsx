@@ -56,7 +56,9 @@ export function ProviderStatusBar({
                 ? 'Sign-in expired'
                 : it.state === 'empty'
                   ? '-'
-                  : `${it.pct}%`}
+                  : it.pct === undefined
+                    ? 'Limited'
+                    : `${it.pct}%`}
           </span>
           {it.reset && <span className="text-fg-4">· {it.reset}</span>}
         </button>

@@ -14,8 +14,8 @@ export function byProvider(a: string, b: string): number {
 }
 
 /**
- * One provider in the status bar. `warning`: its highest window is at or over the share at which
- * swarmupd pauses its runs. `expired`: a run could not sign in, so a sign-in that worked has run
+ * One provider in the status bar. `warning`: swarmupd pauses its runs, because its highest window
+ * is at or over the pause share, a window has status `rejected`, or `limited_until` is ahead. `expired`: a run could not sign in, so a sign-in that worked has run
  * out; `signed-out`: the sign-in check found it signed out. `empty`: no current usage window.
  */
 export interface UsageItem {
@@ -71,25 +71,46 @@ export function usageItems(
           title: `${label}: ${expired ? 'the sign-in expired' : 'signed out'}; no ${label} run starts until it is signed in`,
         };
       }
-      // Match `usagePause`: cached windows stop describing current usage at their reset boundary.
-      const windows = Object.values(u.windows ?? {}).filter((window) => window.resets_at > now);
+      // Match `usageHold` in packages/supervisor/src/quota.ts: cached windows stop describing
+      // current usage at their reset boundary.
+      const windows = Object.entries(u.windows ?? {}).filter(([, w]) => w.resets_at > now);
+      const limited = u.limited_until !== undefined && u.limited_until > now;
       if (windows.length === 0) {
+        if (limited) {
+          const reset = resetIn(u.limited_until! - now);
+          return {
+            provider,
+            label,
+            state: 'warning',
+            reset,
+            title: `${label}: refused work (usage limit); swarmupd starts no ${label} run for ${reset}`,
+          };
+        }
         return { provider, label, state: 'empty', title: `${label}: no current usage window` };
       }
-      const top = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
+      // A rejected window pauses the provider at any share, so it wins over a fuller window.
+      const rejected = windows.find(([, w]) => w.status === 'rejected');
+      const [name, top] =
+        rejected ?? windows.reduce((a, b) => (b[1].utilization > a[1].utilization ? b : a));
       const at = pause?.runtimes?.[provider]?.pause_at ?? pause?.usage_pause_at ?? DEFAULT_PAUSE_AT;
       const pct = Math.round(top.utilization * 100);
       const reset = resetIn(top.resets_at - now);
-      const warning = top.utilization >= at;
+      const used = `${label}: ${pct}% used${reset ? `, resets in ${reset}` : ''}`;
+      let why = '';
+      if (limited) {
+        why = `; refused work (usage limit), swarmupd starts no ${label} run for ${resetIn(u.limited_until! - now)}`;
+      } else if (rejected) {
+        why = `; ${label} rejected work in the ${name} window, swarmupd pauses its runs until it resets`;
+      } else if (top.utilization >= at) {
+        why = `; swarmupd pauses its runs at ${Math.round(at * 100)}%`;
+      }
       return {
         provider,
         label,
-        state: warning ? 'warning' : 'normal',
+        state: why ? 'warning' : 'normal',
         pct,
         ...(reset ? { reset } : {}),
-        title:
-          `${label}: ${pct}% used${reset ? `, resets in ${reset}` : ''}` +
-          (warning ? `; swarmupd pauses its runs at ${Math.round(at * 100)}%` : ''),
+        title: used + why,
       };
     });
 }
