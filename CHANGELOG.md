@@ -6,6 +6,29 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.5 (2026-11-15)
+
+### Added
+
+- The model fields in **Settings** and **Agents** suggest the known Claude and Codex models as you type, and warn on a name the list doesn't have (it still saves, for newer models). Codex models come from the installed Codex CLI's model cache when it has one.
+- Replay can save web-sized, dithered GIFs and toggle the selected project name across PNG, MP4 and GIF exports; its three export actions now sit together.
+- Fold or unfold the Projects, Work, Agents and Talk sections in the desktop sidebar; each section remembers its state.
+
+### Changed
+
+- Settings are now grouped into focused categories with side navigation instead of one long scrolling page.
+
+### Fixed
+
+- A provider paused for usage or signed out no longer stops all work: reviews waiting for its
+  reviewer stop counting toward `review_backlog`, so new work in the project goes on.
+- After `review_fallback_hours` (default 2; `0` turns it off, also in **Settings**), swarmupd
+  moves such a review to a reviewer of the author's provider. The `review-fallback` event and the
+  verdict both say why, such as `fallback: claude paused until 2026-11-18 17:00 UTC`.
+- You get one Inbox note when a usage pause leaves reviews or work waiting, with when it ends and
+  your options. `swarmup waits`, `swarmup runs` and the **Agents** view show the stall as one line
+  per provider instead of one line per task.
+
 ## 0.3.0-beta.4 (2026-11-14)
 
 ### Added

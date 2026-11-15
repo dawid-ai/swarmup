@@ -1,1 +1,0 @@
-- The model fields in **Settings** and **Agents** suggest the known Claude and Codex models as you type, and warn on a name the list doesn't have (it still saves, for newer models). Codex models come from the installed Codex CLI's model cache when it has one.
