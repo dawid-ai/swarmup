@@ -424,6 +424,8 @@ async function trayCommand(cmd: TrayCommand): Promise<void> {
   try {
     if (cmd === 'open') return void (await openWindow());
     if (cmd === 'inbox') return void (await openWindow({ view: 'inbox' }));
+    if (cmd === 'settings-general')
+      return void (await openWindow({ view: 'settings', id: 'general' }));
     if (cmd === 'quit') {
       app.exit(0);
       return;
@@ -829,7 +831,7 @@ async function screenshots(dir: string): Promise<void> {
   const views = (
     process.env.SWARMUP_VIEWS ??
     process.env.AGENT_OPS_VIEWS ??
-    'inbox,board,list,findings,activity,reports,replay,agents,runs,standups,schedules,repeating,decisions,chat,channels,knowledge,settings'
+    'inbox,board,list,findings,activity,reports,replay,agents,runs,standups,schedules,repeating,decisions,chat,channels,knowledge,settings:general,settings:projects,settings:agents,settings:runs,settings:cleanup,settings:updates,settings:notifications,settings:health'
   ).split(',');
   mkdirSync(dir, { recursive: true });
   // Views call swarmupd as soon as they show: wait until the app has started it, which takes
@@ -852,6 +854,14 @@ async function screenshots(dir: string): Promise<void> {
         problems.push(
           `Replay exports are ${exports.join(', ') || 'missing'}, expected ${expected.join(', ')}`,
         );
+      }
+    }
+    if (view === 'settings' && id) {
+      const selected = (await win!.webContents.executeJavaScript(
+        `document.querySelector('[role="tab"][aria-selected="true"]')?.dataset.settingsCategory ?? null`,
+      )) as string | null;
+      if (selected !== id) {
+        problems.push(`Settings opened ${selected ?? 'no category'}, expected ${id}`);
       }
     }
     const img = lastFrame ?? (await win!.webContents.capturePage());

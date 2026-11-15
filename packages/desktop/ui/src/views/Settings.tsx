@@ -64,6 +64,104 @@ import { openAddProject } from './AddProject';
 
 type Patch = Record<string, unknown>;
 
+export const SETTINGS_CATEGORIES = [
+  {
+    id: 'general',
+    label: 'General',
+    description: 'Background service and voice input',
+    icon: SettingsIcon,
+  },
+  {
+    id: 'projects',
+    label: 'Projects',
+    description: 'Data roots and the Master Repo',
+    icon: FolderGit2,
+  },
+  {
+    id: 'agents',
+    label: 'Agents',
+    description: 'Providers, role files and agents',
+    icon: Users,
+  },
+  {
+    id: 'runs',
+    label: 'Runs',
+    description: 'Machine and role limits',
+    icon: Gauge,
+  },
+  {
+    id: 'cleanup',
+    label: 'Cleanup',
+    description: 'Worktrees and scratch files',
+    icon: Trash2,
+  },
+  {
+    id: 'updates',
+    label: 'Updates',
+    description: 'App and command updates',
+    icon: Download,
+  },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    description: 'Webhook alerts; Windows notifications are under General',
+    icon: BellRing,
+  },
+  {
+    id: 'health',
+    label: 'Health',
+    description: 'Configuration and runtime checks',
+    icon: Stethoscope,
+  },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}>;
+
+export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number]['id'];
+
+const SETTINGS_CATEGORY_KEY = 'swarmup.settings.category';
+const LEGACY_SETTINGS_SECTIONS: Record<string, SettingsCategory> = {
+  service: 'general',
+  voice: 'general',
+  roots: 'projects',
+  master: 'projects',
+  providers: 'agents',
+  roles: 'agents',
+  limits: 'runs',
+  notify: 'notifications',
+  doctor: 'health',
+};
+
+function isSettingsCategory(value: string | null | undefined): value is SettingsCategory {
+  return SETTINGS_CATEGORIES.some((category) => category.id === value);
+}
+
+/** Resolves `settings:<category>`, older card links and the category remembered on this PC. */
+export function settingsCategory(linked?: string, remembered?: string | null): SettingsCategory {
+  if (isSettingsCategory(linked)) return linked;
+  if (linked && LEGACY_SETTINGS_SECTIONS[linked]) return LEGACY_SETTINGS_SECTIONS[linked];
+  return isSettingsCategory(remembered) ? remembered : 'general';
+}
+
+function rememberedSettingsCategory(): string | null {
+  try {
+    return window.localStorage.getItem(SETTINGS_CATEGORY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberSettingsCategory(category: SettingsCategory): void {
+  try {
+    window.localStorage.setItem(SETTINGS_CATEGORY_KEY, category);
+  } catch {
+    // A locked-down renderer still gets category navigation for this session.
+  }
+}
+
 /** A number field: empty means "use the default" (sent as null). */
 function num(v: string): number | null {
   if (v.trim() === '') return null;
@@ -83,40 +181,106 @@ export function Settings({
   nav: Nav;
   info: Info | null;
   onRestarted: () => void;
-  /** A section to scroll to once the settings load, such as `cleanup`. */
+  /** A category from a `settings:<category>` link. */
   section?: string;
 }) {
   const { data, error, reload } = useData<SettingsData>('/api/settings');
   const agents = useData<Agent[]>('/api/agents');
-  const loaded = Boolean(data);
+  const [category, setCategory] = useState<SettingsCategory>(() =>
+    settingsCategory(section, rememberedSettingsCategory()),
+  );
   useEffect(() => {
-    if (section && loaded) document.getElementById(`settings-${section}`)?.scrollIntoView();
-  }, [section, loaded]);
+    if (!section) return;
+    const next = settingsCategory(section, rememberedSettingsCategory());
+    setCategory(next);
+    rememberSettingsCategory(next);
+  }, [section]);
+  const choose = (next: SettingsCategory): void => {
+    setCategory(next);
+    rememberSettingsCategory(next);
+    nav.go('settings', next);
+  };
+  const selected = SETTINGS_CATEGORIES.find((item) => item.id === category)!;
+  const SelectedIcon = selected.icon;
   return (
     <Section
       title="Settings"
       icon={SettingsIcon}
       subtitle={data ? `Saved to ${data.path}` : 'swarmupd and the user config'}
     >
-      <div className="mx-auto flex max-w-4xl flex-col gap-5 p-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 p-6">
         <ErrorLine error={error} />
-        <OpsdCard info={info} me={nav.me} onRestarted={onRestarted} />
-        <UpdatesCard />
-        <VoiceCard />
-        <HealthCard />
-        {data && (
-          <>
-            <RootsCard data={data} onSaved={reload} />
-            <MasterCard data={data} onSaved={reload} />
-            <NotifyCard data={data} onSaved={reload} />
-            <LimitsCard data={data} onSaved={reload} />
-            <CleanupCard data={data} onSaved={reload} />
-            <ProvidersCard data={data} onSaved={reload} />
-            <RoleFilesCard me={nav.me} />
-            <RolesCard data={data} onSaved={reload} />
-            <AgentsCard data={data} agents={agents.data ?? []} onSaved={reload} />
-          </>
-        )}
+        <div
+          role="tablist"
+          aria-label="Settings categories"
+          className="panel flex gap-1 overflow-x-auto p-1.5"
+        >
+          {SETTINGS_CATEGORIES.map((item) => {
+            const Icon = item.icon;
+            const active = item.id === category;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={`settings-panel-${item.id}`}
+                data-settings-category={item.id}
+                onClick={() => choose(item.id)}
+                className={cx(
+                  'group flex min-w-24 flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium whitespace-nowrap transition',
+                  active
+                    ? 'bg-signal/14 text-signal shadow-[inset_0_0_0_1px_rgba(125,168,255,0.22)]'
+                    : 'text-fg-3 hover:bg-white/5 hover:text-fg',
+                )}
+              >
+                <Icon size={15} className={active ? 'text-signal' : 'text-fg-4'} />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-3 px-1">
+          <div className="grid h-9 w-9 place-items-center rounded-xl bg-signal/10 text-signal">
+            <SelectedIcon size={18} />
+          </div>
+          <div>
+            <h2 className="font-display text-lg font-semibold tracking-wide">{selected.label}</h2>
+            <p className="text-xs text-fg-3">{selected.description}</p>
+          </div>
+          <code className="ml-auto hidden text-[11px] text-fg-4 sm:block">settings:{category}</code>
+        </div>
+        <div id={`settings-panel-${category}`} role="tabpanel" className="flex flex-col gap-5">
+          {category === 'general' && (
+            <>
+              <OpsdCard info={info} me={nav.me} onRestarted={onRestarted} />
+              <VoiceCard />
+            </>
+          )}
+          {category === 'projects' && data && (
+            <>
+              <RootsCard data={data} onSaved={reload} />
+              <MasterCard data={data} onSaved={reload} />
+            </>
+          )}
+          {category === 'agents' && data && (
+            <>
+              <ProvidersCard data={data} onSaved={reload} />
+              <RoleFilesCard me={nav.me} />
+              <AgentsCard data={data} agents={agents.data ?? []} onSaved={reload} />
+            </>
+          )}
+          {category === 'runs' && data && (
+            <>
+              <LimitsCard data={data} onSaved={reload} />
+              <RolesCard data={data} onSaved={reload} />
+            </>
+          )}
+          {category === 'cleanup' && data && <CleanupCard data={data} onSaved={reload} />}
+          {category === 'updates' && <UpdatesCard />}
+          {category === 'notifications' && data && <NotifyCard data={data} onSaved={reload} />}
+          {category === 'health' && <HealthCard />}
+        </div>
       </div>
     </Section>
   );

@@ -291,7 +291,15 @@ export function Agents({ nav }: { nav: Nav }) {
         <section>
           {agents.data && ids.length === 0 && runnable.length === 0 && (
             <Empty icon={Bot} title="No agents yet">
-              swarmupd reports no runtimes. Add a provider in Settings, or create a role.
+              swarmupd reports no runtimes.{' '}
+              <button
+                type="button"
+                className="text-signal hover:underline"
+                onClick={() => nav.go('settings', 'agents')}
+              >
+                Add a provider in Settings &gt; Agents
+              </button>
+              , or create a role.
             </Empty>
           )}
           <div className="flex flex-col gap-8">

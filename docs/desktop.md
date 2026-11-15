@@ -92,7 +92,8 @@ tooltip and the top of its menu show `swarmupd`'s pid, start time, version and
 build, and flag a build older than the app. Left-click opens the window; right-click offers the
 same controls as the card (**Restart swarmupd** works like **Restart**, and a notification shows the
 new pid and start time or why it did not restart), the items that need you, the notification
-switch, **Quit SwarmUp (swarmupd keeps running)** and **Quit and stop swarmupd**. Closing the window
+switch, a **Background service settings** link that opens **Settings > General**, **Quit SwarmUp
+(swarmupd keeps running)** and **Quit and stop swarmupd**. Closing the window
 keeps the tray icon. Quit closes the app only: `swarmupd` is a process of its own and keeps running
 agents, and opening the app again connects to the same `swarmupd`. Quit and stop also stops `swarmupd`,
 like **Stop**; if the stop fails or you cancel it, the app stays open. One app runs per person:
@@ -150,7 +151,10 @@ closes it, and it survives a restart of the app. A task of type `question` that 
 keeps its reply box: **Reply** reopens it with your text as the next round, and its owner answers
 again.
 
-**Settings** writes the user config with its comments kept, and swarmupd applies the change at once.
+**Settings** is split into **General**, **Projects**, **Agents**, **Runs**, **Cleanup**, **Updates**,
+**Notifications** and **Health**. It remembers the open category on this PC. App navigation and the
+screenshot runner can link one directly as `settings:<category>`, for example `settings:updates`.
+Settings writes the user config with its comments kept, and swarmupd applies the change at once.
 Through swarmupd's API it changes limits, roles, a provider's `model`, `max_live`, `pause_at` and
 `paused`, removes a provider or resets a seeded one to default, adds, edits and removes agents
 (`wake`, `budget`, `model`), sync and roots only.
