@@ -140,7 +140,14 @@ export function serviceLine(s: ServiceState): string {
 }
 
 export type TrayCommand =
-  ServiceAction | 'open' | 'inbox' | 'notify' | 'update' | 'quit' | 'quit-stop';
+  | ServiceAction
+  | 'open'
+  | 'inbox'
+  | 'settings-general'
+  | 'notify'
+  | 'update'
+  | 'quit'
+  | 'quit-stop';
 
 export interface TrayItem {
   label?: string;
@@ -174,6 +181,7 @@ export function trayMenu(s: ServiceState, notify: boolean, update?: string): Tra
   items.push(
     { separator: true },
     { label: 'Open SwarmUp', command: 'open' },
+    { label: 'Background service settings', command: 'settings-general' },
     { separator: true },
     s.running
       ? { label: `Stop swarmupd${ends}`, command: 'stop' }

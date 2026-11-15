@@ -582,9 +582,17 @@ export function App() {
         </div>
         {(restartNote || (!status.connected && status.error)) && (
           <div className="px-4 pb-3 text-[11px] text-warn">
-            {restartNote
-              ? 'swarmupd runs agents: restart it in Settings to load the new config'
-              : status.error}
+            {restartNote ? (
+              <button
+                type="button"
+                className="text-left hover:text-fg"
+                onClick={() => nav.go('settings', 'general')}
+              >
+                swarmupd runs agents: open Settings &gt; General to restart and load the new config
+              </button>
+            ) : (
+              status.error
+            )}
           </div>
         )}
       </aside>
@@ -599,6 +607,13 @@ export function App() {
               SwarmUp {update.version} is ready. It installs on its own once no agent run is live
               and this window is closed.
             </span>
+            <button
+              type="button"
+              onClick={() => nav.go('settings', 'updates')}
+              className="rounded-md px-2.5 py-1 text-xs font-medium hover:bg-signal/10"
+            >
+              Settings &gt; Updates
+            </button>
             <button
               onClick={() => void bridge().update('install')}
               className="inline-flex items-center gap-1.5 rounded-md bg-signal/15 px-2.5 py-1 text-xs font-medium hover:bg-signal/25"

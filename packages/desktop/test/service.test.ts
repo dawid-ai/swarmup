@@ -46,6 +46,7 @@ describe('tray', () => {
         .map((i) => `${i.command}${i.enabled === false ? '(off)' : ''}`);
     expect(labels(base)).toEqual([
       'open',
+      'settings-general',
       'stop',
       'pause',
       'restart',
@@ -55,6 +56,7 @@ describe('tray', () => {
     ]);
     expect(labels({ ...base, running: false, paused: true })).toEqual([
       'open',
+      'settings-general',
       'start',
       'resume',
       'restart(off)',
