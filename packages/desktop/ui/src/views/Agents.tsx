@@ -29,6 +29,7 @@ import {
   ErrorLine,
   Input,
   Modal,
+  ModelInput,
   Section,
   toast,
   Toggle,
@@ -745,6 +746,7 @@ function AgentCard(props: {
                 ? minutes(props.defaultBudget)
                 : ''
           }
+          runtime={who.runtime}
           modelPlaceholder={agent?.model ?? props.providerModel ?? `${who.runtime} default`}
           busy={props.configBusy}
           onChange={props.onConfig}
@@ -877,12 +879,15 @@ function AgentCard(props: {
 function AgentSettings({
   config,
   placeholder,
+  runtime,
   modelPlaceholder,
   busy,
   onChange,
 }: {
   config: { wake?: boolean; budget?: string; model?: string };
   placeholder: string;
+  /** The agent's provider, whose known models the Model field suggests. */
+  runtime: string;
   modelPlaceholder: string;
   busy: boolean;
   onChange: (patch: AgentPatch) => void;
@@ -913,12 +918,14 @@ function AgentSettings({
       >
         Model
       </span>
-      <Input
+      <ModelInput
+        runtime={runtime}
         value={model}
         onChange={setModel}
         placeholder={modelPlaceholder}
-        className="w-28 font-mono"
+        className="w-28"
         onEnter={save}
+        compact
       />
       <span
         className="text-fg-4"
@@ -1003,11 +1010,12 @@ function AddAgent({
       </label>
       <label className="flex flex-col gap-1 text-xs text-fg-3">
         Model
-        <Input
+        <ModelInput
+          runtime={provider}
           value={model}
           onChange={setModel}
           placeholder="provider default"
-          className="w-36 font-mono"
+          className="w-36"
         />
       </label>
       <div className="pb-1.5">

@@ -208,3 +208,73 @@ describe('Agents view: adding, editing and removing agents', () => {
     expect(card('grok:qa').textContent).toContain('no provider');
   });
 });
+
+describe('Agents view: model suggestions and the unknown-model warning', () => {
+  beforeEach(() => {
+    (net.data['/api/settings'] as { opsd: { runtimes: unknown } }).opsd.runtimes = {
+      claude: { command: 'claude', paused: false },
+      codex: { command: 'codex', paused: false, model: 'o3' },
+    };
+  });
+
+  /** The Model field inside `el` and the suggestions its datalist holds now. */
+  function modelField(el: HTMLElement): { input: HTMLInputElement; options: () => string[] } {
+    const input = el.querySelector<HTMLInputElement>('input[list]')!;
+    const options = (): string[] =>
+      [...document.getElementById(input.getAttribute('list')!)!.querySelectorAll('option')].map(
+        (o) => o.value,
+      );
+    return { input, options };
+  }
+
+  it("suggests Claude's models as you type on a Claude agent", () => {
+    mount();
+    const f = modelField(card('claude:pm'));
+    expect(f.options()).toContain('opus');
+    expect(f.options()).not.toContain('gpt-5');
+    type(f.input, 'son');
+    expect(f.options()).toEqual(['sonnet', 'claude-sonnet-5-5', 'claude-sonnet-4-5']);
+    type(f.input, 'claude-sonnet-5-5');
+    expect(card('claude:pm').querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("suggests Codex's models as you type on a Codex agent", () => {
+    mount();
+    const f = modelField(card('codex:qa'));
+    expect(f.options()).toContain('gpt-5-codex');
+    expect(f.options()).not.toContain('opus');
+    type(f.input, '5.1-codex');
+    expect(f.options()).toEqual(['gpt-5.1-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini']);
+    type(f.input, 'gpt-5.1-codex');
+    expect(card('codex:qa').querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('warns on a name outside the list and still saves it', async () => {
+    mount();
+    const c = card('codex:qa');
+    type(modelField(c).input, 'gpt-9-preview');
+    expect(c.querySelector('[role="status"]')?.getAttribute('title')).toMatch(
+      /^Not a known codex model \(list of \d{4}-\d{2}-\d{2}\)/,
+    );
+    await click(c, 'Save');
+    expect(net.posts).toEqual([
+      {
+        path: '/api/settings',
+        body: { patch: { opsd: { agents: { 'codex:qa': { model: 'gpt-9-preview' } } } } },
+      },
+    ]);
+  });
+
+  it('suggests and warns for the provider chosen in Add agent', () => {
+    root = createRoot(box);
+    act(() =>
+      root!.render(createElement(AddAgentDialog, { id: 'claude:writer', onClose: () => {} })),
+    );
+    const f = modelField(document.body);
+    expect(f.options()).toContain('haiku');
+    type(f.input, 'gpt-5');
+    expect(document.body.textContent).toContain('Not a known claude model');
+    type(f.input, 'haiku');
+    expect(document.body.textContent).not.toContain('Not a known claude model');
+  });
+});

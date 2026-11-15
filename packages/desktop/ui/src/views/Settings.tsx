@@ -35,6 +35,7 @@ import {
   ErrorLine,
   Field,
   Input,
+  ModelInput,
   Section,
   Select,
   Toggle,
@@ -1482,11 +1483,11 @@ function ProvidersCard({ data, onSaved }: { data: SettingsData; onSaved: () => v
                   className="w-36"
                   hint={n === 'claude' || n === 'codex' ? undefined : 'Claude and Codex only'}
                 >
-                  <Input
+                  <ModelInput
+                    runtime={n}
                     value={v.model}
                     onChange={(x) => setVals({ ...vals, [n]: { ...v, model: x } })}
                     placeholder="its default"
-                    className="font-mono"
                   />
                 </Field>
                 <Field label="Most live runs" className="w-28">

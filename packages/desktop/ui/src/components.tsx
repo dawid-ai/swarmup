@@ -1,8 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { onWarnings } from './api';
+import { modelWarning, suggestModels } from './lib/models';
 import type { Task } from './types';
 import { PriorityTag, StatusTag } from './ui/identity';
 
@@ -116,11 +117,14 @@ export function Input(props: {
   autoFocus?: boolean;
   disabled?: boolean;
   onEnter?: () => void;
+  /** The id of a `<datalist>` whose options the field suggests. */
+  list?: string;
 }) {
   return (
     <input
       type={props.type ?? 'text'}
       value={props.value}
+      list={props.list}
       autoFocus={props.autoFocus}
       disabled={props.disabled}
       placeholder={props.placeholder}
@@ -130,6 +134,53 @@ export function Input(props: {
       }}
       className={cx(FIELD, 'h-[34px]', props.disabled && 'opacity-60', props.className)}
     />
+  );
+}
+
+/**
+ * A model name field: suggests the provider's known models as you type and warns on a name that
+ * is not one of them. The name still saves, so a model newer than the list works.
+ */
+export function ModelInput(props: {
+  /** The provider, such as `claude` or `codex`. */
+  runtime: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  className?: string;
+  onEnter?: () => void;
+  /** Show the warning as an icon with a tooltip, for a field inside a row. */
+  compact?: boolean;
+}) {
+  const id = useId();
+  const options = suggestModels(props.runtime, props.value);
+  const warning = modelWarning(props.runtime, props.value);
+  return (
+    <>
+      <Input
+        value={props.value}
+        onChange={props.onChange}
+        placeholder={props.placeholder}
+        className={cx('font-mono', props.className)}
+        onEnter={props.onEnter}
+        list={id}
+      />
+      <datalist id={id}>
+        {options.map((m) => (
+          <option key={m} value={m} />
+        ))}
+      </datalist>
+      {warning &&
+        (props.compact ? (
+          <span role="status" title={warning} aria-label={warning} className="text-warn">
+            <AlertTriangle size={14} />
+          </span>
+        ) : (
+          <span role="status" className="text-xs text-warn">
+            {warning}
+          </span>
+        ))}
+    </>
   );
 }
 
