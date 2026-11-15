@@ -9,6 +9,8 @@ import type { Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allowedCall } from '../src/allow';
+import type { GifOptions } from '../ui/src/lib/gif';
+import type { RecordOptions } from '../ui/src/lib/record';
 import {
   clock,
   initialPlayback,
@@ -135,6 +137,41 @@ describe('scenes', () => {
     expect(sceneById('nope')).toBe(SCENES[0]);
     expect(new Set(SCENES.map((s) => s.id)).size).toBe(SCENES.length);
   });
+
+  it('draws the optional project name but never draws the replay kind', () => {
+    const kind = new Map([
+      ['swimlanes', 'Swimlanes'],
+      ['loop', 'Human in the loop'],
+      ['events', 'Replay'],
+      ['counters', 'Replay totals'],
+      ['metro', 'Metro map'],
+      ['constellation', 'Knowledge constellation'],
+      ['wrapped', 'SwarmUp Wrapped'],
+      ['rally', 'REVIEW RALLY'],
+    ]);
+    for (const scene of SCENES) {
+      const data = scene.prepare(fixture(), STAGE_16_9);
+      const frame = {
+        ...STAGE_16_9,
+        t: sceneDuration(scene, fixture()),
+        duration: sceneDuration(scene, fixture()),
+      };
+      const shown = renderToStaticMarkup(
+        renderFrame(scene, data, frame, { projectName: 'agent-ops / docs', showProject: true }),
+      );
+      const hidden = renderToStaticMarkup(
+        renderFrame(scene, data, frame, { projectName: 'agent-ops / docs', showProject: false }),
+      );
+      const text = (markup: string): string => {
+        const host = document.createElement('div');
+        host.innerHTML = markup;
+        return host.textContent ?? '';
+      };
+      expect(text(shown), scene.id).toContain('agent-ops / docs');
+      expect(text(hidden), scene.id).not.toContain('agent-ops / docs');
+      expect(text(shown), scene.id).not.toContain(kind.get(scene.id)!);
+    }
+  });
 });
 
 describe('timeline path and allow list', () => {
@@ -196,10 +233,15 @@ vi.mock(import('../ui/src/api'), async (original) => ({
   },
 }));
 
-// happy-dom loads no images, so the PNG step returns fixed bytes.
+const pngSvgs = vi.hoisted(() => [] as string[]);
+
+// happy-dom loads no images, so the PNG step returns fixed bytes while retaining its SVG input.
 vi.mock(import('../ui/src/lib/png'), async (original) => ({
   ...(await original()),
-  svgToPng: async () => new Uint8Array([1]),
+  svgToPng: async (svg: string) => {
+    pngSvgs.push(svg);
+    return new Uint8Array([1]);
+  },
 }));
 
 declare global {
@@ -214,6 +256,7 @@ let now = 0;
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   paths.length = 0;
+  pngSvgs.length = 0;
   served.timeline = fixture();
   frames = [];
   now = 0;
@@ -351,11 +394,16 @@ describe('Replay view', () => {
     expect(clockText()).toBe(`0:15.0 / ${END}`);
     // The stage shows the scene's frame for the current t.
     const expected = renderToStaticMarkup(
-      renderFrame(other, other.prepare(fixture(), STAGE_16_9), {
-        ...STAGE_16_9,
-        t: 15_000,
-        duration: sceneDuration(other, fixture()),
-      }),
+      renderFrame(
+        other,
+        other.prepare(fixture(), STAGE_16_9),
+        {
+          ...STAGE_16_9,
+          t: 15_000,
+          duration: sceneDuration(other, fixture()),
+        },
+        { projectName: 'All projects', showProject: true },
+      ),
     );
     // Same text and same shapes; the DOM and the server serialize styles differently.
     const parsed = document.createElement('div');
@@ -433,6 +481,72 @@ describe('Replay view', () => {
       expect(saved[1]).toContain('-agent-ops-docs-16x9-');
       pick(projectSelect(), '');
       expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30${query()}`);
+    } finally {
+      delete window.swarmup;
+    }
+  });
+
+  it('keeps the three exports together and applies the project-name toggle to PNG, MP4 and GIF', async () => {
+    const mp4: RecordOptions[] = [];
+    const gifs: GifOptions[] = [];
+    const names: string[] = [];
+    window.swarmup = {
+      saveImages: async (files: Array<{ name: string }>) => ({
+        ok: true,
+        data: { dir: 'C:\\exports', files: files.map((f) => f.name) },
+      }),
+      videoFolder: async () => ({ ok: true, data: { dir: 'C:\\exports' } }),
+      saveVideo: async (name: string) => {
+        names.push(name);
+        return { ok: true, data: { dir: 'C:\\exports', file: name } };
+      },
+      saveGif: async (name: string) => {
+        names.push(name);
+        return { ok: true, data: { dir: 'C:\\exports', file: name } };
+      },
+    } as unknown as typeof window.swarmup;
+    const record = async (opts: RecordOptions): Promise<Uint8Array> => {
+      mp4.push(opts);
+      return new Uint8Array([1]);
+    };
+    const gif = async (opts: GifOptions): Promise<Uint8Array> => {
+      gifs.push(opts);
+      return new Uint8Array(2048);
+    };
+    try {
+      act(() => root!.render(createElement(Replay, { record, gif })));
+      const nested = [...projectSelect().options].find(
+        (o) => o.textContent === 'agent-ops / docs',
+      )!.value;
+      pick(projectSelect(), nested);
+      const group = byLabel('Exports');
+      expect([...group.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual([
+        'Save frame',
+        'Record MP4',
+        'Save as GIF',
+      ]);
+      const project = (): Element | null =>
+        box.querySelector('[data-testid="replay-stage"] [data-project-name="true"]');
+      expect(project()?.textContent).toBe('agent-ops / docs');
+
+      await act(async () => button('Save frame').click());
+      expect(pngSvgs.at(-1)).toContain('data-project-name="true"');
+      expect(pngSvgs.at(-1)).toContain('agent-ops / docs');
+      await act(async () => button('Record MP4').click());
+      await act(async () => button('Save as GIF').click());
+      expect(mp4.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: true });
+      expect(gifs.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: true });
+      expect(names.some((n) => n.includes('agent-ops-docs') && n.endsWith('.mp4'))).toBe(true);
+      expect(names.some((n) => n.includes('agent-ops-docs') && n.endsWith('.gif'))).toBe(true);
+
+      act(() => (byLabel('Show project name') as HTMLInputElement).click());
+      expect(project()).toBeNull();
+      await act(async () => button('Save frame').click());
+      await act(async () => button('Record MP4').click());
+      await act(async () => button('Save as GIF').click());
+      expect(pngSvgs.at(-1)).not.toContain('data-project-name="true"');
+      expect(mp4.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
+      expect(gifs.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
     } finally {
       delete window.swarmup;
     }

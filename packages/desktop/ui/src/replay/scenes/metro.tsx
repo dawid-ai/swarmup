@@ -34,7 +34,6 @@ const IDEA_COLOR = '#ffc857';
 const APPROVE_COLOR = '#3ddc97';
 const CHANGES_COLOR = '#ff9f43';
 const HUMAN_COLOR = identity('human:x').provider.color;
-const TEXT = '#e6edf3';
 const MUTED = '#8b98a5';
 const BACK = '#0b0f14';
 
@@ -501,7 +500,6 @@ export const metroScene: Scene<MetroData> = {
       .sort((a, b) => Math.abs(b.track) - Math.abs(a.track) || a.t0 - b.t0);
     const mainEnd = at(Math.max(ut, d.u0), 0);
     const mainStart = at(d.u0, 0);
-    const title = d.portrait ? 64 : 48;
     const stats = [
       `${counts.lines} lines`,
       `${counts.merged} merged`,
@@ -512,15 +510,6 @@ export const metroScene: Scene<MetroData> = {
 
     return (
       <g fontFamily="'IBM Plex Sans', sans-serif">
-        <text
-          x={d.portrait ? 60 : 80}
-          y={d.portrait ? 110 : 82}
-          fill={TEXT}
-          fontSize={title}
-          fontWeight={600}
-        >
-          Metro map
-        </text>
         <text
           x={d.portrait ? 60 : 80}
           y={d.portrait ? 168 : 124}

@@ -446,9 +446,6 @@ function renderLanes(d: SwimlanesData, frame: Frame): ReactElement {
           <feGaussianBlur stdDeviation={10 * s} />
         </filter>
       </defs>
-      <text x={70 * s} y={L.headerY} fill="#e6edf3" fontSize={48 * s} fontWeight={600}>
-        Swimlanes
-      </text>
       <text
         x={L.stampEnd ? frame.width - 70 * s : 70 * s}
         y={L.stampY}

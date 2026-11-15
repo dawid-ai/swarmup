@@ -75,6 +75,11 @@ interface Bridge {
     name: string,
     data: Uint8Array,
   ) => Promise<{ ok: boolean; data?: { dir: string; file: string }; error?: string }>;
+  /** Writes a GIF into the folder from `videoFolder`; a name already taken gets a suffix. */
+  saveGif: (
+    name: string,
+    data: Uint8Array,
+  ) => Promise<{ ok: boolean; data?: { dir: string; file: string }; error?: string }>;
   setup: (
     me: string,
     roots: string[],

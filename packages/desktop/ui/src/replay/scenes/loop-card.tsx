@@ -205,17 +205,6 @@ export function renderLoopCard(
           fill={CARD_COLORS.agent}
           fillOpacity={0.05}
         />
-        <text
-          x={cx}
-          y={L.title}
-          fill="#5ce1e6"
-          fontSize={40 * s}
-          fontWeight={600}
-          textAnchor="middle"
-          letterSpacing={4 * s}
-        >
-          HUMAN IN THE LOOP
-        </text>
         <text x={cx} y={L.footer} fill="#8b98a5" fontSize={28 * s} textAnchor="middle">
           {card.footer}
         </text>

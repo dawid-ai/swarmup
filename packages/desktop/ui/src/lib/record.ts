@@ -6,7 +6,7 @@
 // The encoder and the frame constructor are passed in, so tests drive the whole loop and the real
 // muxer without a browser encoder.
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
-import type { Scene, Stage } from '../replay/scene';
+import type { FrameOverlay, Scene, Stage } from '../replay/scene';
 import { renderFrame } from '../replay/scene';
 import type { Timeline } from '../types';
 import type { Rasterizer } from './png';
@@ -233,7 +233,7 @@ export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
   }
 }
 
-export interface RecordOptions {
+export interface RecordOptions extends FrameOverlay {
   scene: Scene<unknown>;
   timeline: Timeline;
   aspect: Aspect;
@@ -269,11 +269,16 @@ export async function recordScene(opts: RecordOptions): Promise<Uint8Array> {
       onProgress: opts.onProgress,
       draw: (i) =>
         raster.draw(
-          renderFrame(opts.scene, data, {
-            ...stage,
-            t: frameTime(i, frames, opts.durationMs),
-            duration: opts.durationMs,
-          }),
+          renderFrame(
+            opts.scene,
+            data,
+            {
+              ...stage,
+              t: frameTime(i, frames, opts.durationMs),
+              duration: opts.durationMs,
+            },
+            opts,
+          ),
         ),
     });
   } finally {

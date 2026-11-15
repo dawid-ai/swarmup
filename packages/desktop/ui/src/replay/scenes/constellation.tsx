@@ -587,9 +587,6 @@ export const constellationScene: Scene<ConstellationData> = {
     let lx = d.legend.x;
     return (
       <g fontFamily={FONT}>
-        <text x={MARGIN + 20} y={92} fill="#e6edf3" fontSize={44} fontWeight={600}>
-          Knowledge constellation
-        </text>
         <text x={frame.width - MARGIN - 20} y={92} fill="#8b98a5" fontSize={28} textAnchor="end">
           {utcStamp(realAt(d.map, t))}
         </text>

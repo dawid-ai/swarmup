@@ -1,0 +1,1 @@
+- Replay can save web-sized, dithered GIFs and toggle the selected project name across PNG, MP4 and GIF exports; its three export actions now sit together.

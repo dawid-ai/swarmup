@@ -400,7 +400,7 @@ export const rallyScene: Scene<RallyData> = {
             textAnchor="middle"
             letterSpacing={4 * s}
           >
-            {`REVIEW RALLY · ${d.task}`}
+            {d.task}
           </text>
           <text
             x={frame.width / 2}

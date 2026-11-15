@@ -376,9 +376,6 @@ export const loopScene: Scene<LoopData> = {
             <feGaussianBlur stdDeviation={8 * s} />
           </filter>
         </defs>
-        <text x={70 * s} y={L.headerY} fill="#e6edf3" fontSize={48 * s} fontWeight={600}>
-          Human in the loop
-        </text>
         <text
           x={L.stampEnd ? frame.width - 70 * s : 70 * s}
           y={L.stampY}

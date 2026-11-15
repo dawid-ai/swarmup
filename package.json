@@ -24,6 +24,7 @@
     "desktop": "pnpm run build:desktop && pnpm --filter @swarmup/desktop run start",
     "smoke:desktop": "node scripts/desktop-smoke.mjs",
     "check:record": "node scripts/record-check.mjs",
+    "check:gif": "node scripts/gif-check.mjs",
     "dist": "pnpm run build:desktop && pnpm --filter @swarmup/desktop run dist"
   },
   "devDependencies": {

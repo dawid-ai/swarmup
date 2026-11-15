@@ -11,6 +11,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { freeName } from '../src/images';
+import { MAX_GIF_BYTES, gifFile, writeGif } from '../src/gifs';
 import { MAX_VIDEO_BYTES, videoFile, writeVideo } from '../src/videos';
 import type { Rasterizer } from '../ui/src/lib/png';
 import type { Codecs, EncoderLike, RecordOptions } from '../ui/src/lib/record';
@@ -443,6 +444,16 @@ describe('saving a recording', () => {
     expect(readFileSync(join(dir, 'clip.mp4'), 'utf8')).toBe('old');
     expect(existsSync(join(dir, 'clip-3.mp4'))).toBe(true);
     expect(freeName('a.png', (n) => n === 'a.png')).toBe('a-2.png');
+  });
+
+  it('accepts complete GIF bytes and never overwrites one', () => {
+    const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0, 0, 0, 0x3b]);
+    expect(gifFile('replay-events-all-projects-960w-15fps-1s.gif', gif).data).toBe(gif);
+    expect(() => gifFile('../bad.gif', gif)).toThrow('bad GIF name');
+    expect(() => gifFile('clip.gif', new Uint8Array(14))).toThrow('not a GIF');
+    expect(MAX_GIF_BYTES).toBe(200 * 1024 * 1024);
+    writeFileSync(join(dir, 'clip.gif'), 'old');
+    expect(writeGif(dir, { name: 'clip.gif', data: gif })).toBe('clip-2.gif');
   });
 });
 

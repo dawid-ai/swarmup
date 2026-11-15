@@ -1,15 +1,34 @@
-import { Clapperboard, Film, ImageDown, Pause, Play, Repeat, SkipBack, X } from 'lucide-react';
+import {
+  Clapperboard,
+  Film,
+  ImageDown,
+  Images,
+  Pause,
+  Play,
+  Repeat,
+  SkipBack,
+  X,
+} from 'lucide-react';
 import type { KeyboardEvent } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { bridge, q, useData } from '../api';
 import { Empty, ErrorLine, Section, Select, cx } from '../components';
 import { isTyping } from '../lib/keys';
 import { frameMarkup, svgToPng } from '../lib/png';
+import {
+  GIF_FPS,
+  GIF_WIDTH,
+  GifCancelled,
+  formatBytes,
+  gifFileName,
+  recordGifScene,
+} from '../lib/gif';
+import type { GifOptions } from '../lib/gif';
 import type { Aspect, RecordOptions } from '../lib/record';
 import { ASPECTS, RecordCancelled, aspectById, recordScene, videoFileName } from '../lib/record';
 import type { Playback } from '../lib/replay';
 import { CLIPS, SPEEDS, clock, initialPlayback, seek, tick, togglePlay } from '../lib/replay';
-import type { Scene } from '../replay/scene';
+import type { FrameOverlay, Scene } from '../replay/scene';
 import { STAGE_16_9, renderFrame, sceneDuration } from '../replay/scene';
 import { SCENES, sceneById } from '../replay/scenes';
 import type { WrappedData } from '../replay/scenes/wrapped';
@@ -110,10 +129,11 @@ async function saveFrames(
   data: unknown,
   duration: number,
   shots: Array<{ name: string; t: number }>,
+  overlay: FrameOverlay,
 ): Promise<string> {
   const files = [];
   for (const s of shots) {
-    const svg = frameMarkup(renderFrame(scene, data, { ...STAGE_16_9, t: s.t, duration }));
+    const svg = frameMarkup(renderFrame(scene, data, { ...STAGE_16_9, t: s.t, duration }, overlay));
     files.push({ name: s.name, data: await svgToPng(svg, STAGE_16_9.width, STAGE_16_9.height) });
   }
   const res = await bridge().saveImages(files);
@@ -164,10 +184,12 @@ function useFrames(on: boolean, onFrame: (dtMs: number) => void): void {
 export interface ReplayProps {
   /** The recorder; tests pass a fake, since the test DOM has no video encoder. */
   record?: (opts: RecordOptions) => Promise<Uint8Array>;
+  /** The GIF encoder; tests pass a fake to avoid rasterizing hundreds of frames. */
+  gif?: (opts: GifOptions) => Promise<Uint8Array>;
 }
 
 /** Plays the project's history as a scene: pick a project, a window and a scene, then play. */
-export function Replay({ record = recordScene }: ReplayProps) {
+export function Replay({ record = recordScene, gif = recordGifScene }: ReplayProps) {
   // The picked `ProjectChoice` value. A choice that left the list (a removed root) still filters,
   // so the error from swarmupd shows instead of a silent switch to every project.
   const [pickedProject, setPickedProject] = useState('');
@@ -177,6 +199,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
   const [to, setTo] = useState('');
   const [clip, setClip] = useState<number>(30);
   const [sceneId, setSceneId] = useState(SCENES[0]!.id);
+  const [showProject, setShowProject] = useState(true);
   const scene = sceneById(sceneId);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ text: string; error: boolean } | null>(null);
@@ -191,6 +214,10 @@ export function Replay({ record = recordScene }: ReplayProps) {
     root: pickedRoot,
     project: pickedLabel,
   };
+  const projectName =
+    projects.find((c) => c.value === pickedProject)?.label ??
+    ([root, project].filter(Boolean).join(' / ') || 'All projects');
+  const overlay: FrameOverlay = { projectName, showProject };
   const path = timelinePath({ root, project, days, custom, from, to, clip, query: scene.query });
   const { data: timeline, error } = useData<Timeline>(path);
 
@@ -235,7 +262,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
     if (saving || data === null || shots.length === 0) return;
     setSaving(true);
     setSaved(null);
-    saveFrames(scene, data, duration, shots)
+    saveFrames(scene, data, duration, shots, overlay)
       .then((text) => setSaved(text ? { text, error: false } : null))
       .catch((err: Error) => setSaved({ text: err.message, error: true }))
       .finally(() => setSaving(false));
@@ -245,10 +272,11 @@ export function Replay({ record = recordScene }: ReplayProps) {
   const [aspectId, setAspectId] = useState<Aspect['id']>('16x9');
   // Whole percent done while recording; null when idle.
   const [recording, setRecording] = useState<number | null>(null);
+  const [gifRecording, setGifRecording] = useState<number | null>(null);
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
   const startRecording = (): void => {
-    if (recording !== null || saving || !timeline || duration <= 0) return;
+    if (recording !== null || gifRecording !== null || saving || !timeline || duration <= 0) return;
     const ctrl = new AbortController();
     abort.current = ctrl;
     setP((old) => ({ ...old, playing: false }));
@@ -260,6 +288,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
         scene,
         timeline,
         project: subject,
+        ...overlay,
         choice: choice || undefined,
         aspect: aspectById(aspectId),
         durationMs: duration,
@@ -283,6 +312,52 @@ export function Replay({ record = recordScene }: ReplayProps) {
       .finally(() => {
         abort.current = null;
         setRecording(null);
+      });
+  };
+  const startGif = (): void => {
+    if (recording !== null || gifRecording !== null || saving || !timeline || duration <= 0) return;
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    setP((old) => ({ ...old, playing: false }));
+    setSaved(null);
+    setGifRecording(0);
+    let shown = 0;
+    bridge()
+      .videoFolder()
+      .then(async (folder) => {
+        if (!folder.ok) {
+          if (folder.error === 'cancelled') return null;
+          throw new Error(folder.error ?? 'no folder');
+        }
+        const bytes = await gif({
+          scene,
+          timeline,
+          aspect: aspectById(aspectId),
+          choice: choice || undefined,
+          durationMs: duration,
+          signal: ctrl.signal,
+          ...overlay,
+          onProgress: (done, total) => {
+            const pct = Math.floor((done / total) * 100);
+            if (pct !== shown) setGifRecording((shown = pct));
+          },
+        });
+        const name = gifFileName(scene.id, subject, GIF_WIDTH, GIF_FPS, duration);
+        const res = await bridge().saveGif(name, bytes);
+        if (!res.ok || !res.data) throw new Error(res.error ?? 'saving failed');
+        return `Saved ${res.data.file} (${formatBytes(bytes.length)}) to ${res.data.dir}`;
+      })
+      .then((text) => setSaved(text ? { text, error: false } : null))
+      .catch((err: Error) =>
+        setSaved(
+          err instanceof GifCancelled
+            ? { text: err.message, error: false }
+            : { text: `GIF export failed: ${err.message}`, error: true },
+        ),
+      )
+      .finally(() => {
+        abort.current = null;
+        setGifRecording(null);
       });
   };
   const saveCards = (): void => {
@@ -412,7 +487,18 @@ export function Replay({ record = recordScene }: ReplayProps) {
               />
             </>
           )}
-          <div className="ml-auto flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Scene">
+          <label className="ml-auto flex items-center gap-2 text-xs text-fg-3">
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="Show project name"
+              checked={showProject}
+              onChange={(e) => setShowProject(e.target.checked)}
+              className="accent-[#5ce1e6]"
+            />
+            Project name
+          </label>
+          <div className="flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Scene">
             {SCENES.map((s) => (
               <button
                 key={s.id}
@@ -446,7 +532,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
         {timeline && data !== null && !empty && (
           <>
             <div className="panel overflow-hidden" data-testid="replay-stage">
-              {renderFrame(scene, data, { ...STAGE_16_9, t: p.t, duration: p.duration })}
+              {renderFrame(scene, data, { ...STAGE_16_9, t: p.t, duration: p.duration }, overlay)}
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -509,21 +595,11 @@ export function Replay({ record = recordScene }: ReplayProps) {
               >
                 <Repeat size={15} />
               </button>
-              <button
-                type="button"
-                onClick={saveFrame}
-                disabled={saving || recording !== null}
-                title="Save this frame as a 1920 x 1080 PNG"
-                className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs text-fg-3 hover:bg-white/6 hover:text-fg disabled:opacity-50"
-              >
-                <ImageDown size={15} />
-                Save frame
-              </button>
               {cards.length > 0 && (
                 <button
                   type="button"
                   onClick={saveCards}
-                  disabled={saving || recording !== null}
+                  disabled={saving || recording !== null || gifRecording !== null}
                   title="Save each Wrapped card as a 1920 x 1080 PNG"
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
                 >
@@ -533,7 +609,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3" data-testid="replay-record">
-              <span className="text-xs text-fg-3">Video</span>
+              <span className="text-xs text-fg-3">Export</span>
               <div className="flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Format">
                 {ASPECTS.map((a) => (
                   <button
@@ -541,7 +617,7 @@ export function Replay({ record = recordScene }: ReplayProps) {
                     type="button"
                     title={`${a.stage.width} x ${a.stage.height}`}
                     aria-pressed={a.id === aspectId}
-                    disabled={recording !== null}
+                    disabled={recording !== null || gifRecording !== null}
                     onClick={() => setAspectId(a.id)}
                     className={cx(
                       'rounded-md px-2 py-1 font-mono text-xs transition disabled:opacity-50',
@@ -552,30 +628,56 @@ export function Replay({ record = recordScene }: ReplayProps) {
                   </button>
                 ))}
               </div>
-              {recording === null ? (
+              <div className="flex items-center gap-1" role="group" aria-label="Exports">
+                <button
+                  type="button"
+                  onClick={saveFrame}
+                  disabled={saving || recording !== null || gifRecording !== null}
+                  title="Save this frame as a 1920 x 1080 PNG"
+                  className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs text-fg-3 hover:bg-white/6 hover:text-fg disabled:opacity-50"
+                >
+                  <ImageDown size={15} />
+                  Save frame
+                </button>
                 <button
                   type="button"
                   onClick={startRecording}
-                  disabled={saving || recording !== null}
+                  disabled={saving || recording !== null || gifRecording !== null}
                   title={`Record the whole clip as an MP4 at 60 fps, ${aspectById(aspectId).stage.width} x ${aspectById(aspectId).stage.height}`}
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
                 >
                   <Film size={15} />
                   Record MP4
                 </button>
-              ) : (
+                <button
+                  type="button"
+                  onClick={startGif}
+                  disabled={saving || recording !== null || gifRecording !== null}
+                  title={`Save the whole clip as a dithered GIF at ${GIF_FPS} fps and ${GIF_WIDTH} px wide`}
+                  className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
+                >
+                  <Images size={15} />
+                  Save as GIF
+                </button>
+              </div>
+              {(recording !== null || gifRecording !== null) && (
                 <>
                   <div
                     role="progressbar"
-                    aria-label="Recording"
+                    aria-label={recording !== null ? 'Recording' : 'GIF export'}
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-valuenow={recording}
-                    className="h-2 w-48 overflow-hidden rounded-full bg-white/10"
+                    aria-valuenow={recording ?? gifRecording ?? 0}
+                    className="h-2 w-36 overflow-hidden rounded-full bg-white/10"
                   >
-                    <div className="h-full bg-signal" style={{ width: `${recording}%` }} />
+                    <div
+                      className="h-full bg-signal"
+                      style={{ width: `${recording ?? gifRecording ?? 0}%` }}
+                    />
                   </div>
-                  <span className="font-mono text-xs text-fg-3">Recording {recording}%</span>
+                  <span className="font-mono text-xs text-fg-3">
+                    {recording !== null ? 'Recording' : 'Encoding GIF'} {recording ?? gifRecording}%
+                  </span>
                   <button
                     type="button"
                     onClick={() => abort.current?.abort()}
@@ -586,6 +688,9 @@ export function Replay({ record = recordScene }: ReplayProps) {
                   </button>
                 </>
               )}
+              <span className="text-xs text-fg-4">
+                GIF: clip-wide palette, dithering, {GIF_FPS} fps, {GIF_WIDTH} px wide
+              </span>
             </div>
             {saved && (
               <div

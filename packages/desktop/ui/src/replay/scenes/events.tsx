@@ -134,9 +134,6 @@ export const eventsScene: Scene<EventsData> = {
     const r = Math.max(4, Math.min(9, d.rowHeight / 8));
     return (
       <g fontFamily="'IBM Plex Sans', sans-serif">
-        <text x={80} y={92} fill="#e6edf3" fontSize={44} fontWeight={600}>
-          Replay
-        </text>
         <text x={frame.width - 80} y={92} fill="#8b98a5" fontSize={28} textAnchor="end">
           {utcStamp(realAt(d.map, t))}
         </text>

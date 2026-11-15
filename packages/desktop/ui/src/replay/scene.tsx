@@ -22,6 +22,13 @@ export interface Frame extends Stage {
   duration: number;
 }
 
+/** Optional words shared by the player and every exported frame. */
+export interface FrameOverlay {
+  /** The complete picker label, such as `agent-ops / docs` or `All projects`. */
+  projectName?: string;
+  showProject?: boolean;
+}
+
 /** One thing a scene can be about, such as a task, for the view's picker. */
 export interface Choice {
   id: string;
@@ -80,7 +87,13 @@ export function sceneDuration(scene: Scene<unknown>, timeline: Timeline): number
 export const BACKDROP = '#0b0f14';
 
 /** One frame as a complete SVG element, for the player and for Record. */
-export function renderFrame<D>(scene: Scene<D>, data: D, frame: Frame): ReactElement {
+export function renderFrame<D>(
+  scene: Scene<D>,
+  data: D,
+  frame: Frame,
+  overlay: FrameOverlay = {},
+): ReactElement {
+  const scale = Math.min(frame.width / STAGE_16_9.width, frame.height / STAGE_16_9.height);
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -94,6 +107,19 @@ export function renderFrame<D>(scene: Scene<D>, data: D, frame: Frame): ReactEle
     >
       <rect width={frame.width} height={frame.height} fill={BACKDROP} />
       {scene.render(data, frame)}
+      {overlay.showProject && overlay.projectName && (
+        <text
+          data-project-name="true"
+          x={70 * scale}
+          y={92 * scale}
+          fill="#e6edf3"
+          fontFamily="'IBM Plex Sans', 'Segoe UI', sans-serif"
+          fontSize={44 * scale}
+          fontWeight={600}
+        >
+          {overlay.projectName}
+        </text>
+      )}
     </svg>
   );
 }

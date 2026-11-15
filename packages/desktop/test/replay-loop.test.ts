@@ -111,7 +111,7 @@ describe('Human loop card', () => {
     expect(markup(tl, 30_000)).not.toContain('data-card="loop"');
     const card = markup(tl, 30_000 + CARD_FADE_MS + COUNT_MS + 10);
     expect(card).toContain('data-card="loop"');
-    expect(card).toContain('HUMAN IN THE LOOP');
+    expect(card).not.toContain('HUMAN IN THE LOOP');
     for (const text of [
       '>1.0<',
       'agent hour<',

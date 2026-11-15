@@ -103,9 +103,6 @@ export const countersScene: Scene<CountersData> = {
     const progress = d.duration > 0 ? t / d.duration : 0;
     return (
       <g fontFamily="'IBM Plex Sans', sans-serif">
-        <text x={pad} y={92} fill="#e6edf3" fontSize={44} fontWeight={600}>
-          Replay totals
-        </text>
         <text x={frame.width - pad} y={92} fill="#8b98a5" fontSize={28} textAnchor="end">
           {utcStamp(realAt(d.map, t))}
         </text>

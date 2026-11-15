@@ -140,7 +140,8 @@ describe('review rally', () => {
       const at = (t: number): string => markup(d, stage, t);
       const start = at(0);
       expect(start).toContain(`viewBox="0 0 ${stage.width} ${stage.height}"`);
-      expect(start).toContain('REVIEW RALLY · AO-7');
+      expect(start).toContain('>AO-7<');
+      expect(start).not.toContain('REVIEW RALLY');
       expect(start.match(/data-chip="pending"/g)).toHaveLength(3);
 
       // Round 2's return is in flight with its verdict; round 1's chip is on the board.
@@ -260,7 +261,8 @@ describe('Replay view with the review rally', () => {
     const select = taskSelect()!;
     expect(select.value).toBe('r/AO-7');
     expect([...select.options].map((o) => o.value)).toEqual(['r/AO-7', 'r/AO-1']);
-    expect(stage().textContent).toContain('REVIEW RALLY · AO-7');
+    expect(stage().textContent).toContain('AO-7');
+    expect(stage().textContent).not.toContain('REVIEW RALLY');
 
     const scrub = box.querySelector<HTMLInputElement>('[aria-label="Scrub"]')!;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -271,7 +273,8 @@ describe('Replay view with the review rally', () => {
     expect(clockText()).toBe('0:06.0 / 0:10.0');
 
     pick(select, 'r/AO-1');
-    expect(stage().textContent).toContain('REVIEW RALLY · AO-1');
+    expect(stage().textContent).toContain('AO-1');
+    expect(stage().textContent).not.toContain('REVIEW RALLY');
     expect(clockText()).toBe('0:00.0 / 0:10.0');
   });
 

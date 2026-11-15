@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('swarmup', {
   videoFolder: () => ipcRenderer.invoke('swarmup:video-folder'),
   saveVideo: (name: string, data: Uint8Array) =>
     ipcRenderer.invoke('swarmup:save-video', name, data),
+  saveGif: (name: string, data: Uint8Array) => ipcRenderer.invoke('swarmup:save-gif', name, data),
   projectPick: () => ipcRenderer.invoke('swarmup:project-pick'),
   projectPlan: (name: string) => ipcRenderer.invoke('swarmup:project-plan', name),
   projectStore: () => ipcRenderer.invoke('swarmup:project-store'),

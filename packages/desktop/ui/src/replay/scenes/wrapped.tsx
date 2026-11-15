@@ -217,17 +217,19 @@ export const wrappedScene: Scene<WrappedData> = {
           fillOpacity={0.06 * opacity}
         />
         <g opacity={opacity} transform={`translate(0 ${dy})`}>
-          <text
-            x={cx}
-            y={mid - 230 * s}
-            fill={card.color}
-            fontSize={40 * s}
-            fontWeight={600}
-            textAnchor="middle"
-            letterSpacing={4 * s}
-          >
-            {card.title.toUpperCase()}
-          </text>
+          {card.id !== 'title' && (
+            <text
+              x={cx}
+              y={mid - 230 * s}
+              fill={card.color}
+              fontSize={40 * s}
+              fontWeight={600}
+              textAnchor="middle"
+              letterSpacing={4 * s}
+            >
+              {card.title.toUpperCase()}
+            </text>
+          )}
           {title ? (
             <text
               x={cx}

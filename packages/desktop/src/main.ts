@@ -46,6 +46,7 @@ import { addProjectHandlers } from './add-project.js';
 import { allowedCall, attachmentName, ATTACHMENT_SCHEME } from './allow.js';
 import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
+import { gifFile, writeGif } from './gifs.js';
 import { migrateUserData } from './migrate.js';
 import { inboxTarget } from './route.js';
 import { runtimeDetail } from './runtime-dialog.js';
@@ -842,6 +843,17 @@ async function screenshots(dir: string): Promise<void> {
     const id = at < 0 ? undefined : v.slice(at + 1);
     send('swarmup:navigate', { view, id });
     await new Promise((r) => setTimeout(r, 1200));
+    if (view === 'replay') {
+      const exports = (await win!.webContents.executeJavaScript(
+        `Array.from(document.querySelectorAll('[aria-label="Exports"] button'), (b) => b.textContent.trim())`,
+      )) as string[];
+      const expected = ['Save frame', 'Record MP4', 'Save as GIF'];
+      if (JSON.stringify(exports) !== JSON.stringify(expected)) {
+        problems.push(
+          `Replay exports are ${exports.join(', ') || 'missing'}, expected ${expected.join(', ')}`,
+        );
+      }
+    }
     const img = lastFrame ?? (await win!.webContents.capturePage());
     writeFileSync(join(dir, `${v.replace(/[:/]/g, '-')}.png`), img.toPNG());
   }
@@ -1279,6 +1291,20 @@ ipcMain.handle('swarmup:save-video', (e, name: unknown, data: unknown) => {
     if (!dir) throw new Error('pick a folder first');
     videoDir = null;
     return { ok: true, data: { dir, file: writeVideo(dir, file) } };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+});
+
+/** Writes a finished GIF into the folder picked with `swarmup:video-folder`. */
+ipcMain.handle('swarmup:save-gif', (e, name: unknown, data: unknown) => {
+  if (!fromPage(e)) return { ok: false, error: 'not allowed from this page' };
+  try {
+    const file = gifFile(name, data);
+    const dir = videoDir;
+    if (!dir) throw new Error('pick a folder first');
+    videoDir = null;
+    return { ok: true, data: { dir, file: writeGif(dir, file) } };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
