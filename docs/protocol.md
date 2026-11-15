@@ -742,8 +742,8 @@ of a milestone's plan change on one plan item). Types that change state:
 `claim`, `start`, `progress`, `checkpoint`, `release`, `handoff`, `delegate`, `assign`, `review`,
 `verdict`, `done`, `ask`, `block`, `answer`, `unblock`, `priority`, `park`, `reopen`, and on a
 milestone `plan-approve`, `plan-amend` and the `plan-reject` of its first proposal (the fold reads
-the plan itself from these and from `plan` events; the `swarmup plan` commands that write them are
-not built yet). Other types (`comment`,
+the plan itself from these and from `plan` events, which the `swarmup plan` commands write; see
+[Milestones and plans](#milestones-and-plans)). Other types (`comment`,
 `finding`, `learn`, `run-start`, `run-end`, `merge`) are history. Unknown types are kept and
 ignored, so older `swarmup` versions read newer data. swarmupd writes `merge` events, and the `changes`
 verdict that sends back approved work it could not merge, as `opsd:merge`.
