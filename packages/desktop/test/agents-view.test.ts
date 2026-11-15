@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Nav } from '../ui/src/App';
+import { resetCliModels } from '../ui/src/lib/models';
 import { AddAgentDialog, Agents } from '../ui/src/views/Agents';
 
 const net = vi.hoisted(() => ({
@@ -213,8 +214,13 @@ describe('Agents view: model suggestions and the unknown-model warning', () => {
   beforeEach(() => {
     (net.data['/api/settings'] as { opsd: { runtimes: unknown } }).opsd.runtimes = {
       claude: { command: 'claude', paused: false },
-      codex: { command: 'codex', paused: false, model: 'o3' },
+      codex: { command: 'codex', paused: false, model: 'gpt-5.6-sol' },
     };
+  });
+
+  afterEach(() => {
+    resetCliModels();
+    delete window.swarmup;
   });
 
   /** The Model field inside `el` and the suggestions its datalist holds now. */
@@ -231,7 +237,7 @@ describe('Agents view: model suggestions and the unknown-model warning', () => {
     mount();
     const f = modelField(card('claude:pm'));
     expect(f.options()).toContain('opus');
-    expect(f.options()).not.toContain('gpt-5');
+    expect(f.options()).not.toContain('gpt-5.6-sol');
     type(f.input, 'son');
     expect(f.options()).toEqual(['sonnet', 'claude-sonnet-5-5', 'claude-sonnet-4-5']);
     type(f.input, 'claude-sonnet-5-5');
@@ -241,12 +247,40 @@ describe('Agents view: model suggestions and the unknown-model warning', () => {
   it("suggests Codex's models as you type on a Codex agent", () => {
     mount();
     const f = modelField(card('codex:qa'));
-    expect(f.options()).toContain('gpt-5-codex');
+    expect(f.options()).toContain('gpt-5.6-sol');
     expect(f.options()).not.toContain('opus');
-    type(f.input, '5.1-codex');
-    expect(f.options()).toEqual(['gpt-5.1-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini']);
-    type(f.input, 'gpt-5.1-codex');
+    type(f.input, '6.1');
+    expect(f.options()).toEqual(['gpt-6.1-sol', 'gpt-6.1-terra']);
+    type(f.input, 'gpt-6.1-terra');
     expect(card('codex:qa').querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("suggests the Codex CLI's cached models over the shipped list when the app has them", async () => {
+    window.swarmup = {
+      models: async () => ({
+        ok: true,
+        data: {
+          codex: {
+            models: ['gpt-7-nova', 'gpt-6.1-sol'],
+            source: 'codex CLI 0.170.0',
+            fetchedAt: '2026-12-01T08:00:00Z',
+          },
+        },
+      }),
+    } as unknown as NonNullable<Window['swarmup']>;
+    mount();
+    await act(async () => {});
+    const c = card('codex:qa');
+    const f = modelField(c);
+    expect(f.options()).toEqual(['gpt-7-nova', 'gpt-6.1-sol']);
+    type(f.input, 'gpt-5.6-luna');
+    expect(c.querySelector('[role="status"]')?.getAttribute('title')).toMatch(
+      /^Not a known codex model \(codex CLI 0\.170\.0, 2026-12-01\)/,
+    );
+    type(f.input, 'gpt-7-nova');
+    expect(c.querySelector('[role="status"]')).toBeNull();
+    // Claude has no CLI list, so its shipped list still applies.
+    expect(modelField(card('claude:pm')).options()).toContain('opus');
   });
 
   it('warns on a name outside the list and still saves it', async () => {

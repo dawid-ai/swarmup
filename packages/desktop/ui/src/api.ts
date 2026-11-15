@@ -42,6 +42,12 @@ interface Bridge {
     login?: boolean;
   }) => Promise<{ ok: boolean; data?: DesktopView; error?: string }>;
   onService: (fn: (m: unknown) => void) => () => void;
+  /** The model lists the installed provider CLIs keep, keyed by provider. */
+  models: () => Promise<{
+    ok: boolean;
+    data?: Record<string, { models: string[]; source: string; fetchedAt?: string }>;
+    error?: string;
+  }>;
   voice: () => Promise<{ ok: boolean; data?: VoiceView; error?: string }>;
   /** Choosing `cloud` asks in a system dialog first; resolves `cancelled` when declined. */
   voiceSet: (patch: {

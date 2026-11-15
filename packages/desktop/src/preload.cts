@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('swarmup', {
   update: (action?: 'check' | 'install') => ipcRenderer.invoke('swarmup:update', action),
   onUpdate: (fn: Listener) => subscribe('swarmup:update', fn),
   desktopSet: (patch: unknown) => ipcRenderer.invoke('swarmup:desktop-set', patch),
+  models: () => ipcRenderer.invoke('swarmup:models'),
   voice: () => ipcRenderer.invoke('swarmup:voice'),
   voiceSet: (patch: unknown) => ipcRenderer.invoke('swarmup:voice-set', patch),
   voiceBrowse: (kind: 'program' | 'model') => ipcRenderer.invoke('swarmup:voice-browse', kind),

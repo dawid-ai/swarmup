@@ -48,6 +48,7 @@ import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
 import { gifFile, writeGif } from './gifs.js';
 import { migrateUserData } from './migrate.js';
+import { cliModels } from './models.js';
 import { inboxTarget } from './route.js';
 import { runtimeDetail } from './runtime-dialog.js';
 import type { UpdateState } from './updates.js';
@@ -1164,6 +1165,12 @@ ipcMain.handle('swarmup:runtime', async (e, name: unknown, input: unknown) => {
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
+});
+
+/** The model lists the installed provider CLIs keep, for the Model fields' suggestions. */
+ipcMain.handle('swarmup:models', (e) => {
+  if (!fromPage(e)) return { ok: false, error: 'not allowed from this page' };
+  return { ok: true, data: cliModels() };
 });
 
 ipcMain.handle('swarmup:voice', (e) => {

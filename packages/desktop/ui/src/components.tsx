@@ -3,7 +3,7 @@ import { AlertTriangle, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { onWarnings } from './api';
-import { modelWarning, suggestModels } from './lib/models';
+import { modelWarning, suggestModels, useModelLists } from './lib/models';
 import type { Task } from './types';
 import { PriorityTag, StatusTag } from './ui/identity';
 
@@ -153,6 +153,7 @@ export function ModelInput(props: {
   compact?: boolean;
 }) {
   const id = useId();
+  useModelLists();
   const options = suggestModels(props.runtime, props.value);
   const warning = modelWarning(props.runtime, props.value);
   return (
