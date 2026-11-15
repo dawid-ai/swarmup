@@ -177,6 +177,8 @@ const views = [
   'reports',
   'replay',
   'agents',
+  // The active Agents item stays visible while its section folds (AO-0333).
+  'sidebar-fold:agents',
   'runs',
   'standups',
   'schedules',

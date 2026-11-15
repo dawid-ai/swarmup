@@ -142,7 +142,9 @@ function dialog(): HTMLElement | null {
 
 function projects(): string[] {
   const group = document.body.querySelector('[data-projects]')!;
-  return [...group.querySelectorAll('button')].map((b) => b.textContent!.trim());
+  return [...group.querySelectorAll('button:not([aria-controls])')].map((b) =>
+    b.textContent!.trim(),
+  );
 }
 
 async function start(): Promise<void> {

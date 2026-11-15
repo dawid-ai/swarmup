@@ -7,6 +7,7 @@ import {
   Bookmark,
   Bot,
   CalendarClock,
+  ChevronRight,
   Clapperboard,
   FolderGit2,
   FolderPlus,
@@ -89,8 +90,15 @@ export type View =
   | 'search'
   | 'settings';
 
-const GROUPS: Array<{ title: string; items: Array<[View, string, LucideIcon]> }> = [
+type SidebarSection = 'projects' | 'work' | 'agents' | 'talk';
+
+const GROUPS: Array<{
+  section: Exclude<SidebarSection, 'projects'>;
+  title: string;
+  items: Array<[View, string, LucideIcon]>;
+}> = [
   {
+    section: 'work',
     title: 'Work',
     items: [
       ['inbox', 'Inbox', InboxIcon],
@@ -104,6 +112,7 @@ const GROUPS: Array<{ title: string; items: Array<[View, string, LucideIcon]> }>
     ],
   },
   {
+    section: 'agents',
     title: 'Agents',
     items: [
       ['agents', 'Agents', Bot],
@@ -113,6 +122,7 @@ const GROUPS: Array<{ title: string; items: Array<[View, string, LucideIcon]> }>
     ],
   },
   {
+    section: 'talk',
     title: 'Talk',
     items: [
       ['chat', 'Chat', MessageSquare],
@@ -124,6 +134,35 @@ const GROUPS: Array<{ title: string; items: Array<[View, string, LucideIcon]> }>
 ];
 
 const VIEWS: View[] = [...GROUPS.flatMap((g) => g.items.map(([v]) => v)), 'search', 'settings'];
+
+const SIDEBAR_SECTIONS: SidebarSection[] = ['projects', 'work', 'agents', 'talk'];
+const SIDEBAR_FOLDED_KEY = 'swarmup.sidebar.folded';
+
+function isSidebarSection(value: string | undefined): value is SidebarSection {
+  return SIDEBAR_SECTIONS.includes(value as SidebarSection);
+}
+
+function loadFoldedSections(): Record<SidebarSection, boolean> {
+  const folded = { projects: false, work: false, agents: false, talk: false };
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SIDEBAR_FOLDED_KEY) ?? '{}') as Record<
+      string,
+      unknown
+    >;
+    for (const section of SIDEBAR_SECTIONS) folded[section] = saved[section] === true;
+  } catch {
+    // A corrupt or unavailable local store leaves every section open.
+  }
+  return folded;
+}
+
+function storeFoldedSections(folded: Record<SidebarSection, boolean>): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_FOLDED_KEY, JSON.stringify(folded));
+  } catch {
+    // Folding still works for this window when the local store is unavailable.
+  }
+}
 
 interface Status {
   connected: boolean;
@@ -140,6 +179,19 @@ export interface Nav {
 export function App() {
   const [view, setView] = useState<View>('inbox');
   const [arg, setArg] = useState<string | undefined>();
+  const [folded, setFolded] = useState(loadFoldedSections);
+  const setSectionFolded = useCallback((section: SidebarSection, value: boolean): void => {
+    setFolded((current) => {
+      if (current[section] === value) return current;
+      const next = { ...current, [section]: value };
+      storeFoldedSections(next);
+      return next;
+    });
+  }, []);
+  const toggleSection = useCallback(
+    (section: SidebarSection): void => setSectionFolded(section, !folded[section]),
+    [folded, setSectionFolded],
+  );
   // The open task and the event a task reference points at.
   const { task, focus, open: setTask, back, forward } = useTaskFocus();
   // Back and Forward for the key and mouse listeners below, which are added once.
@@ -308,6 +360,9 @@ export function App() {
         else if (nav.view === 'add-project') {
           setAutoCreate(nav.id === 'create');
           addProject();
+        } else if (nav.view === 'sidebar-fold' && isSidebarSection(nav.id)) {
+          // The smoke run captures an intentionally folded section.
+          setSectionFolded(nav.id, true);
         } else if (VIEWS.includes(nav.view as View)) {
           setView(nav.view as View);
           setArg(nav.id);
@@ -316,7 +371,7 @@ export function App() {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [loadInfo, setTask, addProject, closeForm]);
+  }, [loadInfo, setTask, addProject, closeForm, setSectionFolded]);
 
   // A swarmupd older than the app restarts once no run is live: look again every 30 s.
   useEffect(() => {
@@ -419,6 +474,9 @@ export function App() {
       tone: '#ffb547',
     },
   };
+  const isGroupItemActive = (item: View): boolean =>
+    view === item && !(item === 'list' && arg?.startsWith('project:'));
+  const isProjectActive = (name: string): boolean => view === 'list' && arg === `project:${name}`;
 
   if (setup) {
     return (
@@ -498,35 +556,63 @@ export function App() {
         <nav className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-2 py-2">
           {/* First, so Add project shows without scrolling in a window of the smallest size. */}
           <div data-projects>
-            <div className="label-caps px-3 pb-1.5 !text-[10px]">Projects</div>
-            {projects.map((p) => (
-              <NavItem
-                key={p.dir}
-                active={view === 'list' && arg === `project:${p.name}`}
-                icon={FolderGit2}
-                label={p.name}
-                title={p.dir}
-                onClick={() => nav.go('list', `project:${p.name}`)}
-              />
-            ))}
-            <NavItem active={false} icon={FolderPlus} label="Add project" onClick={addProject} />
-          </div>
-          {GROUPS.map((g) => (
-            <div key={g.title}>
-              <div className="label-caps px-3 pb-1.5 !text-[10px]">{g.title}</div>
-              {g.items.map(([v, label, Icon]) => (
+            <SectionHeader
+              title="Projects"
+              section="projects"
+              folded={folded.projects}
+              onToggle={toggleSection}
+            />
+            <div id="sidebar-section-projects">
+              {projects
+                .filter((p) => !folded.projects || isProjectActive(p.name))
+                .map((p) => (
+                  <NavItem
+                    key={p.dir}
+                    active={isProjectActive(p.name)}
+                    icon={FolderGit2}
+                    label={p.name}
+                    title={p.dir}
+                    onClick={() => nav.go('list', `project:${p.name}`)}
+                  />
+                ))}
+              {!folded.projects && (
                 <NavItem
-                  key={v}
-                  // A project from the list above shows the task list; the mark stays on it.
-                  active={view === v && !(v === 'list' && arg?.startsWith('project:'))}
-                  icon={Icon}
-                  label={label}
-                  count={counts[v]}
-                  onClick={() => nav.go(v)}
+                  active={false}
+                  icon={FolderPlus}
+                  label="Add project"
+                  onClick={addProject}
                 />
-              ))}
+              )}
             </div>
-          ))}
+          </div>
+          {GROUPS.map((g) => {
+            const section = g.section;
+            return (
+              <div key={g.title}>
+                <SectionHeader
+                  title={g.title}
+                  section={section}
+                  folded={folded[section]}
+                  onToggle={toggleSection}
+                />
+                <div id={`sidebar-section-${section}`}>
+                  {g.items
+                    .filter(([v]) => !folded[section] || isGroupItemActive(v))
+                    .map(([v, label, Icon]) => (
+                      <NavItem
+                        key={v}
+                        // A project from the list above shows the task list; the mark stays on it.
+                        active={isGroupItemActive(v)}
+                        icon={Icon}
+                        label={label}
+                        count={counts[v]}
+                        onClick={() => nav.go(v)}
+                      />
+                    ))}
+                </div>
+              </div>
+            );
+          })}
           {saved.length > 0 && (
             <div>
               <div className="label-caps px-3 pb-1.5 !text-[10px]">Saved views</div>
@@ -804,6 +890,31 @@ function SignedOutBanner(props: { provider: string; state: SignedOut; onResumed:
         <RefreshCw size={13} /> Resume
       </button>
     </div>
+  );
+}
+
+function SectionHeader(props: {
+  title: string;
+  section: SidebarSection;
+  folded: boolean;
+  onToggle: (section: SidebarSection) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={!props.folded}
+      aria-controls={`sidebar-section-${props.section}`}
+      onClick={() => props.onToggle(props.section)}
+      className="label-caps flex w-full items-center gap-1 px-3 pb-1.5 text-left !text-[10px] transition hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal"
+    >
+      <ChevronRight
+        aria-hidden="true"
+        size={12}
+        strokeWidth={2.4}
+        className={cx('transition-transform', !props.folded && 'rotate-90')}
+      />
+      <span>{props.title}</span>
+    </button>
   );
 }
 
