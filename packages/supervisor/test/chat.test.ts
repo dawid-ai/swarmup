@@ -9,6 +9,7 @@ import { initRoot, OpsError, Workspace } from '@swarmup/core';
 import type { ChatView, RunRecord } from '../src/index.js';
 import {
   CHAT_DENY,
+  CHAT_READ_TOOLS,
   CHAT_TOOLS,
   CLI_TOOLS,
   chatMessage,
@@ -538,6 +539,18 @@ describe('chat runtime', () => {
       resume: true,
     }).args;
     expect(next).toEqual(expect.arrayContaining(['--resume', 'abc']));
+    // A role file's own tools still get the read-only release and PR commands (AO-0349).
+    const pm = { id: 'claude:pm', status: 'active', file: '', body: '', tools: ['Read'] };
+    const own = invocation(rc, 'claude:pm', pm as never, '/w', [], [], {
+      session: 'abc',
+      resume: true,
+    }).args;
+    const allowed = own[own.indexOf('--allowedTools') + 1]!.split(',');
+    expect(allowed).toEqual(expect.arrayContaining(['Read', ...CHAT_READ_TOOLS]));
+    expect(allowed).toEqual(
+      expect.arrayContaining(['Bash(gh release list*)', 'Bash(git -C * tag -l*)']),
+    );
+    expect(allowed.some((t) => /^Bash\((gh release|git tag) \*\)$/.test(t))).toBe(false);
     expect(next).not.toContain('--session-id');
     // Other runs keep their arguments.
     const plain = invocation(rc, 'claude:engineer', undefined, '/w', []).args;
