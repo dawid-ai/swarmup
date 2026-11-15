@@ -263,7 +263,7 @@ function serviceText(s: ServiceState): { text: string; tone: string } {
 
 const UPDATE_TEXT: Record<string, string> = {
   off: 'Updates come with the installed app. This copy runs from a checkout: update it with git.',
-  idle: 'Looks for a new version a minute after start and every 4 hours.',
+  idle: 'Looks for a new version 20 seconds after start and every 30 minutes.',
   checking: 'Looking for a new version…',
   none: 'You have the newest version.',
   downloading: 'Downloading',

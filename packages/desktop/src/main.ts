@@ -55,6 +55,7 @@ import {
   installUpdate as runInstall,
   notesText,
   plainNotes,
+  scheduleUpdateChecks,
   takeRelaunch,
   writeRelaunch,
 } from './updates.js';
@@ -597,8 +598,7 @@ function setupUpdates(): void {
     }
   });
   u.on('error', (err) => setUpdate({ status: 'error', error: err.message }));
-  setTimeout(() => void checkUpdate(), 20_000).unref();
-  setInterval(() => void checkUpdate(), 4 * 3_600_000).unref();
+  scheduleUpdateChecks(() => void checkUpdate());
   // A downloaded update installs on its own when nothing would be cut off.
   setInterval(() => void installUpdate(false).catch(() => undefined), 60_000).unref();
 }

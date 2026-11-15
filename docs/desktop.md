@@ -18,7 +18,7 @@ needed:
   leaves PATH as it is, so remove the entry yourself. Agent runs always get it first on their PATH
   from swarmupd.
 
-The app checks GitHub Releases a minute after it starts and every 4 hours, and downloads a new
+The app checks GitHub Releases 20 seconds after it starts and every 30 minutes, and downloads a new
 version in the background. It installs on its own once no agent run is live and no window is open
 (the app sits in the tray): it stops swarmupd, which runs from the files the installer replaces,
 installs silently and starts again in the tray. **Settings > Updates**, the banner and the tray's

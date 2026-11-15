@@ -10,6 +10,15 @@ import { join } from 'node:path';
 
 export type UpdateStatus = 'off' | 'idle' | 'checking' | 'none' | 'downloading' | 'ready' | 'error';
 
+/** How often the installed app looks for a new release after startup. */
+export const UPDATE_CHECK_INTERVAL_MS = 30 * 60_000;
+
+/** Schedules the first and recurring update checks. */
+export function scheduleUpdateChecks(check: () => void): void {
+  setTimeout(check, 20_000).unref();
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS).unref();
+}
+
 /** What the Settings card, the banner and the tray show about updates. */
 export interface UpdateState {
   status: UpdateStatus;

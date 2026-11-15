@@ -40,7 +40,7 @@ CI, builds and smoke-tests the installer, and uploads `SwarmUp-Setup.exe`, its b
 
 ## Test the update
 
-The app checks 20 seconds after it starts, then every 4 hours. **Settings > Updates** checks now.
+The app checks 20 seconds after it starts, then every 30 minutes. **Settings > Updates** checks now.
 
 1. In the installed app, open **Settings > Updates** and check. Expect the new version to
    download, then **Install**. With no live run and the window closed, it installs on its own.

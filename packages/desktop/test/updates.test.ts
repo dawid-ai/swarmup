@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { trayMenu } from '../src/service';
 import type { InstallSteps } from '../src/updates';
 import {
@@ -10,13 +10,33 @@ import {
   installUpdate,
   notesText,
   plainNotes,
+  scheduleUpdateChecks,
   takeRelaunch,
+  UPDATE_CHECK_INTERVAL_MS,
   writeRelaunch,
 } from '../src/updates';
 
 const dirs: string[] = [];
 afterEach(() => {
+  vi.useRealTimers();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+describe('update check schedule', () => {
+  it('checks after 20 seconds, then every 30 minutes', () => {
+    vi.useFakeTimers();
+    const check = vi.fn();
+
+    scheduleUpdateChecks(check);
+    vi.advanceTimersByTime(19_999);
+    expect(check).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(check).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS - 20_000);
+    expect(check).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS);
+    expect(check).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('update install policy', () => {
