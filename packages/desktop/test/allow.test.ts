@@ -43,6 +43,7 @@ describe('IPC allowlist', () => {
     expect(allowedCall('GET', '/api/kb?q=git&topic=windows')).toBe(true);
     expect(allowedCall('POST', '/api/kb')).toBe(false);
     expect(allowedCall('GET', '/api/doctor')).toBe(true);
+    expect(allowedCall('POST', '/api/doctor/skills')).toBe(true);
     expect(allowedCall('GET', '/api/report?days=30')).toBe(true);
     expect(allowedCall('POST', '/api/notify/test')).toBe(true);
     expect(allowedCall('GET', '/api/machines')).toBe(true);

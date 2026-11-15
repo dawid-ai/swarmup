@@ -45,6 +45,9 @@ and run it. It installs, for your user only:
 
 - the desktop app, with swarmupd inside it;
 - the `swarmup` command, added to your PATH if you leave the box checked.
+- the current `swarmup` skill in Claude Code and Codex's user skill folders. **Settings > Health
+  checks** can repair those copies and safely remove a leftover `agent-ops` skill folder only when
+  that folder contains no other files.
 
 The app updates itself from [GitHub Releases](https://github.com/dawid-ai/swarmup/releases): a
 new version downloads in the background and installs once no agent run is live and the window is

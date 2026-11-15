@@ -31,7 +31,7 @@ import {
   standup,
 } from './admin.js';
 import { NoDiff } from './diff.js';
-import { doctor } from './doctor.js';
+import { doctor, installUserSkills } from './doctor.js';
 import { buildReport, reportWindow } from './report.js';
 import { buildWrapped } from './wrapped.js';
 import type { SettingsPatch } from './admin.js';
@@ -326,7 +326,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       humanOnly(`changing mirroring for root ${id}`);
       return send(res, 200, mirrorRoot(sup, id, body.on));
     }
-    if (method === 'GET' && area === 'doctor') {
+    if (method === 'POST' && area === 'doctor' && id === 'skills') {
+      humanOnly('installing user-level skills');
+      const { env } = sup.context;
+      return send(res, 200, installUserSkills({ env }));
+    }
+    if (method === 'GET' && area === 'doctor' && !id) {
       const { env, cwd } = sup.context;
       return send(
         res,

@@ -877,6 +877,7 @@ export interface Check {
   status: 'ok' | 'warn' | 'fail';
   detail: string;
   fix?: string;
+  action?: 'install-skills';
 }
 
 /** A learn note from `kb/<topic>/<slug>.md`, as `GET /api/kb` returns it. */

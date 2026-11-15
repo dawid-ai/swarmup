@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statfsSync, statSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statfsSync,
+  statSync,
+} from 'node:fs';
 import { freemem, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +30,8 @@ export interface Check {
   detail: string;
   /** What to do about a warn or fail. */
   fix?: string;
+  /** A repair the desktop app can run. */
+  action?: 'install-skills';
 }
 
 export interface DoctorOptions {
@@ -87,6 +98,27 @@ const SKILL_PATH = join('skills', 'swarmup', 'SKILL.md');
 /** Where the skill sat before the SwarmUp rename; a copy left there is flagged. */
 const OLD_SKILL_PATH = join('skills', 'agent-ops', 'SKILL.md');
 
+interface UserSkillLocation {
+  runtime: string;
+  dir: string;
+  /** Canonical runtime homes receive the skill; ~/.agents is checked and migrated only. */
+  install: boolean;
+}
+
+export interface SkillInstallOptions {
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  /** The skill to install. Default: `bundledSkillFile()`. */
+  skillFile?: string | null;
+}
+
+export interface SkillInstallResult {
+  installed: string[];
+  removed: string[];
+  /** Old skill folders kept because they contain something besides SKILL.md. */
+  kept: string[];
+}
+
 /**
  * The swarmup skill this install ships: `skills/` beside the bundle in the desktop app, or at
  * the top of a source checkout (three folders up from `packages/supervisor/dist`). Null when
@@ -106,25 +138,75 @@ export function bundledSkillFile(): string | null {
  * User-level copies of the swarmup skill, which the runtimes load in place of the repo copy:
  * Claude Code from its config folder, Codex from its home and from `~/.agents`.
  */
-function userSkillFiles(
-  env: NodeJS.ProcessEnv,
-  home: string,
-  path = SKILL_PATH,
-): Array<[string, string]> {
-  const dirs: Array<[string, string]> = [
-    ['Claude Code', env.CLAUDE_CONFIG_DIR ?? join(home, '.claude')],
-    ['Codex', env.CODEX_HOME ?? join(home, '.codex')],
-    ['Codex', join(home, '.agents')],
+function userSkillLocations(env: NodeJS.ProcessEnv, home: string): UserSkillLocation[] {
+  const dirs: UserSkillLocation[] = [
+    { runtime: 'Claude Code', dir: env.CLAUDE_CONFIG_DIR ?? join(home, '.claude'), install: true },
+    { runtime: 'Codex', dir: env.CODEX_HOME ?? join(home, '.codex'), install: true },
+    { runtime: 'Codex', dir: join(home, '.agents'), install: false },
   ];
   const seen = new Set<string>();
-  const out: Array<[string, string]> = [];
-  for (const [runtime, dir] of dirs) {
-    const file = join(dir, path);
-    if (seen.has(file) || !existsSync(file)) continue;
-    seen.add(file);
-    out.push([runtime, file]);
+  const out: UserSkillLocation[] = [];
+  for (const location of dirs) {
+    if (seen.has(location.dir)) continue;
+    seen.add(location.dir);
+    out.push(location);
   }
   return out;
+}
+
+function homeFor(env: NodeJS.ProcessEnv): string {
+  return process.platform === 'win32'
+    ? (env.USERPROFILE ?? env.HOME ?? homedir())
+    : (env.HOME ?? env.USERPROFILE ?? homedir());
+}
+
+/** True only when deleting the old skill folder cannot remove a person's other files. */
+function oldSkillOnly(dir: string): boolean {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    return (
+      entries.length === 1 && entries[0]!.isFile() && entries[0]!.name.toLowerCase() === 'skill.md'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Installs the bundled skill into Claude Code and Codex's user homes. An old `agent-ops` folder is
+ * removed only when its sole entry is SKILL.md; a folder with any other entry is left untouched.
+ * The desktop calls this after an install/update and from Health checks' Fix button.
+ */
+export function installUserSkills(opts: SkillInstallOptions = {}): SkillInstallResult {
+  const env = opts.env ?? process.env;
+  const home = opts.home ?? homeFor(env);
+  const bundled = opts.skillFile === undefined ? bundledSkillFile() : opts.skillFile;
+  if (!bundled || !existsSync(bundled)) {
+    throw new Error('this SwarmUp install does not contain skills/swarmup/SKILL.md');
+  }
+  const locations = userSkillLocations(env, home);
+  const installed: string[] = [];
+  for (const location of locations) {
+    if (!location.install) continue;
+    const file = join(location.dir, SKILL_PATH);
+    mkdirSync(dirname(file), { recursive: true });
+    copyFileSync(bundled, file);
+    installed.push(file);
+  }
+
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const location of locations) {
+    const dir = dirname(join(location.dir, OLD_SKILL_PATH));
+    if (!existsSync(dir)) continue;
+    if (!oldSkillOnly(dir)) {
+      kept.push(dir);
+      continue;
+    }
+    rmSync(dir, { recursive: true });
+    removed.push(dir);
+  }
+  return { installed, removed, kept };
 }
 
 /** Text with Windows line ends turned into `\n`, so a checkout with autocrlf still matches. */
@@ -147,40 +229,74 @@ function skillChecks(env: NodeJS.ProcessEnv, home: string, bundled: string | nul
   } catch {
     return [];
   }
-  const leftovers = userSkillFiles(env, home, OLD_SKILL_PATH).map(([runtime, file]): Check => ({
-    id: `skill:${file}`,
-    label: `${runtime} skill`,
-    status: 'warn',
-    detail: `${file} is the skill under its old name agent-ops; runs now load the swarmup skill`,
-    fix: `copy ${bundled} to ${join(dirname(dirname(dirname(file))), SKILL_PATH)}, then delete ${dirname(file)}`,
-  }));
-  const current = userSkillFiles(env, home).map(([runtime, file]): Check => {
+  const locations = userSkillLocations(env, home);
+  const leftovers = locations.flatMap((location): Check[] => {
+    const file = join(location.dir, OLD_SKILL_PATH);
+    if (!existsSync(file)) return [];
+    const dir = dirname(file);
+    const safe = oldSkillOnly(dir);
+    return [
+      {
+        id: `skill:${file}`,
+        label: `${location.runtime} skill`,
+        status: 'warn',
+        detail:
+          `${file} is the skill under its old name agent-ops; runs now load the swarmup skill` +
+          (safe ? '' : '; the folder has other files, so Fix will keep it'),
+        fix: safe
+          ? 'open Settings > Health checks and click Fix to install the current skill and remove this old folder'
+          : 'open Settings > Health checks and click Fix to install the current skill; move or remove the other files by hand before deleting this old folder',
+        action: 'install-skills',
+      },
+    ];
+  });
+  const current = locations.flatMap((location): Check[] => {
+    const file = join(location.dir, SKILL_PATH);
+    if (!existsSync(file)) {
+      if (!location.install) return [];
+      return [
+        {
+          id: `skill:${file}`,
+          label: `${location.runtime} skill`,
+          status: 'warn',
+          detail: `${file} is not installed`,
+          fix: 'open Settings > Health checks and click Fix to install the swarmup skill this app ships',
+          action: 'install-skills',
+        },
+      ];
+    }
     const id = `skill:${file}`;
-    const label = `${runtime} skill`;
+    const label = `${location.runtime} skill`;
     let have: string;
     try {
       have = lf(readFileSync(file, 'utf8'));
     } catch (err) {
-      return {
+      return [
+        {
+          id,
+          label,
+          status: 'warn',
+          detail: `${file} cannot be read: ${(err as Error).message}`,
+          fix: 'open Settings > Health checks and click Fix to copy the skill this app ships over it',
+          action: 'install-skills',
+        },
+      ];
+    }
+    if (have === want) return [{ id, label, status: 'ok', detail: `${file} matches this install` }];
+    const missing = missingSections(want, have);
+    return [
+      {
         id,
         label,
         status: 'warn',
-        detail: `${file} cannot be read: ${(err as Error).message}`,
-        fix: `copy ${bundled} over it`,
-      };
-    }
-    if (have === want) return { id, label, status: 'ok', detail: `${file} matches this install` };
-    const missing = missingSections(want, have);
-    return {
-      id,
-      label,
-      status: 'warn',
-      detail:
-        `${file} differs from the swarmup skill this install ships, and ${runtime} loads it ` +
-        `instead of the repo copy` +
-        (missing.length ? `; it lacks: ${missing.join(', ')}` : ''),
-      fix: `copy ${bundled} over it`,
-    };
+        detail:
+          `${file} differs from the swarmup skill this install ships, and ${location.runtime} loads it ` +
+          `instead of the repo copy` +
+          (missing.length ? `; it lacks: ${missing.join(', ')}` : ''),
+        fix: 'open Settings > Health checks and click Fix to copy the skill this app ships over it',
+        action: 'install-skills',
+      },
+    ];
   });
   return [...current, ...leftovers];
 }
@@ -192,7 +308,7 @@ function skillChecks(env: NodeJS.ProcessEnv, home: string, bundled: string | nul
  */
 export async function doctor(opts: DoctorOptions): Promise<Check[]> {
   const { env } = opts;
-  const home = opts.home ?? homedir();
+  const home = opts.home ?? homeFor(env);
   const out: Check[] = [];
   const add = (c: Check): void => {
     out.push(c);

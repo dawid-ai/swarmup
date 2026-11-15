@@ -1,14 +1,22 @@
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { initRoot, Workspace, writeOutcome } from '@swarmup/core';
 import type { Check } from '../src/index.js';
-import { bundledSkillFile, doctor, formatChecks } from '../src/index.js';
+import { bundledSkillFile, doctor, formatChecks, installUserSkills } from '../src/index.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -245,7 +253,7 @@ describe('swarmup doctor', () => {
       label: 'Claude Code skill',
       status: 'warn',
       detail: expect.stringContaining('it lacks: Writing event text'),
-      fix: `copy ${bundled} over it`,
+      action: 'install-skills',
     });
     expect(byId(checks, `skill:${same}`)).toMatchObject({ label: 'Codex skill', status: 'ok' });
     expect(byId(checks, `skill:${agents}`)?.status).toBe('warn');
@@ -255,6 +263,65 @@ describe('swarmup doctor', () => {
     // No shipped skill, nothing to compare with: no skill checks.
     const none = await doctor({ env, cwd, home, skillFile: null });
     expect(none.filter((c) => c.id.startsWith('skill:'))).toEqual([]);
+  });
+
+  it('installs the bundled skill for Claude Code and Codex and removes old skill-only folders', () => {
+    const bundled = join(temp(), 'SKILL.md');
+    writeFileSync(bundled, '# SwarmUp\n');
+    const home = temp();
+    const claudeDir = temp();
+    const codexHome = temp();
+    for (const dir of [claudeDir, codexHome]) {
+      const old = join(dir, 'skills', 'agent-ops');
+      mkdirSync(old, { recursive: true });
+      writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
+    }
+
+    const result = installUserSkills({
+      env: { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome },
+      home,
+      skillFile: bundled,
+    });
+
+    for (const dir of [claudeDir, codexHome]) {
+      expect(readFileSync(join(dir, 'skills', 'swarmup', 'SKILL.md'), 'utf8')).toBe('# SwarmUp\n');
+      expect(existsSync(join(dir, 'skills', 'agent-ops'))).toBe(false);
+    }
+    expect(result.installed).toHaveLength(2);
+    expect(result.removed).toHaveLength(2);
+    expect(result.kept).toEqual([]);
+  });
+
+  it('keeps and warns about an old agent-ops skill folder that contains another file', async () => {
+    const bundled = join(temp(), 'SKILL.md');
+    writeFileSync(bundled, '# SwarmUp\n');
+    const home = temp();
+    const claudeDir = temp();
+    const codexHome = temp();
+    const old = join(claudeDir, 'skills', 'agent-ops');
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
+    writeFileSync(join(old, 'notes.md'), 'keep me\n');
+
+    const result = installUserSkills({
+      env: { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome },
+      home,
+      skillFile: bundled,
+    });
+
+    expect(result.kept).toEqual([old]);
+    expect(readFileSync(join(old, 'notes.md'), 'utf8')).toBe('keep me\n');
+    expect(existsSync(join(old, 'SKILL.md'))).toBe(true);
+
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    const env = envFor(config, { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome });
+    const checks = await doctor({ env, cwd: temp(), home, skillFile: bundled });
+    expect(byId(checks, `skill:${join(old, 'SKILL.md')}`)).toMatchObject({
+      status: 'warn',
+      detail: expect.stringContaining('folder has other files'),
+      action: 'install-skills',
+    });
   });
 
   it('finds the skill of a source checkout', () => {

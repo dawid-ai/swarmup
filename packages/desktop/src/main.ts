@@ -20,6 +20,7 @@ import {
   daemonCall,
   DaemonCallError,
   editRuntime,
+  installUserSkills,
   opsdConfig,
   readDaemon,
   RUNS_OUTLIVE_OPSD,
@@ -1413,6 +1414,16 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
           migrationLogDir(),
           `desktop: could not move the sign-in entry: ${(err as Error).message}`,
         );
+      }
+      if (packaged) {
+        try {
+          installUserSkills({ env: process.env });
+        } catch (err) {
+          logMigration(
+            migrationLogDir(),
+            `desktop: could not install user-level skills: ${(err as Error).message}`,
+          );
+        }
       }
     }
     protocol.handle(ATTACHMENT_SCHEME, (req) => attachmentResponse(req.url));

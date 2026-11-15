@@ -17,6 +17,10 @@ needed:
   uninstalling removes it. If you edited PATH at or before that entry since installing, uninstalling
   leaves PATH as it is, so remove the entry yourself. Agent runs always get it first on their PATH
   from swarmupd.
+- On its first start and after every update, the packaged app copies its bundled `swarmup` skill to
+  Claude Code and Codex's user skill folders. **Settings > Health checks > Fix** does the same. It
+  removes a leftover `skills\agent-ops` folder only when `SKILL.md` is its sole entry; when the
+  folder contains anything else, Health checks keeps it and says so.
 
 The app checks GitHub Releases a minute after it starts and every 4 hours, and downloads a new
 version in the background. It installs on its own once no agent run is live and no window is open
@@ -25,6 +29,12 @@ installs silently and starts again in the tray. **Settings > Updates**, the bann
 **Restart to update** install at once; with runs live they ask first: the runs keep going and the
 new swarmupd adopts them, but their `swarmup` commands fail while the files are replaced. A development
 build run from a checkout never updates itself.
+
+An update cannot safely move an existing installation out of an older folder such as
+`C:\Program Files\Agent Ops\SwarmUp`: the updater must replace the running installation in place,
+and its shortcuts, PATH entry and swarmupd launcher all point there. To move it, let every run end,
+quit SwarmUp from the tray, uninstall it, then run `SwarmUp-Setup.exe` and choose the new folder.
+The installer recreates the shortcuts and PATH entry; do not drag the installed folder elsewhere.
 
 ## Run from a checkout
 

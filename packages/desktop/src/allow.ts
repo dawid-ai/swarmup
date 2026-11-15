@@ -56,6 +56,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `repeats/${SEG}/(run|pause|resume|delete)`,
     `roots/${SEG}/mirror`,
     'notify/test',
+    'doctor/skills',
     'roles',
     'attachments',
     'chat',

@@ -368,6 +368,7 @@ const CHECK_LOOK: Record<Check['status'], { icon: LucideIcon; color: string }> =
 /** The same checks as `swarmup doctor`, run by swarmupd on the setup it uses. */
 function HealthCard() {
   const { data, error, reload } = useData<Check[]>('/api/doctor');
+  const fix = useAction();
   const checks = data ?? [];
   const fails = checks.filter((c) => c.status === 'fail').length;
   const warns = checks.filter((c) => c.status === 'warn').length;
@@ -389,6 +390,7 @@ function HealthCard() {
       }
     >
       <ErrorLine error={error} />
+      <ErrorLine error={fix.error} />
       <div className="flex flex-col divide-y divide-white/5">
         {checks.map((c) => {
           const look = CHECK_LOOK[c.status];
@@ -402,8 +404,25 @@ function HealthCard() {
                   <span className="text-fg-3"> · {c.detail}</span>
                 </div>
                 {c.fix && c.status !== 'ok' && (
-                  <div className="mt-0.5 text-xs" style={{ color: look.color }}>
-                    {c.fix}
+                  <div
+                    className="mt-1 flex items-center gap-2 text-xs"
+                    style={{ color: look.color }}
+                  >
+                    <span>{c.fix}</span>
+                    {c.action === 'install-skills' && (
+                      <Button
+                        size="sm"
+                        disabled={fix.busy}
+                        onClick={() =>
+                          fix.run(
+                            () => api('POST', '/api/doctor/skills'),
+                            () => reload(),
+                          )
+                        }
+                      >
+                        Fix
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>

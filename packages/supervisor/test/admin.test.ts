@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -65,7 +65,7 @@ const CONFIG = (agentFile: string): string =>
   ].join('\n');
 
 /** swarmupd on a scratch root whose user config is a real file the API edits. */
-async function setup() {
+async function setup(extraEnv: NodeJS.ProcessEnv = {}) {
   const repo = temp();
   execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
   initRoot(repo, { name: 'test', human: 'human:dawid' });
@@ -76,6 +76,7 @@ async function setup() {
   writeFileSync(userConfig, CONFIG(agentFile));
   const env = {
     ...process.env,
+    ...extraEnv,
     SWARMUP_CONFIG: userConfig,
     SWARMUP_STATE_DIR: temp(),
   } as NodeJS.ProcessEnv;
@@ -355,6 +356,39 @@ describe('desktop admin api', () => {
       });
       expect(checks.find((c) => c.id === 'config')?.status).toBe('ok');
       expect(checks.find((c) => c.id === 'runtime:fake')?.status).toBe('warn');
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('fixes the user-level skill copies through Health checks', async () => {
+    const home = temp();
+    const claudeDir = temp();
+    const codexHome = temp();
+    const old = join(claudeDir, 'skills', 'agent-ops');
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
+    const { api, call } = await setup({
+      HOME: home,
+      USERPROFILE: home,
+      CLAUDE_CONFIG_DIR: claudeDir,
+      CODEX_HOME: codexHome,
+    });
+    try {
+      const res = await call('POST', '/api/doctor/skills', {});
+      expect(res.status).toBe(200);
+      expect(res.data).toMatchObject({
+        installed: [
+          join(claudeDir, 'skills', 'swarmup', 'SKILL.md'),
+          join(codexHome, 'skills', 'swarmup', 'SKILL.md'),
+        ],
+        removed: [old],
+        kept: [],
+      });
+      expect(readFileSync(join(claudeDir, 'skills', 'swarmup', 'SKILL.md'), 'utf8')).toContain(
+        'name: swarmup',
+      );
+      expect(existsSync(old)).toBe(false);
     } finally {
       await api.close();
     }
