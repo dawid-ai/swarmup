@@ -193,6 +193,10 @@ export interface ProviderUsage {
   limited_until?: number;
   plan?: string;
   paused: string | null;
+  /** The model of each window that applies to one model only; older swarmupd builds leave it out. */
+  window_models?: Record<string, string>;
+  /** Per model, why its runs wait while runs of other models go on. */
+  model_paused?: Record<string, string>;
   live: number;
   /** Set while the provider is signed out: no run of it starts until it is signed in. */
   signed_out?: SignedOut;
@@ -294,6 +298,8 @@ export interface Agent {
   budget_min?: number;
   /** The role file's model, when it sets one. */
   model?: string;
+  /** The role file's reasoning effort, when it sets one. */
+  effort?: string;
   /** Path of its role file; agents only the swarmupd config names have none. */
   file?: string;
   /** swarmupd starts runs for it when it has work. */
@@ -311,6 +317,8 @@ export interface RuntimeView {
   args?: string[];
   unset_env?: string[];
   model?: string;
+  /** Reasoning effort for its runs, such as `medium`; unset: the provider's default. */
+  effort?: string;
   max_live?: number;
   pause_at?: number;
   paused: boolean;
@@ -669,7 +677,7 @@ export interface Settings {
     scratch_days: number;
     runtimes: Record<string, RuntimeView>;
     roles: Record<string, RoleLimits>;
-    agents: Record<string, { wake?: boolean; budget?: string; model?: string }>;
+    agents: Record<string, { wake?: boolean; budget?: string; model?: string; effort?: string }>;
     seeded?: boolean;
   };
   /** Default providers the config does not list, with whether their program is on PATH. */

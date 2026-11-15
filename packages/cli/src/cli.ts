@@ -80,7 +80,8 @@ import {
   SIGN_IN_FILE,
   signedOutText,
   signedOutView,
-  usagePause,
+  modelWindows,
+  pauseReport,
   readDaemon,
   readTail,
   reportText,
@@ -2186,15 +2187,27 @@ const COMMANDS: Record<string, Command> = {
       const now = Date.now();
       const report = Object.fromEntries(
         [...new Set([...Object.keys(cfg.runtimes), ...Object.keys(usage)])].map((p) => {
-          const pauseAt = cfg.runtimes[p]?.pause_at ?? cfg.usage_pause_at;
+          const rc = cfg.runtimes[p];
+          const pauseAt = rc?.pause_at ?? cfg.usage_pause_at;
           const out = signIn[p]?.out;
+          // A window of one model pauses only that model's runs (AO-0342).
+          const pause = pauseReport(
+            p,
+            usage[p],
+            pauseAt,
+            now,
+            rc?.model,
+            modelWindows(p, rc?.model_windows),
+          );
           return [
             p,
             {
               ...(usage[p] ?? { windows: {} }),
               live: live.filter((r) => r.agent.startsWith(`${p}:`)).length,
+              window_models: pause.window_models,
+              model_paused: pause.model_paused,
               // Signed out first: no run of it starts, whatever its allowance (AO-0154).
-              paused: out ? signedOutText(p, out, now) : usagePause(p, usage[p], pauseAt, now),
+              paused: out ? signedOutText(p, out, now) : pause.paused,
               ...(out ? { signed_out: signedOutView(p, out) } : {}),
             },
           ];
@@ -2203,12 +2216,19 @@ const COMMANDS: Record<string, Command> = {
       if (ctx.opts.json) return void ctx.io.out(JSON.stringify(report, null, 2));
       for (const [p, u] of Object.entries(report)) {
         const windows = Object.entries(u.windows)
-          .map(([name, w]) => `${name} ${Math.round(w.utilization * 100)}%`)
+          .map(([name, w]) => {
+            const model = u.window_models[name];
+            return `${name}${model ? ` (${model})` : ''} ${Math.round(w.utilization * 100)}%`;
+          })
           .join(', ');
         const label = 'signed_out' in u ? 'SIGNED OUT' : 'PAUSED';
         ctx.io.out(
           `${pad(p, 8)} ${u.live} live  ${windows || 'no reading yet'}${u.paused ? `  ${label}: ${u.paused}` : ''}`,
         );
+        if (u.paused) continue;
+        for (const [model, why] of Object.entries(u.model_paused)) {
+          ctx.io.out(`${pad('', 8)} PAUSED for ${model} runs: ${why}`);
+        }
       }
     },
   },

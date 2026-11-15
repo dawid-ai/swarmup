@@ -254,11 +254,11 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
 
 ### Runtimes
 
-| Runtime  | Command line                                                                                                                                       |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude` | `claude -p --permission-mode acceptEdits --output-format stream-json --verbose [--model M] --allowedTools ... --disallowedTools ... --add-dir ...` |
-| `codex`  | `codex exec [-m M] --json --sandbox workspace-write --skip-git-repo-check -C <cwd> --add-dir ... -`                                                |
-| other    | the config's `command` and `args`, prompt on stdin                                                                                                 |
+| Runtime  | Command line                                                                                                                                                    |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude` | `claude -p --permission-mode acceptEdits --output-format stream-json --verbose [--model M] [--effort E] --allowedTools ... --disallowedTools ... --add-dir ...` |
+| `codex`  | `codex exec [-m M] [-c model_reasoning_effort=E] --json --sandbox workspace-write --skip-git-repo-check -C <cwd> --add-dir ... -`                               |
+| other    | the config's `command` and `args`, prompt on stdin                                                                                                              |
 
 - The providers come from the user config only, once it is seeded (`swarmupd.seeded`). `swarmup setup`,
   the desktop's first start and swarmupd's start write the defaults (`claude`, `codex`) once; a
@@ -268,6 +268,12 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
 - The model of a run is the agent's `model` in the config, else its role file's `model`, else the
   provider's `model`. A model is one word that cannot start with `-`. Other runtimes get no model
   flag.
+- The reasoning effort of a run is picked the same way: the agent's `effort`, else its role file's
+  `effort`, else the provider's `effort`. Claude gets `--effort E`, Codex
+  `-c model_reasoning_effort=E`; both take levels such as `low`, `medium` and `high`. An effort is one lowercase word of letters,
+  digits, `_` and `-`; the provider refuses a level it does not know when the run starts. Other
+  runtimes get no effort flag. Set it here instead of `--effort` in `args`, so **Settings** and
+  **Agents** show and edit it.
 - A run of a provider the config does not list, such as one removed in Settings, does not start:
   `swarmup waits` and the launch error say `no provider '<name>' in Settings > Providers`.
 - Claude's allowed tools are the role file's `tools` (or a default dev set) plus `Bash(swarmup *)` and, until 0.4, `Bash(ops *)` for the old command name.
@@ -684,6 +690,18 @@ wake and schedules wait for room.
   the provider until the reset it names, or for `usage_cooldown_minutes` (default 30).
 - The part of a window over `usage_pause_at` stays for your own Claude and Codex sessions; runs
   already going finish.
+- **Windows of one model.** Some windows count the use of one model only. Such a window holds only
+  the runs that would use that model (the run's model, picked as in "Runtimes"); runs of other
+  models of the provider go on. Claude Code's `rate_limit_event` names no model, so swarmupd maps
+  window names to a word of the model's name: a name that ends in `_opus`, `_sonnet`, `_haiku` or
+  `_fable` applies to that model, and `seven_day_overage_included` applies to `fable`, Claude
+  Code's default model. `runtimes.<name>.model_windows` adds to or overrides that map, such as
+  `{ seven_day_overage_included: fable }`; an empty value makes a window count for every run again.
+  A run with no model, or a role file's `model: default`, uses the provider's default model, so
+  every window counts for it. A refusal (`status: rejected`) on a window of one model holds only
+  that model's runs too. The pause text names the model (`pause at 90%, fable runs only`), and
+  `swarmup usage` shows each such window with its model and a `PAUSED for fable runs` line while
+  runs of the provider's own model go on.
 - **Signed out.** The first run that cannot sign in (an expired OAuth session, no login, a bad
   API key) puts its provider in the signed-out state. swarmupd starts no run of that provider until it
   is signed in again: no task, review, inbox or schedule run, no helper and no chat turn. Runs
@@ -804,8 +822,10 @@ swarmupd:
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
-    claude: { command: claude, model: opus }
-    codex: { command: codex, pause_at: 0.95 }
+    claude: { command: claude, model: opus, effort: medium } # effort: --effort for Claude
+    codex: { command: codex, pause_at: 0.95, effort: high } # -c model_reasoning_effort=high
+    # model_windows: usage windows that hold only one model's runs; '' counts a window for all
+    # claude: { command: claude, model_windows: { seven_day_overage_included: fable } }
     hermes: { command: hermes, args: [run, --json, '-'], unset_env: [GH_TOKEN], paused: true } # paused: no new runs
     # sign_in_check: the status command's arguments after `command` and `args`; false: none, try a run hourly
     other: { command: other, sign_in_check: [whoami] }
@@ -815,7 +835,7 @@ swarmupd:
     engineer: { per_project: 1, providers: [claude, codex], overflow: true, max_children: 2 }
     qa: { per_project: 3, burst: 6 } # qa and reviewer only read
   agents:
-    codex:engineer: { wake: true, budget: 2h, model: gpt-5-codex }
+    codex:engineer: { wake: true, budget: 2h, model: gpt-5-codex, effort: medium }
     claude:qa: { wake: true, cwd: 'C:\dev\my-project' }
     claude:pm: {} # an agent with no settings of its own
   schedules:

@@ -1,7 +1,7 @@
 import type { AgentDef, LogEntry } from '@swarmup/core';
 import { actorSlug, decisionLines, roleOf, runtimeOf } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
-import { checkModel } from './config.js';
+import { checkEffort, checkModel } from './config.js';
 
 /** Tools for a Claude role that lists none: edit, read and the usual dev commands. */
 export const DEFAULT_CLAUDE_TOOLS = [
@@ -240,6 +240,21 @@ export function runModel(rc: RuntimeConfig, agent: Pick<AgentDef, 'model' | 'fil
 }
 
 /**
+ * The reasoning effort of a run: the agent's own (`swarmupd.agents.<id>.effort`, merged into
+ * `agent` by the caller, or the role file's `effort`), else the provider's. Checked here for the
+ * same reason as {@link runModel}.
+ */
+export function runEffort(
+  rc: RuntimeConfig,
+  agent: Pick<AgentDef, 'effort' | 'file'> | undefined,
+): string | undefined {
+  if (agent?.effort !== undefined && agent.effort !== null && agent.effort !== '') {
+    return checkEffort(agent.effort, `${agent.file || 'agent'}: effort`);
+  }
+  return rc.effort ? checkEffort(rc.effort, 'provider effort') : undefined;
+}
+
+/**
  * Builds the arguments for one run. The prompt always goes on stdin, because Claude's
  * `--allowedTools` takes several values and would swallow a trailing prompt argument.
  * `readOnly` marks a run of a role that does not write (`roleLimits(...).writes` is false): a
@@ -270,6 +285,7 @@ export function invocation(
   const base = rc.args ?? [];
   const unsetEnv = rc.unset_env ?? [];
   const model = runModel(rc, agent);
+  const effort = runEffort(rc, agent);
   if (runtime === 'claude') {
     const own = agent?.tools ?? (chat ? CHAT_TOOLS : DEFAULT_CLAUDE_TOOLS);
     const denied = new Set([...(chat ? CHAT_DENY : []), ...(readOnly ? READ_ONLY_DENY : [])]);
@@ -291,6 +307,7 @@ export function invocation(
         'stream-json',
         '--verbose',
         ...(model ? ['--model', model] : []),
+        ...(effort ? ['--effort', effort] : []),
         ...session,
         '--allowedTools',
         [...new Set(tools)].join(','),
@@ -313,6 +330,7 @@ export function invocation(
       ...base,
       'exec',
       ...(model ? ['-m', model] : []),
+      ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
       '--json',
       '--sandbox',
       sandbox,

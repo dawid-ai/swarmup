@@ -10,6 +10,7 @@ import {
   invocation,
   opsdConfig,
   roleLimits,
+  runEffort,
   runModel,
   seedOnStart,
   seedUserConfig,
@@ -242,5 +243,89 @@ describe('the model of a run', () => {
       [],
     );
     expect(hermes.args).toEqual(['run', '-']);
+  });
+});
+
+describe('the effort of a run (AO-0342)', () => {
+  it("takes the agent's effort over the provider's and refuses one that reads as a flag", () => {
+    expect(runEffort({ command: 'claude', effort: 'medium' }, undefined)).toBe('medium');
+    expect(
+      runEffort({ command: 'claude', effort: 'medium' }, { effort: 'high', file: 'x.md' }),
+    ).toBe('high');
+    expect(runEffort({ command: 'claude' }, undefined)).toBeUndefined();
+    expect(() => runEffort({ command: 'codex' }, { effort: '--yolo', file: 'a.md' })).toThrow(
+      /a\.md: effort/,
+    );
+  });
+
+  it('passes --effort to Claude, -c model_reasoning_effort= to Codex, and nothing to others', () => {
+    const claude = invocation(
+      { command: 'claude', model: 'opus', effort: 'medium' },
+      'claude:qa',
+      undefined,
+      '/w',
+      [],
+    );
+    expect(claude.args.join(' ')).toContain('--model opus --effort medium');
+    const agent = { id: 'codex:qa', status: 'active', file: '', body: '', effort: 'high' } as const;
+    const codex = invocation(
+      { command: 'codex', model: 'o3', effort: 'low' },
+      'codex:qa',
+      agent,
+      '/w',
+      [],
+    );
+    expect(codex.args.slice(0, 5)).toEqual([
+      'exec',
+      '-m',
+      'o3',
+      '-c',
+      'model_reasoning_effort=high',
+    ]);
+    const hermes = invocation(
+      { command: 'hermes', args: ['run', '-'], effort: 'high' },
+      'hermes:qa',
+      undefined,
+      '/w',
+      [],
+    );
+    expect(hermes.args).toEqual(['run', '-']);
+    const none = invocation({ command: 'claude' }, 'claude:qa', undefined, '/w', []);
+    expect(none.args).not.toContain('--effort');
+  });
+
+  it('checks effort and model_windows in the provider and agent settings', () => {
+    const cfg = opsdConfig({
+      opsd: {
+        runtimes: {
+          claude: {
+            command: 'claude',
+            effort: 'medium',
+            model_windows: { seven_day_overage_included: '', seven_day_x: 'fable' },
+          },
+        },
+        agents: { 'claude:qa': { effort: 'high' } },
+      },
+    } as never);
+    expect(cfg.runtimes.claude!.effort).toBe('medium');
+    expect(cfg.agents['claude:qa']!.effort).toBe('high');
+    for (const effort of ['--max', 'a b', 'High', 7, '']) {
+      expect(() =>
+        opsdConfig({ opsd: { runtimes: { claude: { command: 'claude', effort } } } } as never),
+      ).toThrow(/runtimes\.claude\.effort/);
+    }
+    expect(() =>
+      opsdConfig({ opsd: { agents: { 'codex:qa': { effort: '-c x=y' } } } } as never),
+    ).toThrow(/agents\.codex:qa\.effort/);
+    expect(() =>
+      opsdConfig({
+        opsd: { runtimes: { claude: { command: 'claude', model_windows: ['fable'] } } },
+      } as never),
+    ).toThrow(/model_windows/);
+    expect(() =>
+      opsdConfig({
+        opsd: { runtimes: { claude: { command: 'claude', model_windows: { w: '--x' } } } },
+      } as never),
+    ).toThrow(/model_windows\.w/);
   });
 });

@@ -151,9 +151,13 @@ keeps its reply box: **Reply** reopens it with your text as the next round, and 
 again.
 
 **Settings** writes the user config with its comments kept, and swarmupd applies the change at once.
-Through swarmupd's API it changes limits, roles, a provider's `model`, `max_live`, `pause_at` and
-`paused`, removes a provider or resets a seeded one to default, adds, edits and removes agents
-(`wake`, `budget`, `model`), sync and roots only.
+Through swarmupd's API it changes limits, roles, a provider's `model`, `effort`, `max_live`,
+`pause_at` and `paused`, removes a provider or resets a seeded one to default, adds, edits and
+removes agents (`wake`, `budget`, `model`, `effort`), sync and roots only. **Effort** sits next to
+**Model** in **Settings > Providers** and on each agent card in **Agents**; see
+[the supervisor](supervisor.md#runtimes) for the levels each provider takes. A provider card in
+**Agents** tags a usage window that holds only one model's runs with that model, and says which
+model's runs wait while the others go on.
 
 - **Providers.** `swarmup setup`, the app's first start and swarmupd's first start write the default
   providers (`claude`, `codex`) into the user config; from then on the config is the only source,

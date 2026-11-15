@@ -8,10 +8,13 @@ import {
   findRollout,
   lastCodexLimits,
   mergeUsage,
+  modelWindows,
   opsdConfig,
+  pauseReport,
   roleLimits,
   UsageMeter,
   usagePause,
+  windowModel,
 } from '../src/index.js';
 
 const dirs: string[] = [];
@@ -111,6 +114,72 @@ describe('provider usage', () => {
     });
     expect(merged.windows.five_hour?.utilization).toBe(0.5);
     expect(merged.windows.seven_day?.utilization).toBe(0.2);
+  });
+
+  it("pauses a window of one model only for that model's runs (AO-0342)", () => {
+    // The reading of 2026-11-15: the weekly window at 47%, Fable's weekly allowance at 92%.
+    const u = claudeUsage(
+      {
+        status: 'allowed_warning',
+        resetsAt: RESET,
+        rateLimitType: 'seven_day_overage_included',
+        unifiedWindows: {
+          seven_day: { utilization: 0.47, resetsAt: RESET, status: 'allowed' },
+          seven_day_overage_included: {
+            utilization: 0.92,
+            resetsAt: RESET,
+            status: 'allowed_warning',
+          },
+        },
+      },
+      NOW,
+    )!;
+    const windows = modelWindows('claude');
+    expect(windowModel('seven_day_overage_included', windows)).toBe('fable');
+    expect(windowModel('seven_day_opus', windows)).toBe('opus');
+    expect(windowModel('seven_day', windows)).toBeUndefined();
+    const fable = usagePause('claude', u, 0.9, NOW, { model: 'claude-fable-5-2', windows });
+    expect(fable).toMatch(
+      /claude usage at 92% of the seven_day_overage_included window \(pause at 90%, fable runs only\)/,
+    );
+    expect(usagePause('claude', u, 0.9, NOW, { model: 'claude-opus-5-5', windows })).toBeNull();
+    expect(usagePause('claude', u, 0.9, NOW, { model: 'opus', windows })).toBeNull();
+    // No model, or a role file's `default`, runs Claude Code's default model: it waits.
+    expect(usagePause('claude', u, 0.9, NOW, { windows })).toBe(fable);
+    expect(usagePause('claude', u, 0.9, NOW, { model: 'default', windows })).toBe(fable);
+    // An empty entry in model_windows makes the window count for every model again.
+    const all = modelWindows('claude', { seven_day_overage_included: '' });
+    expect(usagePause('claude', u, 0.9, NOW, { model: 'claude-opus-5-5', windows: all })).toMatch(
+      /92% of the seven_day_overage_included window \(pause at 90%\)/,
+    );
+    // A window for every model still pauses every run.
+    expect(usagePause('claude', u, 0.4, NOW, { model: 'claude-opus-5-5', windows })).toMatch(
+      /47% of the seven_day window/,
+    );
+
+    // A refusal on a model's window holds only that model's runs.
+    const refused = claudeUsage(
+      { status: 'rejected', resetsAt: RESET, rateLimitType: 'seven_day_opus' },
+      NOW,
+    )!;
+    expect(refused.limited_by).toBe('seven_day_opus');
+    expect(usagePause('claude', refused, 0.9, NOW, { model: 'opus', windows })).toMatch(
+      /refused work \(usage limit, opus runs only\)/,
+    );
+    expect(usagePause('claude', refused, 0.9, NOW, { model: 'sonnet', windows })).toBeNull();
+    expect(mergeUsage(u, refused).limited_by).toBe('seven_day_opus');
+
+    // What `swarmup usage` and the app show for a provider whose runs use Opus.
+    expect(pauseReport('claude', u, 0.9, NOW, 'claude-opus-5-5', windows)).toEqual({
+      paused: null,
+      window_models: { seven_day_overage_included: 'fable' },
+      model_paused: { fable },
+    });
+    expect(pauseReport('claude', u, 0.9, NOW, undefined, windows)).toEqual({
+      paused: fable,
+      window_models: { seven_day_overage_included: 'fable' },
+      model_paused: {},
+    });
   });
 
   it('defaults role limits by whether the role writes, and checks the threshold setting', () => {

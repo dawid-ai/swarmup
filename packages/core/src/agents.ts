@@ -14,6 +14,8 @@ export interface AgentDef {
   can_claim?: string[];
   projects?: string[];
   model?: string;
+  /** Reasoning effort for the role's runs, such as `medium`; see swarmupd's `effort`. */
+  effort?: string;
   budget_min?: number;
   /** Tool permissions for the role, for the phase 2 supervisor's permission profiles. */
   tools?: string[];
