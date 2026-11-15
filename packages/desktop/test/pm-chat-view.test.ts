@@ -123,7 +123,7 @@ async function panel(t: Task): Promise<void> {
 
 /** Opens the status pill's menu in the task panel and picks `label`. */
 async function pickStatus(label: string): Promise<void> {
-  await click(box.querySelector('button[title="Status"]')!);
+  await click(document.body.querySelector('button[title="Status"]')!);
   await click(button(label));
 }
 
@@ -132,9 +132,9 @@ describe('top bar', () => {
     answers.set('/api/chat', { agent: 'claude:orchestrator', messages: [], live: null });
     await mount(createElement(App));
     await settle();
-    await click(box.querySelector('[data-chat-button]')!);
-    expect(box.querySelector('main')?.textContent).toContain('Chat with the PM');
-    expect(box.querySelector('[data-modal]')).toBeNull();
+    await click(document.body.querySelector('[data-chat-button]')!);
+    expect(document.body.querySelector('main')?.textContent).toContain('Chat with the PM');
+    expect(document.body.querySelector('[data-modal]')).toBeNull();
     expect(writes).toEqual([]);
   });
 });
@@ -142,7 +142,7 @@ describe('top bar', () => {
 describe('an answered question', () => {
   it('keeps the reply box, and Reply reopens it with the text', async () => {
     await panel(task());
-    const area = box.querySelector('textarea')!;
+    const area = document.body.querySelector('textarea')!;
     expect(area.placeholder).toContain('Reply');
     type(area, 'Then: is AO-0124 on track?');
     await click(button('Reply'));
@@ -166,7 +166,9 @@ describe('status changes need a click on the confirming button', () => {
     await panel(task({ status: 'in-progress', claimedBy: 'claude:orchestrator' }));
     await pickStatus('Close as done');
     expect(writes).toEqual([]);
-    expect(box.querySelector('[data-move-confirm]')?.textContent).toContain('Closes the task');
+    expect(document.body.querySelector('[data-move-confirm]')?.textContent).toContain(
+      'Closes the task',
+    );
     // The menu closed on the pick, so the only Close as done button left is the dialog's.
     await click(button('Close as done'));
     expect(writes.map((w) => w.path)).toEqual(['/api/tasks/r%2FAO-0125/done']);
@@ -176,9 +178,11 @@ describe('status changes need a click on the confirming button', () => {
     await panel(task({ type: 'task' }));
     await pickStatus('Reopen');
     expect(writes).toEqual([]);
-    expect(box.querySelector('[data-move-confirm]')?.textContent).toContain('Reopens the task');
+    expect(document.body.querySelector('[data-move-confirm]')?.textContent).toContain(
+      'Reopens the task',
+    );
     await click(button('Cancel'));
-    expect(box.querySelector('[data-modal]')).toBeNull();
+    expect(document.body.querySelector('[data-modal]')).toBeNull();
     expect(writes).toEqual([]);
   });
 
@@ -196,7 +200,7 @@ describe('status changes need a click on the confirming button', () => {
         onClose: vi.fn(),
       }),
     );
-    const input = box.querySelector('input')!;
+    const input = document.body.querySelector('input')!;
     type(input, 'AO-0125');
     expect(button('Can I talk to you here?')).toBeTruthy();
     expect(() => button('Back to to do')).toThrow();

@@ -80,7 +80,9 @@ const nav = (): Nav => ({ me: 'human:dawid', openTask: vi.fn(), go: vi.fn() });
 
 /** The `data-task-ref` of every reference link on screen. */
 const refs = (): string[] =>
-  [...box.querySelectorAll('a[data-task-ref]')].map((a) => a.getAttribute('data-task-ref')!);
+  [...document.body.querySelectorAll('a[data-task-ref]')].map((a) =>
+    a.getAttribute('data-task-ref')!,
+  );
 
 const decision = (outcome: boolean): Decision => ({
   root: 'r',
@@ -158,7 +160,7 @@ it('links task references in a task title, checkpoint and next step', async () =
 
 /** Clicks the row's own button: the one that stretches over a row with reference links. */
 function openRow(): void {
-  const b = box.querySelector<HTMLButtonElement>('.row-link .row-open')!;
+  const b = document.body.querySelector<HTMLButtonElement>('.row-link .row-open')!;
   act(() => b.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 }
 
@@ -179,7 +181,7 @@ it('links task references in report decisions, outside the row button', async ()
   const n = nav();
   await mount(createElement(Reports, { nav: n }));
   expect(refs()).toEqual([`AO-0014#${EVT}`, 'AO-0030']);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
   openRow();
   expect(n.go).toHaveBeenCalledWith('decisions');
 });
@@ -213,7 +215,7 @@ it('links task references in standup titles and notes, outside the row button', 
   const n = nav();
   await mount(createElement(Standups, { nav: n }));
   expect(refs()).toEqual(expect.arrayContaining(['AO-0014', `AO-0014#${EVT}`]));
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
   openRow();
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
@@ -267,7 +269,7 @@ it('links task references in activity titles, outside the row button', async () 
     await new Promise((r) => setTimeout(r, 250));
   });
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
   openRow();
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
@@ -283,7 +285,7 @@ it('links task references in inbox titles, outside the row button', async () => 
   const n = nav();
   await mount(createElement(Inbox, { nav: n, items: [item], error: null }));
   expect(refs()).toEqual([`AO-0014#${EVT}`, 'AO-0020']);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
   openRow();
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
@@ -293,9 +295,9 @@ it('links task references in list titles; a reference click does not open the ro
   const n = nav();
   await mount(createElement(List, { nav: n }));
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  click(box.querySelector('a[data-task-ref]')!);
+  click(document.body.querySelector('a[data-task-ref]')!);
   expect(n.openTask).not.toHaveBeenCalled();
-  click(box.querySelector('tbody tr')!);
+  click(document.body.querySelector('tbody tr')!);
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
 
@@ -305,9 +307,9 @@ it('links task references in board cards; a reference click does not open the ca
   const n = nav();
   await mount(createElement(Board, { nav: n }));
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  click(box.querySelector('a[data-task-ref]')!);
+  click(document.body.querySelector('a[data-task-ref]')!);
   expect(n.openTask).not.toHaveBeenCalled();
-  click(box.querySelector('[draggable="true"]')!);
+  click(document.body.querySelector('[draggable="true"]')!);
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
 
@@ -316,7 +318,7 @@ it('links task references in finding titles, outside the row button', async () =
   const n = nav();
   await mount(createElement(Findings, { nav: n }));
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
   openRow();
   expect(n.openTask).toHaveBeenCalledWith('r/AO-0057');
 });
@@ -337,8 +339,8 @@ it('links task references in knowledge note titles, outside the row button', asy
   await mount(createElement(Knowledge, { nav: nav() }));
   // Only the second note's row: the first note is open, and its heading has no reference.
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  expect(box.querySelector('button a')).toBeNull();
-  const second = box.querySelectorAll<HTMLButtonElement>('.row-link .row-open')[1]!;
+  expect(document.body.querySelector('button a')).toBeNull();
+  const second = document.body.querySelectorAll<HTMLButtonElement>('.row-link .row-open')[1]!;
   expect(second.getAttribute('aria-label')).toBe(TITLE);
   click(second);
   // Picked, so its heading links the reference too.
@@ -359,7 +361,7 @@ it('links task references in a schedule name, task and prompt', async () => {
   answers.set('/api/schedules', [schedule]);
   await mount(createElement(Schedules, { nav: nav() }));
   expect(refs()).toEqual(['AO-0014', 'r/AO-0057', `AO-0014#${EVT}`]);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
 });
 
 it("links task references in the agents' waiting list, outside the id button", async () => {
@@ -376,7 +378,7 @@ it("links task references in the agents' waiting list, outside the id button", a
   answers.set('/api/settings', { opsd: {} });
   await mount(createElement(Agents, { nav: nav() }));
   expect(refs()).toEqual([`AO-0014#${EVT}`, 'AO-0020']);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
 });
 
 it('links task references in the move dialog title; a reference click closes it', async () => {
@@ -386,10 +388,10 @@ it('links task references in the move dialog title; a reference click closes it'
     return dialog;
   }
   await mount(createElement(Mover, { t: task({ status: 'in-progress' }) }));
-  expect(box.querySelector('[data-modal]')).not.toBeNull();
+  expect(document.body.querySelector('[data-modal]')).not.toBeNull();
   expect(refs()).toEqual([`AO-0014#${EVT}`]);
-  click(box.querySelector('a[data-task-ref]')!);
-  expect(box.querySelector('[data-modal]')).toBeNull();
+  click(document.body.querySelector('a[data-task-ref]')!);
+  expect(document.body.querySelector('[data-modal]')).toBeNull();
 });
 
 it('links task references in decision options, ballot choices and the outcome choice', async () => {
@@ -404,7 +406,7 @@ it('links task references in decision options, ballot choices and the outcome ch
   await mount(createElement(Decisions, { nav: nav(), selected: 'r/D-0001' }));
   // Option label, ballot choice and recorded outcome.
   expect(refs().filter((r) => r === 'AO-0030')).toHaveLength(3);
-  expect(box.querySelector('button a')).toBeNull();
+  expect(document.body.querySelector('button a')).toBeNull();
 });
 
 it('scrolls to an event reference again after a plain reference to the same task', async () => {

@@ -74,7 +74,7 @@ function type(input: HTMLInputElement, text: string): void {
 }
 
 function ownerInput(): HTMLInputElement {
-  const i = box.querySelector<HTMLInputElement>('input[placeholder="Unassigned"]');
+  const i = document.body.querySelector<HTMLInputElement>('input[placeholder="Unassigned"]');
   if (!i) throw new Error('no Owner input');
   return i;
 }
@@ -87,7 +87,7 @@ function openOwner(): void {
 /** A row of the open agent list, drawn in a portal on document.body. */
 function option(name: string): HTMLButtonElement | undefined {
   return [...document.body.querySelectorAll('button')].find(
-    (b) => !box.contains(b) && b.textContent?.includes(name),
+    (b) => b.closest('[data-popover]') !== null && b.textContent?.includes(name),
   );
 }
 
@@ -111,12 +111,12 @@ describe('New task: agent picker', () => {
     mouse(row, 'click');
     expect(option('Builder one')).toBeUndefined();
     expect(option('Checker two')).toBeUndefined();
-    expect(box.textContent).toContain('engineer');
+    expect(document.body.textContent).toContain('engineer');
   });
 
   it('closes the list on a click elsewhere in the dialog', () => {
     openOwner();
-    const title = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+    const title = document.body.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
     mouse(title, 'mousedown');
     expect(option('Builder one')).toBeUndefined();
     expect(onClose).not.toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe('New task: agent picker', () => {
     press(ownerInput(), 'Escape');
     expect(option('Builder one')).toBeUndefined();
     expect(onClose).not.toHaveBeenCalled();
-    expect(box.textContent).not.toContain('Discard what you typed?');
+    expect(document.body.textContent).not.toContain('Discard what you typed?');
   });
 });
 
@@ -135,7 +135,7 @@ describe('New task: owner picker offers configured agents only (AO-0124)', () =>
   /** Rows of the open list that pick an agent, as opposed to greyed not configured rows. */
   function pickable(): HTMLButtonElement[] {
     return [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(
-      (b) => !box.contains(b) && !b.hasAttribute('data-unconfigured'),
+      (b) => b.closest('[data-popover]') !== null && !b.hasAttribute('data-unconfigured'),
     );
   }
 
@@ -166,7 +166,7 @@ describe('New task: owner picker offers configured agents only (AO-0124)', () =>
     expect(asked).toEqual(['claude:orchestrator']);
     // Nothing was picked: the empty Owner field still shows its placeholder.
     expect(ownerInput().value).toBe('');
-    expect(box.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
   });
 
   it('never picks an unknown typed id or a greyed one with Enter; a typed person it does', () => {
@@ -174,16 +174,16 @@ describe('New task: owner picker offers configured agents only (AO-0124)', () =>
     type(ownerInput(), 'claude:ghost');
     expect(greyed('claude:ghost')).not.toBeNull();
     press(ownerInput(), 'Enter');
-    expect(box.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
 
     type(ownerInput(), 'orchestrator');
     press(ownerInput(), 'Enter');
-    expect(box.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).not.toBeNull();
 
     type(ownerInput(), 'human:ana');
     press(ownerInput(), 'Enter');
-    expect(box.querySelector('input[placeholder="Unassigned"]')).toBeNull();
-    expect(box.textContent).toContain('ana');
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).toBeNull();
+    expect(document.body.textContent).toContain('ana');
   });
 });
 
@@ -225,14 +225,16 @@ describe('Directory from an older swarmupd without the configured flag (AO-0124)
     type(ownerInput(), 'claude:ghost');
     expect(document.body.querySelector('button[data-unconfigured]')).toBeNull();
     press(ownerInput(), 'Enter');
-    expect(box.querySelector('input[placeholder="Unassigned"]')).toBeNull();
-    expect(box.textContent).toContain('ghost');
+    expect(document.body.querySelector('input[placeholder="Unassigned"]')).toBeNull();
+    expect(document.body.textContent).toContain('ghost');
   });
 });
 
 describe('New task: due picker', () => {
   function dueButton(): HTMLButtonElement {
-    const b = [...box.querySelectorAll('button')].find((x) => x.textContent === 'Due date');
+    const b = [...document.body.querySelectorAll('button')].find(
+      (x) => x.textContent === 'Due date',
+    );
     if (!b) throw new Error('no Due date button');
     return b;
   }
@@ -240,7 +242,7 @@ describe('New task: due picker', () => {
   /** A button of the open calendar, drawn in a portal on document.body. */
   function calendar(text: string): HTMLButtonElement | undefined {
     return [...document.body.querySelectorAll('button')].find(
-      (b) => !box.contains(b) && b.textContent === text,
+      (b) => b.closest('[data-popover]') !== null && b.textContent === text,
     );
   }
 
@@ -250,7 +252,7 @@ describe('New task: due picker', () => {
     mouse(tomorrow, 'mousedown');
     mouse(tomorrow, 'click');
     expect(calendar('Tomorrow')).toBeUndefined();
-    expect(box.textContent).not.toContain('Due date');
+    expect(document.body.textContent).not.toContain('Due date');
   });
 
   it('stays open for a time after a date pick with a time, and closes on the time', () => {
@@ -277,33 +279,35 @@ describe('New task: Escape on the dialog', () => {
   });
 
   it('asks before discarding a typed title; a second Escape keeps editing', () => {
-    const title = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+    const title = document.body.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
     type(title, 'Keep this');
     press(title, 'Escape');
     expect(onClose).not.toHaveBeenCalled();
-    expect(box.textContent).toContain('Discard what you typed?');
+    expect(document.body.textContent).toContain('Discard what you typed?');
     press(title, 'Escape');
-    expect(box.textContent).not.toContain('Discard what you typed?');
+    expect(document.body.textContent).not.toContain('Discard what you typed?');
     expect(title.value).toBe('Keep this');
 
     press(title, 'Escape');
-    const discard = [...box.querySelectorAll('button')].find((b) => b.textContent === 'Discard')!;
+    const discard = [...document.body.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Discard',
+    )!;
     mouse(discard, 'click');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('closes the mention list on Escape without asking or closing', () => {
-    const area = box.querySelector<HTMLTextAreaElement>('textarea')!;
+    const area = document.body.querySelector<HTMLTextAreaElement>('textarea')!;
     const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
     act(() => {
       set.call(area, '@');
       area.setSelectionRange(1, 1);
       area.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    expect(box.textContent).toContain('Mention');
+    expect(document.body.textContent).toContain('Mention');
     press(area, 'Escape');
-    expect(box.textContent).not.toContain('Mention');
+    expect(document.body.textContent).not.toContain('Mention');
     expect(onClose).not.toHaveBeenCalled();
-    expect(box.textContent).not.toContain('Discard what you typed?');
+    expect(document.body.textContent).not.toContain('Discard what you typed?');
   });
 });

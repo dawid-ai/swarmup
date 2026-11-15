@@ -90,6 +90,7 @@ export function Popover(props: {
   return createPortal(
     <div
       ref={panel}
+      data-popover
       className="animate-fade fixed z-[60] rounded-xl border border-white/10 bg-ink-800/95 p-1 shadow-[0_18px_50px_-12px_rgba(0,0,0,0.8)] backdrop-blur"
       style={{
         top: pos?.top ?? -9999,

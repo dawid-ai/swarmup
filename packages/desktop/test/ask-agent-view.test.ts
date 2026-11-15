@@ -53,7 +53,9 @@ afterEach(() => {
 });
 
 function button(text: string): HTMLButtonElement {
-  const b = [...box.querySelectorAll('button')].find((x) => x.textContent?.trim() === text);
+  const b = [...document.body.querySelectorAll('button')].find(
+    (x) => x.textContent?.trim() === text,
+  );
   if (!b) throw new Error(`no ${text} button`);
   return b;
 }
@@ -74,7 +76,9 @@ function type(el: HTMLInputElement | HTMLTextAreaElement, text: string): void {
 }
 
 function pickAgent(id: string): void {
-  const input = box.querySelector<HTMLInputElement>('input[placeholder="codex:qa, claude:pm…"]')!;
+  const input = document.body.querySelector<HTMLInputElement>(
+    'input[placeholder="codex:qa, claude:pm…"]',
+  )!;
   act(() => input.focus());
   type(input, id);
   act(() => {
@@ -95,9 +99,11 @@ describe('New task: Question type', () => {
       root!.render(createElement(NewTask, { me: 'human:dawid', onClose: vi.fn(), onCreated })),
     );
     click(button('Question'));
-    expect(box.textContent).not.toContain('Due date');
+    expect(document.body.textContent).not.toContain('Due date');
     type(
-      box.querySelector<HTMLInputElement>('input[placeholder="The question, in one line"]')!,
+      document.body.querySelector<HTMLInputElement>(
+        'input[placeholder="The question, in one line"]',
+      )!,
       'Why is the build slow?',
     );
     expect(button('Ask').disabled).toBe(true);
@@ -131,12 +137,12 @@ describe('Inbox', () => {
       },
     ];
     act(() => root!.render(createElement(Inbox, { nav, items, error: null })));
-    const labels = [...box.querySelectorAll('span.uppercase')].map((s) => s.textContent);
+    const labels = [...document.body.querySelectorAll('span.uppercase')].map((s) => s.textContent);
     expect(labels).toEqual(['Answer']);
     expect(() => button('Ask an agent')).toThrow();
     click(button('Chat with the PM'));
     expect(nav.go).toHaveBeenCalledWith('chat');
-    expect(box.querySelector('[data-modal]')).toBeNull();
-    expect(box.querySelector('input[placeholder="codex:qa, claude:pm…"]')).toBeNull();
+    expect(document.body.querySelector('[data-modal]')).toBeNull();
+    expect(document.body.querySelector('input[placeholder="codex:qa, claude:pm…"]')).toBeNull();
   });
 });

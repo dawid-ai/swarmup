@@ -74,7 +74,7 @@ function mount(): void {
 
 /** The agent card that names `id`. */
 function card(id: string): HTMLElement {
-  const cards = [...box.querySelectorAll<HTMLElement>('.panel')].filter((p) =>
+  const cards = [...document.body.querySelectorAll<HTMLElement>('.panel')].filter((p) =>
     [...p.querySelectorAll('button')].some((b) => b.textContent === 'Start run'),
   );
   const found = cards.find((c) => c.textContent?.includes(id.split(':')[1]!));
@@ -164,9 +164,9 @@ describe('Agents view: adding, editing and removing agents', () => {
 
   it('adds an agent on a provider from Settings', async () => {
     mount();
-    await click(box, 'Add agent');
-    type(box.querySelector<HTMLInputElement>('input[placeholder="writer"]')!, 'writer');
-    await click(box, 'Add claude:writer');
+    await click(document.body, 'Add agent');
+    type(document.body.querySelector<HTMLInputElement>('input[placeholder="writer"]')!, 'writer');
+    await click(document.body, 'Add claude:writer');
     expect(net.posts).toEqual([
       {
         path: '/api/settings',
@@ -186,11 +186,11 @@ describe('Agents view: adding, editing and removing agents', () => {
     act(() =>
       root!.render(createElement(AddAgentDialog, { id: 'codex:orchestrator', onAdded, onClose })),
     );
-    expect(box.querySelector<HTMLInputElement>('input[placeholder="writer"]')!.value).toBe(
-      'orchestrator',
-    );
-    expect(box.querySelector('select')!.value).toBe('codex');
-    await click(box, 'Add codex:orchestrator');
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[placeholder="writer"]')!.value,
+    ).toBe('orchestrator');
+    expect(document.body.querySelector('select')!.value).toBe('codex');
+    await click(document.body, 'Add codex:orchestrator');
     expect(net.posts).toEqual([
       {
         path: '/api/settings',

@@ -1,7 +1,8 @@
 import type { LucideIcon } from 'lucide-react';
 import { AlertTriangle, X } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { onWarnings } from './api';
 import { modelWarning, suggestModels, useModelLists } from './lib/models';
 import type { Task } from './types';
@@ -306,6 +307,11 @@ export function useAction(): {
  * dialog holds typed input), they ask first, so a stray Escape never loses what was typed.
  * `stacked` shows it above other dialogs, such as Add agent opened from a picker in one; Escape
  * closes only the dialog on top.
+ *
+ * It renders in a portal on `document.body`, so no stacking context of the page draws over it
+ * or catches its clicks: a Settings section's `animate-rise` keeps a filled `transform`, which
+ * otherwise makes the section the dialog's layer (AO-0338). Focus moves into the dialog when it
+ * opens, Tab and Shift+Tab stay inside the dialog on top, and focus goes back on close.
  */
 export function Modal(props: {
   title: string;
@@ -318,6 +324,8 @@ export function Modal(props: {
 }) {
   const [asking, setAsking] = useState(false);
   const self = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(self, box);
   const close = useRef<() => void>(() => {});
   close.current = (): void => {
     if (props.dirty) setAsking(true);
@@ -337,7 +345,7 @@ export function Modal(props: {
     return () => document.removeEventListener('keydown', key);
   }, [asking]);
   const Icon = props.icon;
-  return (
+  return createPortal(
     <div
       ref={self}
       data-modal
@@ -352,7 +360,9 @@ export function Modal(props: {
       onMouseDown={() => close.current()}
     >
       <div
-        className="animate-rise max-h-[90vh] max-w-[94vw] overflow-auto rounded-2xl border border-white/10 bg-ink-850 p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
+        ref={box}
+        tabIndex={-1}
+        className="animate-rise max-h-[90vh] outline-none max-w-[94vw] overflow-auto rounded-2xl border border-white/10 bg-ink-850 p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]"
         style={{ width: props.width ?? 560 }}
         onMouseDown={(e) => e.stopPropagation()}
       >
@@ -384,8 +394,60 @@ export function Modal(props: {
         )}
         {props.children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Keeps keyboard focus in the dialog `modal` while it is the one on top. On open, focus moves to
+ * `box` unless something inside already took it (an `autoFocus` field); on close, it goes back to
+ * what had it. A list a picker opens from inside the dialog lives in its own portal
+ * (`data-popover`), so focus there is left alone.
+ */
+function useFocusTrap(
+  modal: RefObject<HTMLDivElement | null>,
+  box: RefObject<HTMLDivElement | null>,
+): void {
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    if (!modal.current?.contains(document.activeElement)) box.current?.focus();
+    const key = (e: KeyboardEvent): void => {
+      const el = modal.current;
+      if (e.key !== 'Tab' || !el || !onTop(el)) return;
+      const active = document.activeElement;
+      if (active instanceof Element && active.closest('[data-popover]')) return;
+      const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (i) => !i.closest('[inert]'),
+      );
+      if (items.length === 0) {
+        e.preventDefault();
+        box.current?.focus();
+        return;
+      }
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      const inside = active instanceof Node && el.contains(active);
+      if (!inside) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && (active === first || active === box.current)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('keydown', key);
+      if (before?.isConnected) before.focus();
+    };
+  }, [modal, box]);
 }
 
 /** Whether `el` is the dialog on top: the last stacked one, else the last one in the page. */
