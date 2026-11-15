@@ -69,6 +69,7 @@ import { Search } from './views/Search';
 import { Standups } from './views/Standups';
 import { SEARCH_INPUT_ID, SearchBox } from './ui/search';
 import { TaskPanel } from './views/TaskPanel';
+import { ProviderStatusBar } from './ui/provider-status';
 
 export type View =
   | 'inbox'
@@ -722,7 +723,7 @@ export function App() {
           {view === 'activity' && <ActivityView nav={nav} />}
           {view === 'reports' && <Reports nav={nav} />}
           {view === 'replay' && <Replay />}
-          {view === 'agents' && <Agents nav={nav} />}
+          {view === 'agents' && <Agents nav={nav} selected={arg} />}
           {view === 'runs' && <Runs nav={nav} selected={arg} />}
           {view === 'schedules' && <Schedules nav={nav} selected={arg} />}
           {view === 'repeating' && <Repeating nav={nav} />}
@@ -733,6 +734,17 @@ export function App() {
             <Settings nav={nav} info={info} onRestarted={loadInfo} section={arg} />
           )}
         </div>
+        <ProviderStatusBar
+          providers={usage.data ?? {}}
+          pauseAt={settings.data?.opsd?.usage_pause_at ?? 0.9}
+          pauseAtByProvider={Object.fromEntries(
+            Object.entries(settings.data?.opsd?.runtimes ?? {}).map(([provider, config]) => [
+              provider,
+              config.pause_at,
+            ]),
+          )}
+          onOpen={(provider) => nav.go('agents', provider)}
+        />
       </main>
       {task && (
         <TaskPanel

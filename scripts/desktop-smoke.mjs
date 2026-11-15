@@ -177,6 +177,8 @@ const views = [
   'reports',
   'replay',
   'agents',
+  // A dedicated capture makes the bottom provider usage bar part of the smoke evidence (AO-0340).
+  'agents:usage',
   // The active Agents item stays visible while its section folds (AO-0333).
   'sidebar-fold:agents',
   'runs',

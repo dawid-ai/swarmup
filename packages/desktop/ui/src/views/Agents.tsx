@@ -115,7 +115,7 @@ function Chip({
   );
 }
 
-export function Agents({ nav }: { nav: Nav }) {
+export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
   const agents = useData<Agent[]>('/api/agents');
   const runs = useData<RunRecord[]>('/api/runs?live');
   const tasks = useData<Task[]>('/api/tasks');
@@ -218,6 +218,7 @@ export function Agents({ nav }: { nav: Nav }) {
             <Providers
               providers={waits.data.providers}
               agents={[...ids, ...runnable.map((d) => d.id)]}
+              selected={selected}
             />
           ) : (
             <div className="text-sm text-fg-4">Reading usage…</div>
@@ -397,9 +398,11 @@ function WaitsUnavailable({ error }: { error: string }) {
 function Providers({
   providers,
   agents,
+  selected,
 }: {
   providers: Record<string, ProviderUsage>;
   agents: string[];
+  selected?: string;
 }) {
   const names = Object.keys(providers).sort(byProvider);
   if (names.length === 0) {
@@ -415,9 +418,11 @@ function Providers({
         return (
           <div
             key={name}
+            data-provider-card={name}
             className={cx(
               'panel animate-rise relative overflow-hidden p-4',
               p.paused && 'ring-1 ring-warn/40',
+              selected === name && 'ring-1 ring-signal/60',
             )}
           >
             <div

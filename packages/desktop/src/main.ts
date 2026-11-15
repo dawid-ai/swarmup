@@ -781,6 +781,9 @@ const problems: string[] = [];
 let lastFrame: Electron.NativeImage | null = null;
 
 async function createWindow(): Promise<void> {
+  // The stock Electron menu is mostly browser defaults and consumes a full row on Windows.
+  // Native edit shortcuts keep working in Chromium; reload and DevTools stay available in dev.
+  Menu.setApplicationMenu(null);
   win = new BrowserWindow({
     show: !offscreen,
     width: 1360,
@@ -788,6 +791,7 @@ async function createWindow(): Promise<void> {
     minWidth: 900,
     minHeight: 600,
     title: 'SwarmUp',
+    autoHideMenuBar: true,
     backgroundColor: '#0f1115',
     webPreferences: {
       preload: join(here, 'preload.cjs'),
@@ -797,6 +801,21 @@ async function createWindow(): Promise<void> {
       offscreen,
     },
   });
+  win.setMenuBarVisibility(false);
+  if (!packaged) {
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const key = input.key.toLowerCase();
+      const command = input.control || input.meta;
+      if ((command && key === 'r') || key === 'f5') {
+        event.preventDefault();
+        win?.webContents.reload();
+      } else if ((command && input.shift && key === 'i') || key === 'f12') {
+        event.preventDefault();
+        win?.webContents.toggleDevTools();
+      }
+    });
+  }
   if (offscreen) {
     win.webContents.setFrameRate(10);
     win.webContents.on('paint', (_e, _dirty, image) => {

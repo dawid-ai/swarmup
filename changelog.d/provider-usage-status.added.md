@@ -1,0 +1,1 @@
+- The desktop now hides Electron's default menu bar and keeps each provider's usage, reset time and sign-in state visible in a slim status bar.
