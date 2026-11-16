@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { addRootToUserConfig, initRoot, Root, Workspace } from '@swarmup/core';
 import type { RunRecord } from '../src/index.js';
@@ -696,12 +696,14 @@ describe('desktop admin api', () => {
   });
 
   it('archives, labels, relocates and removes a project, waking no agent while archived (AO-0353)', async () => {
-    const { sup, api, call, userConfig } = await setup();
+    const { repo, sup, api, call, userConfig } = await setup();
     try {
       const shop = temp();
       execFileSync('git', ['init', '-q'], { cwd: shop, windowsHide: true });
       initRoot(shop, { name: 'shop', prefix: 'S', human: 'human:dawid' });
       addRootToUserConfig(sup.context.env, shop);
+      // A daemon may inherit SWARMUP_ROOTS. It must still filter an archived configured root.
+      sup.context.env.SWARMUP_ROOTS = [repo, shop].join(delimiter);
       sup.editConfig((doc) => doc.setIn(['opsd', 'agents', 'fake:engineer', 'wake'], true));
       const env = sup.context.env;
       const shopWs = new Workspace({ cwd: shop, env, actor: 'human:dawid', root: 'shop' });
@@ -729,6 +731,9 @@ describe('desktop admin api', () => {
       expect(shopWaits()).toEqual([
         expect.objectContaining({ kind: 'task', agents: ['fake:engineer'] }),
       ]);
+      // The inherited value served the archive regression above. Later project-location edits use
+      // the user-config list, as a normally started daemon does.
+      delete env.SWARMUP_ROOTS;
 
       res = await call('POST', '/api/projects/label', { root: shop, label: 'Web shop' });
       expect(res.data).toEqual([expect.objectContaining({ name: 'shop', label: 'Web shop' })]);

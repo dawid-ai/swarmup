@@ -65,8 +65,12 @@ describe('archiveRoot', () => {
     expect(loaded(env, base)).toEqual(['blog']);
     // From inside the archived repo too: swarmupd may run there.
     expect(loaded(env, shop)).toEqual(['blog']);
-    // A run gets its roots in SWARMUP_ROOTS and keeps them.
-    expect(discoverRoots(base, { ...env, SWARMUP_ROOTS: shop })).toHaveLength(1);
+    // A daemon or manual caller cannot use an inherited SWARMUP_ROOTS to bypass the archive.
+    expect(discoverRoots(base, { ...env, SWARMUP_ROOTS: shop })).toHaveLength(0);
+    // A supervised run gets its roots in SWARMUP_ROOTS and keeps them until it finishes.
+    expect(discoverRoots(base, { ...env, SWARMUP_ROOTS: shop, SWARMUP_RUN: 'run' })).toHaveLength(
+      1,
+    );
     // Comments and other settings stay.
     expect(readFileSync(file, 'utf8')).toContain('max_runs: 3 # low');
 

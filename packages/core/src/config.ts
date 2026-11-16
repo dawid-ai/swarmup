@@ -577,13 +577,15 @@ export function discoverRoots(
   const found: string[] = [];
   const rootsEnv = envVar(env, 'ROOTS');
   const local = rootsEnv && envVar(env, ROOTS_ONLY_NAME) === '1' ? null : findRootUp(cwd);
-  // An archived root (AO-0353) is left out wherever it comes from, except SWARMUP_ROOTS: swarmupd
-  // gives a run its roots there, so a run that started before the archive can finish.
+  // An archived root (AO-0353) is left out wherever it comes from. A supervised run keeps the
+  // roots swarmupd gave it in SWARMUP_ROOTS, so a run that started before the archive can finish;
+  // swarmupd itself removes RUN before it discovers roots, so an inherited ROOTS cannot bypass it.
   const archived = archivedRoots(user);
   const isArchived = (p: string): boolean => archived.some((a) => sameRoot(a, p));
+  const supervisedRun = Boolean(envVar(env, 'RUN'));
   if (local && !isArchived(local)) found.push(local);
   const listed = rootsEnv
-    ? rootsEnv.split(delimiter).filter(Boolean)
+    ? rootsEnv.split(delimiter).filter((r) => r && (supervisedRun || !isArchived(r)))
     : [
         ...(user.roots ?? []).map(String).filter((r) => !isArchived(r)),
         ...(user.master ? [user.master] : []),
