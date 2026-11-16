@@ -412,10 +412,19 @@ describe('usage windows of one model (AO-0342)', () => {
         updated_at: Date.now(),
       },
     };
-    // claude:engineer runs the provider's Opus; claude:qa runs Fable.
+    const usage = (sup as unknown as { usage: UsageState }).usage.claude!;
+    // Fable's own window at 92% pauses nothing: only the main quota does.
+    expect(sup.blocker('claude:qa', 'test')).toBeNull();
+    expect(sup.usageReport().claude!.main_windows).toEqual(['seven_day']);
+    // Refused, it holds claude:qa, which runs Fable; claude:engineer runs the provider's Opus.
+    usage.windows.seven_day_overage_included = {
+      utilization: 1,
+      resets_at: resets,
+      status: 'rejected',
+    };
     expect(sup.blocker('claude:engineer', 'test')).toBeNull();
     expect(sup.blocker('claude:qa', 'test')).toMatch(
-      /92% of the seven_day_overage_included window \(pause at 90%, fable runs only\)/,
+      /refused work at 100% of the seven_day_overage_included window \(fable runs only\)/,
     );
     const report = sup.usageReport().claude!;
     expect(report.paused).toBeNull();
@@ -427,6 +436,12 @@ describe('usage windows of one model (AO-0342)', () => {
         def: { id: 'claude:pm', status: 'active', file: '', body: '', model: 'fable' },
       }),
     ).toMatch(/fable runs only/);
+    // A role file's `model: default` picks no model: the run takes the provider's Opus.
+    expect(
+      sup.blocker('claude:pm', 'test', {
+        def: { id: 'claude:pm', status: 'active', file: '', body: '', model: 'default' },
+      }),
+    ).toBeNull();
   });
 });
 

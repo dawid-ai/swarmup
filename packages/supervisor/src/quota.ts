@@ -127,6 +127,28 @@ export const DEFAULT_MODEL_WINDOWS: Record<string, Record<string, string>> = {
 const MODEL_SUFFIX_RE = /_(opus|sonnet|haiku|fable)$/;
 
 /**
+ * The windows of a provider's main quota, which every run counts against. Another window of such
+ * a provider, such as a new model's allowance, pauses nothing at `pause_at`: only a refusal on it
+ * holds runs. A provider not listed has only main windows, unless a window names a model.
+ */
+const MAIN_WINDOWS: Record<string, string[]> = { claude: ['five_hour', 'seven_day'] };
+
+/**
+ * True when `name` is a window of the provider's main quota: one that every run counts against
+ * and that pauses runs at `pause_at`. An empty entry in `map` makes any window a main one.
+ */
+export function mainWindow(
+  provider: string,
+  name: string,
+  map: Record<string, string | null | undefined> = {},
+): boolean {
+  if (Object.hasOwn(map, name)) return !map[name];
+  if (MODEL_SUFFIX_RE.test(name)) return false;
+  const main = MAIN_WINDOWS[provider];
+  return main ? main.includes(name) : true;
+}
+
+/**
  * The model a usage window applies to, as a word to find in a model name (`fable` for
  * `claude-fable-5-2`), or undefined for a window that counts every run of the provider. `map` is
  * the provider's map from {@link modelWindows}.
@@ -164,9 +186,11 @@ export interface PauseScope {
 }
 
 /**
- * Why no new run should start on the provider now, or null. A window counts once it reaches
- * `pauseAt` (the rest stays for the human's own sessions) and until it resets. A window that
- * applies to one model (`scope.windows`) counts only for runs of that model (`scope.model`).
+ * Why no new run should start on the provider now, or null. A window of the main quota (see
+ * {@link mainWindow}) counts once it reaches `pauseAt` (the rest stays for the human's own
+ * sessions) and until it resets. Any other window, such as one model's allowance, counts only
+ * once the provider refuses work on it, and then, when it applies to one model
+ * (`scope.windows`), only for runs of that model (`scope.model`).
  */
 export function usagePause(
   provider: string,
@@ -203,13 +227,22 @@ export function usageHold(
   }
   for (const [name, w] of Object.entries(usage.windows)) {
     if (w.resets_at <= now) continue;
-    const token = tied(name);
+    const main = mainWindow(provider, name, scope.windows);
+    const token = main ? undefined : tied(name);
     if (!applies(token)) continue;
-    if (w.utilization >= pauseAt || w.status === 'rejected') {
+    if (w.status === 'rejected' && !main) {
+      return {
+        text:
+          `${provider} refused work at ${Math.round(w.utilization * 100)}% of the ${name} ` +
+          `window${token ? ` (${token} runs only)` : ''} until ${clock(w.resets_at)}`,
+        until: w.resets_at,
+      };
+    }
+    if (main && (w.utilization >= pauseAt || w.status === 'rejected')) {
       return {
         text:
           `${provider} usage at ${Math.round(w.utilization * 100)}% of the ${name} window ` +
-          `(pause at ${Math.round(pauseAt * 100)}%${only(token)}) until ${clock(w.resets_at)}`,
+          `(pause at ${Math.round(pauseAt * 100)}%) until ${clock(w.resets_at)}`,
         until: w.resets_at,
       };
     }
@@ -236,6 +269,8 @@ export interface PauseReport {
   paused: string | null;
   /** The model of each window that applies to one model only. */
   window_models: Record<string, string>;
+  /** The windows of the reading that are the provider's main quota (see {@link mainWindow}). */
+  main_windows: string[];
   /** Per model, why its runs wait while runs of other models go on. */
   model_paused: Record<string, string>;
 }
@@ -251,13 +286,16 @@ export function pauseReport(
 ): PauseReport {
   const paused = usagePause(provider, usage, pauseAt, now, { model, windows });
   const window_models = windowModels(usage, windows);
+  const main_windows = Object.keys(usage?.windows ?? {}).filter((name) =>
+    mainWindow(provider, name, windows),
+  );
   const model_paused: Record<string, string> = {};
   for (const token of new Set(Object.values(window_models))) {
     const why = usagePause(provider, usage, pauseAt, now, { model: token, windows });
     // Listed only when it differs: else `paused` already says it for every model.
     if (why && why !== paused) model_paused[token] = why;
   }
-  return { paused, window_models, model_paused };
+  return { paused, window_models, main_windows, model_paused };
 }
 
 /** A time for messages: `2026-11-06 13:10 UTC`. */

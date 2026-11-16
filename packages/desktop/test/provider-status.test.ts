@@ -49,6 +49,26 @@ describe('usageItems', () => {
     expect(usageItems(usage, undefined, NOW)[0]!.state).toBe('warning');
   });
 
+  it("shows the main quota, not a model's own window, and warns only when swarmupd pauses (AO-0342)", () => {
+    const fable = {
+      claude: provider(
+        {
+          seven_day: { utilization: 0.52, resets_at: NOW + 75 * HOUR },
+          seven_day_overage_included: { utilization: 0.95, resets_at: NOW + 75 * HOUR },
+        },
+        {
+          main_windows: ['seven_day'],
+          window_models: { seven_day_overage_included: 'fable' },
+        },
+      ),
+    };
+    const [item] = usageItems(fable, { usage_pause_at: 0.9 }, NOW);
+    expect([item!.state, item!.pct]).toEqual(['normal', 52]);
+    // Older swarmupd builds send no main_windows: every window counts, as before.
+    const old = { claude: provider(fable.claude.windows) };
+    expect(usageItems(old, { usage_pause_at: 0.9 }, NOW)[0]!.state).toBe('warning');
+  });
+
   it('ignores cached windows at or past their reset boundary', () => {
     const stale = {
       claude: provider({

@@ -73,7 +73,14 @@ export function usageItems(
       }
       // Match `usageHold` in packages/supervisor/src/quota.ts: cached windows stop describing
       // current usage at their reset boundary.
-      const windows = Object.entries(u.windows ?? {}).filter(([, w]) => w.resets_at > now);
+      const current = Object.entries(u.windows ?? {}).filter(([, w]) => w.resets_at > now);
+      // The main quota only, as `usageHold` pauses at `pause_at` (AO-0342): a model's own
+      // window, such as Fable's, holds nothing until the provider refuses work on it. Older
+      // swarmupd builds send no `main_windows`, and a reading with no main window shows all.
+      const main = u.main_windows
+        ? current.filter(([name]) => u.main_windows!.includes(name))
+        : current;
+      const windows = main.length > 0 ? main : current;
       const limited = u.limited_until !== undefined && u.limited_until > now;
       if (windows.length === 0) {
         if (limited) {
@@ -101,8 +108,10 @@ export function usageItems(
         why = `; refused work (usage limit), swarmupd starts no ${label} run for ${resetIn(u.limited_until! - now)}`;
       } else if (rejected) {
         why = `; ${label} rejected work in the ${name} window, swarmupd pauses its runs until it resets`;
-      } else if (top.utilization >= at) {
+      } else if (top.utilization >= at && main.length > 0) {
         why = `; swarmupd pauses its runs at ${Math.round(at * 100)}%`;
+      } else if (u.paused) {
+        why = `; ${u.paused}`;
       }
       return {
         provider,

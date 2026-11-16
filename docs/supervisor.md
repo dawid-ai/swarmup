@@ -266,7 +266,8 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
   for each default provider found on PATH). A config from before seeding gets the defaults
   written on the next swarmupd start, with a note in the swarmupd log, and keeps every entry it had.
 - The model of a run is the agent's `model` in the config, else its role file's `model`, else the
-  provider's `model`. A model is one word that cannot start with `-`. Other runtimes get no model
+  provider's `model`. `default`, which the role file templates carry, picks no model, so the
+  provider's `model` applies; with none, Claude Code and Codex use their own default. A model is one word that cannot start with `-`. Other runtimes get no model
   flag.
 - The reasoning effort of a run is picked the same way: the agent's `effort`, else its role file's
   `effort`, else the provider's `effort`. Claude gets `--effort E`, Codex
@@ -573,7 +574,7 @@ wake and schedules wait for room.
 | ---------------- | -------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------- |
 | PC               | `max_runs`, `min_free_gb`                    | live runs on this PC; free memory                         | number of CPU cores; 4 GB                                      |
 | Provider         | `runtimes.<name>.max_live`                   | live runs of that provider on this PC                     | none                                                           |
-| Usage allowance  | `usage_pause_at`, `runtimes.<name>.pause_at` | the provider's plan windows, as its runs report them      | pause at 90% of a window until it resets                       |
+| Usage allowance  | `usage_pause_at`, `runtimes.<name>.pause_at` | the provider's plan windows, as its runs report them      | pause at 90% of a main-quota window until it resets            |
 | Role per project | `roles.<role>.per_project`                   | live runs of the role on one project, over every provider | 1 for roles that write; 3 for `qa`, `reviewer`, `orchestrator` |
 | Role total       | `roles.<role>.max_live`                      | live runs of the role on every project                    | none; 1 for `orchestrator`                                     |
 | Checkout         | none                                         | live runs of roles that write in one folder               | 1                                                              |
@@ -706,20 +707,23 @@ wake and schedules wait for room.
   Runs whose output has no such event still count: a usage-limit error in the output (Claude
   Code's "usage limit reached", Codex's "hit your usage limit", an API `rate_limit_error`) pauses
   the provider until the reset it names, or for `usage_cooldown_minutes` (default 30).
-- The part of a window over `usage_pause_at` stays for your own Claude and Codex sessions; runs
-  already going finish.
-- **Windows of one model.** Some windows count the use of one model only. Such a window holds only
-  the runs that would use that model (the run's model, picked as in "Runtimes"); runs of other
-  models of the provider go on. Claude Code's `rate_limit_event` names no model, so swarmupd maps
-  window names to a word of the model's name: a name that ends in `_opus`, `_sonnet`, `_haiku` or
-  `_fable` applies to that model, and `seven_day_overage_included` applies to `fable`, Claude
-  Code's default model. `runtimes.<name>.model_windows` adds to or overrides that map, such as
-  `{ seven_day_overage_included: fable }`; an empty value makes a window count for every run again.
-  A run with no model, or a role file's `model: default`, uses the provider's default model, so
-  every window counts for it. A refusal (`status: rejected`) on a window of one model holds only
-  that model's runs too. The pause text names the model (`pause at 90%, fable runs only`), and
-  `swarmup usage` shows each such window with its model and a `PAUSED for fable runs` line while
-  runs of the provider's own model go on.
+- The part of the main quota over `usage_pause_at` stays for your own Claude and Codex sessions;
+  runs already going finish. The main quota is the windows every run counts against: Claude's
+  `five_hour` and `seven_day`, and every Codex window. `pause_at` applies to these only.
+- **Windows of one model.** Other windows, such as one model's weekly allowance, never pause runs
+  at `pause_at`, whatever their share: each new model can bring its own window, and the main
+  quota decides. Such a window holds runs only once the provider refuses work on it
+  (`status: rejected`, or a refusal that names it), and then only the runs that would use that
+  model (the run's model, picked as in "Runtimes"); runs of other models go on. Claude Code's
+  `rate_limit_event` names no model, so swarmupd maps window names to a word of the model's name:
+  a name that ends in `_opus`, `_sonnet`, `_haiku` or `_fable` applies to that model, and
+  `seven_day_overage_included` applies to `fable`. A refused window of no known model holds every
+  run of the provider. A run with no model at any level uses the provider's default model, so a
+  refused window holds it. `runtimes.<name>.model_windows` adds to or overrides that map, such as
+  `{ seven_day_overage_included: fable }`; an empty value makes a window part of the main quota.
+  The text names the model (`refused work at 100% of the seven_day_overage_included window
+(fable runs only)`), `swarmup usage` shows each such window with its model, and `GET
+/api/usage` lists the main quota's windows in `main_windows`.
 - **Signed out.** The first run that cannot sign in (an expired OAuth session, no login, a bad
   API key) puts its provider in the signed-out state. swarmupd starts no run of that provider until it
   is signed in again: no task, review, inbox or schedule run, no helper and no chat turn. Runs
@@ -822,7 +826,7 @@ swarmupd:
   proc_seconds: 5 # how often the processes of live runs are looked at
   max_runs: 24 # default: the number of CPU cores
   min_free_gb: 4 # no new run below this much free memory
-  usage_pause_at: 0.9 # no new runs on a provider past 90% of a usage window
+  usage_pause_at: 0.9 # no new runs on a provider past 90% of a main-quota window
   usage_cooldown_minutes: 30 # pause after a usage-limit error that names no reset
   signed_out_handoff_minutes: 15 # hand named work of a signed-out provider to another; 0: never
   budget_minutes: 180
