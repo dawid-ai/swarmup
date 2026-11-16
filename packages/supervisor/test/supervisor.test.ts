@@ -470,7 +470,14 @@ describe('runs', () => {
   function fableWindowFull(sup: Supervisor): void {
     (sup as unknown as { usage: UsageState }).usage = {
       fake: {
-        windows: { seven_day_fable: { utilization: 0.95, resets_at: Date.now() + 3_600_000 } },
+        // Refused: a model's own window holds runs only then, whatever its share.
+        windows: {
+          seven_day_fable: {
+            utilization: 1,
+            resets_at: Date.now() + 3_600_000,
+            status: 'rejected',
+          },
+        },
         updated_at: Date.now(),
       },
     };
