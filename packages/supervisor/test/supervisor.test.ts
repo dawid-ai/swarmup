@@ -6896,6 +6896,32 @@ describe('reviews of a provider that cannot run (AO-0341)', () => {
     ).toThrow();
   });
 
+  it('does not move an Opus review for a Fable-only window (AO-0362)', async () => {
+    const { sup, as, ids, advance } = paused({
+      agents: {
+        'fake:reviewer': { wake: true, model: 'claude-opus-5-5' },
+        'other:reviewer': { wake: true },
+        'other:engineer': { wake: true },
+      },
+    });
+    sup['usage'].fake = {
+      windows: {
+        seven_day_fable: { utilization: 0.95, resets_at: Date.now() + 3 * 24 * HOUR },
+      },
+      updated_at: Date.now(),
+    };
+    sup['waitsMemo'] = null;
+
+    expect(sup.providerHold('fake')).toBeNull();
+    await sup.tick();
+    advance(2 * HOUR);
+    await sup.tick();
+
+    const reviewerOf = (id: string) => as('human:dawid').view(id).reviewer;
+    expect(ids.map(reviewerOf)).toEqual(['fake:reviewer', 'fake:reviewer', 'fake:reviewer']);
+    expect(sup.runs({ live: true }).some((r) => r.agent === 'fake:reviewer')).toBe(true);
+  });
+
   it('never moves a review with review_fallback_hours 0', async () => {
     const { sup, as, ids, pause, advance } = paused({ review_fallback_hours: 0 });
     pause();
