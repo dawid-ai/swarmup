@@ -236,6 +236,8 @@ export interface PauseReport {
   paused: string | null;
   /** The model of each window that applies to one model only. */
   window_models: Record<string, string>;
+  /** The windows of the reading that are the provider's main quota (see {@link mainWindow}). */
+  main_windows: string[];
   /** Per model, why its runs wait while runs of other models go on. */
   model_paused: Record<string, string>;
 }
@@ -251,13 +253,16 @@ export function pauseReport(
 ): PauseReport {
   const paused = usagePause(provider, usage, pauseAt, now, { model, windows });
   const window_models = windowModels(usage, windows);
+  const main_windows = Object.keys(usage?.windows ?? {}).filter((name) =>
+    mainWindow(provider, name, windows),
+  );
   const model_paused: Record<string, string> = {};
   for (const token of new Set(Object.values(window_models))) {
     const why = usagePause(provider, usage, pauseAt, now, { model: token, windows });
     // Listed only when it differs: else `paused` already says it for every model.
     if (why && why !== paused) model_paused[token] = why;
   }
-  return { paused, window_models, model_paused };
+  return { paused, window_models, main_windows, model_paused };
 }
 
 /** A time for messages: `2026-11-06 13:10 UTC`. */

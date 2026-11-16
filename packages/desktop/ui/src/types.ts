@@ -195,6 +195,8 @@ export interface ProviderUsage {
   paused: string | null;
   /** The model of each window that applies to one model only; older swarmupd builds leave it out. */
   window_models?: Record<string, string>;
+  /** The windows of the provider's main quota, the only ones `pause_at` applies to; older swarmupd builds leave it out. */
+  main_windows?: string[];
   /** Per model, why its runs wait while runs of other models go on. */
   model_paused?: Record<string, string>;
   live: number;

@@ -487,6 +487,8 @@ export type ProviderReport = ProviderUsage & {
   paused: string | null;
   /** The model of each window that applies to one model only (AO-0342). */
   window_models?: Record<string, string>;
+  /** The windows of the provider's main quota, the only ones `pause_at` applies to. */
+  main_windows?: string[];
   /** Per model, why its runs wait while runs of other models go on. */
   model_paused?: Record<string, string>;
   live: number;
@@ -2352,6 +2354,7 @@ export class Supervisor extends EventEmitter {
       out[p] = {
         ...u,
         window_models: usage.window_models,
+        main_windows: usage.main_windows,
         model_paused: usage.model_paused,
         paused: rc?.paused
           ? `${p} is paused in Settings`

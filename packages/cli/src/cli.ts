@@ -2220,6 +2220,7 @@ const COMMANDS: Record<string, Command> = {
               ...(usage[p] ?? { windows: {} }),
               live: live.filter((r) => r.agent.startsWith(`${p}:`)).length,
               window_models: pause.window_models,
+              main_windows: pause.main_windows,
               model_paused: pause.model_paused,
               // Signed out first: no run of it starts, whatever its allowance (AO-0154).
               paused: out ? signedOutText(p, out, now) : pause.paused,

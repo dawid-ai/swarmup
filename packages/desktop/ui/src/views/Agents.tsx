@@ -479,7 +479,8 @@ function Providers({
               )}
               {Object.entries(p.windows).map(([w, u]) => {
                 const pct = Math.round(u.utilization * 100);
-                const hot = u.utilization >= 0.9;
+                // Only the main quota pauses runs at a share; a model's own window does not.
+                const hot = u.utilization >= 0.9 && (p.main_windows?.includes(w) ?? true);
                 return (
                   <div key={w}>
                     <div className="mb-1 flex items-baseline gap-2 text-xs">
@@ -487,7 +488,7 @@ function Providers({
                       {p.window_models?.[w] && (
                         <span
                           className="rounded bg-white/6 px-1.5 text-fg-3"
-                          title={`Pauses only runs of ${p.window_models[w]} models`}
+                          title={`Counts only runs of ${p.window_models[w]} models, and holds them only when the provider refuses work`}
                         >
                           {p.window_models[w]}
                         </span>
