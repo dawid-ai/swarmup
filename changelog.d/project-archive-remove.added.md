@@ -1,0 +1,1 @@
+- Projects can be archived, labeled, relocated and removed through swarmupd's API (`/api/projects`). An archived project stays in the user config but is off the board, and swarmupd starts no run on its tasks. Removing a project drops only its entry from the user config; its folder and tasks stay on disk. The app's project menu builds on these calls.

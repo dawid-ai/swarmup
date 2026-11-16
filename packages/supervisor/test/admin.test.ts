@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { initRoot, Root, Workspace } from '@swarmup/core';
+import { addRootToUserConfig, initRoot, Root, Workspace } from '@swarmup/core';
 import type { RunRecord } from '../src/index.js';
 import { nextRun, startApi, Supervisor } from '../src/index.js';
 
@@ -693,6 +693,72 @@ describe('desktop admin api', () => {
       new Date(2026, 10, 1, 11, 0).getTime(),
     );
     expect(nextRun({ name: 'a', agent: 'x:y', at: '11:00', paused: true }, 0, now)).toBeNull();
+  });
+
+  it('archives, labels, relocates and removes a project, waking no agent while archived (AO-0353)', async () => {
+    const { sup, api, call, userConfig } = await setup();
+    try {
+      const shop = temp();
+      execFileSync('git', ['init', '-q'], { cwd: shop, windowsHide: true });
+      initRoot(shop, { name: 'shop', prefix: 'S', human: 'human:dawid' });
+      addRootToUserConfig(sup.context.env, shop);
+      sup.editConfig((doc) => doc.setIn(['opsd', 'agents', 'fake:engineer', 'wake'], true));
+      const env = sup.context.env;
+      const shopWs = new Workspace({ cwd: shop, env, actor: 'human:dawid', root: 'shop' });
+      shopWs.newTask({ title: 'shop work', owner: 'fake:engineer' }, shopWs.defaultRoot());
+      // What swarmupd starts or plans to start on the shop task: a run, or a wait in the wake plan.
+      const shopRuns = () => sup.runs().filter((r) => r.task?.endsWith('S-0001'));
+      const shopWaits = () => sup.waits().filter((w) => w.task === 'shop/S-0001');
+
+      let res = await call('POST', '/api/projects/archive', { root: shop, archived: true });
+      expect(res.status).toBe(200);
+      expect(res.data).toEqual([expect.objectContaining({ root: shop, archived: true })]);
+      // Off the board and out of the wake plan.
+      expect(sup.ws().roots.map((r) => r.name)).toEqual(['test']);
+      expect(JSON.stringify((await call('GET', '/api/tasks?all')).data)).not.toContain('S-0001');
+      await sup.tick();
+      await sup.tick();
+      expect(shopRuns()).toEqual([]);
+      expect(shopWaits()).toEqual([]);
+      // Unarchived, the same task is in the wake plan at once: fake:engineer is woken on it as
+      // soon as its worktree is made (this scratch repo has no commit to make one from).
+      res = await call('POST', '/api/projects/unarchive', { root: shop });
+      expect(res.status).toBe(200);
+      expect(sup.ws().roots.map((r) => r.name)).toEqual(['test', 'shop']);
+      await sup.tick();
+      expect(shopWaits()).toEqual([
+        expect.objectContaining({ kind: 'task', agents: ['fake:engineer'] }),
+      ]);
+
+      res = await call('POST', '/api/projects/label', { root: shop, label: 'Web shop' });
+      expect(res.data).toEqual([expect.objectContaining({ name: 'shop', label: 'Web shop' })]);
+      res = await call('GET', '/api/settings');
+      expect((res.data as unknown as { rootList: Array<{ label: string }> }).rootList).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'shop', label: 'Web shop' })]),
+      );
+
+      // Relocate refuses a folder without a data root and writes nothing then.
+      const before = readFileSync(userConfig, 'utf8');
+      res = await call('POST', '/api/projects/relocate', { root: shop, to: temp() });
+      expect(res.status).toBe(400);
+      expect(readFileSync(userConfig, 'utf8')).toBe(before);
+      const moved = temp();
+      initRoot(moved, { name: 'shop', prefix: 'S', human: 'human:dawid' });
+      res = await call('POST', '/api/projects/relocate', { root: shop, to: moved });
+      expect(res.data).toEqual([expect.objectContaining({ root: moved, label: 'Web shop' })]);
+      expect(sup.ws().roots.find((r) => r.name === 'shop')?.dir).toBe(join(moved, '.swarmup'));
+
+      res = await call('POST', '/api/projects/remove', { root: moved });
+      expect(res.data).toEqual([]);
+      expect(sup.ws().roots.map((r) => r.name)).toEqual(['test']);
+      expect(existsSync(join(moved, '.swarmup', 'config.yml'))).toBe(true);
+      expect(existsSync(join(shop, '.swarmup', 'tasks'))).toBe(true);
+      expect(readFileSync(userConfig, 'utf8')).toContain('# my notes stay');
+
+      expect((await call('POST', '/api/projects/explode', { root: shop })).status).toBe(400);
+    } finally {
+      await api.close();
+    }
   });
 
   it('creates channels with a description and refuses duplicates', async () => {

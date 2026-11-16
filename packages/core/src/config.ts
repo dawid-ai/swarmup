@@ -74,6 +74,11 @@ export interface UserConfig {
   /** Data roots to read besides the one found from the working directory. */
   roots?: string[];
   /**
+   * Per-root options, keyed by the folder as `roots` lists it (AO-0353). Kept beside `roots` so
+   * that list stays plain folders for every reader, older builds included.
+   */
+  root_options?: Record<string, RootOptions>;
+  /**
    * The SwarmUp Master Repo: one data root for every project. It is read like any root, its
    * mirror roots show the projects that mirror into it, and mirrored project roots sync with it.
    */
@@ -85,6 +90,33 @@ export interface UserConfig {
    * so machines that create tasks between syncs never pick the same id.
    */
   id_block?: number;
+}
+
+/** One root's options in the user config (`root_options.<folder>`). */
+export interface RootOptions {
+  /** No reader loads an archived root: it is off the board and swarmupd runs none of its tasks. */
+  archived?: boolean;
+  /** The name the app shows for the project; the root's own `name` stays its id. */
+  label?: string;
+}
+
+/** The options the user config holds for a root, or an empty object. */
+export function rootOptionsOf(user: UserConfig, root: string): RootOptions {
+  const all = user.root_options;
+  if (!all || typeof all !== 'object') return {};
+  for (const [key, value] of Object.entries(all)) {
+    if (value && typeof value === 'object' && sameRoot(key, root)) return value;
+  }
+  return {};
+}
+
+/** The folders the user config marks archived. */
+export function archivedRoots(user: UserConfig): string[] {
+  const all = user.root_options;
+  if (!all || typeof all !== 'object') return [];
+  return Object.entries(all)
+    .filter(([, o]) => o && typeof o === 'object' && o.archived === true)
+    .map(([key]) => key);
 }
 
 /** The user config key that holds swarmupd's settings, such as `swarmupd.agents`. */
@@ -545,10 +577,17 @@ export function discoverRoots(
   const found: string[] = [];
   const rootsEnv = envVar(env, 'ROOTS');
   const local = rootsEnv && envVar(env, ROOTS_ONLY_NAME) === '1' ? null : findRootUp(cwd);
-  if (local) found.push(local);
+  // An archived root (AO-0353) is left out wherever it comes from, except SWARMUP_ROOTS: swarmupd
+  // gives a run its roots there, so a run that started before the archive can finish.
+  const archived = archivedRoots(user);
+  const isArchived = (p: string): boolean => archived.some((a) => sameRoot(a, p));
+  if (local && !isArchived(local)) found.push(local);
   const listed = rootsEnv
     ? rootsEnv.split(delimiter).filter(Boolean)
-    : [...(user.roots ?? []), ...(user.master ? [user.master] : [])];
+    : [
+        ...(user.roots ?? []).map(String).filter((r) => !isArchived(r)),
+        ...(user.master ? [user.master] : []),
+      ];
   for (const r of listed) found.push(rootDirOf(r));
   const seen = new Set<string>();
   const roots = found.filter((p) => {
@@ -560,6 +599,11 @@ export function discoverRoots(
   // Mirror roots in a Master Repo show projects this machine does not have; a project root that
   // is loaded hides its own copy.
   const names = new Set(roots.map(rootNameOf).filter((n): n is string => n !== null));
+  // An archived project stays off the board through its Master Repo copy too.
+  for (const a of archived) {
+    const name = existsSync(a) ? rootNameOf(storeDirIn(a) ?? a) : null;
+    if (name) names.add(name);
+  }
   for (const dir of [...roots]) {
     if (isMirrorDir(dir)) continue;
     for (const m of mirrorDirs(dir)) {

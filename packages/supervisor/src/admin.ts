@@ -12,7 +12,14 @@ import {
   samePath,
   sameRoot,
   setRootMirror,
+  archiveRoot,
+  labelRoot,
+  listRoots,
+  relocateRoot,
+  removeRoot,
+  rootOptionsOf,
 } from '@swarmup/core';
+import type { ListedRoot } from '@swarmup/core';
 import type { OpsdConfig, RoleConfig, RuntimeConfig, ScheduleConfig } from './config.js';
 import { DEFAULT_RUNTIMES, opsdConfig, roleLimits, stateDir } from './config.js';
 import { envVar } from '@swarmup/core';
@@ -800,6 +807,8 @@ function firstLine(s: string | undefined): string | undefined {
 
 export interface RootInfo {
   name: string;
+  /** The name the app shows: the user config's label for the root, else `name` (AO-0353). */
+  label: string;
   dir: string;
   /** Mirrors into the Master Repo. */
   mirror: boolean;
@@ -814,11 +823,48 @@ export function rootList(sup: Supervisor): RootInfo[] {
   const master = masterRoot(ws.roots, ws.user);
   return ws.roots.map((r) => ({
     name: r.name,
+    label: rootOptionsOf(ws.user, r.dir).label?.trim() || r.name,
     dir: r.dir,
     mirror: r.config.mirror === true,
     isMirror: r.isMirror,
     isMaster: master !== undefined && r === master,
   }));
+}
+
+/** The projects in swarmupd's user config, archived ones included, in the listed order. */
+export function projectsView(sup: Supervisor): ListedRoot[] {
+  return listRoots(sup.context.env, sup.userConfig);
+}
+
+/**
+ * Archives, unarchives, labels, relocates or removes a project in swarmupd's user config, then
+ * reloads swarmupd's roots, as Add project does (AO-0274). Each changes only the user config;
+ * remove never touches the folder. Returns the project list after the change.
+ */
+export function projectAction(
+  sup: Supervisor,
+  action: string,
+  body: Record<string, unknown>,
+): ListedRoot[] {
+  const { env } = sup.context;
+  const root = body.root as string;
+  try {
+    if (action === 'archive')
+      archiveRoot(env, root, body.archived === undefined ? true : (body.archived as boolean));
+    else if (action === 'unarchive') archiveRoot(env, root, false);
+    else if (action === 'label') labelRoot(env, root, (body.label ?? null) as string | null);
+    else if (action === 'relocate') relocateRoot(env, root, body.to as string);
+    else if (action === 'remove') removeRoot(env, root);
+    else
+      throw new OpsError(
+        `projects: no action '${action}'; use archive, unarchive, label, relocate or remove`,
+        2,
+      );
+  } finally {
+    // A refused change wrote nothing; reloading anyway keeps swarmupd on what the file says.
+    sup.reloadConfig();
+  }
+  return projectsView(sup);
 }
 
 /** Turns mirroring on or off for a project root, then reloads swarmupd's view of it. */

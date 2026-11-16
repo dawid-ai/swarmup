@@ -10,6 +10,11 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/signin/resume')).toBe(true);
     expect(allowedCall('GET', '/api/signin/resume')).toBe(false);
     expect(allowedCall('POST', '/api/signin/other')).toBe(false);
+    expect(allowedCall('GET', '/api/projects')).toBe(true);
+    expect(allowedCall('POST', '/api/projects/archive')).toBe(true);
+    expect(allowedCall('POST', '/api/projects/remove')).toBe(true);
+    expect(allowedCall('POST', '/api/projects/other')).toBe(false);
+    expect(allowedCall('POST', '/api/projects/relocate')).toBe(false);
     expect(allowedCall('GET', '/api/runs/01ABC/procs')).toBe(true);
     expect(allowedCall('POST', '/api/runs/01ABC/procs')).toBe(true);
     expect(allowedCall('POST', '/api/waits')).toBe(false);

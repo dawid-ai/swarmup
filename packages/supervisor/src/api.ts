@@ -25,6 +25,8 @@ import {
   applySettings,
   deleteSchedule,
   mirrorRoot,
+  projectAction,
+  projectsView,
   saveSchedule,
   schedulesView,
   settingsView,
@@ -325,6 +327,15 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (method === 'POST' && area === 'roots' && id && action === 'mirror') {
       humanOnly(`changing mirroring for root ${id}`);
       return send(res, 200, mirrorRoot(sup, id, body.on));
+    }
+    // Projects in the user config, archived ones included (AO-0353). The folder goes in the body,
+    // since it holds slashes: `{ root, archived }`, `{ root, label }`, `{ root, to }`, `{ root }`.
+    if (area === 'projects') {
+      if (method === 'GET' && !id) return send(res, 200, projectsView(sup));
+      if (method === 'POST' && id && !action) {
+        humanOnly(`changing the project list (${id})`);
+        return send(res, 200, projectAction(sup, id, body));
+      }
     }
     if (method === 'GET' && area === 'doctor') {
       const { env, cwd } = sup.context;
