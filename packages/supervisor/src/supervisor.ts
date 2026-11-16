@@ -147,6 +147,7 @@ import type {
 import {
   CODEX_GIT_DIRS,
   invocation,
+  ownModel,
   planCheckPrompt,
   runPrompt,
   withStoreCheckoutRule,
@@ -2308,14 +2309,14 @@ export class Supervisor extends EventEmitter {
 
   /**
    * The model a run of `agent` would use, unchecked, for the usage pause: the agent's in Settings,
-   * else its role file's, else the provider's; undefined for the provider's default.
+   * else its role file's, else the provider's; undefined for the provider's default. `default`
+   * picks none, as in {@link runModel}.
    */
   runModelOf(agent: string, def?: AgentDef | null): string | undefined {
     return (
-      this.config.agents[agent]?.model ||
-      def?.model ||
-      this.config.runtimes[runtimeOf(agent)]?.model ||
-      undefined
+      ownModel(this.config.agents[agent]?.model) ??
+      ownModel(def?.model) ??
+      ownModel(this.config.runtimes[runtimeOf(agent)]?.model)
     );
   }
 
@@ -3227,10 +3228,10 @@ export class Supervisor extends EventEmitter {
     // The agent's model and effort in Settings win over its role file's, which win over the
     // provider's.
     const runDef =
-      agentCfg.model || agentCfg.effort
+      ownModel(agentCfg.model) || agentCfg.effort
         ? ({
             ...(def ?? { id: agent, status: 'active', file: '', body: '' }),
-            ...(agentCfg.model ? { model: agentCfg.model } : {}),
+            ...(ownModel(agentCfg.model) ? { model: agentCfg.model } : {}),
             ...(agentCfg.effort ? { effort: agentCfg.effort } : {}),
           } as AgentDef)
         : def;

@@ -228,14 +228,22 @@ function claudeAbsolutePattern(dir: string): string {
 }
 
 /**
+ * A model an agent or role file picks itself, or undefined. `default`, which the role file
+ * templates carry, picks none: the run takes the provider's `model`. Passed on as
+ * `--model default`, it would run Claude Code's own default (Fable) over the provider's choice.
+ */
+export function ownModel(model: string | null | undefined): string | undefined {
+  return model && model !== 'default' ? model : undefined;
+}
+
+/**
  * The model of a run: the agent's own (`swarmupd.agents.<id>.model`, merged into `agent` by the
  * caller, or the role file's `model`), else the provider's. Checked here, because a role file's
  * value comes from a synced repo and must never read as a flag.
  */
 export function runModel(rc: RuntimeConfig, agent: Pick<AgentDef, 'model' | 'file'> | undefined) {
-  if (agent?.model !== undefined && agent.model !== null && agent.model !== '') {
-    return checkModel(agent.model, `${agent.file || 'agent'}: model`);
-  }
+  const own = ownModel(agent?.model);
+  if (own) return checkModel(own, `${agent?.file || 'agent'}: model`);
   return rc.model ? checkModel(rc.model, 'provider model') : undefined;
 }
 

@@ -266,7 +266,8 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
   for each default provider found on PATH). A config from before seeding gets the defaults
   written on the next swarmupd start, with a note in the swarmupd log, and keeps every entry it had.
 - The model of a run is the agent's `model` in the config, else its role file's `model`, else the
-  provider's `model`. A model is one word that cannot start with `-`. Other runtimes get no model
+  provider's `model`. `default`, which the role file templates carry, picks no model, so the
+  provider's `model` applies; with none, Claude Code and Codex use their own default. A model is one word that cannot start with `-`. Other runtimes get no model
   flag.
 - The reasoning effort of a run is picked the same way: the agent's `effort`, else its role file's
   `effort`, else the provider's `effort`. Claude gets `--effort E`, Codex
@@ -715,8 +716,8 @@ wake and schedules wait for room.
   `_fable` applies to that model, and `seven_day_overage_included` applies to `fable`, Claude
   Code's default model. `runtimes.<name>.model_windows` adds to or overrides that map, such as
   `{ seven_day_overage_included: fable }`; an empty value makes a window count for every run again.
-  A run with no model, or a role file's `model: default`, uses the provider's default model, so
-  every window counts for it. A refusal (`status: rejected`) on a window of one model holds only
+  A run with no model at any level uses the provider's default model, so every window counts
+  for it. A refusal (`status: rejected`) on a window of one model holds only
   that model's runs too. The pause text names the model (`pause at 90%, fable runs only`), and
   `swarmup usage` shows each such window with its model and a `PAUSED for fable runs` line while
   runs of the provider's own model go on.

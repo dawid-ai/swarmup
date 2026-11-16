@@ -427,6 +427,12 @@ describe('usage windows of one model (AO-0342)', () => {
         def: { id: 'claude:pm', status: 'active', file: '', body: '', model: 'fable' },
       }),
     ).toMatch(/fable runs only/);
+    // A role file's `model: default` picks no model: the run takes the provider's Opus.
+    expect(
+      sup.blocker('claude:pm', 'test', {
+        def: { id: 'claude:pm', status: 'active', file: '', body: '', model: 'default' },
+      }),
+    ).toBeNull();
   });
 });
 

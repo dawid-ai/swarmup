@@ -219,6 +219,11 @@ describe('the model of a run', () => {
       runModel({ command: 'codex', model: 'o3' }, { model: 'gpt-5-codex', file: 'x.md' }),
     ).toBe('gpt-5-codex');
     expect(runModel({ command: 'codex' }, undefined)).toBeUndefined();
+    // `model: default`, as the role file templates carry it, takes the provider's model.
+    expect(
+      runModel({ command: 'claude', model: 'claude-opus-5-5' }, { model: 'default', file: 'p.md' }),
+    ).toBe('claude-opus-5-5');
+    expect(runModel({ command: 'claude' }, { model: 'default', file: 'p.md' })).toBeUndefined();
     expect(() => runModel({ command: 'codex' }, { model: '--full-auto', file: 'a.md' })).toThrow(
       /a\.md: model/,
     );
