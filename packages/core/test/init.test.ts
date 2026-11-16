@@ -1,8 +1,11 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  findTemplatesDir,
   initRoot,
+  TEMPLATES_DIR,
   readAgentFiles,
   readAgents,
   defaultHumanId,
@@ -28,6 +31,42 @@ describe('initRoot', () => {
     expect(pm.can_claim).toEqual(['question', 'milestone']);
     expect(qa.can_claim).toEqual(['task', 'bug', 'milestone']);
     expect(readFileSync(join(withAgents, 'people', 'owner.md'), 'utf8')).toContain('human:owner');
+  });
+
+  it('refuses --with-agents when the build has no templates, before writing anything (WEB-0002)', () => {
+    const missing = join(tempDir(), 'templates');
+    for (const opts of [{ withAgents: true }, { agents: ['claude:qa'] }]) {
+      const target = join(tempDir(), 'repo');
+      expect(() => initRoot(target, { ...opts, templatesDir: missing })).toThrow(
+        /no role templates at .*templates.agents: this SwarmUp build ships without them/,
+      );
+      expect(existsSync(target)).toBe(false);
+    }
+    // Without --with-agents, missing templates do not matter.
+    expect(readAgents(initRoot(tempDir(), { templatesDir: missing }))).toEqual([]);
+  });
+});
+
+describe('findTemplatesDir', () => {
+  it('finds templates beside dist in a checkout, or beside the bundle in the desktop app', () => {
+    const checkout = tempDir();
+    mkdirSync(join(checkout, 'dist'));
+    mkdirSync(join(checkout, 'templates', 'agents'), { recursive: true });
+    const inDist = pathToFileURL(join(checkout, 'dist', 'init.js')).href;
+    expect(findTemplatesDir(inDist)).toBe(join(checkout, 'templates'));
+
+    const app = tempDir();
+    mkdirSync(join(app, 'templates', 'agents'), { recursive: true });
+    const bundle = pathToFileURL(join(app, 'swarmup.mjs')).href;
+    expect(findTemplatesDir(bundle)).toBe(join(app, 'templates'));
+
+    // Neither: the checkout location, so the error names where templates belong.
+    const bare = pathToFileURL(join(tempDir(), 'dist', 'init.js')).href;
+    expect(findTemplatesDir(bare)).toBe(join(fileURLToPath(bare), '..', '..', 'templates'));
+  });
+
+  it('resolves to the templates of this checkout', () => {
+    expect(existsSync(join(TEMPLATES_DIR, 'agents', 'claude-pm.md'))).toBe(true);
   });
 });
 

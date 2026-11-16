@@ -97,7 +97,7 @@ import {
   buildWrapped,
   wrappedText,
 } from '@swarmup/supervisor';
-import { envVar } from '@swarmup/core';
+import { envVar, isReadOnlyRole, READ_ONLY_CAN_CLAIM } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
@@ -1132,10 +1132,15 @@ const COMMANDS: Record<string, Command> = {
   },
   agents: {
     usage: 'agents',
-    summary: 'list agent definitions from agents/*.md',
+    summary:
+      'list agent definitions from agents/*.md, and the agents in the user config that have no role file',
     run: (ctx) => {
       const ws = ctx.ws();
       const agents = ws.agents();
+      // Agents `swarmup setup` seeds into the user config can run without a role file, so a
+      // fresh install lists them instead of printing "no agents defined" (WEB-0002).
+      const roleIds = new Set(agents.map((a) => a.id));
+      const configOnly = ws.knownAgents().filter((id) => !roleIds.has(id));
       // On stderr, so `--json` output stays parseable.
       for (const p of ws.agentProblems()) {
         ctx.io.err(`warning: skipped ${p.file}: ${p.message}`);
@@ -1143,7 +1148,10 @@ const COMMANDS: Record<string, Command> = {
       if (ctx.opts.json) {
         ctx.io.out(
           JSON.stringify(
-            agents.map(({ body: _b, ...a }) => a),
+            [
+              ...agents.map(({ body: _b, ...a }) => a),
+              ...configOnly.map((id) => ({ id, status: 'active', source: 'config' })),
+            ],
             null,
             2,
           ),
@@ -1153,7 +1161,11 @@ const COMMANDS: Record<string, Command> = {
       for (const a of agents) {
         ctx.io.out(`${pad(a.id, 24)} ${pad(a.status, 9)} ${(a.can_claim ?? ['*']).join(',')}`);
       }
-      if (agents.length === 0) ctx.io.out('no agents defined');
+      for (const id of configOnly) {
+        const types = isReadOnlyRole(id) ? READ_ONLY_CAN_CLAIM : ['*'];
+        ctx.io.out(`${pad(id, 24)} ${pad('active', 9)} ${types.join(',')}  (user config)`);
+      }
+      if (agents.length === 0 && configOnly.length === 0) ctx.io.out('no agents defined');
     },
   },
   new: {

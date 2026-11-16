@@ -1038,6 +1038,29 @@ describe('setup', () => {
     expect(text).toMatch(/codex:\s+command: codex/);
     expect(text).toContain('claude:reviewer: {}');
   });
+
+  it('leaves agents that swarmup agents lists on a fresh install with no role files (WEB-0002)', () => {
+    const d = repo();
+    const file = join(d, 'user.yml');
+    const out: string[] = [];
+    const env = { SWARMUP_CONFIG: file, SWARMUP_STATE_DIR: stateFor(d) } as NodeJS.ProcessEnv;
+    const io = { out: (l: string) => out.push(l), err: () => {}, env, cwd: d };
+    expect(run(['setup', '--me', 'human:dawid'], io)).toBe(0);
+    run(['init', '--name', 'site'], io);
+    out.length = 0;
+    expect(run(['agents'], io)).toBe(0);
+    expect(out).not.toContain('no agents defined');
+    expect(out).toContainEqual(
+      expect.stringMatching(/^claude:engineer\s+active\s+\*\s+\(user config\)$/),
+    );
+    expect(out).toContainEqual(
+      expect.stringMatching(/^claude:qa\s+active\s+question\s+\(user config\)$/),
+    );
+    out.length = 0;
+    expect(run(['agents', '--json'], io)).toBe(0);
+    const listed = JSON.parse(out.join('\n')) as { id: string; source?: string }[];
+    expect(listed).toContainEqual({ id: 'claude:engineer', status: 'active', source: 'config' });
+  });
 });
 
 describe('init --user', () => {

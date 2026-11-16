@@ -67,6 +67,9 @@ cpSync(join(desktop, 'dist', 'preload.cjs'), join(stage, 'preload.cjs'));
 cpSync(join(desktop, 'dist', 'ui'), join(stage, 'ui'), { recursive: true });
 // The swarmup skill beside the bundles: `swarmup doctor` compares user-level copies with it.
 cpSync(join(top, 'skills', 'swarmup'), join(stage, 'skills', 'swarmup'), { recursive: true });
+// The role and people templates beside the bundles, where `findTemplatesDir` in core looks for
+// them: `swarmup init --with-agents`, `adopt` and `new-project` copy roles from here (WEB-0002).
+cpSync(join(top, 'packages', 'core', 'templates'), join(stage, 'templates'), { recursive: true });
 
 writeFileSync(
   join(stage, 'package.json'),

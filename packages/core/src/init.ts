@@ -13,10 +13,24 @@ export interface InitOptions {
   withAgents?: boolean;
   /** Copy only these role templates, such as `claude:qa`, and the people templates. */
   agents?: string[];
+  /** Where the templates are; defaults to `TEMPLATES_DIR`. */
+  templatesDir?: string;
 }
 
-/** Role and people templates shipped with the core package. */
-export const TEMPLATES_DIR = fileURLToPath(new URL('../templates', import.meta.url));
+/**
+ * Finds the role and people templates: `templates/` beside `dist/` in a checkout of the core
+ * package, or `templates/` beside the bundle in the desktop app, where `package.mjs` copies it.
+ * Returns the first that exists, else the first candidate.
+ */
+export function findTemplatesDir(moduleUrl: string): string {
+  const candidates = [new URL('../templates', moduleUrl), new URL('./templates', moduleUrl)].map(
+    (u) => fileURLToPath(u),
+  );
+  return candidates.find((d) => existsSync(join(d, 'agents'))) ?? candidates[0]!;
+}
+
+/** Role and people templates shipped with SwarmUp; see `findTemplatesDir`. */
+export const TEMPLATES_DIR = findTemplatesDir(import.meta.url);
 
 /** Ids of the role templates in `templates/agents/`, such as `claude:qa`. */
 export function templateAgentIds(): string[] {
@@ -53,6 +67,16 @@ export function initRoot(target: string, opts: InitOptions = {}): string {
   const prefix = (opts.prefix ?? 'T').toUpperCase();
   if (!/^[A-Z][A-Z0-9]*$/.test(prefix)) throw new OpsError(`bad id prefix '${prefix}'`, 2);
   const name = opts.name ?? basename(basename(abs) === ROOT_DIR_NAME ? dirname(abs) : abs);
+  const templates = opts.templatesDir ?? TEMPLATES_DIR;
+  const copyRoles = Boolean(opts.withAgents || opts.agents);
+  // Checked before anything is written: a build without templates used to create a root with
+  // an empty agents/ folder and say nothing (WEB-0002).
+  if (copyRoles && !existsSync(join(templates, 'agents'))) {
+    throw new OpsError(
+      `no role templates at ${join(templates, 'agents')}: this SwarmUp build ships without them; reinstall, or run init without --with-agents`,
+      1,
+    );
+  }
   mkdirSync(dir, { recursive: true });
   for (const f of FOLDERS) {
     mkdirSync(join(dir, f), { recursive: true });
@@ -63,10 +87,10 @@ export function initRoot(target: string, opts: InitOptions = {}): string {
   writeFileSync(join(dir, '.gitignore'), '.ops/\n');
   // Data files stay LF on every machine, even with core.autocrlf=true.
   writeFileSync(join(dir, '.gitattributes'), '* text=auto eol=lf\n');
-  if (opts.withAgents || opts.agents) {
+  if (copyRoles) {
     const only = opts.agents && new Set(opts.agents.map((a) => `${a.replace(':', '-')}.md`));
     for (const sub of ['agents', 'people']) {
-      const src = join(TEMPLATES_DIR, sub);
+      const src = join(templates, sub);
       if (!existsSync(src)) continue;
       for (const f of readdirSync(src)) {
         if (!f.endsWith('.md') || (sub === 'agents' && only && !only.has(f))) continue;
