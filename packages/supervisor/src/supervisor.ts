@@ -6031,6 +6031,38 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * Reads the task worktrees without ever turning an unread one into an empty one. A transient
+   * failure makes this merge start again; after repeated failures {@link startMerge} tells the
+   * human and leaves the approval waiting, as before AO-0330's second look at the no-merge path.
+   */
+  private async checkedWorktreeLeftovers(
+    ref: string,
+    job: MergeJob,
+    source: string,
+    repo: MergeRepo,
+  ): Promise<
+    { commit: string; branch: string; what: string } | 'held' | 'again' | 'look-again' | null
+  > {
+    try {
+      return await this.worktreeLeftovers(ref, job, source, repo);
+    } catch (err) {
+      const looks = (this.mergeLooks.get(ref) ?? 0) + 1;
+      if (looks >= MERGE_LOOKS) {
+        this.mergeLooks.delete(ref);
+        if (err instanceof GitTimeout) throw err;
+        const m = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `${firstLines(m)} (${MERGE_LOOKS} times in a row). Nothing is merged: swarmupd cannot tell whether the task's worktree holds changes the commit lacks. Check that git works there`,
+        );
+      }
+      this.mergeLooks.set(ref, looks);
+      const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+      this.emit('warn', `merge of ${ref}: ${firstLines(msg)}; nothing merged, looks again`);
+      return 'look-again';
+    }
+  }
+
+  /**
    * Rebases the approved commit onto the base in swarmupd's worktree, runs the checks there, moves
    * the base forward, and builds it in its checkout. A conflict or a failed check sends the
    * task back to its author; nothing is ever forced. When the base moved in the meantime (a
@@ -6077,27 +6109,16 @@ export class Supervisor extends EventEmitter {
     // What a run left uncommitted in the task's worktree is part of the approved work (AO-0300).
     // A look that fails says nothing about what is there, so the merge waits and looks again;
     // after MERGE_LOOKS failed looks in a row the human hears of it and nothing is merged.
-    let left: Awaited<ReturnType<Supervisor['worktreeLeftovers']>>;
-    try {
-      left = await this.worktreeLeftovers(ref, job, source, repo);
+    const left = await this.checkedWorktreeLeftovers(ref, job, source, repo);
+    if (left === 'look-again') return 'again';
+    if (left === 'held') {
       this.mergeLooks.delete(ref);
-    } catch (err) {
-      const looks = (this.mergeLooks.get(ref) ?? 0) + 1;
-      if (looks >= MERGE_LOOKS) {
-        this.mergeLooks.delete(ref);
-        if (err instanceof GitTimeout) throw err;
-        const m = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `${firstLines(m)} (${MERGE_LOOKS} times in a row). Nothing is merged: swarmupd cannot tell whether the task's worktree holds changes the commit lacks. Check that git works there`,
-        );
-      }
-      this.mergeLooks.set(ref, looks);
-      const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-      this.emit('warn', `merge of ${ref}: ${firstLines(msg)}; nothing merged, looks again`);
+      return;
+    }
+    if (left === 'again') {
+      this.mergeLooks.delete(ref);
       return 'again';
     }
-    if (left === 'held') return;
-    if (left === 'again') return 'again';
     if (left) {
       source = left.commit;
       src = { commit: left.commit, branch: left.branch };
@@ -6119,6 +6140,7 @@ export class Supervisor extends EventEmitter {
       await repo.ensureWorktree(onto);
       const r = await repo.rebase(approved, onto);
       if ('conflict' in r) {
+        this.mergeLooks.delete(ref);
         this.mergeBack(
           ref,
           job.what,
@@ -6129,6 +6151,19 @@ export class Supervisor extends EventEmitter {
         return;
       }
       if (r.head === onto) {
+        // The task worktree may have changed after the look at the start of this merge (a run's
+        // wrap-up can finish while git prepares swarmupd's worktree). Look at it at the exact
+        // point that would otherwise record "already in main": staged or unstaged files must be
+        // committed under AO-0300's rules or send the task back, never be hidden by no_merge.
+        const late = await this.checkedWorktreeLeftovers(ref, job, approved, repo);
+        if (late === 'look-again') return 'again';
+        if (late === 'held') {
+          this.mergeLooks.delete(ref);
+          return;
+        }
+        if (late === 'again') return 'again';
+        this.mergeLooks.delete(ref);
+        if (late) return 'again';
         const lacks = await this.unmergedNamed(repo, job, approved, onto);
         if (lacks.length > 0) {
           this.mergeLacks(ref, job, lacks, onto);
@@ -6144,6 +6179,7 @@ export class Supervisor extends EventEmitter {
         }
         return;
       }
+      this.mergeLooks.delete(ref);
       // Task store files on a branch would overwrite the live store in the checkout.
       const store = await repo.storeFiles(onto, r.head);
       if (store.length > 0) {
