@@ -925,7 +925,7 @@ function RootsCard({ data, onSaved }: { data: SettingsData; onSaved: () => void 
     <Card
       icon={FolderGit2}
       title="Data roots"
-      hint="Repos with .agent-ops/ (or dedicated data repos) whose tasks this PC loads"
+      hint="Repos with .swarmup/ (or dedicated data repos) whose tasks this PC loads"
       footer={<SaveBar s={s} dirty={dirty} onSave={() => s.save({ roots })} />}
     >
       <ul className="flex flex-col gap-1.5">
