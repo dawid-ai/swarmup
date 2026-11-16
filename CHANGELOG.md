@@ -6,6 +6,24 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.6 (2026-11-16)
+
+### Added
+
+- `effort` sets the reasoning effort of a provider's or an agent's runs (`runtimes.<name>.effort`, `agents.<id>.effort`): `--effort` for Claude, `-c model_reasoning_effort=` for Codex. **Settings > Providers** and the agent cards in **Agents** show and edit it next to the model.
+- The desktop window has no menu bar; a status bar at its bottom shows each provider's usage and time to reset, in the warning color at the pause threshold or when signed out. Click a provider to open it in Agents.
+
+### Fixed
+
+- A Codex PM can answer release questions: its sandbox has no network, so `gh release list` failed
+  there. swarmupd now reads each code checkout's GitHub releases and local tags itself, at most
+  every 10 minutes, and puts them in the prompt of every `codex:pm` run.
+- Dialogs, such as editing an agent in **Settings**, now always show above the page: switches and
+  fields of the page no longer draw over them or take their clicks. Tab stays inside the open
+  dialog, and focus goes back where it was when the dialog closes.
+- `pause_at` now applies to the main quota only (Claude's `five_hour` and `seven_day`, every Codex window). A window of one model, such as Claude's `seven_day_overage_included` (Fable), or a new model's window, pauses nothing at any share; once the provider refuses work on it, it holds only the runs of that model, and runs of other models go on. The status bar, `swarmup usage` and the provider cards in **Agents** follow the same rule; `runtimes.<name>.model_windows` maps more windows to models.
+- A role file's `model: default`, which every role file template carries, now takes the provider's `model` in **Settings** instead of passing `--model default`, which ran Claude Code's own default (Fable) and held such agents, such as the PM in **Chat**, on Fable's usage window.
+
 ## 0.3.0-beta.5 (2026-11-15)
 
 ### Added

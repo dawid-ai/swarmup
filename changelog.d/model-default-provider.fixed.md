@@ -1,1 +1,0 @@
-- A role file's `model: default`, which every role file template carries, now takes the provider's `model` in **Settings** instead of passing `--model default`, which ran Claude Code's own default (Fable) and held such agents, such as the PM in **Chat**, on Fable's usage window.

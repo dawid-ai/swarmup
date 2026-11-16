@@ -3,6 +3,20 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.6 (2026-11-16)
+
+- **Usage pauses follow the main quota.** swarmupd pauses a provider at its pause threshold of
+  the main quota only (Claude's five-hour and weekly windows). One model's own allowance, such
+  as Fable's weekly window, no longer stops runs of other models, and holds that model's runs
+  only once the provider refuses work. The status bar and **Agents** show the main quota.
+- **Agents use your provider model.** A role file with `model: default`, such as the PM's, now
+  runs the model set for the provider in **Settings** instead of the CLI's own default.
+- **Reasoning effort.** **Settings > Providers** and the agent cards in **Agents** set how hard
+  each provider or agent thinks, next to its model.
+- **Status bar.** The window has no menu bar; a status bar at the bottom shows each provider's
+  usage and time to reset. Click a provider to open it in **Agents**.
+- **Dialogs stay on top.** Dialogs always show above the page, and Tab stays inside them.
+
 ## v0.3.0-beta.5 (2026-11-15)
 
 - **Settings in categories.** **Settings** has a side list of categories instead of one long

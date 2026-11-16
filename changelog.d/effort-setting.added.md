@@ -1,1 +1,0 @@
-- `effort` sets the reasoning effort of a provider's or an agent's runs (`runtimes.<name>.effort`, `agents.<id>.effort`): `--effort` for Claude, `-c model_reasoning_effort=` for Codex. **Settings > Providers** and the agent cards in **Agents** show and edit it next to the model.
