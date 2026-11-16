@@ -18,13 +18,20 @@ needed:
   leaves PATH as it is, so remove the entry yourself. Agent runs always get it first on their PATH
   from swarmupd.
 
-The app checks GitHub Releases a minute after it starts and every 4 hours, and downloads a new
-version in the background. It installs on its own once no agent run is live and no window is open
-(the app sits in the tray): it stops swarmupd, which runs from the files the installer replaces,
-installs silently and starts again in the tray. **Settings > Updates**, the banner and the tray's
-**Restart to update** install at once; with runs live they ask first: the runs keep going and the
-new swarmupd adopts them, but their `swarmup` commands fail while the files are replaced. A development
-build run from a checkout never updates itself.
+The app checks GitHub Releases 20 seconds after it starts and every 30 minutes, and downloads a new
+version in the background. **Settings > Updates** chooses how a downloaded version installs:
+
+- **Manual** (the default) installs once no agent run is live and no window is open (the app sits
+  in the tray), or when you choose **Restart and install** in Settings or the tray. With runs live,
+  a clicked install asks first: the runs keep going and the new swarmupd adopts them, but their
+  `swarmup` commands fail while the files are replaced.
+- **Auto** pauses new runs and schedules, waits up to 3 hours for live runs to finish, then stops
+  swarmupd, installs, restarts the app and swarmupd, and resumes new work. If swarmupd was already
+  paused, Auto leaves that pause in place. A timeout or install failure clears an Auto-created
+  pause and leaves a message in the Inbox.
+
+Settings and the tray show downloading, waiting for live runs, and installing progress. A
+development build run from a checkout never updates itself.
 
 ## Run from a checkout
 

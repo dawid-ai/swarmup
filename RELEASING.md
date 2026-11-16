@@ -3,7 +3,7 @@
 A release is a pushed version tag. The `release` workflow checks the code, builds the Windows
 installer, smoke-tests the packaged app, and publishes `SwarmUp-Setup.exe`, its block map and
 `latest.yml` to the GitHub Release for the tag. Installed apps find the new version in
-`latest.yml` within four hours and update themselves.
+`latest.yml` within 30 minutes and update themselves.
 
 1. Set the version everywhere it is written down:
 

@@ -157,8 +157,37 @@ export interface TrayItem {
   separator?: true;
 }
 
+/** The update progress shown in the tray menu. */
+export interface TrayUpdate {
+  status: 'downloading' | 'ready' | 'waiting' | 'installing';
+  version?: string;
+  percent?: number;
+  live?: number;
+}
+
+function updateItem(u: TrayUpdate): TrayItem | null {
+  const version = u.version ? ` ${u.version}` : '';
+  if (u.status === 'ready') {
+    return u.version ? { label: `Restart to update to ${u.version}`, command: 'update' } : null;
+  }
+  if (u.status === 'downloading') {
+    return {
+      label: `Downloading SwarmUp${version}: ${Math.round(u.percent ?? 0)}%`,
+      enabled: false,
+    };
+  }
+  if (u.status === 'waiting') {
+    const live = u.live ?? 0;
+    return {
+      label: `Update${version}: waiting for ${live} live ${live === 1 ? 'run' : 'runs'}`,
+      enabled: false,
+    };
+  }
+  return { label: `Installing SwarmUp${version}…`, enabled: false };
+}
+
 /** The tray's right-click menu for a state; main.ts turns it into an Electron menu. */
-export function trayMenu(s: ServiceState, notify: boolean, update?: string): TrayItem[] {
+export function trayMenu(s: ServiceState, notify: boolean, update?: TrayUpdate): TrayItem[] {
   const items: TrayItem[] = [{ label: serviceLine(s), enabled: false }];
   if (s.running && s.opsd) {
     items.push({ label: opsdLine(s.opsd), enabled: false });
@@ -169,7 +198,8 @@ export function trayMenu(s: ServiceState, notify: boolean, update?: string): Tra
       });
     }
   }
-  if (update) items.push({ label: `Restart to update to ${update}`, command: 'update' });
+  const progress = update ? updateItem(update) : null;
+  if (progress) items.push(progress);
   if (s.waiting > 0) {
     items.push({
       label: s.waiting === 1 ? '1 item needs you' : `${s.waiting} items need you`,
@@ -379,9 +409,11 @@ export function cwdArg(argv: string[]): string | undefined {
 export interface DesktopSettings {
   /** Windows notifications for asks, reviews and votes that wait for the human. */
   notify: boolean;
+  /** Manual keeps the existing idle install; Auto pauses new runs and waits for live ones. */
+  updates: 'manual' | 'auto';
 }
 
 export function desktopSettings(user: unknown): DesktopSettings {
-  const d = (user as { desktop?: { notify?: unknown } } | null)?.desktop;
-  return { notify: d?.notify !== false };
+  const d = (user as { desktop?: { notify?: unknown; updates?: unknown } } | null)?.desktop;
+  return { notify: d?.notify !== false, updates: d?.updates === 'auto' ? 'auto' : 'manual' };
 }
