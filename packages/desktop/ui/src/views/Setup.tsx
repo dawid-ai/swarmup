@@ -68,7 +68,7 @@ export function Setup({
               />
             </label>
             <div className="mt-1 text-xs text-zinc-500">
-              A repo with an .agent-ops folder, or the SwarmUp Master Repo. You can add more later.
+              A repo with a .swarmup folder, or the SwarmUp Master Repo. You can add more later.
             </div>
           </>
         )}
