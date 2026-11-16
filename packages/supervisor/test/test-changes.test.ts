@@ -301,11 +301,13 @@ describe('changes to tests and check configuration, for the reviewer (AO-0291)',
     'reads the files of a failed chunk one by one, and lists a new test it cannot read',
     async () => {
       const { range, read } = manyNewTests();
-      // Git fails for every call that names more than one file, and for `f7` alone.
+      // Git fails for every patch call that names `f7`: the chunk that holds it, and `f7` alone.
+      // Only that chunk is read file by file; failing every chunk spawned 230 git calls, which
+      // ran past the timeout in the full suite on Windows.
       const failing: Git = (args, max) => {
         const paths = args.slice(args.indexOf('--') + 1);
         const patch = args.includes('-U0');
-        if (patch && (paths.length > 1 || paths[0]!.endsWith('/f7.test.ts'))) {
+        if (patch && paths.some((p) => p.endsWith('/f7.test.ts'))) {
           return Promise.reject(new Error('maxBuffer length exceeded'));
         }
         return read(args, max);
