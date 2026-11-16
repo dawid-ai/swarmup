@@ -71,7 +71,10 @@ afterEach(async () => {
     }
   } finally {
     for (const d of gone) {
-      rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      // A sandbox may refuse to stop a timed-out Git command's whole process tree. Its hook exits
+      // after the test releases it, but Windows can keep the repo locked for more than the one
+      // second `rmSync` retries cover. Keep checking the test's own temp folder until it lets go.
+      await until(() => removed(d), 30_000);
     }
   }
 }, 90_000);
@@ -2570,6 +2573,7 @@ describe('merging approved work', () => {
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
     const beat = join(s.state, 'beat.txt').split(sep).join('/');
+    const left = join(s.state, 'left.txt').split(sep).join('/');
     // Hangs while git updates main: the fast-forward in the checkout, not the rebase.
     writeFileSync(
       join(s.repo, '.git', 'hooks', 'reference-transaction'),
@@ -2578,6 +2582,7 @@ describe('merging approved work', () => {
         '[ "$1" = prepared ] || exit 0',
         "grep -q 'refs/heads/main' || exit 0",
         `while [ ! -f "$MERGE_GO" ]; do printf x >> '${beat}'; sleep 0.1; done`,
+        `: > '${left}'`,
         'exit 1',
         '',
       ].join('\n'),
@@ -2598,6 +2603,9 @@ describe('merging approved work', () => {
     );
     expect(warns.join('\n')).not.toMatch(/kept moving|did not move/);
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
+    // A sandbox may refuse `taskkill /T`, leaving the hook alive after git stops. Wait for its
+    // exact exit path before afterEach removes the repo, as the AO-0251 regression below does.
+    await until(() => existsSync(left), 30_000);
   });
 
   it('says what git started may still run when the stop of a timed-out git is refused (AO-0251)', async () => {
@@ -2697,6 +2705,38 @@ describe('merging approved work', () => {
     expect(existsSync(join(s.state, 'checks.txt'))).toBe(false);
     expect(s.last()).toMatchObject({ type: 'merge', commit: tip });
     expect(s.last().body).toContain('is already in main; nothing to merge');
+  });
+
+  it("merges the run-suffixed branch that holds a reviewed run's leftover files (AO-0356)", async () => {
+    const s = mergeSetup();
+    const committed = s.branch('two\n');
+    const branch = 'fake/t-0001-r1';
+    git(s.repo, 'branch', '-m', 'feature', branch);
+    // The review was sent before wrap-up. Its task branch has no work, while swarmupd's later
+    // run-end records the branch where it committed the files the sandboxed run left.
+    git(s.repo, 'branch', 'feature', 'main');
+    const reviewed = git(s.repo, 'rev-parse', 'feature');
+    const eng = s.as('fake:engineer', 'R1');
+    eng.start('1', 'plan');
+    eng.review(
+      '1',
+      `${reviewed.slice(0, 7)} on branch feature: changes the code, tests`,
+      'human:dawid',
+    );
+    eng.recordRun(
+      '1',
+      'run-end',
+      { run: 'R1', exit: 0, reason: 'exit', minutes: 1 },
+      `left 1 changed file(s); swarmupd committed them as ${committed.slice(0, 7)} on branch ${branch}`,
+    );
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+
+    await s.merged();
+
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch });
+    expect(s.last().body).not.toContain('nothing to merge');
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(committed);
   });
 
   it('takes the commit the approved review names in code font, not the branch of an earlier review (AO-0325)', async () => {
