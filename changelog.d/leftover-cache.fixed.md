@@ -1,0 +1,1 @@
+- swarmupd no longer commits package caches (`.pnpm-store`, `node_modules`, `.npm`) that a run leaves in its checkout, and leaves a run's changes uncommitted for a person when they exceed 2,000 files.

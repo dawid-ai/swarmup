@@ -59,7 +59,7 @@ import {
   WATCH_ACTOR,
   withStoreCheckoutRule,
 } from '../src/index.js';
-import { Checkout } from '../src/checkout.js';
+import { Checkout, LEFTOVER_FILE_LIMIT } from '../src/checkout.js';
 import { killOwn } from './own-procs.js';
 import { spySyncProcs } from './sync-procs.js';
 import { until, WAIT_MS } from './until.js';
@@ -5393,6 +5393,52 @@ describe('what runs leave in the checkout', () => {
     expect(co.changes()).toEqual([]);
     expect(await co.commitLeftovers('codex/x', 'T\n', co.head())).toBeNull();
     expect(readFileSync(join(repo, 'x.txt'), 'utf8')).toBe('y\n');
+  });
+
+  it('leaves package caches out of the dirty check and the leftover commit', async () => {
+    // AO-0372: a run's `.pnpm-store` put 19,498 cache files on a review branch.
+    const repo = temp();
+    git(repo, 'init', '-q');
+    // One cache folder the repo ignores, the others it doesn't: neither kind is a change.
+    writeFileSync(join(repo, '.gitignore'), '.pnpm-store/\n');
+    writeFileSync(join(repo, 'x.txt'), 'x\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'start');
+    const co = new Checkout(repo, [], { ...process.env, ...ID });
+    const head = co.head();
+    for (const dir of [
+      '.pnpm-store/v3/files/00',
+      'node_modules/a',
+      'pkg/node_modules/b',
+      '.npm/c',
+    ]) {
+      mkdirSync(join(repo, dir), { recursive: true });
+      writeFileSync(join(repo, dir, 'f'), 'cache\n');
+    }
+    expect(co.changes()).toEqual([]);
+    expect(await co.commitLeftovers('codex/cache-only', 'T\n', head)).toBeNull();
+    writeFileSync(join(repo, 'x.txt'), 'y\n');
+    const left = (await co.commitLeftovers('codex/cache', 'T\n', head))!;
+    expect(left.files).toEqual(['x.txt']);
+    // The caches stay where the run left them.
+    expect(existsSync(join(repo, 'pkg', 'node_modules', 'b', 'f'))).toBe(true);
+  });
+
+  it('refuses a leftover commit of more files than the limit and leaves them', async () => {
+    const repo = temp();
+    git(repo, 'init', '-q');
+    writeFileSync(join(repo, 'x.txt'), 'x\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-qm', 'start');
+    const co = new Checkout(repo, [], { ...process.env, ...ID });
+    const head = co.head();
+    mkdirSync(join(repo, 'build'));
+    for (let i = 0; i <= LEFTOVER_FILE_LIMIT; i++) writeFileSync(join(repo, 'build', `${i}`), '');
+    await expect(co.commitLeftovers('codex/big', 'T\n', head)).rejects.toThrow(
+      `${LEFTOVER_FILE_LIMIT + 1} changed files, more than ${LEFTOVER_FILE_LIMIT}`,
+    );
+    expect(git(repo, 'branch', '--list', 'codex/big')).toBe('');
+    expect(existsSync(join(repo, 'build', '0'))).toBe(true);
   });
 
   it('commits only from the commit the run started on', async () => {

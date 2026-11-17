@@ -7,6 +7,19 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
+ * Package caches and installs a run can leave in its checkout, at any depth. They are never a
+ * change of the checkout, so neither the dirty check nor a run's commit takes them: one run's
+ * `.pnpm-store` put 19,498 files on a review branch (AO-0372).
+ */
+const CACHE_DIRS = ['.pnpm-store', 'node_modules', '.npm'];
+
+/**
+ * The most files a run's leftover commit may change. Past it the run most likely left a cache
+ * or a build that no ignore rule names; the files stay for a person instead (AO-0372).
+ */
+export const LEFTOVER_FILE_LIMIT = 2000;
+
+/**
  * `git worktree list` per main checkout, with the modification time of its `.git/worktrees`
  * folder when it was read. Adding, removing or pruning a worktree changes that folder, so the
  * list is read again only then. With ~90 worktrees it took ~70 ms of swarmupd's event loop on every
@@ -136,6 +149,7 @@ export class Checkout {
     const ignored = yield* this.ignored(paths);
     return [
       ...ROOT_DIR_NAMES.map((n) => `:(exclude,glob)**/${n}/**`),
+      ...CACHE_DIRS.map((n) => `:(exclude,glob)**/${n}/**`),
       ...paths.filter((p) => !ignored.has(p)).map((p) => `:(exclude,literal)${p}`),
     ];
   }
@@ -299,6 +313,15 @@ export class Checkout {
       } else {
         const tree = yield* this.stage(join(tmp, 'commit'), head, excludes);
         if (tree === (yield { args: ['rev-parse', `${head}^{tree}`] }).trim()) return null;
+        const count = this.names(
+          yield { args: ['diff-tree', '-r', '-z', '--no-renames', '--name-only', head, tree] },
+        ).length;
+        if (count > LEFTOVER_FILE_LIMIT) {
+          throw new Error(
+            `the run left ${count} changed files, more than ${LEFTOVER_FILE_LIMIT}; ` +
+              'nothing was committed, so a person checks them (a cache or build folder?)',
+          );
+        }
         commit = (yield { args: ['commit-tree', tree, '-p', head], input: message }).trim();
         // An empty old value: the branch must not exist yet.
         yield { args: ['update-ref', `refs/heads/${branch}`, commit, ''] };
