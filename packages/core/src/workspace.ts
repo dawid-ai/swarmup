@@ -1752,6 +1752,9 @@ export class Workspace {
       const results = syncAll(partners, this.user, {
         pull: true,
         push: true,
+        // Every registered root, so one that shares the repo with a root outside `partners`
+        // still pushes the commits of both (AO-0371).
+        siblings: this.roots.map((r) => r.dir),
         now: this.now(),
       });
       sync = {

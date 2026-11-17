@@ -426,6 +426,39 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     expect(wide.pushed).toBe(false);
   });
 
+  it('pushes a coordinated claim past a sibling root commit, but not past code', async () => {
+    // AO-0371: Workspace.confirm synced only the claimed root, so a commit of `web/.swarmup/` in
+    // the same repo held the claim's push.
+    const { remote, a, ra } = machines({ policy: 'coordinated' });
+    initRoot(join(a, 'web'), { name: 'web', human: 'human:dawid' });
+    const rw = new Root(join(a, 'web', '.swarmup'));
+    expect((await sync(rw, {}, { push: false })).committed).toBeGreaterThan(0);
+    const env = { SWARMUP_CONFIG: join(a, 'none.yml') } as NodeJS.ProcessEnv;
+    const ws = (actor: string) =>
+      new Workspace({
+        cwd: a,
+        env,
+        actor,
+        user: { id_block: 0, machine: 'm0', roots: [a, join(a, 'web')] },
+      });
+    expect(ws('human:dawid').roots.map((r) => r.name)).toEqual(['shared', 'web']);
+    ws('human:dawid').newTask({ title: 't', owner: 'claude:engineer' });
+    ws('human:dawid').newTask({ title: 'u', owner: 'claude:engineer' });
+    await sync(ra, {}, { push: false });
+    const claim = ws('claude:engineer').claim('T-0001');
+    expect(claim.notes ?? []).toEqual([]);
+    expect(git(remote, 'rev-parse', 'main')).toBe(git(a, 'rev-parse', 'HEAD'));
+
+    // A code commit is outside every registered root, so the next claim is held back.
+    writeFileSync(join(a, 'code.ts'), 'export {};\n');
+    git(a, 'add', 'code.ts');
+    git(a, 'commit', '-q', '-m', 'code');
+    const held = ws('claude:engineer').claim('T-0002');
+    expect(held.view.claimedBy).toBe('claude:engineer');
+    expect(held.notes?.join()).toMatch(/1 file\(s\) outside \.swarmup/);
+    expect(git(remote, 'rev-parse', 'main')).not.toBe(git(a, 'rev-parse', 'HEAD'));
+  });
+
   it('pushes code commits that are approved merges, also after a pull rebased them', async () => {
     // AO-0193: swarmupd merged into the store branch, and the store sync held the push for good.
     const { remote, a, b, ws, ra, rb } = machines();
