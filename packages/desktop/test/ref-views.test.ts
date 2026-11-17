@@ -457,3 +457,42 @@ it('scrolls to an event reference again after a plain reference to the same task
     vi.unstubAllGlobals();
   }
 });
+
+it('clears the reference flash timer when the task panel unmounts after a jump', async () => {
+  answers.set('/api/tasks/r%2FAO-0014', {
+    task: task({ id: 'AO-0014', status: 'in-progress' }),
+    body: '',
+    events: [
+      { id: EVT, type: 'comment', actor: 'codex:qa', at: '2026-11-03T10:00:00Z', body: 'Note' },
+    ],
+  });
+  const had = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = vi.fn();
+  const set = vi.spyOn(globalThis, 'setTimeout');
+  const clear = vi.spyOn(globalThis, 'clearTimeout');
+  try {
+    await mount(
+      createElement(TaskPanel, {
+        id: 'r/AO-0014',
+        focus: { event: EVT, n: 1 },
+        nav: nav(),
+        onClose: vi.fn(),
+      }),
+    );
+    // Let the jump's animation frame run.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    const flash = set.mock.calls.findIndex((c) => c[1] === 1600);
+    expect(flash).toBeGreaterThanOrEqual(0);
+    const timer = set.mock.results[flash]!.value as unknown;
+    act(() => root!.unmount());
+    root = undefined;
+    expect(clear).toHaveBeenCalledWith(timer);
+  } finally {
+    set.mockRestore();
+    clear.mockRestore();
+    Element.prototype.scrollIntoView = had;
+  }
+});

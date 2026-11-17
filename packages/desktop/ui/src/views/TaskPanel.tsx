@@ -653,10 +653,22 @@ function Thread({
 }) {
   const pairs = pairAnswers(events);
   const [flash, setFlash] = useState<string | null>(null);
+  // The pending flash timeout and jump frame, cleared on unmount so neither fires after the
+  // panel closes (or after a test environment is torn down).
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const jumpFrame = useRef<number | undefined>(undefined);
+  useEffect(
+    () => () => {
+      clearTimeout(flashTimer.current);
+      if (jumpFrame.current !== undefined) cancelAnimationFrame(jumpFrame.current);
+    },
+    [],
+  );
   const jump = (id: string): void => {
     document.getElementById(`ev-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setFlash(id);
-    setTimeout(() => setFlash((f) => (f === id ? null : f)), 1600);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlash((f) => (f === id ? null : f)), 1600);
   };
   // Jump to the referenced event once it has loaded, once per reference opened.
   const jumped = useRef<number | null>(null);
@@ -664,7 +676,10 @@ function Thread({
   useEffect(() => {
     if (!focus || !target || jumped.current === focus.n) return;
     jumped.current = focus.n;
-    requestAnimationFrame(() => jump(target.id));
+    jumpFrame.current = requestAnimationFrame(() => {
+      jumpFrame.current = undefined;
+      jump(target.id);
+    });
   }, [focus, target]);
   const byId = new Map(events.map((e) => [e.id, e]));
   return (
