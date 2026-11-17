@@ -2600,6 +2600,8 @@ const COMMANDS: Record<string, Command> = {
           auto: Boolean(ctx.opts.auto),
           sessionEnd: Boolean(ctx.opts['session-end']),
           allPaths: Boolean(ctx.opts['all-paths']),
+          // `--root` syncs one root, but a root sharing its repo still counts as inside it.
+          siblings: ws.roots.map((r) => r.dir),
         });
       } catch (err) {
         // A run in a sandbox (Codex keeps `.git` read-only and has no network) cannot commit or

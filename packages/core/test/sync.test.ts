@@ -395,6 +395,37 @@ describe('sync', { timeout: GIT_TEST_TIMEOUT }, () => {
     expect((await sync(ra, {}, { allPaths: true })).pushed).toBe(true);
   });
 
+  it('pushes the commits of a sibling root in the same repo, but still holds back code', async () => {
+    // AO-0371: `.swarmup/` and `web/.swarmup/` in one store repo held back each other's commits.
+    const { remote, a, ws, ra } = machines();
+    initRoot(join(a, 'web'), { name: 'web', human: 'human:dawid' });
+    const rw = new Root(join(a, 'web', '.swarmup'));
+    const siblings = [ra.dir, rw.dir];
+    // Each root commits only its own files; neither push may hold back the other's commit.
+    ws(a, 'human:dawid').newTask({ title: 't' });
+    expect((await sync(ra, {}, { push: false })).committed).toBeGreaterThan(0);
+    expect((await sync(rw, {}, { push: false })).committed).toBeGreaterThan(0);
+    // Without the sibling list the old refusal stands.
+    const held = await sync(ra, {}, { skipPull: true });
+    expect(held.pushed).toBe(false);
+    expect(held.notes.join()).toMatch(/outside \.swarmup/);
+    const res = await sync(ra, {}, { siblings });
+    expect(res.pushed).toBe(true);
+    expect(git(remote, 'rev-parse', 'main')).toBe(git(a, 'rev-parse', 'HEAD'));
+
+    // A code commit is still outside both roots.
+    writeFileSync(join(a, 'code.ts'), 'export {};\n');
+    git(a, 'add', 'code.ts');
+    git(a, 'commit', '-q', '-m', 'code');
+    ws(a, 'human:dawid').newTask({ title: 'u' });
+    const code = await sync(ra, {}, { siblings });
+    expect(code.pushed).toBe(false);
+    expect(code.notes.join()).toMatch(/1 file\(s\) outside \.swarmup/);
+    // A sibling outside the repo, or at its top, never widens what goes out.
+    const wide = await sync(ra, {}, { siblings: [a, tempDir()], skipPull: true });
+    expect(wide.pushed).toBe(false);
+  });
+
   it('pushes code commits that are approved merges, also after a pull rebased them', async () => {
     // AO-0193: swarmupd merged into the store branch, and the store sync held the push for good.
     const { remote, a, b, ws, ra, rb } = machines();
