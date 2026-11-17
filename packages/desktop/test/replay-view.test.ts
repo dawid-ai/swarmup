@@ -172,6 +172,55 @@ describe('scenes', () => {
       expect(text(shown), scene.id).not.toContain(kind.get(scene.id)!);
     }
   });
+
+  // AO-0373: the type label and the project name reached recorded frames other than the last
+  // one, such as the stat card's footer and the Wrapped title card. Sample the whole clip.
+  it('draws no replay type in any frame, and the project name only with the toggle on', () => {
+    const kind = new Map([
+      ['swimlanes', ['Swimlanes']],
+      ['loop', ['Human in the loop', 'Human loop']],
+      ['events', ['Replay']],
+      ['counters', ['Replay totals']],
+      ['metro', ['Metro map']],
+      ['constellation', ['Knowledge constellation', 'Constellation']],
+      ['wrapped', ['SwarmUp Wrapped', 'Wrapped']],
+      ['rally', ['REVIEW RALLY', 'Review rally']],
+    ]);
+    const name = 'agent-ops / docs';
+    const tl = fixture();
+    // The report names the picked root and label, as swarmupd does (AO-0301).
+    tl.wrapped = { ...tl.wrapped!, project: name };
+    const text = (markup: string): string => {
+      const host = document.createElement('div');
+      host.innerHTML = markup;
+      return host.textContent ?? '';
+    };
+    for (const scene of SCENES) {
+      const data = scene.prepare(tl, STAGE_16_9);
+      const duration = sceneDuration(scene, tl);
+      for (let i = 0; i <= 40; i++) {
+        const frame = { ...STAGE_16_9, t: (duration * i) / 40, duration };
+        const at = `${scene.id} at ${frame.t} ms`;
+        const shown = text(
+          renderToStaticMarkup(
+            renderFrame(scene, data, frame, { projectName: name, showProject: true }),
+          ),
+        );
+        const hidden = text(
+          renderToStaticMarkup(
+            renderFrame(scene, data, frame, { projectName: name, showProject: false }),
+          ),
+        );
+        for (const label of kind.get(scene.id)!) {
+          expect(shown, at).not.toContain(label);
+          expect(hidden, at).not.toContain(label);
+        }
+        expect(hidden, at).not.toContain(name);
+        expect(hidden, at).not.toContain('All projects');
+        expect(shown.split(name).length - 1, at).toBe(1);
+      }
+    }
+  });
 });
 
 describe('timeline path and allow list', () => {

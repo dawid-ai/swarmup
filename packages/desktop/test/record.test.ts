@@ -9,10 +9,13 @@ import type { ReactElement } from 'react';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { freeName } from '../src/images';
 import { MAX_GIF_BYTES, gifFile, writeGif } from '../src/gifs';
 import { MAX_VIDEO_BYTES, videoFile, writeVideo } from '../src/videos';
+import type { GifOptions } from '../ui/src/lib/gif';
+import { recordGifScene } from '../ui/src/lib/gif';
 import type { Rasterizer } from '../ui/src/lib/png';
 import type { Codecs, EncoderLike, RecordOptions } from '../ui/src/lib/record';
 import {
@@ -45,9 +48,13 @@ interface FakeFrame {
 
 /**
  * WebCodecs stand-in: outputs one small chunk per frame a task later, like the real encoder, with
- * the decoder config on the first chunk. `supported` limits the codecs it accepts.
+ * the decoder config on the first chunk. `supported` limits the codecs it accepts. `soon` outputs
+ * on a microtask instead, for tests that record long clips through the view.
  */
-function fakeCodecs(opts: { supported?: string[]; failAt?: number } = {}) {
+function fakeCodecs(opts: { supported?: string[]; failAt?: number; soon?: boolean } = {}) {
+  const later = opts.soon
+    ? (fn: () => void) => void Promise.resolve().then(fn)
+    : (fn: () => void) => void setTimeout(fn, 0);
   const log = {
     configs: [] as VideoEncoderConfig[],
     encoded: [] as Array<{ timestamp: number; duration: number; key: boolean }>,
@@ -81,7 +88,7 @@ function fakeCodecs(opts: { supported?: string[]; failAt?: number } = {}) {
           const { timestamp, duration } = f;
           pending.push(
             new Promise<void>((resolve) =>
-              setTimeout(() => {
+              later(() => {
                 queue--;
                 if (n === opts.failAt) {
                   init.error(new DOMException('encoder broke', 'EncodingError'));
@@ -108,7 +115,7 @@ function fakeCodecs(opts: { supported?: string[]; failAt?: number } = {}) {
                     : undefined;
                 init.output(chunk, meta);
                 resolve();
-              }, 0),
+              }),
             ),
           );
         },
@@ -457,15 +464,124 @@ describe('saving a recording', () => {
   });
 });
 
+/** The fixture as swarmupd serves it for `clip=<s>`: its playback scaled to that length. */
+function clipped(seconds: number): ReturnType<typeof fixture> {
+  const tl = fixture();
+  const k = (seconds * 1000) / tl.time.playbackMs;
+  tl.time.segments = tl.time.segments.map((s) => ({
+    ...s,
+    playStart: s.playStart * k,
+    playEnd: s.playEnd * k,
+  }));
+  tl.time.playbackMs = seconds * 1000;
+  return tl;
+}
+
+/**
+ * The real MP4 and GIF encoders with the stand-in codecs and a rasterizer that keeps the text of
+ * every 20th frame it is asked to draw: enough to see every scene's words and the closing card.
+ */
+function encoders(width = 32) {
+  const text: string[] = [];
+  let n = 0;
+  const raster = (w: number, h: number): Rasterizer => ({
+    draw: async (el: ReactElement) => {
+      // The drawn words: the markup without its tags. No DOM parse, which is slow in happy-dom.
+      if (n++ % 20 === 0) text.push(renderToStaticMarkup(el).replace(/<[^>]*>/g, ''));
+      const data = new Uint8ClampedArray(w * h * 4).fill(255);
+      return {
+        getContext: () => ({ getImageData: () => ({ data }) }),
+      } as unknown as HTMLCanvasElement;
+    },
+    close: () => {},
+  });
+  const mp4: RecordOptions[] = [];
+  const gifs: GifOptions[] = [];
+  const out = {
+    text,
+    mp4,
+    gifs,
+    /** The encode that runs or ran last. */
+    running: Promise.resolve() as Promise<unknown>,
+    record: (opts: RecordOptions) => {
+      mp4.push(opts);
+      const codecs = fakeCodecs({ soon: true }).codecs;
+      const p = recordScene({ ...opts, codecs, rasterizer: raster });
+      out.running = p;
+      return p;
+    },
+    gif: (opts: GifOptions) => {
+      gifs.push(opts);
+      const p = recordGifScene({ ...opts, width, rasterizer: raster });
+      out.running = p;
+      return p;
+    },
+  };
+  return out;
+}
+
+// AO-0373: Swimlanes showed its type label and the stat card named the project with the toggle
+// off. The words each scene must never draw: its picker label and the titles scenes once drew.
+const KIND: Record<string, string[]> = {
+  swimlanes: ['Swimlanes'],
+  loop: ['Human loop', 'Human in the loop'],
+  events: ['Events', 'Replay'],
+  counters: ['Counters', 'Replay totals'],
+  metro: ['Metro map'],
+  constellation: ['Constellation', 'Knowledge constellation'],
+  wrapped: ['Wrapped'],
+  rally: ['Review rally', 'REVIEW RALLY'],
+};
+
+describe('recorded frames', () => {
+  it('draw no replay type in MP4 and GIF frames of any scene, and the project name only when on', async () => {
+    const name = 'agent-ops / docs';
+    // A short clip keeps the test fast; outro cards keep their full length.
+    const timeline = clipped(3);
+    // The report names the picked root and label, as swarmupd does (AO-0301).
+    timeline.wrapped = { ...timeline.wrapped!, project: name };
+    for (const scene of SCENES) {
+      expect(KIND[scene.id], scene.id).toBeDefined();
+      const durationMs = sceneDuration(scene, timeline);
+      for (const showProject of [true, false]) {
+        for (const kind of ['mp4', 'gif'] as const) {
+          const enc = encoders();
+          const opts = {
+            scene,
+            timeline,
+            aspect: aspectById('16x9'),
+            durationMs,
+            projectName: name,
+            showProject,
+          };
+          const bytes = await (kind === 'mp4' ? enc.record(opts) : enc.gif(opts));
+          const at = `${scene.id} ${kind}, project name ${showProject ? 'on' : 'off'}`;
+          if (kind === 'mp4') expect(mp4Info(bytes).frames, at).toBe(frameCount(durationMs));
+          expect(enc.text.length, at).toBeGreaterThan(0);
+          for (const frame of enc.text) {
+            for (const label of KIND[scene.id]!) expect(frame, at).not.toContain(label);
+            expect(frame, at).not.toContain('All projects');
+            expect(frame.split(name).length - 1, at).toBe(showProject ? 1 : 0);
+          }
+        }
+      }
+    }
+  });
+});
+
 // The Record controls, with swarmupd mocked and the recorder replaced: the test DOM has no encoder.
-// One timeline object for every render, as `useData` gives; a new one would restart the clip.
-const served = vi.hoisted(() => ({ timeline: null as unknown }));
+// One timeline object per path for every render, as `useData` gives; a new one would restart the
+// clip. Like swarmupd, the timeline follows the path's `clip`.
+const served = vi.hoisted(() => ({ timelines: new Map<string, unknown>() }));
 vi.mock(import('../ui/src/api'), async (original) => ({
   ...(await original()),
   useData: <T>(path: string | null) => {
-    served.timeline ??= fixture();
+    if (path?.startsWith('/api/timeline') && !served.timelines.has(path)) {
+      const clip = Number(new URLSearchParams(path.split('?')[1]).get('clip') ?? 30);
+      served.timelines.set(path, clipped(clip));
+    }
     const data = path?.startsWith('/api/timeline')
-      ? served.timeline
+      ? served.timelines.get(path)
       : path === '/api/tasks?all'
         ? [{ id: 'AO-1', project: 'swarmup' }]
         : undefined;
@@ -555,6 +671,78 @@ describe('Record controls', () => {
     expect(status()).toBe(`Saved ${name} to C:\\clips`);
     expect(box.querySelector('[role="progressbar"]')).toBeNull();
     expect(button('Record MP4').disabled).toBe(false);
+  });
+
+  /** Waits until the export that is running has saved its file. */
+  async function finished(enc: { running: Promise<unknown> }): Promise<void> {
+    await act(async () => {
+      await enc.running;
+      // The save and the status line follow the encode by a few promise turns.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(status()).toMatch(/^Saved /);
+  }
+
+  const clipSelect = (): HTMLSelectElement =>
+    [...box.querySelectorAll('select')].find((s) =>
+      [...s.options].some((o) => o.textContent === '15 s'),
+    )!;
+
+  function pick(select: HTMLSelectElement, value: string): void {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(select, value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  // AO-0373: 15 s + the 6 s card came out as 30 s + 6 s.
+  it('records the selected clip length plus the outro card: 15 s + 6 s is a 21 s MP4', async () => {
+    const enc = encoders();
+    act(() => root!.render(createElement(Replay, { record: enc.record })));
+    act(() => button('Swimlanes').click());
+    pick(clipSelect(), '15');
+    expect(box.textContent).toContain('+ 6 s card');
+    await act(async () => button('Record MP4').click());
+    await finished(enc);
+    expect(enc.mp4.at(-1)).toMatchObject({ durationMs: 21_000 });
+    const mp4 = saved.at(-1)!;
+    expect(mp4.name).toBe('replay-swimlanes-all-projects-16x9-21s.mp4');
+    const info = mp4Info(mp4.data);
+    expect(Math.abs(info.durationMs - 21_000)).toBeLessThanOrEqual(1000 / FPS);
+    expect(info.frames).toBe(21 * FPS);
+    // The view's clock says the same length.
+    expect(box.querySelector('[data-testid="replay-clock"]')!.textContent).toContain('0:21');
+  });
+
+  // AO-0373: the type label and the project name reached recorded frames. `recorded frames` in
+  // the `frames` describe covers every scene; this one checks the view hands the toggle over.
+  it('applies the project-name toggle to the frames the view records as MP4 and GIF', async () => {
+    window.swarmup = {
+      ...window.swarmup!,
+      saveGif: async (name: string) => ({ ok: true, data: { dir: 'C:\\clips', file: name } }),
+    } as unknown as NonNullable<Window['swarmup']>;
+    const enc = encoders();
+    act(() => root!.render(createElement(Replay, { record: enc.record, gif: enc.gif })));
+    act(() => button('Swimlanes').click());
+    pick(clipSelect(), '15');
+    const toggle = box.querySelector<HTMLInputElement>('[aria-label="Show project name"]')!;
+    for (const on of [true, false]) {
+      if (toggle.checked !== on) act(() => toggle.click());
+      for (const action of ['Record MP4', 'Save as GIF']) {
+        enc.text.length = 0;
+        await act(async () => button(action).click());
+        await finished(enc);
+        const at = `${action}, project name ${on ? 'on' : 'off'}`;
+        expect(enc.text.length, at).toBeGreaterThan(0);
+        for (const frame of enc.text) {
+          expect(frame, at).not.toContain('Swimlanes');
+          expect(frame.split('All projects').length - 1, at).toBe(on ? 1 : 0);
+        }
+      }
+    }
+    expect(enc.mp4.map((o) => o.durationMs)).toEqual([21_000, 21_000]);
+    expect(enc.gifs.map((o) => o.durationMs)).toEqual([21_000, 21_000]);
   });
 
   it('cancels a recording without saving', async () => {

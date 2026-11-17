@@ -66,7 +66,7 @@ describe('Human loop card', () => {
       asksAnswered: 1,
       reviewRounds: 1,
       tasksClosed: 1,
-      footer: 'All projects · 2026-11-02 to 2026-11-02',
+      footer: '2026-11-02 to 2026-11-02',
       fromReport: true,
     });
   });
@@ -83,10 +83,11 @@ describe('Human loop card', () => {
     });
   });
 
-  it('names the project in the footer', () => {
+  // AO-0373: only the frame's project-name overlay names the project, and only when it is on.
+  it('leaves the project out of the footer', () => {
     const tl = fixture();
     tl.wrapped = { ...tl.wrapped!, project: 'swarmup' };
-    expect(loopCard(tl).footer).toBe('swarmup · 2026-11-02 to 2026-11-02');
+    expect(loopCard(tl).footer).toBe('2026-11-02 to 2026-11-02');
   });
 
   it('works out agent minutes per human minute', () => {

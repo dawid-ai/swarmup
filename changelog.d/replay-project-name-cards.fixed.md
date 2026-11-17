@@ -1,0 +1,1 @@
+- Replay: the Swimlanes and Human loop stat card and the Wrapped cards no longer name the project, so with **Project name** off no MP4, GIF or PNG frame shows it; with it on, only the corner label does.

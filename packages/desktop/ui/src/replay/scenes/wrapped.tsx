@@ -24,7 +24,10 @@ export interface WrappedCard {
 
 export interface WrappedData {
   cards: WrappedCard[];
-  /** `project · from to to`, shown on every card. */
+  /**
+   * The window, `from to to`, shown on every card. No project name: only the frame's project-name
+   * overlay draws that, and only when its toggle is on (AO-0373).
+   */
   footer: string;
 }
 
@@ -45,7 +48,7 @@ export function wrappedCards(w: Wrapped): WrappedCard[] {
       title: 'SwarmUp Wrapped',
       value: null,
       decimals: 0,
-      unit: w.project ?? 'All projects',
+      unit: 'Highlights',
       subject: `${day(w.from)} to ${day(w.to)}`,
       detail: '',
       color: '#5ce1e6',
@@ -130,7 +133,7 @@ export function prepareWrapped(tl: Timeline): WrappedData {
   if (!w) return { cards: [], footer: '' };
   return {
     cards: wrappedCards(w),
-    footer: `${w.project ?? 'All projects'} · ${day(w.from)} to ${day(w.to)}`,
+    footer: `${day(w.from)} to ${day(w.to)}`,
   };
 }
 

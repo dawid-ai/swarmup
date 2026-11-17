@@ -17,7 +17,10 @@ export interface LoopCard {
   asksAnswered: number;
   reviewRounds: number;
   tasksClosed: number;
-  /** `project · from to to`. */
+  /**
+   * The window, `from to to`. No project name: only the frame's project-name overlay draws that,
+   * and only when its toggle is on (AO-0373).
+   */
   footer: string;
   /** Agent hours and tasks closed come from the report of the same window. */
   fromReport: boolean;
@@ -42,7 +45,6 @@ const day = (iso: string): string => iso.slice(0, 10);
 /** The card's figures for a timeline; see the file comment for where each comes from. */
 export function loopCard(tl: Timeline): LoopCard {
   const w = tl.wrapped;
-  const project = w ? (w.project ?? 'All projects') : null;
   const window = tl.from ? `${day(tl.from)} to ${day(tl.to)}` : `to ${day(tl.to)}`;
   return {
     agentHours: w ? w.agentHours : tl.totals.agentHours,
@@ -50,7 +52,7 @@ export function loopCard(tl: Timeline): LoopCard {
     asksAnswered: tl.totals.asksAnswered,
     reviewRounds: tl.totals.reviewRounds,
     tasksClosed: w ? w.closed : tl.totals.tasksClosed,
-    footer: project ? `${project} · ${window}` : window,
+    footer: window,
     fromReport: w !== undefined,
   };
 }
