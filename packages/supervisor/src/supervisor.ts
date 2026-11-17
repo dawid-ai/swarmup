@@ -1214,6 +1214,7 @@ export class Supervisor extends EventEmitter {
       const results = await syncAllAsync([...pending.values()], this.user, {
         pull: true,
         push: true,
+        siblings: this.ws().roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
@@ -4319,6 +4320,7 @@ export class Supervisor extends EventEmitter {
       ];
       const results = await syncAllAsync(targets, this.user, {
         sessionEnd: true,
+        siblings: ws.roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
@@ -5077,6 +5079,7 @@ export class Supervisor extends EventEmitter {
     void this.syncWork(async () => {
       const results = await syncAllAsync(targets, this.user, {
         auto: true,
+        siblings: ws.roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
