@@ -7125,6 +7125,37 @@ describe('reviews of a provider that cannot run (AO-0341)', () => {
     expect(sup.runs({ live: true }).some((r) => r.agent === 'fake:reviewer')).toBe(true);
   });
 
+  it('ignores a non-waking Opus agent for a Fable provider hold (AO-0368)', async () => {
+    const { sup, as, ids, advance } = paused({
+      agents: {
+        'fake:reviewer': { wake: true, model: 'claude-fable-5-2' },
+        'fake:engineer': { wake: false, model: 'claude-opus-5-5' },
+        'other:reviewer': { wake: true },
+        'other:engineer': { wake: true },
+      },
+    });
+    sup['usage'].fake = {
+      windows: {
+        seven_day_fable: {
+          utilization: 1,
+          resets_at: Date.now() + 3 * 24 * HOUR,
+          status: 'rejected',
+        },
+      },
+      updated_at: Date.now(),
+    };
+    sup['waitsMemo'] = null;
+
+    expect(sup.providerHold('fake')?.text).toMatch(/seven_day_fable window .*fable runs only/);
+    await sup.tick();
+    advance(2 * HOUR);
+    await sup.tick();
+
+    const reviewerOf = (id: string) => as('human:dawid').view(id).reviewer;
+    expect(ids.map(reviewerOf)).toEqual(['other:reviewer', 'other:reviewer', 'other:reviewer']);
+    expect(sup.runs({ live: true }).some((r) => r.agent === 'other:reviewer')).toBe(true);
+  });
+
   it('never moves a review with review_fallback_hours 0', async () => {
     const { sup, as, ids, pause, advance } = paused({ review_fallback_hours: 0 });
     pause();

@@ -1,0 +1,1 @@
+- Model-specific provider holds now consider only agents that can wake, so a disabled agent on another model no longer prevents stalled reviews from falling back.

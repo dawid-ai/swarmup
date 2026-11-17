@@ -2741,7 +2741,7 @@ export class Supervisor extends EventEmitter {
    * Why no run of the provider can start for a while, or null: paused for usage or signed out.
    * A pause in Settings, a full `max_live` or a start backoff are not holds: a person chose the
    * first, and the others clear on their own within minutes. A model-scoped window is a provider
-   * hold only when it holds every configured agent of that provider (AO-0362).
+   * hold only when it holds every waking, active agent of that provider (AO-0362, AO-0368).
    */
   providerHold(provider: string): ProviderHold | null {
     const now = this.now();
@@ -2749,8 +2749,11 @@ export class Supervisor extends EventEmitter {
     if (out) return { text: signedOutText(provider, out, now), signedOut: true };
     const rc = this.config.runtimes[provider];
     if (!rc) return null;
-    const agents = Object.keys(this.config.agents).filter((a) => runtimeOf(a) === provider);
-    const ws = agents.length > 0 ? this.ws() : null;
+    const waking = Object.entries(this.config.agents)
+      .filter(([a, cfg]) => runtimeOf(a) === provider && cfg.wake)
+      .map(([a]) => a);
+    const ws = waking.length > 0 ? this.ws() : null;
+    const agents = ws ? waking.filter((a) => !roleInactive(ws.agent(a))) : [];
     const models =
       agents.length > 0 ? agents.map((a) => this.runModelOf(a, ws!.agent(a))) : [rc.model];
     let first: ReturnType<typeof usageHold> = null;
@@ -2762,8 +2765,8 @@ export class Supervisor extends EventEmitter {
         now,
         { model, windows: modelWindows(provider, rc.model_windows) },
       );
-      // At least one configured agent can still run, so this is not a provider-wide hold. The
-      // agents whose models use the window still wait in `blocker` (AO-0342).
+      // At least one waking, active agent can still run, so this is not a provider-wide hold.
+      // The agents whose models use the window still wait in `blocker` (AO-0342).
       if (!usage) return null;
       first ??= usage;
     }
