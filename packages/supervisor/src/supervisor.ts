@@ -2667,7 +2667,8 @@ export class Supervisor extends EventEmitter {
   /**
    * Why no run of the provider can start for a while, or null: paused for usage or signed out.
    * A pause in Settings, a full `max_live` or a start backoff are not holds: a person chose the
-   * first, and the others clear on their own within minutes.
+   * first, and the others clear on their own within minutes. A model-scoped window is a provider
+   * hold only when it holds every configured agent of that provider (AO-0362).
    */
   providerHold(provider: string): ProviderHold | null {
     const now = this.now();
@@ -2675,16 +2676,25 @@ export class Supervisor extends EventEmitter {
     if (out) return { text: signedOutText(provider, out, now), signedOut: true };
     const rc = this.config.runtimes[provider];
     if (!rc) return null;
-    // A window of one model holds the provider only when its own model is that one (AO-0342);
-    // an agent set to that model still waits in `blocker`.
-    const usage = usageHold(
-      provider,
-      this.usage[provider],
-      rc.pause_at ?? this.config.usage_pause_at,
-      now,
-      { model: rc.model, windows: modelWindows(provider, rc.model_windows) },
-    );
-    return usage ? { text: usage.text, until: usage.until, signedOut: false } : null;
+    const agents = Object.keys(this.config.agents).filter((a) => runtimeOf(a) === provider);
+    const ws = agents.length > 0 ? this.ws() : null;
+    const models =
+      agents.length > 0 ? agents.map((a) => this.runModelOf(a, ws!.agent(a))) : [rc.model];
+    let first: ReturnType<typeof usageHold> = null;
+    for (const model of new Set(models)) {
+      const usage = usageHold(
+        provider,
+        this.usage[provider],
+        rc.pause_at ?? this.config.usage_pause_at,
+        now,
+        { model, windows: modelWindows(provider, rc.model_windows) },
+      );
+      // At least one configured agent can still run, so this is not a provider-wide hold. The
+      // agents whose models use the window still wait in `blocker` (AO-0342).
+      if (!usage) return null;
+      first ??= usage;
+    }
+    return first ? { text: first.text, until: first.until, signedOut: false } : null;
   }
 
   /** When the provider's hold began: its sign-out, else when swarmupd first saw the pause. */

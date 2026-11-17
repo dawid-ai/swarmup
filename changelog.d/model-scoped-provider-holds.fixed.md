@@ -1,0 +1,1 @@
+- A rejected model-specific usage window no longer makes swarmupd treat the whole provider as paused while another configured agent model can still run, so reviews stay with an available reviewer instead of falling back.
