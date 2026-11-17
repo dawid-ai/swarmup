@@ -15,7 +15,7 @@ import { freeName } from '../src/images';
 import { MAX_GIF_BYTES, gifFile, writeGif } from '../src/gifs';
 import { MAX_VIDEO_BYTES, videoFile, writeVideo } from '../src/videos';
 import type { GifOptions } from '../ui/src/lib/gif';
-import { recordGifScene } from '../ui/src/lib/gif';
+import { GifCancelled, recordGifScene } from '../ui/src/lib/gif';
 import type { Rasterizer } from '../ui/src/lib/png';
 import type { Codecs, EncoderLike, RecordOptions } from '../ui/src/lib/record';
 import {
@@ -661,7 +661,7 @@ describe('Record controls', () => {
     act(() => rec.calls[0]!.onProgress!(900, 1800));
     const bar = box.querySelector('[role="progressbar"]')!;
     expect(bar.getAttribute('aria-valuenow')).toBe('50');
-    expect(box.textContent).toContain('Recording 50%');
+    expect(box.textContent).toContain('Recording MP4 50% · 900 / 1800 frames');
     expect(button('9:16').disabled).toBe(true);
     expect(button('Save frame').disabled).toBe(true);
     const bytes = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
@@ -743,6 +743,79 @@ describe('Record controls', () => {
     }
     expect(enc.mp4.map((o) => o.durationMs)).toEqual([21_000, 21_000]);
     expect(enc.gifs.map((o) => o.durationMs)).toEqual([21_000, 21_000]);
+  });
+
+  // AO-0375: exports showed nothing while they ran.
+  it('shows the busy line the moment an export starts, before the folder is picked', async () => {
+    let pickFolder: (f: typeof folder) => void = () => {};
+    window.swarmup = {
+      ...window.swarmup!,
+      videoFolder: () => new Promise((resolve) => (pickFolder = resolve)),
+    } as unknown as NonNullable<Window['swarmup']>;
+    const rec = manual();
+    act(() => root!.render(createElement(Replay, { record: rec.record })));
+    act(() => button('Record MP4').click());
+    const busy = box.querySelector('[data-testid="replay-busy"]')!;
+    expect(busy.textContent).toContain('Recording MP4: pick a folder');
+    // No value yet: the bar pulses until frames are counted.
+    expect(busy.querySelector('[role="progressbar"]')!.hasAttribute('aria-valuenow')).toBe(false);
+    for (const b of ['Save frame', 'Record MP4', 'Save as GIF', '16:9']) {
+      expect(button(b).disabled, b).toBe(true);
+    }
+    expect(button('Record MP4').getAttribute('aria-busy')).toBe('true');
+    await act(async () => pickFolder({ ok: true, data: { dir: 'C:\\clips' } }));
+    expect(box.textContent).toContain('Recording MP4: starting');
+    act(() => rec.calls[0]!.onProgress!(1800, 1800));
+    expect(box.textContent).toContain('Recording MP4: saving the file');
+    await act(async () => rec.finish(new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70])));
+    expect(box.querySelector('[data-testid="replay-busy"]')).toBeNull();
+  });
+
+  it('shows GIF progress in frames and percent, and Cancel stops the GIF', async () => {
+    const gifs: GifOptions[] = [];
+    const gif = (opts: GifOptions): Promise<Uint8Array> => {
+      gifs.push(opts);
+      return new Promise((_, reject) =>
+        opts.signal?.addEventListener('abort', () => reject(new GifCancelled())),
+      );
+    };
+    act(() => root!.render(createElement(Replay, { gif })));
+    await act(async () => button('Save as GIF').click());
+    expect(gifs).toHaveLength(1);
+    expect(box.textContent).toContain('Encoding GIF: starting');
+    act(() => gifs[0]!.onProgress!(117, 468));
+    const bar = box.querySelector('[role="progressbar"]')!;
+    expect(bar.getAttribute('aria-label')).toBe('GIF export');
+    expect(bar.getAttribute('aria-valuenow')).toBe('25');
+    expect(box.textContent).toContain('Encoding GIF 25% · 117 / 468 frames');
+    expect(button('Record MP4').disabled).toBe(true);
+    expect(button('Save frame').disabled).toBe(true);
+    await act(async () => button('Cancel').click());
+    expect(gifs[0]!.signal!.aborted).toBe(true);
+    expect(status()).toBe('GIF export cancelled');
+    expect(box.querySelector('[role="progressbar"]')).toBeNull();
+    expect(button('Save as GIF').disabled).toBe(false);
+  });
+
+  it('shows Save frame as busy while the PNG renders, and Cancel ends it', async () => {
+    // An image that never loads: the PNG stays mid-render until Cancel.
+    vi.stubGlobal(
+      'Image',
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        src = '';
+      },
+    );
+    act(() => root!.render(createElement(Replay, {})));
+    await act(async () => button('Save frame').click());
+    expect(box.textContent).toContain('Saving PNG 0% · 0 / 1 image');
+    expect(button('Save frame').getAttribute('aria-busy')).toBe('true');
+    expect(button('Record MP4').disabled).toBe(true);
+    await act(async () => button('Cancel').click());
+    expect(status()).toBe('Saving cancelled');
+    expect(box.querySelector('[data-testid="replay-busy"]')).toBeNull();
+    expect(button('Save frame').disabled).toBe(false);
   });
 
   it('cancels a recording without saving', async () => {

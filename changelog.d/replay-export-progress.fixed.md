@@ -1,0 +1,1 @@
+- Show Replay's exports working: **Save frame**, **Record MP4** and **Save as GIF** show a busy line with a progress bar, frame count and **Cancel** beside the export buttons from the click until the file is saved. GIF and fast MP4 exports no longer freeze the page until they finish.

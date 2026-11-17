@@ -15,7 +15,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const top = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -234,6 +234,10 @@ writeFileSync(
   }),
 );
 
+// Where the Replay export views would save; they cancel before saving.
+const exportsDir = join(base, 'exports');
+mkdirSync(exportsDir);
+
 const views = [
   'inbox',
   'board',
@@ -242,6 +246,9 @@ const views = [
   'activity',
   'reports',
   'replay',
+  // Each export starts, is captured with its progress bar mid-way, then cancelled (AO-0375).
+  'replay:export-mp4',
+  'replay:export-gif',
   'agents',
   // A status bar item opens its provider in Agents, scrolled to and highlighted (AO-0340).
   'agents:codex',
@@ -305,7 +312,8 @@ try {
         'new-task:smo',
         'add-project',
       ].join(','),
-      SWARMUP_SCREENSHOT_PICKS: adoptable,
+      // The two Replay exports pick their folder first, in view order; Add project picks last.
+      SWARMUP_SCREENSHOT_PICKS: [exportsDir, exportsDir, adoptable].join(delimiter),
       ELECTRON_ENABLE_LOGGING: '1',
     },
     // No pipes: the scratch swarmupd the app starts would hold them open past the app's exit. A log

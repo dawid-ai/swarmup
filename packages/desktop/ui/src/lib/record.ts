@@ -11,6 +11,7 @@ import { renderFrame } from '../replay/scene';
 import type { Timeline } from '../types';
 import type { Rasterizer } from './png';
 import { createRasterizer } from './png';
+import { paintBreaks } from './yield';
 
 /** Frames per second of every recording. */
 export const FPS = 60;
@@ -207,6 +208,7 @@ export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
   });
   try {
     encoder.configure(config);
+    const pause = paintBreaks();
     for (let i = 0; i < opts.frames; i++) {
       if (signal?.aborted) throw new RecordCancelled();
       if (failed) throw failed;
@@ -219,6 +221,8 @@ export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
       }
       while (encoder.encodeQueueSize > MAX_QUEUE && !failed) await dequeued(encoder);
       opts.onProgress?.(i + 1, opts.frames);
+      // A fast encoder never fills its queue, so nothing above returns to the event loop.
+      await pause();
     }
     await encoder.flush();
     if (failed) throw failed;
