@@ -11,10 +11,14 @@ declare module 'gifenc' {
         delay?: number;
         repeat?: number;
         dispose?: number;
+        transparent?: boolean;
+        transparentIndex?: number;
       },
     ): void;
     finish(): void;
     bytes(): Uint8Array;
+    /** A view of the bytes written so far; writes to it change the output. */
+    bytesView(): Uint8Array;
   }
 
   export function GIFEncoder(options?: { initialCapacity?: number }): GifEncoder;

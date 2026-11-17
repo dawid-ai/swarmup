@@ -1,6 +1,7 @@
 // GIF export uses gifenc (MIT): it is a tiny, fast, pure-JS encoder that bundles with the page,
-// so the app needs neither a network request nor ffmpeg at run time. We add Floyd-Steinberg
-// dithering here, use one palette sampled across the clip, and merge identical adjacent frames.
+// so the app needs neither a network request nor ffmpeg at run time. We add ordered dithering
+// here, use one palette sampled across the clip, write only the changed box of each frame with
+// unchanged pixels transparent, and merge identical adjacent frames.
 import { GIFEncoder, quantize } from 'gifenc';
 import type { GifPalette } from 'gifenc';
 import type { FrameOverlay, Scene, Stage } from '../replay/scene';
@@ -16,6 +17,10 @@ export const GIF_FPS = 15;
 export const GIF_WIDTH = 960;
 const PALETTE_FRAMES = 12;
 const PALETTE_PIXELS = 160_000;
+/** Most colors a palette may hold: 256 minus the transparent slot. */
+const MAX_COLORS = 255;
+/** Peak-to-peak strength of the ordered dither, in 8-bit channel steps. */
+const DITHER = 16;
 
 export interface GifOptions extends FrameOverlay {
   scene: Scene<unknown>;
@@ -62,10 +67,78 @@ export function gifFileName(
   return `${base}-${width}w-${fps}fps-${seconds}s.gif`;
 }
 
-function sameFrame(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+/**
+ * Moves the frame written at byte `start` to `box.x`, `box.y`. gifenc always writes frames at
+ * 0, 0; its frame starts with an 8-byte Graphic Control Extension, then the Image Descriptor:
+ * 0x2c, left, top, width, height (16-bit little-endian each).
+ */
+function placeFrame(bytes: Uint8Array, start: number, box: Box): void {
+  const at = start + 8;
+  if (bytes[start] !== 0x21 || bytes[start + 1] !== 0xf9 || bytes[at] !== 0x2c) {
+    throw new Error('unexpected GIF frame layout from gifenc');
+  }
+  bytes[at + 1] = box.x & 0xff;
+  bytes[at + 2] = box.x >> 8;
+  bytes[at + 3] = box.y & 0xff;
+  bytes[at + 4] = box.y >> 8;
+}
+
+/** The box of pixels that differ between two indexed frames, or null when they are the same. */
+export interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export function changedBox(
+  a: Uint8Array,
+  b: Uint8Array,
+  width: number,
+  height: number,
+): Box | null {
+  let top = -1;
+  let bottom = -1;
+  let left = width;
+  let right = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let x = 0;
+    while (x < width && a[row + x] === b[row + x]) x++;
+    if (x === width) continue;
+    if (top < 0) top = y;
+    bottom = y;
+    if (x < left) left = x;
+    let end = width - 1;
+    while (end > right && a[row + end] === b[row + end]) end--;
+    if (end > right) right = end;
+  }
+  if (top < 0) return null;
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+/**
+ * The pixels of `box` in `next`, with every pixel that `shown` already displays replaced by
+ * `transparent`: the viewer keeps the previous frame there, and long runs of one index compress
+ * to almost nothing.
+ */
+export function deltaPixels(
+  shown: Uint8Array,
+  next: Uint8Array,
+  width: number,
+  box: Box,
+  transparent: number,
+): Uint8Array {
+  const out = new Uint8Array(box.width * box.height);
+  for (let y = 0; y < box.height; y++) {
+    const from = (box.y + y) * width + box.x;
+    const to = y * box.width;
+    for (let x = 0; x < box.width; x++) {
+      const v = next[from + x]!;
+      out[to + x] = v === shown[from + x] ? transparent : v;
+    }
+  }
+  return out;
 }
 
 function closest(palette: GifPalette, r: number, g: number, b: number): number {
@@ -85,57 +158,41 @@ function closest(palette: GifPalette, r: number, g: number, b: number): number {
   return best;
 }
 
-/** Maps RGBA pixels to one palette with Floyd-Steinberg error diffusion. */
+// 4x4 Bayer matrix, scaled to offsets of about +-DITHER / 2 per channel.
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(
+  (m) => ((m + 0.5) / 16 - 0.5) * DITHER,
+);
+
+/**
+ * Maps RGBA pixels to one palette with ordered (Bayer) dithering. Unlike error diffusion, a pixel's
+ * index depends only on its own color and position, so pixels that do not change between frames
+ * keep their index and the encoder can skip them.
+ */
 export function ditherToPalette(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
   palette: GifPalette,
+  cache: Int16Array = new Int16Array(1 << 18).fill(-1),
 ): Uint8Array {
   const out = new Uint8Array(width * height);
-  let current = new Float32Array((width + 2) * 3);
-  let next = new Float32Array((width + 2) * 3);
-  // Five-bit RGB cache: dithering creates many nearby colors, and a full palette scan per pixel
-  // would dominate a 15 fps export.
-  const cache = new Int16Array(1 << 15);
-  cache.fill(-1);
-  const add = (row: Float32Array, x: number, c: number, value: number): void => {
-    const i = (x + 1) * 3 + c;
-    row[i] = row[i]! + value;
-  };
   for (let y = 0; y < height; y++) {
+    const row = (y & 3) * 4;
     for (let x = 0; x < width; x++) {
       const pixel = (y * width + x) * 4;
-      const error = (x + 1) * 3;
-      const r = Math.max(0, Math.min(255, rgba[pixel]! + current[error]!));
-      const g = Math.max(0, Math.min(255, rgba[pixel + 1]! + current[error + 1]!));
-      const b = Math.max(0, Math.min(255, rgba[pixel + 2]! + current[error + 2]!));
-      const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+      const offset = BAYER[row + (x & 3)]!;
+      const r = Math.max(0, Math.min(255, Math.round(rgba[pixel]! + offset)));
+      const g = Math.max(0, Math.min(255, Math.round(rgba[pixel + 1]! + offset)));
+      const b = Math.max(0, Math.min(255, Math.round(rgba[pixel + 2]! + offset)));
+      // Six-bit RGB cache: a full palette scan per pixel would dominate the export.
+      const key = ((r >> 2) << 12) | ((g >> 2) << 6) | (b >> 2);
       let index = cache[key]!;
       if (index < 0) {
         index = closest(palette, r, g, b);
         cache[key] = index;
       }
       out[y * width + x] = index;
-      const p = palette[index]!;
-      const er = r - p[0]!;
-      const eg = g - p[1]!;
-      const eb = b - p[2]!;
-      for (const [c, e] of [
-        [0, er],
-        [1, eg],
-        [2, eb],
-      ] as const) {
-        add(current, x + 1, c, (e * 7) / 16);
-        add(next, x - 1, c, (e * 3) / 16);
-        add(next, x, c, (e * 5) / 16);
-        add(next, x + 1, c, e / 16);
-      }
     }
-    const old = current;
-    current = next;
-    next = old;
-    next.fill(0);
   }
   return out;
 }
@@ -191,10 +248,20 @@ async function clipPalette(
       sample[at++] = 255;
     }
   }
-  return quantize(sample.subarray(0, at), 256, { format: 'rgb565' });
+  // One slot stays free for the transparent index.
+  return quantize(sample.subarray(0, at), MAX_COLORS, { format: 'rgb565' });
 }
 
-/** Renders and encodes one clip, using a global palette and longer delays for unchanged frames. */
+interface PendingFrame {
+  pixels: Uint8Array;
+  box: Box;
+  transparent: boolean;
+}
+
+/**
+ * Renders and encodes one clip. Every frame after the first holds only the box that changed, with
+ * unchanged pixels inside it transparent; frames with no change extend the previous frame's delay.
+ */
 export async function recordGifScene(opts: GifOptions): Promise<Uint8Array> {
   const fps = opts.fps ?? GIF_FPS;
   const stage = gifStage(opts.aspect, opts.width ?? GIF_WIDTH);
@@ -202,18 +269,32 @@ export async function recordGifScene(opts: GifOptions): Promise<Uint8Array> {
   const data = opts.scene.prepare(opts.timeline, stage, opts.choice);
   const raster = (opts.rasterizer ?? createRasterizer)(stage.width, stage.height);
   try {
-    const palette = await clipPalette(raster, opts, data, stage, frames, fps);
+    const colors = (await clipPalette(raster, opts, data, stage, frames, fps)).slice(0, MAX_COLORS);
+    // GIF color tables hold a power of two entries. Pad to the next one above the colors and make
+    // the last entry the transparent index; dithering picks only from `colors`, never that slot.
+    let size = 2;
+    while (size < colors.length + 1) size *= 2;
+    const transparentIndex = size - 1;
+    const palette = [...colors, ...Array.from({ length: size - colors.length }, () => [0, 0, 0])];
+    const cache = new Int16Array(1 << 18).fill(-1);
     const gif = GIFEncoder();
-    let previous: Uint8Array | null = null;
+    let shown: Uint8Array | null = null;
+    let pending: PendingFrame | null = null;
     let delay = 0;
     let first = true;
     const write = (): void => {
-      if (!previous) return;
-      gif.writeFrame(previous, stage.width, stage.height, {
+      if (!pending) return;
+      const { pixels, box, transparent } = pending;
+      const start = gif.bytesView().length;
+      gif.writeFrame(pixels, box.width, box.height, {
         ...(first ? { palette } : {}),
         delay,
         repeat: 0,
+        // 1: leave this frame in place; the next one draws only its changes over it.
+        dispose: 1,
+        ...(transparent ? { transparent: true, transparentIndex } : {}),
       });
+      if (box.x || box.y) placeFrame(gif.bytesView(), start, box);
       first = false;
     };
     for (let i = 0; i < frames; i++) {
@@ -233,16 +314,31 @@ export async function recordGifScene(opts: GifOptions): Promise<Uint8Array> {
       const rgba = canvas
         .getContext('2d', { willReadFrequently: true })!
         .getImageData(0, 0, stage.width, stage.height).data;
-      const indexed = ditherToPalette(rgba, stage.width, stage.height, palette);
-      // GIF delays are centiseconds. Alternating 60/70 ms preserves 15 fps on average.
+      const indexed = ditherToPalette(rgba, stage.width, stage.height, colors, cache);
+      // GIF delays are centiseconds; rounding the running total keeps the clip's length exact.
       const frameDelay = Math.round(((i + 1) * 100) / fps) * 10 - Math.round((i * 100) / fps) * 10;
-      if (previous && !sameFrame(previous, indexed)) {
-        write();
-        previous = indexed;
+      if (!shown) {
+        pending = {
+          pixels: indexed,
+          box: { x: 0, y: 0, width: stage.width, height: stage.height },
+          transparent: false,
+        };
+        shown = indexed;
         delay = frameDelay;
       } else {
-        previous ??= indexed;
-        delay += frameDelay;
+        const box = changedBox(shown, indexed, stage.width, stage.height);
+        if (box) {
+          write();
+          pending = {
+            pixels: deltaPixels(shown, indexed, stage.width, box, transparentIndex),
+            box,
+            transparent: true,
+          };
+          shown = indexed;
+          delay = frameDelay;
+        } else {
+          delay += frameDelay;
+        }
       }
       opts.onProgress?.(i + 1, frames);
     }
