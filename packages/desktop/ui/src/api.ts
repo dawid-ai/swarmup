@@ -111,6 +111,10 @@ interface Bridge {
     tasks: number[];
     where: 'repo' | 'store';
   }) => Promise<{ ok: boolean; data?: ProjectCreated; error?: string }>;
+  /** Picks the folder that now holds `root`, then asks swarmupd to relocate the config entry. */
+  projectRelocate: (
+    root: string,
+  ) => Promise<{ ok: boolean; data?: import('./types').ListedProject[]; error?: string }>;
   call: (
     method: 'GET' | 'POST',
     path: string,

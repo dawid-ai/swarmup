@@ -38,6 +38,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `channels/${SEG}`,
     'chat',
     'usage',
+    'projects',
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
@@ -61,6 +62,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'chat',
     'chat/(stop|reset)',
     'signin/resume',
+    'projects/(archive|unarchive|label|remove)',
   ].map((p) => new RegExp(`^/api/${p}$`)),
 };
 

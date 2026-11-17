@@ -250,12 +250,23 @@ If the folder already has a data root (`.swarmup/` or `.agent-ops/`), **Add proj
 proposal and only adds the folder to `roots`. Errors, such as a folder that is not a git repo or
 has no write access, show in the dialog. A project in the sidebar opens **Tasks** filtered to it.
 
+## Manage projects
+
+Right-click a project in the sidebar to **Edit name**, **Edit location**, **Archive** or **Delete**.
+Edit location opens the system folder dialog and points SwarmUp at the data root in the folder you
+pick; it moves nothing. Archived projects leave the board and no new run starts for their tasks.
+They stay in the collapsed **Archived** group under **Projects**, where the same menu offers
+**Unarchive**. **Delete** removes only the user-config entry after confirmation: it never deletes or
+changes the project's folder or files. A refused change shows swarmupd's error in the app.
+
 ## Security
 
 - The page talks to `swarmupd` only through Electron's main process, which holds the API token; the
   page never sees it. The main process accepts only `/api/` paths.
 - The page never names a folder to **Add project**: the main process uses only the folders you
-  pick in the system dialog, and refuses calls that don't come from the app's own page.
+  pick in the system dialog, and refuses calls that don't come from the app's own page. **Edit
+  location** uses the same boundary: the renderer names the existing project, and the main process
+  alone sends the folder picked in the system dialog to swarmupd.
 - The window runs with context isolation and the renderer sandbox, without Node, under a content
   security policy that allows only the app's own files.
 - Task text, comments and messages come from agents, so Markdown is sanitized before it is shown.

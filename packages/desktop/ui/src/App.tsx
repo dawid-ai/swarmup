@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
+  Archive as ArchiveIcon,
   History,
   BarChart3,
   BookOpen,
@@ -27,6 +28,7 @@ import {
   X,
   Download,
 } from 'lucide-react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SetupStatus } from './api';
 import { api, bridge, refreshSoon, useData, useUpdate } from './api';
@@ -44,7 +46,16 @@ import { useMover } from './ui/move';
 import { Palette, ShortcutHelp } from './ui/palette';
 import { setRefTasks } from './lib/refs';
 import { useRefTasks, useTaskFocus } from './ui/refs';
-import type { Decision, InboxItem, Info, ProviderUsage, RunRecord, SignedOut, Task } from './types';
+import type {
+  Decision,
+  InboxItem,
+  Info,
+  ListedProject,
+  ProviderUsage,
+  RunRecord,
+  SignedOut,
+  Task,
+} from './types';
 import type { Settings as SettingsData } from './types';
 import { Activity as ActivityView } from './views/Activity';
 import type { AddProjectState } from './views/AddProject';
@@ -70,6 +81,7 @@ import { Search } from './views/Search';
 import { Standups } from './views/Standups';
 import { SEARCH_INPUT_ID, SearchBox } from './ui/search';
 import { TaskPanel } from './views/TaskPanel';
+import { ProjectControls, type ProjectMenuRequest } from './ui/projects';
 
 export type View =
   | 'inbox'
@@ -163,6 +175,58 @@ function storeFoldedSections(folded: Record<SidebarSection, boolean>): void {
   } catch {
     // Folding still works for this window when the local store is unavailable.
   }
+}
+
+const pathKey = (path: string): string => {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  // Windows drive and UNC paths are case-insensitive; POSIX paths are not.
+  return /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLocaleLowerCase()
+    : normalized;
+};
+
+/**
+ * Loaded roots include the cwd and Master Repo mirrors; `/api/projects` adds configured roots that
+ * are archived or missing. Keep the loaded order, then the remaining user-config order.
+ */
+function sidebarProjects(
+  loaded: SettingsData['rootList'],
+  configured: ListedProject[] | undefined,
+  listedRoots: string[] = [],
+): ListedProject[] {
+  const byPath = new Map((configured ?? []).map((p) => [pathKey(p.root), p]));
+  const listedPaths = new Set(listedRoots.map(pathKey));
+  const seen = new Set<string>();
+  const out: ListedProject[] = [];
+  for (const root of loaded.filter((r) => !r.isMaster)) {
+    const key = pathKey(root.dir);
+    const listed = byPath.get(key);
+    // A project action has answered with a newer config than `/api/settings`: do not put a just
+    // removed root back while the settings refresh is in flight. Cwd and mirror roots are not in
+    // `roots`, so they remain visible.
+    if (configured && listedPaths.has(key) && !listed) continue;
+    seen.add(key);
+    out.push(
+      listed
+        ? {
+            ...listed,
+            name: root.name,
+            label: listed.label || root.label || root.name,
+            found: true,
+          }
+        : {
+            root: root.dir,
+            name: root.name,
+            label: root.label || root.name,
+            archived: false,
+            found: true,
+          },
+    );
+  }
+  for (const project of configured ?? []) {
+    if (!seen.has(pathKey(project.root))) out.push(project);
+  }
+  return out;
 }
 
 interface Status {
@@ -297,6 +361,9 @@ export function App() {
   const [planEditOf, setPlanEditOf] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [projectMenu, setProjectMenu] = useState<ProjectMenuRequest | null>(null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const projectList = useRef<ListedProject[]>([]);
   const pendingG = useRef(false);
 
   const loadInfo = useCallback(() => {
@@ -368,6 +435,13 @@ export function App() {
         else if (nav.view === 'add-project') {
           setAutoCreate(nav.id === 'create');
           addProject();
+        } else if (nav.view === 'project-menu') {
+          const project = projectList.current.find(
+            (p) => p.name === nav.id || p.label === nav.id || p.root === nav.id,
+          );
+          if (project) setProjectMenu({ project, x: 172, y: 180 });
+        } else if (nav.view === 'archived-projects') {
+          setArchivedOpen(true);
         } else if (nav.view === 'sidebar-fold' && isSidebarSection(nav.id)) {
           // The smoke run captures an intentionally folded section.
           setSectionFolded(nav.id, true);
@@ -395,7 +469,16 @@ export function App() {
   const tasks = useData<Task[]>(info ? '/api/tasks' : null);
   // The loaded data roots, for the sidebar's project list.
   const settings = useData<SettingsData>(info ? '/api/settings' : null);
-  const projects = (settings.data?.rootList ?? []).filter((r) => !r.isMaster);
+  // Unlike `/api/settings`, this includes roots archived out of swarmupd's live workspace.
+  const configuredProjects = useData<ListedProject[]>(info ? '/api/projects' : null);
+  const projects = sidebarProjects(
+    settings.data?.rootList ?? [],
+    configuredProjects.data,
+    settings.data?.roots,
+  );
+  projectList.current = projects;
+  const activeProjects = projects.filter((project) => !project.archived);
+  const archivedProjects = projects.filter((project) => project.archived);
   // Signed-out providers (AO-0154): a banner on every view until each is signed in again.
   const usage = useData<Record<string, ProviderUsage>>(info ? '/api/usage' : null);
   const signedOut = Object.entries(usage.data ?? {}).flatMap(([p, u]) =>
@@ -572,18 +655,63 @@ export function App() {
                 onToggle={toggleSection}
               />
               <div id="sidebar-section-projects">
-                {projects
-                  .filter((p) => !folded.projects || isProjectActive(p.name))
+                {activeProjects
+                  .filter((p) => !folded.projects || isProjectActive(p.name ?? ''))
                   .map((p) => (
                     <NavItem
-                      key={p.dir}
-                      active={isProjectActive(p.name)}
+                      key={p.root}
+                      active={isProjectActive(p.name ?? '')}
                       icon={FolderGit2}
-                      label={p.name}
-                      title={p.dir}
-                      onClick={() => nav.go('list', `project:${p.name}`)}
+                      label={p.label || p.name || p.root}
+                      title={p.root}
+                      onClick={() => p.name && nav.go('list', `project:${p.name}`)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setProjectMenu({ project: p, x: event.clientX, y: event.clientY });
+                      }}
                     />
                   ))}
+                {!folded.projects && archivedProjects.length > 0 && (
+                  <div data-archived-projects className="mt-1">
+                    <button
+                      type="button"
+                      aria-expanded={archivedOpen}
+                      aria-controls="sidebar-archived-projects"
+                      onClick={() => setArchivedOpen((open) => !open)}
+                      className="group flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-fg-4 transition hover:bg-white/4 hover:text-fg-2"
+                    >
+                      <ChevronRight
+                        size={12}
+                        strokeWidth={2.4}
+                        className={cx('transition-transform', archivedOpen && 'rotate-90')}
+                      />
+                      <ArchiveIcon size={14} strokeWidth={1.9} />
+                      <span className="flex-1 font-medium tracking-wide">Archived</span>
+                      <span className="font-mono text-[10px]">{archivedProjects.length}</span>
+                    </button>
+                    {archivedOpen && (
+                      <div
+                        id="sidebar-archived-projects"
+                        className="ml-3 border-l border-white/8 pl-1"
+                      >
+                        {archivedProjects.map((p) => (
+                          <NavItem
+                            key={p.root}
+                            active={isProjectActive(p.name ?? '')}
+                            icon={FolderGit2}
+                            label={p.label || p.name || p.root}
+                            title={p.found ? p.root : `${p.root} (folder not found)`}
+                            onClick={() => p.name && nav.go('list', `project:${p.name}`)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              setProjectMenu({ project: p, x: event.clientX, y: event.clientY });
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {!folded.projects && (
                   <NavItem
                     active={false}
@@ -779,6 +907,17 @@ export function App() {
         onOpen={(provider) => nav.go('agents', provider)}
       />{' '}
       <Toaster />
+      <ProjectControls
+        menu={projectMenu}
+        onCloseMenu={() => setProjectMenu(null)}
+        onChanged={(projects) => {
+          configuredProjects.set(projects);
+          settings.reload();
+        }}
+        onProjectUnavailable={(project) => {
+          if (project.name && isProjectActive(project.name)) nav.go('board');
+        }}
+      />
       <Lightbox />
       {palette && (
         <Palette
@@ -834,6 +973,7 @@ export function App() {
             setAdding(null);
             setAutoCreate(false);
             settings.reload();
+            configuredProjects.reload();
             toast(
               p.reloaded
                 ? `Created ${p.name} with ${p.tasks.length} ${p.tasks.length === 1 ? 'task' : 'tasks'}`
@@ -957,11 +1097,13 @@ function NavItem(props: {
   count?: { n: number; tone: string };
   title?: string;
   onClick: () => void;
+  onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
   const Icon = props.icon;
   return (
     <button
       onClick={props.onClick}
+      onContextMenu={props.onContextMenu}
       title={props.title}
       className={cx(
         'group relative flex w-full items-center gap-2.5 rounded-lg px-3 py-[7px] text-left text-sm transition',
