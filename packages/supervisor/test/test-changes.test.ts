@@ -12,16 +12,22 @@ import { until, WAIT_MS } from './until.js';
 
 const dirs: string[] = [];
 const sups: Supervisor[] = [];
+const gits: { closed: boolean; pending: Set<Promise<unknown>> }[] = [];
 
 // As in merge.test.ts: this test's supervisors and folders are taken before anything is awaited.
 afterEach(async () => {
   const mine = sups.splice(0);
   const gone = dirs.splice(0);
+  const calls = gits.splice(0);
   try {
     for (const s of mine) {
       s.stop({ killRuns: true });
       await s.close();
     }
+    // A test that timed out leaves `readTestChanges` running: no new git call starts, and the
+    // running ones end before their repo goes, or Windows refuses to delete it (EPERM, AO-0367).
+    for (const c of calls) c.closed = true;
+    for (const c of calls) await Promise.allSettled([...c.pending]);
   } finally {
     for (const d of gone) {
       rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -275,7 +281,21 @@ describe('changes to tests and check configuration, for the reviewer (AO-0291)',
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'Add tests');
     const to = git(repo, 'rev-parse', 'HEAD');
-    return { range: { base: 'main', from, to }, read: gitIn(repo, { ...process.env, ...ID }) };
+    // Every call is tracked, so cleanup waits for it (see `afterEach`).
+    const real = gitIn(repo, { ...process.env, ...ID });
+    const calls = { closed: false, pending: new Set<Promise<unknown>>() };
+    gits.push(calls);
+    const read: Git = (args, max) => {
+      if (calls.closed) return Promise.reject(new Error('the test ended'));
+      const p = real(args, max);
+      calls.pending.add(p);
+      void p.then(
+        () => calls.pending.delete(p),
+        () => calls.pending.delete(p),
+      );
+      return p;
+    };
+    return { range: { base: 'main', from, to }, read };
   }
 
   it(
@@ -301,11 +321,12 @@ describe('changes to tests and check configuration, for the reviewer (AO-0291)',
     'reads the files of a failed chunk one by one, and lists a new test it cannot read',
     async () => {
       const { range, read } = manyNewTests();
-      // Git fails for every call that names more than one file, and for `f7` alone.
+      // Git fails for the chunk that names `f7`, and for `f7` alone. Only that chunk is read file
+      // by file: failing every chunk took 230 git calls, too slow under full-suite load (AO-0367).
       const failing: Git = (args, max) => {
         const paths = args.slice(args.indexOf('--') + 1);
         const patch = args.includes('-U0');
-        if (patch && (paths.length > 1 || paths[0]!.endsWith('/f7.test.ts'))) {
+        if (patch && paths.some((p) => p.endsWith('/f7.test.ts'))) {
           return Promise.reject(new Error('maxBuffer length exceeded'));
         }
         return read(args, max);
