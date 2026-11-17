@@ -1,5 +1,13 @@
 // Archive, label, relocate and remove a project in the user config (AO-0353).
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -78,6 +86,33 @@ describe('archiveRoot', () => {
     expect(loaded(env, base)).toEqual(['shop', 'blog']);
     // Nothing is left behind once the last option goes.
     expect(readFileSync(file, 'utf8')).not.toContain('root_options');
+  });
+
+  it('keeps the Master Repo mirror off the board when the archived folder is gone', () => {
+    const { base, file, env, shop } = setup();
+    const hub = join(base, 'hub');
+    initRoot(hub, { name: 'hub', prefix: 'H' });
+    // The hub holds a mirror of shop, as a mirrored project's sync leaves it.
+    cpSync(join(shop, '.swarmup'), join(hub, '.swarmup', 'mirrors', 'shop'), { recursive: true });
+    const user = YAML.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, YAML.stringify({ ...user, master: hub }));
+
+    archiveRoot(env, shop, true);
+    expect(readUserConfig(env).root_options?.[shop]).toEqual({ archived: true, name: 'shop' });
+    expect(loaded(env, base)).toEqual(['blog', 'hub']);
+
+    // The folder goes missing: the recorded name still hides the mirror and keeps the label.
+    rmSync(shop, { recursive: true, force: true });
+    expect(loaded(env, base)).toEqual(['blog', 'hub']);
+    expect(listRoots(env)[0]).toMatchObject({ root: shop, found: false, name: 'shop' });
+    // Archiving again while it is gone keeps the recorded name.
+    archiveRoot(env, shop, true);
+    expect(loaded(env, base)).toEqual(['blog', 'hub']);
+
+    // Unarchived, the mirror shows the project this machine no longer has.
+    archiveRoot(env, shop, false);
+    expect(readUserConfig(env).root_options).toBeUndefined();
+    expect(discoverRoots(base, env)).toContain(join(hub, '.swarmup', 'mirrors', 'shop'));
   });
 
   it('refuses a folder the user config does not list', () => {

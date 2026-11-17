@@ -950,14 +950,16 @@ roots:
 root_options:
   C:/dev/shop:
     archived: true # off the board; swarmupd starts no run on its tasks
+    name: shop # the root's own name, recorded on archive
     label: Web shop # the name the app shows; the root's own name stays its id
 ```
 
 - **Archive** leaves the root in `roots`, but no reader loads it: not swarmupd, the app or
   `swarmup`, not from inside its repo, and not through its Master Repo copy. swarmupd wakes no
   agent on its tasks. A run that started before the archive finishes, since swarmupd hands each
-  run its roots in `SWARMUP_ROOTS`, which the archive flag does not filter. **Unarchive** clears
-  the flag.
+  run its roots in `SWARMUP_ROOTS`, which the archive flag does not filter. Archive records the
+  root's own `name` too: the Master Repo copy is found by that name, so it stays hidden when the
+  folder later goes missing or cannot be read. **Unarchive** clears the flag and the name.
 - **Label** sets the name the app shows. The root's own `name` in its `config.yml` stays the id
   that task references use.
 - **Relocate** points the entry at another folder, keeping its place in `roots` and its options.

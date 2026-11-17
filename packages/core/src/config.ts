@@ -96,6 +96,11 @@ export interface UserConfig {
 export interface RootOptions {
   /** No reader loads an archived root: it is off the board and swarmupd runs none of its tasks. */
   archived?: boolean;
+  /**
+   * The root's own name, recorded when it is archived. Its Master Repo mirror stays hidden by this
+   * name even when the folder goes missing or cannot be read.
+   */
+  name?: string;
   /** The name the app shows for the project; the root's own `name` stays its id. */
   label?: string;
 }
@@ -112,11 +117,27 @@ export function rootOptionsOf(user: UserConfig, root: string): RootOptions {
 
 /** The folders the user config marks archived. */
 export function archivedRoots(user: UserConfig): string[] {
+  return archivedEntries(user).map(([key]) => key);
+}
+
+function archivedEntries(user: UserConfig): [string, RootOptions][] {
   const all = user.root_options;
   if (!all || typeof all !== 'object') return [];
-  return Object.entries(all)
-    .filter(([, o]) => o && typeof o === 'object' && o.archived === true)
-    .map(([key]) => key);
+  return Object.entries(all).filter(([, o]) => o && typeof o === 'object' && o.archived === true);
+}
+
+/**
+ * The root names of the archived roots: the name each folder's config holds, and the one recorded
+ * at archive time, so a folder that is gone or unreadable still hides its Master Repo mirror.
+ */
+export function archivedRootNames(user: UserConfig): string[] {
+  const names = new Set<string>();
+  for (const [key, opts] of archivedEntries(user)) {
+    if (typeof opts.name === 'string' && opts.name) names.add(opts.name);
+    const name = existsSync(key) ? rootNameOf(storeDirIn(key) ?? key) : null;
+    if (name) names.add(name);
+  }
+  return [...names];
 }
 
 /** The user config key that holds swarmupd's settings, such as `swarmupd.agents`. */
@@ -602,10 +623,7 @@ export function discoverRoots(
   // is loaded hides its own copy.
   const names = new Set(roots.map(rootNameOf).filter((n): n is string => n !== null));
   // An archived project stays off the board through its Master Repo copy too.
-  for (const a of archived) {
-    const name = existsSync(a) ? rootNameOf(storeDirIn(a) ?? a) : null;
-    if (name) names.add(name);
-  }
+  for (const name of archivedRootNames(user)) names.add(name);
   for (const dir of [...roots]) {
     if (isMirrorDir(dir)) continue;
     for (const m of mirrorDirs(dir)) {

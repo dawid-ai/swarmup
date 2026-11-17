@@ -22,7 +22,10 @@ export const ROOT_OPTIONS_KEY = 'root_options';
 export interface ListedRoot {
   /** The folder as `roots` lists it. */
   root: string;
-  /** The name in the root's own config: its id. Null when the folder holds no readable root. */
+  /**
+   * The name in the root's own config: its id. For an archived root whose folder holds no readable
+   * root, the name recorded when it was archived; else null.
+   */
   name: string | null;
   /** The name the app shows: `label` when set, else `name`. */
   label: string | null;
@@ -38,8 +41,9 @@ export function listRoots(
 ): ListedRoot[] {
   return (user.roots ?? []).map(String).map((root) => {
     const found = existsSync(root);
-    const name = found ? rootNameOf(storeDirIn(root) ?? root) : null;
     const opts = rootOptionsOf(user, root);
+    const recorded = opts.archived === true && typeof opts.name === 'string' ? opts.name : null;
+    const name = (found ? nameIn(root) : null) ?? recorded;
     return {
       root,
       name,
@@ -48,6 +52,11 @@ export function listRoots(
       found,
     };
   });
+}
+
+/** The name in the config of the data root a folder holds, or null when none reads. */
+function nameIn(root: string): string | null {
+  return existsSync(root) ? rootNameOf(storeDirIn(root) ?? root) : null;
 }
 
 /** The entry of `roots` that names `root`, as listed. Throws when none does. */
@@ -102,10 +111,17 @@ export function archiveRoot(
   check?: (next: UserConfig) => void,
 ): ListedRoot {
   if (typeof archived !== 'boolean') throw new OpsError('archived: use true or false', 2);
-  const entry = listedEntry(readUserConfig(env), root);
+  const user = readUserConfig(env);
+  const entry = listedEntry(user, root);
+  // The root's name is kept with the flag: its Master Repo mirror is found by name, and the
+  // folder may later go missing. An unreadable folder keeps a name recorded before.
+  const name = archived ? (nameIn(entry) ?? rootOptionsOf(user, entry).name) : undefined;
   const next = editUserConfig(
     env,
-    (doc) => setOption(doc, entry, 'archived', archived ? true : undefined),
+    (doc) => {
+      setOption(doc, entry, 'archived', archived ? true : undefined);
+      setOption(doc, entry, 'name', name);
+    },
     check,
   );
   return listRoots(env, next).find((r) => r.root === entry)!;
@@ -164,6 +180,11 @@ export function relocateRoot(
         const opts = doc.getIn([ROOT_OPTIONS_KEY, at]);
         doc.deleteIn([ROOT_OPTIONS_KEY, at]);
         doc.setIn([ROOT_OPTIONS_KEY, target], doc.createNode(opts));
+        // An archived root records the name of the folder it now points at.
+        if (doc.getIn([ROOT_OPTIONS_KEY, target, 'archived']) === true) {
+          const name = nameIn(target);
+          if (name) doc.setIn([ROOT_OPTIONS_KEY, target, 'name'], name);
+        }
       }
     },
     check,
