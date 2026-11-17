@@ -1,14 +1,19 @@
 // Child processes started from a worker thread (AO-0171): the same output and failures as
 // `execFile`, and nothing started on the calling thread, whose event loop opsd's API runs on.
 import type { ChildProcess } from 'node:child_process';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { ExecFailure } from '../src/index.js';
 import { execOffThread } from '../src/index.js';
 import { gitAsync } from '../src/git-steps.js';
 
 const node = process.execPath;
+const repoTop = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('execOffThread', () => {
   it('returns standard output, with the input, environment and folder it was given', async () => {
@@ -108,4 +113,32 @@ describe('execOffThread', () => {
     }
     expect(calls).toEqual([]);
   });
+
+  it('removes its temporary folder when the process exits', () => {
+    // A separate process with a temp folder of its own, so the folder left at exit is visible.
+    const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc');
+    execFileSync(node, [tsc, '-b', 'packages/core'], { cwd: repoTop, windowsHide: true });
+    const temp = mkdtempSync(join(tmpdir(), 'swarmup-exec-test-'));
+    const scriptDir = mkdtempSync(join(tmpdir(), 'swarmup-exec-script-'));
+    try {
+      const dist = pathToFileURL(join(repoTop, 'packages', 'core', 'dist', 'index.js')).href;
+      const script = [
+        `const { execOffThread } = await import(${JSON.stringify(dist)});`,
+        "process.stdout.write(await execOffThread(process.execPath, ['-e', 'process.stdout.write(\"ran\")']));",
+      ].join('\n');
+      // A file, not `--input-type=module -e`: the worker would inherit that flag.
+      const file = join(scriptDir, 'run.mjs');
+      writeFileSync(file, script);
+      const out = execFileSync(node, [file], {
+        env: { ...process.env, TEMP: temp, TMP: temp, TMPDIR: temp },
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      expect(out).toBe('ran');
+      expect(readdirSync(temp)).toEqual([]);
+    } finally {
+      rmSync(temp, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(scriptDir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  }, 120_000);
 });

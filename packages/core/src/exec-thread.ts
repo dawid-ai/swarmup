@@ -8,6 +8,13 @@
 // pipe ends: a long-lived agent run then held git's output pipe open, and the sync waiting for it
 // hung until the run ended. An inherited file handle holds nothing up: the worker waits for the
 // process to exit, then reads the files.
+//
+// The files live in one temporary folder per worker, which goes when the worker or the process
+// exits. Every `swarmup` command and every test process that ran a command left one behind
+// before: some 5,000 `opsd-exec-*` folders in a week of agent runs.
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 /** What `execFile` reports for a failed command, so callers read failures the same either way. */
@@ -51,13 +58,11 @@ interface Reply {
 
 // Plain CommonJS, so the worker needs no build step and runs the same under the test runner.
 const WORKER = `
-const { parentPort } = require('node:worker_threads');
+const { parentPort, workerData } = require('node:worker_threads');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-let dir;
-const tmp = () => (dir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'opsd-exec-')));
+const tmp = () => workerData.dir;
 const quiet = (f) => { try { f(); } catch {} };
 const failure = (err) => ({ message: String((err && err.message) || err), code: err && err.code });
 // Each command in flight has a slot whose files the next command in it truncates and reuses, so
@@ -131,11 +136,33 @@ parentPort.on('message', ({ id, file, args, opts }) => {
 
 let worker: Worker | undefined;
 let nextId = 0;
+/** The temporary folders of workers that have not exited yet. */
+const dirs = new Set<string>();
+let cleanupOnExit = false;
+
+/** Removes a worker's temporary folder; a file a command still holds open on Windows stays. */
+function removeDir(dir: string): void {
+  dirs.delete(dir);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best effort: the folder is in the OS temp folder, which the OS cleans up.
+  }
+}
 const pending = new Map<number, { resolve: (s: string) => void; reject: (e: Error) => void }>();
 
 function thread(): Worker {
   if (worker) return worker;
-  const w = new Worker(WORKER, { eval: true });
+  const dir = mkdtempSync(join(tmpdir(), 'swarmup-exec-'));
+  dirs.add(dir);
+  if (!cleanupOnExit) {
+    cleanupOnExit = true;
+    // The process ends the worker without its `exit` event, so its folder goes here.
+    process.once('exit', () => {
+      for (const d of [...dirs]) removeDir(d);
+    });
+  }
+  const w = new Worker(WORKER, { eval: true, workerData: { dir } });
   // Calls in flight keep the process alive through their promises' callers; an idle worker
   // never does.
   w.unref();
@@ -161,7 +188,10 @@ function thread(): Worker {
     }
   };
   w.on('error', fail);
-  w.on('exit', (code) => fail(new Error(`the process thread exited (${code})`)));
+  w.on('exit', (code) => {
+    removeDir(dir);
+    fail(new Error(`the process thread exited (${code})`));
+  });
   worker = w;
   return w;
 }
