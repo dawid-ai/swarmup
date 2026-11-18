@@ -44,6 +44,7 @@ import {
 } from 'electron';
 import electronUpdater from 'electron-updater';
 import { addProjectHandlers } from './add-project.js';
+import { relocateProjectHandler } from './project-relocate.js';
 import { allowedCall, attachmentName, ATTACHMENT_SCHEME } from './allow.js';
 import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
@@ -1359,22 +1360,25 @@ const screenshotPicks = (process.env.SWARMUP_SCREENSHOT_PICKS ?? '')
   .split(delimiter)
   .filter(Boolean);
 
+/** The system folder picker shared by Add project and Edit location. */
+async function pickProjectFolder(title: string): Promise<string | null> {
+  if (offscreen) {
+    const next = screenshotPicks.shift();
+    if (!next) throw new Error('not in screenshot mode');
+    return next;
+  }
+  const pick = await dialog.showOpenDialog(win!, {
+    title,
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return pick.canceled ? null : (pick.filePaths[0] ?? null);
+}
+
 /** Add project (AO-0274): pick a repo, review the proposal, create the root. */
 const addProject = addProjectHandlers<Electron.IpcMainInvokeEvent>({
   env: process.env,
   fromPage,
-  pickFolder: async (title) => {
-    if (offscreen) {
-      const next = screenshotPicks.shift();
-      if (!next) throw new Error('not in screenshot mode');
-      return next;
-    }
-    const pick = await dialog.showOpenDialog(win!, {
-      title,
-      properties: ['openDirectory', 'createDirectory'],
-    });
-    return pick.canceled ? null : (pick.filePaths[0] ?? null);
-  },
+  pickFolder: pickProjectFolder,
   // An empty settings patch makes swarmupd read the user config again: the new root loads at once.
   reload: async () => void (await call('POST', '/api/settings', {})),
   checkConfig: (next) => void opsdConfig(next as Parameters<typeof opsdConfig>[0]),
@@ -1383,6 +1387,15 @@ ipcMain.handle('swarmup:project-pick', (e) => addProject.pick(e));
 ipcMain.handle('swarmup:project-plan', (e, name: unknown) => addProject.plan(e, name));
 ipcMain.handle('swarmup:project-store', (e) => addProject.pickStore(e));
 ipcMain.handle('swarmup:project-create', (e, input: unknown) => addProject.create(e, input));
+
+// Unlike the other project actions, relocate is not on the renderer allow list: the page cannot
+// choose a filesystem path. The main process sends only the folder the person picked (AO-0354).
+const relocateProject = relocateProjectHandler<Electron.IpcMainInvokeEvent, unknown>({
+  fromPage,
+  pickFolder: () => pickProjectFolder('Edit project location: choose its data-root folder'),
+  relocate: (root, to) => call('POST', '/api/projects/relocate', { root, to }),
+});
+ipcMain.handle('swarmup:project-relocate', (e, root: unknown) => relocateProject(e, root));
 
 ipcMain.handle('swarmup:call', async (e, method: 'GET' | 'POST', path: string, body?: unknown) => {
   // Only the app's own page in its own window may call swarmupd.

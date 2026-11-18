@@ -730,10 +730,25 @@ export interface ProjectCreated {
 /** `GET /api/settings`: effective values, and which keys the file sets. */
 export interface RootInfo {
   name: string;
+  /** The name the person chose for the sidebar; absent before AO-0353. */
+  label?: string;
   dir: string;
   mirror: boolean;
   isMirror: boolean;
   isMaster: boolean;
+}
+
+/** A project in the user config, including projects swarmupd has archived (AO-0353). */
+export interface ListedProject {
+  /** The folder as the user config lists it; project actions identify the entry by this value. */
+  root: string;
+  /** The root's own name, used by task project filters. */
+  name: string | null;
+  /** The editable display name, or the root's own name when no label is set. */
+  label: string | null;
+  archived: boolean;
+  /** False when the configured folder no longer exists. */
+  found: boolean;
 }
 
 export interface Settings {

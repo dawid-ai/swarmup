@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('swarmup', {
   projectPlan: (name: string) => ipcRenderer.invoke('swarmup:project-plan', name),
   projectStore: () => ipcRenderer.invoke('swarmup:project-store'),
   projectCreate: (input: unknown) => ipcRenderer.invoke('swarmup:project-create', input),
+  projectRelocate: (root: string) => ipcRenderer.invoke('swarmup:project-relocate', root),
   call: (method: 'GET' | 'POST', path: string, body?: unknown) =>
     ipcRenderer.invoke('swarmup:call', method, path, body),
   onEvent: (fn: Listener) => subscribe('swarmup:event', fn),
