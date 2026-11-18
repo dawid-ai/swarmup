@@ -156,11 +156,12 @@ import {
 import type { ReviewChecks } from './review-checks.js';
 import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
-import type { TaskWorktree, WorktreeEntry } from './worktree.js';
+import type { InstallResult, TaskWorktree, WorktreeEntry } from './worktree.js';
 import {
   CODE_TASK_TYPES,
   clearStaleIndexLock,
   deleteWorktree,
+  installWorktreeSync,
   isLink,
   MAKING_LOCK,
   makeTaskWorktree,
@@ -864,6 +865,13 @@ export interface MergeStatus {
   command?: { text: string; index: number; count: number; started_at: string };
   /** How long each check or build command may run. */
   timeout_minutes: number;
+}
+
+/** A deferred launch's task worktree is being made; `made` settles once it is there or failed. */
+class WorktreePending extends Error {
+  constructor(readonly made: Promise<void>) {
+    super('swarmupd is making the task worktree');
+  }
 }
 
 /**
@@ -1616,16 +1624,32 @@ export class Supervisor extends EventEmitter {
     this.stopAbort.signal.addEventListener('abort', stop, { once: true });
     try {
       const [r] = await runner.runAll([command], path, WORKTREE_INSTALL_TIMEOUT_MS);
-      if (r && !r.ok) {
-        const tail = r.output.trim().split(/\r?\n/).slice(-3).join(' / ');
-        this.emit(
-          'warn',
-          `${ref}: \`${command}\` failed in ${path} (${r.why ?? 'failed'})${tail ? `: ${tail}` : ''}; the run starts without it`,
-        );
-      }
+      if (r) this.installEnded(r, command, path, ref);
     } finally {
       this.stopAbort.signal.removeEventListener('abort', stop);
     }
+  }
+
+  /**
+   * {@link installDependencies} for a launch that cannot wait, such as a schedule's: it blocks
+   * the event loop until the install ends. A launch from the API installs off the event loop
+   * (see {@link launchFresh}).
+   */
+  private installDependenciesSync(path: string, ref: string): void {
+    const command = worktreeInstallCommand(path);
+    if (!command) return;
+    this.emit('worktree', `${ref}: running \`${command}\` in ${path}`);
+    this.installEnded(installWorktreeSync(path, command, this.commandEnv()), command, path, ref);
+  }
+
+  /** Warns when the install in a new worktree failed; the run starts without it. */
+  private installEnded(r: InstallResult, command: string, path: string, ref: string): void {
+    if (r.ok) return;
+    const tail = r.output.trim().split(/\r?\n/).slice(-3).join(' / ');
+    this.emit(
+      'warn',
+      `${ref}: \`${command}\` failed in ${path} (${r.why ?? 'failed'})${tail ? `: ${tail}` : ''}; the run starts without it`,
+    );
   }
 
   /**
@@ -3085,17 +3109,30 @@ export class Supervisor extends EventEmitter {
       }
     }
     if (needsReleases(req.agent)) await this.releasesTick();
-    const states = await this.readCheckouts();
-    // A tick's launches run without an await, so none is under way here.
-    this.tickStates = states;
-    try {
-      return this.launch(req);
-    } finally {
-      this.tickStates = null;
+    // A task worktree that is not there yet is made and installed off the event loop, and the
+    // launch runs again once it is (AO-0380). The second launch makes it in place if it must.
+    for (let attempt = 0; ; attempt++) {
+      const states = await this.readCheckouts();
+      let pending: Promise<void>;
+      // A tick's launches run without an await, so none is under way here.
+      this.tickStates = states;
+      try {
+        return this.launch(req, { defer: attempt === 0 });
+      } catch (err) {
+        if (!(err instanceof WorktreePending)) throw err;
+        pending = err.made;
+      } finally {
+        this.tickStates = null;
+      }
+      await pending;
     }
   }
 
-  launch(req: LaunchRequest): RunRecord {
+  /**
+   * Starts a run. With `defer`, a task worktree that is not there yet is not made here: the
+   * launch starts making it off the event loop and throws {@link WorktreePending}.
+   */
+  launch(req: LaunchRequest, opts: { defer?: boolean } = {}): RunRecord {
     if (this.stopping) throw new OpsError('swarmupd is stopping');
     const agent = assertActor(req.agent, 'agent');
     const runtime = runtimeOf(agent);
@@ -3210,8 +3247,15 @@ export class Supervisor extends EventEmitter {
     let blocked = blockedIn(cwd);
     if (blocked) throw new OpsError(blocked);
     if (worktree && !worktree.ready) {
-      // Wake makes worktrees off the event loop before it starts a run; a launch from the API
-      // or a schedule cannot wait for a tick, so it makes one here.
+      // A launch from the API waits while the worktree is made and installed off the event loop,
+      // then launches again (AO-0380).
+      if (opts.defer && ref && !this.reclaimHolds(worktree.path)) {
+        this.makeWorktree(worktree, ref);
+        const made = this.makingWorktrees.get(worktree.path);
+        if (made) throw new WorktreePending(made);
+      }
+      // Wake makes worktrees off the event loop before it starts a run; a launch from a schedule
+      // cannot wait for a tick, so it makes one here.
       if (this.makingWorktrees.has(worktree.path)) {
         throw new OpsError(
           `swarmupd is making the worktree ${worktree.path} for ${ref}; start the run once it is there`,
@@ -3227,6 +3271,8 @@ export class Supervisor extends EventEmitter {
         makeTaskWorktreeSync(worktree, this.env);
         this.worktreeFailed.delete(worktree.path);
         this.emit('worktree', `${ref}: made ${worktree.path}`);
+        // Only a launch on a task gets a worktree, so `ref` is set.
+        this.installDependenciesSync(worktree.path, ref!);
       } catch (err) {
         this.worktreeFailed.set(worktree.path, this.now());
         this.emit('warn', `${ref}: cannot make worktree ${worktree.path}: ${gitError(err)}`);

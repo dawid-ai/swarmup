@@ -6154,16 +6154,50 @@ describe('task worktrees (AO-0168)', () => {
   // AO-0380: a worktree with no `node_modules` could not type-check.
   it('installs a pnpm repo in a new worktree before its run starts', async () => {
     const { said, made } = fakePnpmSetup(0);
-    expect(await made()).toBe('install --frozen-lockfile --prefer-offline');
+    expect(await made()).toBe('install --frozen-lockfile --offline');
     expect(said.join('\n')).toContain('test/T-0001: running `pnpm install');
     expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  /** The fake's arguments in the task's worktree, or null when it did not run there. */
+  const installedIn = (repo: string): string | null => {
+    const marker = join(wt(repo, 'T-0001'), 'node_modules', 'installed.txt');
+    return existsSync(marker) ? readFileSync(marker, 'utf8').trim() : null;
+  };
+
+  it('installs a pnpm repo in the worktree of an API launch before the run starts', async () => {
+    const { repo, sup, said } = fakePnpmSetup(0);
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(installedIn(repo), said.join('\n')).toBe('install --frozen-lockfile --offline');
+    // Made off the event loop, not in place.
+    expect(said.join('\n')).toContain(`test/T-0001: making ${wt(repo, 'T-0001')}`);
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  it('installs a pnpm repo in the worktree a direct launch makes in place', async () => {
+    const { repo, sup, said } = fakePnpmSetup(0);
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(installedIn(repo), said.join('\n')).toBe('install --frozen-lockfile --offline');
+    expect(said.join('\n')).toContain('test/T-0001: running `pnpm install');
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  it('starts a direct launch in its new worktree when the install fails, with a warning', () => {
+    const { repo, sup, said } = fakePnpmSetup(1);
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(said.join('\n')).toMatch(
+      /warn: test\/T-0001: `pnpm install --frozen-lockfile --offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
+    );
   });
 
   it('starts the run in the new worktree when its install fails, with a warning', async () => {
     const { repo, sup, said, made } = fakePnpmSetup(1);
     await made();
     expect(said.join('\n')).toMatch(
-      /warn: test\/T-0001: `pnpm install --frozen-lockfile --prefer-offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
+      /warn: test\/T-0001: `pnpm install --frozen-lockfile --offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
     );
     await sup.tick();
     const live = sup.runs({ live: true });

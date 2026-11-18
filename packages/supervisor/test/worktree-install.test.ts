@@ -19,7 +19,7 @@ describe('worktree install', () => {
     expect(worktreeInstallCommand(dir)).toBeNull();
     writeFileSync(join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
     expect(worktreeInstallCommand(dir)).toBe(WORKTREE_INSTALL);
-    expect(WORKTREE_INSTALL).toBe('pnpm install --frozen-lockfile --prefer-offline');
+    expect(WORKTREE_INSTALL).toBe('pnpm install --frozen-lockfile --offline');
     mkdirSync(join(dir, 'node_modules'));
     expect(worktreeInstallCommand(dir)).toBeNull();
   });

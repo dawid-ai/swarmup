@@ -1,1 +1,1 @@
-- Install dependencies with `pnpm install --frozen-lockfile --prefer-offline` in each new task worktree of a pnpm repo before its run starts, so the run can type-check and test without a manual install.
+- Install dependencies with `pnpm install --frozen-lockfile --offline` in each new task worktree of a pnpm repo before its run starts, so the run can type-check and test without a manual install.

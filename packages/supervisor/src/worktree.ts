@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { samePath } from '@swarmup/core';
@@ -119,9 +119,10 @@ export function makeTaskWorktreeSync(wt: TaskWorktree, env: NodeJS.ProcessEnv): 
  * The install swarmupd runs in a new task worktree of a pnpm repo (AO-0380). A worktree has no
  * `node_modules` of its own, and resolving through the main checkout's misses what pnpm puts only
  * in each package's own `node_modules`, such as workspace links. pnpm hard-links from its
- * store, so the install takes seconds; `--prefer-offline` fetches only what the store lacks.
+ * store, so the install takes seconds. `--offline` never reaches the network: when the store
+ * lacks a package, the install fails and the run starts without it.
  */
-export const WORKTREE_INSTALL = 'pnpm install --frozen-lockfile --prefer-offline';
+export const WORKTREE_INSTALL = 'pnpm install --frozen-lockfile --offline';
 
 /** How long the install in a new task worktree may take. */
 export const WORKTREE_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -134,6 +135,45 @@ export const WORKTREE_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export function worktreeInstallCommand(path: string): string | null {
   if (!existsSync(join(path, 'pnpm-lock.yaml'))) return null;
   return existsSync(join(path, 'node_modules')) ? null : WORKTREE_INSTALL;
+}
+
+/** How an install in a new worktree ended: `why` says how a failed one failed. */
+export interface InstallResult {
+  ok: boolean;
+  why?: string;
+  output: string;
+}
+
+/**
+ * Runs `command` in the worktree at `path` and blocks until it ends, for a launch that cannot
+ * wait (AO-0380). A timeout ends the shell it runs in.
+ */
+export function installWorktreeSync(
+  path: string,
+  command: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = WORKTREE_INSTALL_TIMEOUT_MS,
+): InstallResult {
+  const r = spawnSync(command, {
+    cwd: path,
+    shell: true,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  if (r.error) {
+    const timedOut = (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+    return { ok: false, why: timedOut ? 'timed out' : r.error.message, output };
+  }
+  if (r.status !== 0) {
+    const why = r.status === null ? `signal ${r.signal}` : `exit ${r.status}`;
+    return { ok: false, why, output };
+  }
+  return { ok: true, output };
 }
 
 /** The branch checked out in the worktree at `path`, or null on a detached HEAD or error. */
