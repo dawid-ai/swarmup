@@ -52,6 +52,7 @@ import {
   OpsError,
   readDenyFile,
   readUserConfig,
+  daemonSection,
   scanFiles,
   scopeText,
   setRootMirror,
@@ -229,18 +230,34 @@ function realPath(p: string): string {
   }
 }
 
+/** A data root as the review needs it: its name and folder. */
+interface StoreRoot {
+  name: string;
+  dir: string;
+}
+
 /**
- * Whether the git checkout `top` is a task store's own repo (AO-0384): one of `stores` is in it,
- * and its HEAD holds nothing at the top but store folders and dotfiles. A store folder inside a
- * code repo (`.swarmup/` beside the code) leaves the checkout a code checkout.
+ * Whether the git checkout `top` is a task store's own repo (AO-0384): a root's store is in it,
+ * and either that root's code lives in another checkout (`swarmupd.code.<root>`, AO-0252), as
+ * for a store repo that holds several roots beside notes and docs, or its HEAD holds nothing at
+ * the top but store folders and dotfiles. A store folder inside a code repo (`.swarmup/` beside
+ * the code, no `swarmupd.code` entry) leaves the checkout a code checkout.
  */
-function isStoreCheckout(top: string, stores: string[]): boolean {
+function isStoreCheckout(top: string, roots: StoreRoot[], code: Record<string, unknown>): boolean {
   const realTop = realPath(top);
-  const holds = stores.some((s) => {
-    const t = gitOut(s, ['rev-parse', '--show-toplevel']);
-    return t !== null && realPath(t) === realTop;
+  const topOf = (dir: string): string | null => {
+    const t = gitOut(dir, ['rev-parse', '--show-toplevel']);
+    return t === null ? null : realPath(t);
+  };
+  const held = roots.filter((r) => topOf(r.dir) === realTop);
+  if (held.length === 0) return false;
+  const codeElsewhere = held.some((r) => {
+    const c = code[r.name];
+    if (typeof c !== 'string' || c.trim() === '') return false;
+    const t = topOf(resolve(c));
+    return t !== null && t !== realTop;
   });
-  if (!holds) return false;
+  if (codeElsewhere) return true;
   const entries = gitOut(top, ['ls-tree', '--name-only', 'HEAD']);
   if (entries === null) return false;
   return entries
@@ -256,10 +273,15 @@ function isStoreCheckout(top: string, stores: string[]): boolean {
  * `<commit> on branch <name>` that is not the checkout's HEAD, the message wins: the agent named
  * other work than the folder it runs in, such as a review sent from the main checkout. Outside a
  * checkout, only what the options name.
+ *
+ * In a task store's own checkout, the review is store work unless it names a commit (by option
+ * or in the message) that the store repo does not have: that is code work named from the store
+ * folder, recorded as `repo: code` so the merge still picks it up.
  */
 function reviewSourceOf(
   cwd: string,
-  stores: string[],
+  roots: StoreRoot[],
+  code: Record<string, unknown>,
   message: string,
   opts: { commit?: string; branch?: string },
 ): { source: ReviewSourceFields; note?: string } {
@@ -269,11 +291,23 @@ function reviewSourceOf(
     ...(opts.branch ? { branch: opts.branch } : {}),
   };
   if (top === null) return { source: given };
-  const repo = isStoreCheckout(top, stores) ? 'store' : 'code';
-  if (repo === 'store') return { source: { ...given, repo } };
+  const named = reviewSources(message).named;
+  if (isStoreCheckout(top, roots, code)) {
+    const pick = opts.commit || opts.branch ? given : named?.commit ? named : {};
+    const commit = pick.commit;
+    if (commit && gitOut(top, ['cat-file', '-e', `${commit}^{commit}`]) === null) {
+      return {
+        source: { ...pick, repo: 'code' },
+        note:
+          `${commit} is not a commit of the task store repo ${top}: recorded it as code work; ` +
+          `send the review from the code checkout to record its HEAD`,
+      };
+    }
+    return { source: { ...given, repo: 'store' } };
+  }
+  const repo = 'code';
   const head = gitOut(top, ['rev-parse', 'HEAD']) ?? undefined;
   const branch = gitOut(top, ['symbolic-ref', '--short', '-q', 'HEAD']) ?? undefined;
-  const named = reviewSources(message).named;
   if (!opts.commit && !opts.branch && named?.commit && head && !head.startsWith(named.commit)) {
     return {
       source: { commit: named.commit, branch: named.branch, repo },
@@ -1539,7 +1573,8 @@ const COMMANDS: Record<string, Command> = {
       const ws = ctx.ws();
       const { source, note } = reviewSourceOf(
         ctx.io.cwd,
-        ws.roots.map((r) => r.dir),
+        ws.roots.map((r) => ({ name: r.name, dir: r.dir })),
+        (daemonSection(readUserConfig(ctx.io.env))?.code ?? {}) as Record<string, unknown>,
         msg,
         { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
       );

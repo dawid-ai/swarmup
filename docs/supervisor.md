@@ -1025,8 +1025,12 @@ swarmupd:
   `repo` of the review event; `--commit` and `--branch` override the checkout, and a
   `<commit> on branch <name>` in the message that is not the checkout's HEAD wins over it, with a
   note. The merge reads these fields before the review's text, so the wording no longer decides
-  what is merged. A checkout counts as the store's repo when a task store is in it and its HEAD
-  holds nothing at the top but store folders and dotfiles. An approved review with `repo: store`
+  what is merged. A checkout counts as the store's repo when a root's task store is in it and
+  either that root's code is a checkout of its own (`swarmupd.code.<root>`, as for a store repo
+  that holds several roots beside notes and docs) or its HEAD holds nothing at the top but store
+  folders and dotfiles. From the store's repo, a commit named by `--commit` or in the message that
+  the store repo does not have is recorded as `repo: code`, with a note, so code work named from
+  the store folder is still merged. An approved review with `repo: store`
   is store work that `swarmup sync` already pushed: swarmupd records "nothing to merge: store work,
   synced" (a `no_merge` comment), files no finding, and the tasks blocked on it go on; the
   approval itself does not hold them for a merge. Reviews without the fields (older ones, or sent
