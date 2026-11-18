@@ -1,1 +1,0 @@
-- The desktop app now checks for updates every 30 minutes.

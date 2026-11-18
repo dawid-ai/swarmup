@@ -1,1 +1,0 @@
-- Shrink Replay's **Save as GIF** files to about a tenth of their old size: each frame now stores only the area that changed, and ordered dithering keeps unchanged pixels identical between frames.

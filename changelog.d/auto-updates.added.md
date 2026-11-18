@@ -1,1 +1,0 @@
-- **Settings > Updates** now has an Auto mode that pauses new work, lets live runs finish, installs the update, restarts SwarmUp and resumes only the pause it made.

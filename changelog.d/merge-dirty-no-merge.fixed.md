@@ -1,1 +1,0 @@
-- Recheck a task's worktree before reporting that its approved branch is already in the merge base, so staged or unstaged work is recovered or sent back instead of being skipped.

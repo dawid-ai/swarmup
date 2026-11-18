@@ -3,6 +3,25 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.7 (2026-11-18)
+
+- **Manage projects from the sidebar.** Right-click a project to rename it, change its folder,
+  archive it or remove it. Archived projects move to a collapsed **Archived** group, leave the
+  board and run no tasks. Removing a project takes it off SwarmUp's list only; its folder and
+  tasks stay on disk.
+- **Updates every 30 minutes, and an Auto mode.** The app checks for updates every 30 minutes.
+  **Settings > Updates** has an Auto mode: it pauses new work, lets live runs finish, installs
+  the update, restarts SwarmUp and resumes.
+- **Milestone plans in the app.** A milestone's task panel shows its plan, and plans that wait
+  for approval show in a **Plans** group in the inbox, where you approve, edit or send them
+  back. Milestone cards show their progress.
+- **Smaller GIFs.** **Replay**'s **Save as GIF** files are about a tenth of their old size, and
+  with **Project name** off, no exported frame names the project.
+- **Approved work reaches main.** swarmupd merges work it committed for a run that could not
+  commit, and no longer skips work left uncommitted in a task's worktree.
+- **Faster reviews and merges.** Reviews judge the work without running the test suite, and
+  merges run only the tests of what changed.
+
 ## v0.3.0-beta.6 (2026-11-16)
 
 - **Usage pauses follow the main quota.** swarmupd pauses a provider at its pause threshold of

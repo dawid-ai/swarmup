@@ -6,6 +6,43 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.7 (2026-11-18)
+
+### Added
+
+- **Settings > Updates** now has an Auto mode that pauses new work, lets live runs finish, installs the update, restarts SwarmUp and resumes only the pause it made.
+- The desktop app shows a milestone's plan (step 4 of the milestone design). The inbox has a
+  **Plans** group for plans that wait for approval, with each plan's item count and estimate
+  sum. The task panel of a milestone shows the goal, `done_when` and the plan table with each
+  item's task, owner, status, estimate and time spent; **Approve plan**, **Edit** and
+  **Send back** while a plan waits; and the check history after. Edit mode changes a row's
+  title, owner, estimate, `after`, `done_when`, reviewer, type and priority, and adds, removes
+  and reorders rows; on a row that already has a task the fields that live in the task's file
+  are read-only, and **Replace item** removes the item and adds it again under a new key.
+- The board shows a milestone's progress on its card (`4/7 done, 9 h of 14 h`), and
+  **Milestone** lanes group tasks by their `milestone:` label.
+- swarmupd answers `GET /api/tasks/<id>/plan`, `POST /api/tasks/<id>/plan-approve` and
+  `plan-reject`, and `GET /api/milestones`. They call the functions behind `swarmup plan show`,
+  `approve` and `reject`, so the app and the CLI apply the same rules.
+- A milestone that waits for its plan's tasks no longer shows in the inbox as a question to
+  answer, and a plan change shows as one plan item instead of a message.
+- Projects can be archived, labeled, relocated and removed through swarmupd's API (`/api/projects`). An archived project stays in the user config but is off the board, and swarmupd starts no run on its tasks. Removing a project drops only its entry from the user config; its folder and tasks stay on disk. The app's project menu builds on these calls.
+- The desktop sidebar now keeps archived projects in a collapsed group and offers rename, relocate, archive, unarchive and safe removal from each project's right-click menu.
+
+### Changed
+
+- The desktop app now checks for updates every 30 minutes.
+
+### Fixed
+
+- swarmupd no longer commits package caches (`.pnpm-store`, `node_modules`, `.npm`) that a run leaves in its checkout, and leaves a run's changes uncommitted for a person when they exceed 2,000 files.
+- Recheck a task's worktree before reporting that its approved branch is already in the merge base, so staged or unstaged work is recovered or sent back instead of being skipped.
+- Merge the run-suffixed branch where swarmupd committed a reviewed run's leftover files, instead of incorrectly reporting that the older task branch was already in the base.
+- A rejected model-specific usage window no longer makes swarmupd treat the whole provider as paused while another configured agent model can still run, so reviews stay with an available reviewer instead of falling back.
+- Shrink Replay's **Save as GIF** files to about a tenth of their old size: each frame now stores only the area that changed, and ordered dithering keeps unchanged pixels identical between frames.
+- Replay: the Swimlanes and Human loop stat card and the Wrapped cards no longer name the project, so with **Project name** off no MP4, GIF or PNG frame shows it; with it on, only the corner label does.
+- Packaged installs and updates now refresh the `swarmup` skill for Claude Code and Codex, and **Health checks** can fix stale copies without deleting old skill folders that contain other files.
+
 ## 0.3.0-beta.6 (2026-11-16)
 
 ### Added

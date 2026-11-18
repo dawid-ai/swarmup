@@ -1,1 +1,0 @@
-- Packaged installs and updates now refresh the `swarmup` skill for Claude Code and Codex, and **Health checks** can fix stale copies without deleting old skill folders that contain other files.
