@@ -351,7 +351,12 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   `<runtime>/<id>` (lowercase), from that branch when it exists, else from the root's
   `swarmupd.merge` base, else from the checkout's `HEAD`. Wake makes it off the event loop and starts
   the run at a later tick (`swarmup waits` says `starts once swarmupd has made its worktree <path>`); a
-  launch from the API or a schedule makes it before it starts. When git cannot make it, or
+  launch from the API or a schedule makes it before it starts. When wake makes a worktree that
+  has a `pnpm-lock.yaml` and no `node_modules`, it runs
+  `pnpm install --frozen-lockfile --prefer-offline` there before the run starts (AO-0380), so the
+  run can type-check and test at once; a failed install is a warning, and the run starts anyway.
+  A launch from the API or a schedule does not wait for an install, and npm repos get none: the
+  run installs itself. When git cannot make it, or
   something that is not a worktree is at that path, the run starts in the checkout as before,
   and swarmupd tries again 10 minutes later; the swarmupd log has a `worktree` line for each made one and
   a warning for each failure. The prompt names the worktree and its branch and tells the run to

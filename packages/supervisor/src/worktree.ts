@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { lstatSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { samePath } from '@swarmup/core';
 import { gitAsync } from './git.js';
@@ -113,6 +113,27 @@ export function makeTaskWorktreeSync(wt: TaskWorktree, env: NodeJS.ProcessEnv): 
   if (!branchExists && !base) throw new Error(`${wt.top} has no commit to branch from`);
   git(worktreeAddArgs(wt, branchExists, base));
   git(['worktree', 'unlock', wt.path]);
+}
+
+/**
+ * The install swarmupd runs in a new task worktree of a pnpm repo (AO-0380). A worktree has no
+ * `node_modules` of its own, and resolving through the main checkout's misses what pnpm puts only
+ * in each package's own `node_modules`, such as workspace links. pnpm hard-links from its
+ * store, so the install takes seconds; `--prefer-offline` fetches only what the store lacks.
+ */
+export const WORKTREE_INSTALL = 'pnpm install --frozen-lockfile --prefer-offline';
+
+/** How long the install in a new task worktree may take. */
+export const WORKTREE_INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The install for the new worktree at `path`: {@link WORKTREE_INSTALL} when it has a
+ * `pnpm-lock.yaml` and no `node_modules`, else null. npm repos get none: `npm ci` copies every
+ * package, and the run installs when it needs to.
+ */
+export function worktreeInstallCommand(path: string): string | null {
+  if (!existsSync(join(path, 'pnpm-lock.yaml'))) return null;
+  return existsSync(join(path, 'node_modules')) ? null : WORKTREE_INSTALL;
 }
 
 /** The branch checked out in the worktree at `path`, or null on a detached HEAD or error. */

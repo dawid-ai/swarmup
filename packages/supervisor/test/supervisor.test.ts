@@ -16,7 +16,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -6101,6 +6101,74 @@ describe('task worktrees (AO-0168)', () => {
     expect(sup.blocker('fake:planner', 'test', { cwd: repo })).toMatch(
       /fake:writer works on test\/T-0003 in .+; one writing run per checkout/,
     );
+  });
+
+  // AO-0380: a worktree with no `node_modules` could not type-check.
+  /**
+   * A store setup whose `pnpm` is a fake first on PATH: it writes its arguments to
+   * `node_modules/installed.txt` in the folder it runs in, then exits with `exit`.
+   */
+  function fakePnpmSetup(exit: number) {
+    const bin = temp();
+    writeFileSync(
+      join(bin, 'pnpm.cmd'),
+      `@mkdir node_modules 2>nul\r\n@echo %*> node_modules\\installed.txt\r\n@exit /b ${exit}\r\n`,
+    );
+    writeFileSync(
+      join(bin, 'pnpm'),
+      `#!/bin/sh\nmkdir -p node_modules\necho "$@" > node_modules/installed.txt\nexit ${exit}\n`,
+      { mode: 0o755 },
+    );
+    const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const s = storeSetup({
+      mode: 'hang',
+      env: { [key]: `${bin}${delimiter}${process.env[key] ?? ''}` },
+      opsd: { agents: { 'fake:engineer': { wake: true } } },
+    });
+    const said: string[] = [];
+    s.sup.on('warn', (w: string) => said.push(`warn: ${w}`));
+    s.sup.on('worktree', (w: string) => said.push(`worktree: ${w}`));
+    writeFileSync(join(s.repo, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+    // Every worktree reads the repo's exclude file: installed packages are no changes.
+    writeFileSync(join(s.repo, '.git', 'info', 'exclude'), 'node_modules/\n');
+    s.as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
+    s.commit();
+    /** Makes the worktree and waits until the run may start; returns the fake's arguments. */
+    const made = async (): Promise<string> => {
+      await s.sup.tick();
+      await until(
+        () => s.sup.waits().every((w) => w.reason === 'starts at the next tick'),
+        'the worktree',
+      ).catch((err: Error) => {
+        throw new Error(
+          `${err.message}; waits: ${JSON.stringify(s.sup.waits())}; said:\n${said.join('\n')}`,
+        );
+      });
+      const marker = join(wt(s.repo, 'T-0001'), 'node_modules', 'installed.txt');
+      expect(existsSync(marker), said.join('\n')).toBe(true);
+      return readFileSync(marker, 'utf8').trim();
+    };
+    return { ...s, said, made };
+  }
+
+  // AO-0380: a worktree with no `node_modules` could not type-check.
+  it('installs a pnpm repo in a new worktree before its run starts', async () => {
+    const { said, made } = fakePnpmSetup(0);
+    expect(await made()).toBe('install --frozen-lockfile --prefer-offline');
+    expect(said.join('\n')).toContain('test/T-0001: running `pnpm install');
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  it('starts the run in the new worktree when its install fails, with a warning', async () => {
+    const { repo, sup, said, made } = fakePnpmSetup(1);
+    await made();
+    expect(said.join('\n')).toMatch(
+      /warn: test\/T-0001: `pnpm install --frozen-lockfile --prefer-offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
+    );
+    await sup.tick();
+    const live = sup.runs({ live: true });
+    expect(live.map((r) => r.task)).toEqual(['T-0001']);
+    expect(samePath(live[0]!.cwd, wt(repo, 'T-0001'))).toBe(true);
   });
 
   it('makes the worktree for a launch, reuses one that is there and tells the run', async () => {

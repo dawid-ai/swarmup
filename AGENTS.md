@@ -19,6 +19,10 @@ This repo is the SwarmUp engine, v2. Read [README.md](README.md) and
   store, so the install is fast and takes little disk, and deleting the worktree leaves the store
   alone. Never edit a file under `node_modules` in place: it is the store's copy, shared with
   every checkout.
+- A worktree has no `node_modules` of its own, and the main checkout's lacks the `@swarmup/*`
+  workspace links (they are only in `packages/*/node_modules`), so `tsc` there fails with TS2307.
+  swarmupd installs in the task worktrees it makes; in one you make yourself, or when
+  `node_modules` is missing, run `pnpm install --frozen-lockfile --offline` there first.
 - The repo installs with pnpm only (`pnpm-lock.yaml`, `node-linker=hoisted` in `.npmrc`). Don't
   run `npm install` or `npm ci`, and don't commit a `package-lock.json`.
 

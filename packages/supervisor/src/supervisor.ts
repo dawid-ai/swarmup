@@ -171,6 +171,8 @@ import {
   taskWorktreePath,
   worktreeAt,
   worktreeBranch,
+  WORKTREE_INSTALL_TIMEOUT_MS,
+  worktreeInstallCommand,
 } from './worktree.js';
 import { repairRoot, type SandboxLister, staleTempFiles } from './store-repair.js';
 import { gitAsync } from './git.js';
@@ -1587,6 +1589,7 @@ export class Supervisor extends EventEmitter {
     const made = makeTaskWorktree(wt, this.env)
       .then(async () => {
         this.worktreeFailed.delete(wt.path);
+        await this.installDependencies(wt.path, ref);
         await this.learnCheckout(wt.path);
         this.emit('worktree', `${ref}: ${wt.path} ready`);
       })
@@ -1596,6 +1599,33 @@ export class Supervisor extends EventEmitter {
       })
       .finally(() => this.makingWorktrees.delete(wt.path));
     this.makingWorktrees.set(wt.path, made);
+  }
+
+  /**
+   * Installs the dependencies of the new worktree at `path` before its run starts, so the run can
+   * build, type-check and test without an install of its own (AO-0380). A failed install leaves
+   * the worktree usable: it is logged, and the run installs when it needs to.
+   */
+  private async installDependencies(path: string, ref: string): Promise<void> {
+    const command = worktreeInstallCommand(path);
+    if (!command || this.stopAbort.signal.aborted) return;
+    this.emit('worktree', `${ref}: running \`${command}\` in ${path}`);
+    // The runner ends the install's whole process tree on a timeout or a stop.
+    const runner = new CommandRunner(this.commandEnv(), { now: this.now });
+    const stop = (): void => runner.stop();
+    this.stopAbort.signal.addEventListener('abort', stop, { once: true });
+    try {
+      const [r] = await runner.runAll([command], path, WORKTREE_INSTALL_TIMEOUT_MS);
+      if (r && !r.ok) {
+        const tail = r.output.trim().split(/\r?\n/).slice(-3).join(' / ');
+        this.emit(
+          'warn',
+          `${ref}: \`${command}\` failed in ${path} (${r.why ?? 'failed'})${tail ? `: ${tail}` : ''}; the run starts without it`,
+        );
+      }
+    } finally {
+      this.stopAbort.signal.removeEventListener('abort', stop);
+    }
   }
 
   /**
