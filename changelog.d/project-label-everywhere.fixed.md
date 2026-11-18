@@ -1,0 +1,1 @@
+- A project renamed with **Edit name** now shows its new name everywhere the app names it, not only in the sidebar: project dropdowns and filters, New task, task cards, the task panel, Replay and its exported frames, Runs, Agents, Reports and Settings.

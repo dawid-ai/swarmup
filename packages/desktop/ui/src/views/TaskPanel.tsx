@@ -71,6 +71,7 @@ import { RefText } from '../ui/refs';
 import { StatusLoop } from '../ui/statusloop';
 import { TriageActions, waitsOn } from '../ui/triage';
 import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
+import { ProjectName } from '../ui/project-label';
 
 type Panel = 'delegate' | 'launch' | null;
 
@@ -237,7 +238,11 @@ export function TaskPanel({
                 )}
               />
               {t.delegation?.due && <DueChip iso={t.delegation.due} />}
-              {t.project && <Pill>{t.project}</Pill>}
+              {t.project && (
+                <Pill>
+                  <ProjectName name={t.project} />
+                </Pill>
+              )}
               {(t.labels ?? []).map((l) => (
                 <Pill key={l}>#{l}</Pill>
               ))}

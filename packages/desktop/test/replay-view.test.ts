@@ -24,6 +24,7 @@ import {
 import { STAGE_16_9, renderFrame, sceneDuration } from '../ui/src/replay/scene';
 import { SCENES, sceneById } from '../ui/src/replay/scenes';
 import { valueAt, prepareCounters } from '../ui/src/replay/scenes/counters';
+import { setProjectLabels } from '../ui/src/ui/project-label';
 import { Replay, frameFileName, projectChoices, timelinePath } from '../ui/src/views/Replay';
 import { H, T0, fixture } from './replay-fixture';
 
@@ -597,6 +598,52 @@ describe('Replay view', () => {
       expect(mp4.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
       expect(gifs.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
     } finally {
+      delete window.swarmup;
+    }
+  });
+
+  it('shows a renamed project by its label in the picker, the stage and the exports', async () => {
+    const mp4: RecordOptions[] = [];
+    window.swarmup = {
+      saveImages: async (files: Array<{ name: string }>) => ({
+        ok: true,
+        data: { dir: 'C:\\exports', files: files.map((f) => f.name) },
+      }),
+      videoFolder: async () => ({ ok: true, data: { dir: 'C:\\exports' } }),
+      saveVideo: async (name: string) => ({ ok: true, data: { dir: 'C:\\exports', file: name } }),
+    } as unknown as typeof window.swarmup;
+    const record = async (opts: RecordOptions): Promise<Uint8Array> => {
+      mp4.push(opts);
+      return new Uint8Array([1]);
+    };
+    setProjectLabels(new Map([['agent-ops', 'Control Plane']]));
+    try {
+      act(() => root!.render(createElement(Replay, { record })));
+      const select = projectSelect();
+      expect([...select.options].map((o) => o.textContent)).toEqual([
+        'All projects',
+        'Control Plane',
+        'Control Plane / Control Plane',
+        'Control Plane / docs',
+        'swarmup-web',
+      ]);
+      // The value still names the root, so swarmupd gets the root's own name.
+      pick(select, 'agent-ops');
+      expect(paths.at(-1)).toContain('&root=agent-ops');
+      const project = (): Element | null =>
+        box.querySelector('[data-testid="replay-stage"] [data-project-name="true"]');
+      expect(project()?.textContent).toBe('Control Plane');
+
+      await act(async () => button('Save frame').click());
+      expect(pngSvgs.at(-1)).toContain('Control Plane');
+      await act(async () => button('Record MP4').click());
+      expect(mp4.at(-1)).toMatchObject({ projectName: 'Control Plane', showProject: true });
+
+      // A later rename reaches the open view without a reload.
+      act(() => setProjectLabels(new Map([['agent-ops', 'Ops HQ']])));
+      expect(project()?.textContent).toBe('Ops HQ');
+    } finally {
+      setProjectLabels(new Map());
       delete window.swarmup;
     }
   });

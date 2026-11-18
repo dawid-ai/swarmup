@@ -21,6 +21,7 @@ import {
 export { openHit };
 import { RefText } from './refs';
 import type { SearchHit, SearchResult } from '../types';
+import { ProjectName } from './project-label';
 
 export const KIND_ICON: Record<SearchHit['kind'], LucideIcon> = {
   task: ListTodo,
@@ -174,7 +175,11 @@ export function HitRow({
               </>
             )}
             <span>· {ago(hit.at)}</span>
-            {hit.root && <span className="ml-auto font-mono">{hit.root}</span>}
+            {hit.root && (
+              <span className="ml-auto font-mono">
+                <ProjectName name={hit.root} />
+              </span>
+            )}
           </div>
         )}
       </div>

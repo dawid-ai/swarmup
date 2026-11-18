@@ -8,6 +8,7 @@ import { QUESTION } from '../lib/question';
 import type { RootInfo, Task } from '../types';
 import type { Due } from '../ui/pickers';
 import { AgentPicker, DuePicker, dueToApi, MentionArea, Popover } from '../ui/pickers';
+import { useProjectLabel } from '../ui/project-label';
 import { openAddProject } from './AddProject';
 
 const TYPES: Array<[string, string]> = [
@@ -21,8 +22,9 @@ const TYPES: Array<[string, string]> = [
 ];
 
 /**
- * The project of a new task: the loaded projects, filtered as you type (a match anywhere in the
- * name), with **Add project** as the last row. Arrow keys move, Enter picks, Esc closes the list.
+ * The project of a new task: the loaded projects by label, filtered as you type (a match anywhere
+ * in the label or the name), with **Add project** as the last row. Arrow keys move, Enter picks,
+ * Esc closes the list.
  */
 function ProjectPicker(props: {
   value: string | undefined;
@@ -42,8 +44,11 @@ function ProjectPicker(props: {
   const [hi, setHi] = useState(0);
   const box = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const label = useProjectLabel();
   const needle = q.trim().toLowerCase();
-  const shown = props.options.filter((o) => o.toLowerCase().includes(needle));
+  const shown = props.options.filter(
+    (o) => label(o).toLowerCase().includes(needle) || o.toLowerCase().includes(needle),
+  );
   // The row after the projects is Add project.
   const last = shown.length;
   const reset = (): void => {
@@ -73,8 +78,8 @@ function ProjectPicker(props: {
         aria-label="Project"
         aria-expanded={open}
         aria-autocomplete="list"
-        value={open ? q : (props.value ?? '')}
-        placeholder={open ? (props.value ?? 'Search projects') : 'Default project'}
+        value={open ? q : label(props.value)}
+        placeholder={open ? label(props.value) || 'Search projects' : 'Default project'}
         onChange={(e) => {
           setQ(e.target.value);
           setOpen(true);
@@ -117,7 +122,7 @@ function ProjectPicker(props: {
               onClick={() => pick(i)}
               className={row(i === hi)}
             >
-              <span className="min-w-0 flex-1 truncate">{o}</span>
+              <span className="min-w-0 flex-1 truncate">{label(o)}</span>
               {o === props.value && <Check size={14} className="text-signal" />}
             </button>
           ))}

@@ -34,6 +34,7 @@ import { SCENES, sceneById } from '../replay/scenes';
 import type { WrappedData } from '../replay/scenes/wrapped';
 import { cardFileName, cardTime } from '../replay/scenes/wrapped';
 import type { RootInfo, Settings, Task, Timeline } from '../types';
+import { useProjectLabel } from '../ui/project-label';
 
 const RANGES: Array<[number, string]> = [
   [1, 'Day'],
@@ -60,24 +61,26 @@ const SEP = '\u001f';
  * The picker's options: `All projects`, then each root by name, each followed by its project
  * labels when its tasks carry more than one. Roots come from the app's list (the sidebar's
  * projects, never the Master Repo), since a root may hold no task yet; until that list loads,
- * the roots of the tasks stand in.
+ * the roots of the tasks stand in. `display` turns a name into what the option shows, such as
+ * the label set with **Edit name**; values keep the names.
  */
 export function projectChoices(
   roots: Array<Pick<RootInfo, 'name' | 'isMaster'>> | undefined,
   tasks: Array<Pick<Task, 'root' | 'project'>>,
+  display: (name: string) => string = (name) => name,
 ): ProjectChoice[] {
   const names = roots
     ? roots.filter((r) => !r.isMaster).map((r) => r.name)
     : tasks.flatMap((t) => (t.root ? [t.root] : [])).sort();
   const out: ProjectChoice[] = [{ value: '', label: 'All projects', root: '', project: '' }];
   for (const root of new Set(names)) {
-    out.push({ value: root, label: root, root, project: '' });
+    out.push({ value: root, label: display(root), root, project: '' });
     const labels = new Set(tasks.flatMap((t) => (t.root === root && t.project ? [t.project] : [])));
     if (labels.size < 2) continue;
     for (const project of [...labels].sort()) {
       out.push({
         value: `${root}${SEP}${project}`,
-        label: `${root} / ${project}`,
+        label: `${display(root)} / ${display(project)}`,
         root,
         project,
       });
@@ -205,9 +208,10 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
   const [saved, setSaved] = useState<{ text: string; error: boolean } | null>(null);
   const tasks = useData<Task[]>('/api/tasks?all');
   const settings = useData<Settings>('/api/settings');
+  const projectLabel = useProjectLabel();
   const projects = useMemo(
-    () => projectChoices(settings.data?.rootList, tasks.data ?? []),
-    [settings.data, tasks.data],
+    () => projectChoices(settings.data?.rootList, tasks.data ?? [], projectLabel),
+    [settings.data, tasks.data, projectLabel],
   );
   const [pickedRoot = '', pickedLabel = ''] = pickedProject.split(SEP);
   const { root, project } = projects.find((c) => c.value === pickedProject) ?? {
@@ -216,7 +220,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
   };
   const projectName =
     projects.find((c) => c.value === pickedProject)?.label ??
-    ([root, project].filter(Boolean).join(' / ') || 'All projects');
+    ([root, project].filter(Boolean).map(projectLabel).join(' / ') || 'All projects');
   const overlay: FrameOverlay = { projectName, showProject };
   const path = timelinePath({ root, project, days, custom, from, to, clip, query: scene.query });
   const { data: timeline, error } = useData<Timeline>(path);
