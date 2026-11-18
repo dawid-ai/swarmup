@@ -23,6 +23,11 @@ export interface ListedRoot {
   /** The folder as `roots` lists it. */
   root: string;
   /**
+   * The data root folder that entry names, as swarmupd loads it: the store folder inside a listed
+   * repo, such as `<repo>/.swarmup`. The listed folder itself when it holds no store or is missing.
+   */
+  dir: string;
+  /**
    * The name in the root's own config: its id. For an archived root whose folder holds no readable
    * root, the name recorded when it was archived; else null.
    */
@@ -46,6 +51,7 @@ export function listRoots(
     const name = (found ? nameIn(root) : null) ?? recorded;
     return {
       root,
+      dir: (found ? storeDirIn(root) : null) ?? root,
       name,
       label: typeof opts.label === 'string' && opts.label.trim() ? opts.label : name,
       archived: opts.archived === true,

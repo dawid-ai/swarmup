@@ -32,6 +32,8 @@ let projects: ListedProject[];
 let calls: Array<{ path: string; body?: Record<string, unknown> }>;
 let refuse: string | null;
 let relocate: { ok: boolean; data?: ListedProject[]; error?: string };
+/** The data root folder swarmupd loads for a listed folder, when it differs from it. */
+let storeDirs: Record<string, string>;
 
 function stubBridge(): void {
   const off = (): (() => void) => () => {};
@@ -57,7 +59,7 @@ function stubBridge(): void {
               .map((project) => ({
                 name: project.name,
                 label: project.label,
-                dir: project.root,
+                dir: storeDirs[project.root] ?? project.root,
                 mirror: false,
                 isMirror: false,
                 isMaster: false,
@@ -90,6 +92,7 @@ beforeEach(() => {
   calls = [];
   refuse = null;
   relocate = { ok: true, data: projects };
+  storeDirs = {};
   stubBridge();
   box = document.createElement('div');
   document.body.append(box);
@@ -151,6 +154,23 @@ function menu(): HTMLElement {
 }
 
 describe('project sidebar actions', () => {
+  it('lists a project once when the config names its repo and swarmupd loads the store folder in it', async () => {
+    const store = `${AGENT_OPS.root}/.swarmup`;
+    storeDirs = { [AGENT_OPS.root]: store };
+    projects = [{ ...AGENT_OPS, dir: store }, { ...SHOP }];
+    await mount();
+    const names = [...document.body.querySelector('[data-projects]')!.querySelectorAll('button')]
+      .map((item) => item.textContent?.trim())
+      .filter((text) => text === 'Agent Ops');
+    expect(names).toEqual(['Agent Ops']);
+
+    rightClick(button('Agent Ops'));
+    click(button('Archive', menu()));
+    await settle();
+    // Project actions still name the entry as the user config lists it.
+    expect(calls.at(-1)).toEqual({ path: '/api/projects/archive', body: { root: AGENT_OPS.root } });
+  });
+
   it('opens the right-click menu and moves projects through the collapsed Archived group', async () => {
     await mount();
     const archived = button('Archived1');

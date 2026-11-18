@@ -753,6 +753,8 @@ export interface RootInfo {
 export interface ListedProject {
   /** The folder as the user config lists it; project actions identify the entry by this value. */
   root: string;
+  /** The data root folder swarmupd loads for this entry, such as `<repo>/.swarmup`. */
+  dir?: string;
   /** The root's own name, used by task project filters. */
   name: string | null;
   /** The editable display name, or the root's own name when no label is set. */

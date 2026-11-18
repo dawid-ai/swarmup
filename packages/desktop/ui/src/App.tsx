@@ -194,7 +194,13 @@ function sidebarProjects(
   configured: ListedProject[] | undefined,
   listedRoots: string[] = [],
 ): ListedProject[] {
-  const byPath = new Map((configured ?? []).map((p) => [pathKey(p.root), p]));
+  // A configured entry names a repo or its store folder; swarmupd loads the store folder. Match a
+  // loaded root by either, or a project listed as its repo shows twice.
+  const byPath = new Map<string, ListedProject>();
+  for (const p of configured ?? []) {
+    byPath.set(pathKey(p.root), p);
+    if (p.dir) byPath.set(pathKey(p.dir), p);
+  }
   const listedPaths = new Set(listedRoots.map(pathKey));
   const seen = new Set<string>();
   const out: ListedProject[] = [];
@@ -206,6 +212,7 @@ function sidebarProjects(
     // `roots`, so they remain visible.
     if (configured && listedPaths.has(key) && !listed) continue;
     seen.add(key);
+    if (listed) seen.add(pathKey(listed.root));
     out.push(
       listed
         ? {
