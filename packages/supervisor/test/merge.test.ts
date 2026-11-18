@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initRoot, PATCH_KEY_ARGS, patchKey, samePath, secretKind, Workspace } from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
 import type {
+  MergeCheck,
   MergeGitTimeout,
   MergeStatus,
   OpsdSelf,
@@ -319,6 +320,8 @@ function mergeSetup(
     since?: string;
     /** `swarmupd.merge` of other roots, by root name. */
     otherMerge?: Record<string, { base: string }>;
+    /** `swarmupd.merge.test.checks`; default `['node check.mjs']`. */
+    checks?: MergeCheck[];
   } = {},
 ) {
   const repo = temp();
@@ -372,7 +375,11 @@ function mergeSetup(
       runtimes: { fake: { command: process.execPath, args: [runFile] } },
       merge: {
         ...opts.otherMerge,
-        test: { base: 'main', checks: ['node check.mjs'], build: ['node build.mjs'] },
+        test: {
+          base: 'main',
+          checks: opts.checks ?? ['node check.mjs'],
+          build: ['node build.mjs'],
+        },
       },
     },
   });
@@ -1693,6 +1700,43 @@ describe('merging approved work', () => {
         .showEvents('1')
         .events.filter((x) => x.type === 'merge'),
     ).toHaveLength(1);
+  });
+
+  it('runs no check whose paths a Markdown-only change misses, and says so (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [{ run: 'node check.mjs', paths: ['**', '!**/*.md'] }],
+    });
+    // `code.txt` stays as it is: the work changes a Markdown file only.
+    const commit = s.branch('one\n', { 'docs/guide.md': '# Guide\n' });
+    s.approve(commit);
+    await s.merged();
+
+    const tip = git(s.repo, 'rev-parse', 'main');
+    expect(git(s.repo, 'log', '-1', '--format=%s', tip)).toBe('Change the code');
+    expect(existsSync(join(s.state, 'checks.txt'))).toBe(false);
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge', commit: tip });
+    expect(e.body).not.toContain('Checks passed');
+    expect(e.body).toContain('Not run, the work changes none of their paths: `node check.mjs`.');
+  });
+
+  it('runs a check whose paths the change reaches (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [
+        { run: 'node check.mjs', paths: ['**', '!**/*.md'] },
+        { run: 'node check.mjs --docs', paths: ['**/*.md'] },
+      ],
+    });
+    const commit = s.branch('two\n');
+    s.approve(commit);
+    await s.merged();
+
+    expect(text(join(s.state, 'checks.txt'))).toBe('x');
+    const e = s.last();
+    expect(e.body).toContain('Checks passed: `node check.mjs`.');
+    expect(e.body).toContain(
+      'Not run, the work changes none of their paths: `node check.mjs --docs`.',
+    );
   });
 
   it("runs the checks without the installed app's swarmupd entry and Electron host flags (AO-0235)", async () => {
