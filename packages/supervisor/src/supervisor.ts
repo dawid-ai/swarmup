@@ -68,6 +68,7 @@ import {
   MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
+import { isMergeConflictBack, MERGE_CONFLICT, resolutionNote } from './merge-conflict.js';
 import type { GitDirs } from './checkout.js';
 import type { MergeConfig, OpsdConfig, ScheduleConfig } from './config.js';
 import type {
@@ -738,6 +739,11 @@ interface WakeCandidate {
   keys?: string[];
   /** Task candidates: the work resumes after an answer or a change request. */
   resume?: boolean;
+  /**
+   * Task candidates: approved work came back because its merge conflicts with the base. Its run
+   * starts first and past the project's run limit and review backlog: it finishes approved work.
+   */
+  conflict?: boolean;
   /** The task's owner: one agent, a wildcard, or null for anyone. */
   owner?: string | null;
   /** The reviewer the task expects (a delegation, else its plan item); its provider never takes the task. */
@@ -1220,6 +1226,8 @@ export class Supervisor extends EventEmitter {
     project: string,
     opts: {
       burst?: boolean;
+      /** The run finishes approved work whose merge conflicts: the per-project limit does not hold it. */
+      finish?: boolean;
       child?: boolean;
       question?: boolean;
       chat?: boolean;
@@ -1279,7 +1287,7 @@ export class Supervisor extends EventEmitter {
     const mine = live.filter((r) => !r.parent && !r.question && roleOf(r.agent) === role);
     const here = mine.filter((r) => (r.project ?? r.root) === project).length;
     const cap = opts.burst ? lim.burst : lim.per_project;
-    if (here >= cap) {
+    if (here >= cap && !opts.finish) {
       return `${here} ${role} run(s) live on ${project}; ${opts.burst ? 'burst' : 'per_project'} is ${cap}`;
     }
     if (lim.max_live !== undefined && mine.length >= lim.max_live) {
@@ -5487,13 +5495,17 @@ export class Supervisor extends EventEmitter {
         return;
       }
       const patterns = this.config.test_changes[root.name];
-      if (request && patterns !== false) {
+      if (request) {
         const cfg = this.config.merge[root.name];
         const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
         if (top) {
           const env = this.commandEnv();
           const range = await reviewRange({ top, env, events, base: cfg?.base });
-          note = testChangesNote(await readTestChanges(gitIn(top, env), range, patterns));
+          if (patterns !== false) {
+            note = testChangesNote(await readTestChanges(gitIn(top, env), range, patterns));
+          }
+          // A review after a conflict send-back covers only the resolution, whatever test_changes.
+          note += await resolutionNote(gitIn(top, env), events, range.to, range.base);
         }
       }
     } catch (err) {
@@ -6169,17 +6181,19 @@ export class Supervisor extends EventEmitter {
       const onto = (await repo.commit(`refs/heads/${cfg.base}`))!;
       this.mergeStep('rebase', `rebases onto ${cfg.base} (${short(onto)}) again`);
       await repo.ensureWorktree(onto);
-      const r = await repo.rebase(approved, onto);
+      let r: { head: string } | { conflict: string } = await repo.rebase(approved, onto);
       if ('conflict' in r) {
-        this.mergeLooks.delete(ref);
-        this.mergeBack(
-          ref,
-          job.what,
-          job.author,
-          `it does not rebase onto ${cfg.base} (${short(onto)})`,
-          r.conflict,
-        );
-        return;
+        // A rebase replays every commit, so a branch that merged the base to resolve a conflict
+        // hits it again; a merge commit compares only the two tips. History stays linear when
+        // the rebase works.
+        const m = await repo.mergeInto(approved, onto, `Merge ${job.what} into ${cfg.base}`);
+        if ('conflict' in m) {
+          this.mergeLooks.delete(ref);
+          this.mergeConflictBack(ref, job.what, job.author, cfg.base, onto, m.files, m.conflict);
+          return;
+        }
+        this.mergeStep('rebase', `merges into ${cfg.base} (${short(onto)}) with a merge commit`);
+        r = m;
       }
       if (r.head === onto) {
         // The task worktree may have changed after the look at the start of this merge (a run's
@@ -6560,6 +6574,35 @@ export class Supervisor extends EventEmitter {
    * Sends the task back to its author with what failed and the end of its output. Lines that look
    * like secrets are taken out of the output before it is kept anywhere, log file included.
    */
+  /**
+   * Sends approved work back whose merge conflicts with the base. The author merges the base into
+   * the branch instead of rebasing, so the approved commits stay as they are; wake starts that run
+   * ahead of other work and past the project's run limit, and the review that follows covers only
+   * the merge commit's resolution (see {@link MERGE_CONFLICT}).
+   */
+  private mergeConflictBack(
+    ref: string,
+    what: string,
+    author: string,
+    base: string,
+    onto: string,
+    files: string[],
+    output: string,
+  ): void {
+    const safe = redactSecrets(output);
+    const log = this.mergeLog(ref, safe);
+    const where = files.length > 0 ? ` in ${files.map((f) => `\`${f}\``).join(', ')}` : '';
+    const text = [
+      `swarmupd did not merge ${what}: ${MERGE_CONFLICT} ${base} (${short(onto)})${where}.`,
+      '',
+      `- Merge \`${base}\` into the branch in the task's worktree: \`git merge ${base}\`. Don't rebase: the approved commits stay as they are.`,
+      '- Resolve each conflict so both changes still work, run the tests of the files you touched, and commit the merge.',
+      '- Ask for review again with `swarmup review`, naming the merge commit and the branch. The review covers only how you resolved the conflicts.',
+      ...(log ? ['', `Full output: ${log}`] : []),
+    ].join('\n');
+    this.ws(MERGE_ACTOR).sendBack(ref, text, author);
+  }
+
   private mergeBack(ref: string, what: string, author: string, why: string, output: string): void {
     const safe = redactSecrets(output);
     const log = this.mergeLog(ref, safe);
@@ -6717,14 +6760,22 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
-   * Bottleneck first: reviews; then tasks that resume after an answer or a change request; then
-   * new claims; last, runs that only read an inbox, since they name no work. Within each,
-   * priority, then the project with the fewest live runs, then age.
+   * Bottleneck first: approved work whose merge conflicts; reviews; then tasks that resume after
+   * an answer or a change request; then new claims; last, runs that only read an inbox, since they
+   * name no work. Within each, priority, then the project with the fewest live runs, then age.
    */
   private sortCandidates(pending: WakeCandidate[], live: PlannedRun[]): void {
     // Someone waits for a question's answer, as for resumed work.
     const rank = (c: WakeCandidate): number =>
-      c.kind === 'review' ? 0 : c.kind === 'task' ? (c.resume || c.question ? 1 : 2) : 3;
+      c.conflict
+        ? 0
+        : c.kind === 'review'
+          ? 1
+          : c.kind === 'task'
+            ? c.resume || c.question
+              ? 2
+              : 3
+            : 4;
     const order: Record<Priority, number> = { p0: 0, p1: 1, p2: 2, p3: 3 };
     const liveIn = (project: string): number =>
       live.filter((r) => !r.question && (r.project ?? r.root) === project).length;
@@ -6937,9 +6988,11 @@ export class Supervisor extends EventEmitter {
             last?.type === 'answer' ||
             last?.type === 'unblock' ||
             (last?.type === 'verdict' && last.verdict === 'changes');
+          const conflict = last ? isMergeConflictBack(last) : false;
           const c = byTask.get(ref) ?? {
             kind: 'task' as const,
             resume,
+            conflict: conflict || undefined,
             ref,
             root: v.root,
             id: v.meta.id,
@@ -7045,6 +7098,7 @@ export class Supervisor extends EventEmitter {
         if (
           c.kind === 'task' &&
           !c.question &&
+          !c.conflict &&
           held &&
           roleLimits(this.config, roleOf(agent)).writes
         ) {
@@ -7080,6 +7134,7 @@ export class Supervisor extends EventEmitter {
         const cwd = wt ? wt.path : this.checkoutOf(planWs, agent, c.root);
         const why = this.blocker(agent, c.project, {
           burst: c.kind === 'review' && held,
+          finish: c.conflict,
           question: c.question,
           live,
           cwd,

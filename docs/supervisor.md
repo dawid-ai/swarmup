@@ -1083,6 +1083,16 @@ swarmupd:
   moved meanwhile (a task store sync, another merge), swarmupd rebases again, and runs the checks
   again only if code changed. Then it runs `build` in `checkout` and adds a `merge` event
   (`opsd:merge`) with the new commit to the task.
+- **Conflicts.** When the rebase conflicts, swarmupd merges the commit into the base with a
+  merge commit instead: a rebase replays each commit, so a branch that already merged the base to
+  resolve a conflict hits that conflict again, while a merge compares only the two tips. When the
+  merge conflicts too, swarmupd sends the task back with the files that conflict and asks the
+  author to merge the base into the branch (`git merge <base>`, not a rebase, so the approved
+  commits stay as they are), resolve, run the tests of the files they touched, and ask for review
+  again. That fix starts ahead of other work, and the project's `per_project` limit and review
+  backlog do not hold it: it finishes approved work. The review that follows covers only the
+  resolution: the reviewer's prompt names each merge commit for `git show --remerge-diff`, and any
+  other commit added since the approval for a full review.
 - **Tasks blocked on the work.** A task blocked `--on` an approved task stays blocked until
   swarmupd records the merge on that task, so no run starts on a base that lacks the work. A merge
   that fails keeps them blocked: a conflict or a failed check sends the approved task back, and a

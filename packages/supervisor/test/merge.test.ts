@@ -2405,8 +2405,10 @@ describe('merging approved work', () => {
       to: 'fake:engineer',
     });
     expect(e.body).toContain(`swarmupd did not merge ${commit.slice(0, 7)} on branch feature`);
-    expect(e.body).toContain(`does not rebase onto main (${before.slice(0, 7)})`);
-    expect(e.body).toContain('conflicts in code.txt');
+    expect(e.body).toContain(`it conflicts with main (${before.slice(0, 7)}) in \`code.txt\``);
+    // The author merges main into the branch instead of rebasing it.
+    expect(e.body).toContain('`git merge main`');
+    expect(e.body).toContain('The review covers only how you resolved the conflicts');
     // The engineer has it in the inbox.
     expect(
       s
@@ -2554,6 +2556,63 @@ describe('merging approved work', () => {
     await end;
   });
 
+  it('merges a branch that merged main to resolve its conflict, which a rebase would hit again', async () => {
+    const s = mergeSetup();
+    const first = s.branch('two\n');
+    const before = s.onMain('code.txt', 'three\n');
+    s.approve(first);
+    await s.merged();
+    expect(s.last().body).toContain(`it conflicts with main (${before.slice(0, 7)})`);
+
+    // The author merges main into the branch, as the send-back says, and resolves the conflict.
+    const wt = git(s.repo, 'worktree', 'list', '--porcelain')
+      .split('\n\n')
+      .find((b) => b.includes('branch refs/heads/feature'))!
+      .split('\n')[0]!
+      .slice('worktree '.length);
+    try {
+      git(wt, 'merge', '-q', 'main');
+    } catch {
+      // The conflict this test is about.
+    }
+    writeFileSync(join(wt, 'code.txt'), 'two and three\n');
+    git(wt, 'add', 'code.txt');
+    git(wt, 'commit', '-q', '--no-edit');
+    const resolved = git(wt, 'rev-parse', 'HEAD');
+    // A rebase replays `first` onto main and conflicts again; the merge takes the resolution.
+    s.approve(resolved);
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(resolved);
+    expect(text(join(s.repo, 'code.txt'))).toBe('two and three\n');
+    expect(s.last().body).not.toContain('it conflicts with');
+  });
+
+  it('starts the fix of a merge conflict past the per-project limit and the review backlog', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    s.onMain('code.txt', 'three\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.last().body).toContain('it conflicts with main');
+    // No engineer may start in the project, yet the conflict fix of approved work is not held.
+    s.sup.config.roles.engineer = { ...s.sup.config.roles.engineer, per_project: 0 };
+    s.sup.config.agents['fake:engineer'] = { ...s.sup.config.agents['fake:engineer'], wake: true };
+    // The test acted as fake:engineer itself; that counts as no session that may still work.
+    s.sup.config.outside_session_minutes = 0;
+    s.as('human:dawid').newTask({ title: 'New work', owner: 'fake:engineer' });
+    const waits = s.sup.waits();
+    const reasonsOf = (task: string): string =>
+      waits
+        .filter((w) => w.task === task)
+        .map((w) => w.reason)
+        .join('\n');
+    // New work in the project waits for the limit; the conflict fix does not.
+    expect(reasonsOf('test/T-0002')).toMatch(/per_project is 0/);
+    expect(reasonsOf('test/T-0001')).toBe('starts at the next tick');
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toMatch(/per_project is 0/);
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [], finish: true })).toBeNull();
+  });
+
   it('gives a later review its own merge once more after a check timeout, when the earlier merge ended another way (AO-0172)', async () => {
     const s = mergeSetup({ timeoutMinutes: 0.01 });
     const warns: string[] = [];
@@ -2569,7 +2628,7 @@ describe('merging approved work', () => {
     await s.merged();
     let e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
-    expect(e.body).toContain('does not rebase onto main');
+    expect(e.body).toContain('it conflicts with main');
 
     // A later review of the same work: its first check timeout gets its own merge once more.
     s.onMain('code.txt', 'one\n');
