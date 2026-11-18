@@ -236,6 +236,7 @@ if (code.includes('nap') && !existsSync(process.env.MERGE_NAPPED)) {
 }
 if (code.includes('slow')) while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
 if (code.includes('bad')) { console.error('code says bad'); process.exit(1); }
+if (existsSync('two.txt') && readFileSync('two.txt', 'utf8').includes('bad')) { console.error('two says bad'); process.exit(1); }
 if (code.includes('leak')) {
   console.log('GH_TOKEN=' + ['gh', 'p_'].join('') + 'A'.repeat(36));
   console.error('after the token');
@@ -308,6 +309,8 @@ function mergeSetup(
     now?: () => number;
     /** Minutes each merge command may take; config allows whole minutes only. */
     timeoutMinutes?: number;
+    /** `swarmupd.merge.test.batch` (AO-0381). */
+    batch?: number;
     gitTimeoutMs?: MergeGitTimeout;
     /** `swarmupd.merge.test.install`, or a function of the repo that returns it. */
     install?: string[] | ((repo: string) => string[]);
@@ -377,6 +380,7 @@ function mergeSetup(
     },
   });
   if (opts.timeoutMinutes !== undefined) config.merge.test!.timeout_minutes = opts.timeoutMinutes;
+  if (opts.batch !== undefined) config.merge.test!.batch = opts.batch;
   if (opts.install) {
     config.merge.test!.install =
       typeof opts.install === 'function' ? opts.install(repo) : opts.install;
@@ -2435,6 +2439,178 @@ describe('merging approved work', () => {
     expect(e.body).toContain('code says bad');
     const log = /Full output: (\S+)/.exec(e.body)?.[1];
     expect(log && text(log)).toContain('code says bad');
+  });
+
+  /**
+   * Task 1 approved on `feature` with `code.txt` as `two`, then task 2 on `feature2` with
+   * `two.txt` as `second`; the merge lines swarmupd logs go to `lines`.
+   */
+  const twoApproved = (s: ReturnType<typeof mergeSetup>, second: string) => {
+    const first = s.branch('two\n');
+    s.approve(first);
+    const wt = join(temp(), 'wt2');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature2', wt, 'main');
+    writeFileSync(join(wt, 'two.txt'), second);
+    git(wt, 'add', '-A');
+    git(wt, 'commit', '-qm', 'Other work');
+    const commit = git(wt, 'rev-parse', 'HEAD');
+    s.as('fake:engineer').start('2', 'plan');
+    s.as('fake:engineer').review(
+      '2',
+      `${commit.slice(0, 7)} on branch feature2: adds two.txt`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('2', 'approve', 'looks right');
+    const lines: string[] = [];
+    s.sup.on('merge', (l: string) => lines.push(l));
+    const events = (id: string) => s.as('human:dawid').showEvents(id).events;
+    const checks = () =>
+      existsSync(join(s.state, 'checks.txt')) ? text(join(s.state, 'checks.txt')) : '';
+    return { lines, events, checks };
+  };
+
+  it('merges two approved tasks that wait together after one run of the checks (AO-0381)', async () => {
+    const s = mergeSetup();
+    const before = git(s.repo, 'rev-parse', 'main');
+    const t = twoApproved(s, 'second\n');
+    await s.merged();
+
+    expect(t.checks()).toBe('x');
+    const tip = git(s.repo, 'rev-parse', 'main');
+    expect(git(s.repo, 'rev-parse', `${tip}~2`)).toBe(before);
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(text(join(s.repo, 'two.txt'))).toBe('second\n');
+    expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('two\n');
+    // Each task keeps its own merge event, with the commit that holds it.
+    const one = t.events('1').at(-1)!;
+    const two = t.events('2').at(-1)!;
+    expect(one).toMatchObject({
+      type: 'merge',
+      commit: git(s.repo, 'rev-parse', `${tip}^`),
+      branch: 'feature',
+    });
+    expect(two).toMatchObject({ type: 'merge', commit: tip, branch: 'feature2' });
+    expect(one.body).toContain('in one batch with T-0002');
+    expect(two.body).toContain('in one batch with T-0001');
+    expect(one.body).toContain('Checks passed once for the batch: `node check.mjs`.');
+    expect(two.body).toContain('Built with `node build.mjs`.');
+    expect(t.lines.some((l) => l.includes('checks the batch of 2 (T-0001, T-0002) once'))).toBe(
+      true,
+    );
+    expect(
+      t.lines.some((l) => l.includes('moved main to') && l.includes('after one run of the checks')),
+    ).toBe(true);
+
+    // Done once: a second tick merges nothing again.
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(t.checks()).toBe('x');
+  });
+
+  it('splits a batch whose checks fail and sends back only the task that breaks them (AO-0381)', async () => {
+    const s = mergeSetup();
+    const t = twoApproved(s, 'bad\n');
+    await s.merged();
+
+    // The batch, then each half alone.
+    expect(t.checks()).toBe('xxx');
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(existsSync(join(s.repo, 'two.txt'))).toBe(false);
+    expect(t.events('1').at(-1)).toMatchObject({ type: 'merge', branch: 'feature' });
+    expect(s.as('human:dawid').view('1').status).toBe('done');
+    const back = t.events('2').at(-1)!;
+    expect(back).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
+    expect(back.body).toContain('two says bad');
+    expect(s.as('human:dawid').view('2').status).toBe('todo');
+    expect(t.lines.some((l) => l.includes('splits the batch: checks T-0001, then T-0002'))).toBe(
+      true,
+    );
+  });
+
+  it('records each terminal batch note once and does nothing on the next tick (AO-0381)', async () => {
+    const s = mergeSetup();
+    const t = twoApproved(s, 'second\n');
+    git(s.repo, 'checkout', '-q', '--detach');
+    git(s.repo, 'branch', '-D', 'main');
+    await s.merged();
+
+    const notes = ['1', '2'].map((id) => t.events(id).at(-1)!);
+    for (const note of notes) {
+      expect(note).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+      expect(note.body).toContain('no branch main');
+    }
+
+    await s.merged();
+    expect(t.events('1').at(-1)).toEqual(notes[0]);
+    expect(t.events('2').at(-1)).toEqual(notes[1]);
+  });
+
+  /**
+   * A git timeout that stops at once the commands `hung` picks, once `on` holds a commit, and
+   * gives every other command a minute: spawning git alone takes longer than 1 ms.
+   */
+  const hangOn = (hung: (args: readonly string[], commit: string) => boolean) => {
+    const on = { commit: '' };
+    const timeout: MergeGitTimeout = (args) => (on.commit && hung(args, on.commit) ? 1 : 60_000);
+    return { on, timeout };
+  };
+
+  /** Checks that a git timeout on task 2 of a batch is task 2's, and task 1 still merges. */
+  const secondTimesOut = async (
+    s: ReturnType<typeof mergeSetup>,
+    on: { commit: string },
+    stage: RegExp,
+  ) => {
+    const t = twoApproved(s, 'second\n');
+    on.commit = git(s.repo, 'rev-parse', 'feature2');
+    await s.merged();
+
+    // Task 1 merges alone after task 2 leaves the batch; it gets no note about task 2.
+    expect(t.events('1').at(-1)).toMatchObject({ type: 'merge', branch: 'feature' });
+    expect(t.events('1').some((e) => e.type === 'comment' && e.actor === MERGE_ACTOR)).toBe(false);
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(existsSync(join(s.repo, 'two.txt'))).toBe(false);
+    // Task 2 gets the note of a merge of it alone that hung.
+    const note = t.events('2').at(-1)!;
+    expect(note).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(note.body).toMatch(/swarmupd could not merge .*feature2.*timed out after/);
+    expect(note.body).toMatch(stage);
+    expect(
+      t.lines.some((l) => l.includes('T-0002') && l.includes('merges alone after the batch')),
+    ).toBe(true);
+    // Seen: the next tick tries neither again.
+    const tip = git(s.repo, 'rev-parse', 'main');
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(t.events('2').at(-1)).toEqual(note);
+  };
+
+  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
+    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+    const h = hangOn((args, commit) => {
+      const rev = (args[3] ?? '').replace('^{commit}', '');
+      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+    });
+    const s = mergeSetup({ gitTimeoutMs: h.timeout });
+    await secondTimesOut(s, h.on, /rev-parse/);
+  });
+
+  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
+    const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
+    const s = mergeSetup({ gitTimeoutMs: h.timeout });
+    await secondTimesOut(s, h.on, /checkout/);
+  });
+
+  it('merges each task alone with batch 1 (AO-0381)', async () => {
+    const s = mergeSetup({ batch: 1 });
+    const t = twoApproved(s, 'second\n');
+    await s.merged();
+    await s.merged();
+
+    expect(t.checks()).toBe('xx');
+    expect(t.events('1').at(-1)).toMatchObject({ type: 'merge' });
+    expect(t.events('2').at(-1)).toMatchObject({ type: 'merge' });
+    expect(t.events('1').at(-1)!.body).not.toContain('batch');
   });
 
   it('merges again instead of sending the task back when the PC slept during the checks (AO-0151)', async () => {

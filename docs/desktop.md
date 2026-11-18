@@ -39,8 +39,8 @@ version in the background. **Settings > Updates** chooses how a downloaded versi
 Settings and the tray show downloading, waiting for live runs, and installing progress. A
 development build run from a checkout never updates itself.
 
-An update cannot safely move an existing installation out of an older folder such as
-`C:\Program Files\Agent Ops\SwarmUp`: the updater must replace the running installation in place,
+An update cannot safely move an existing installation out of an older install folder from before
+the rename: the updater must replace the running installation in place,
 and its shortcuts, PATH entry and swarmupd launcher all point there. To move it, let every run end,
 quit SwarmUp from the tray, uninstall it, then run `SwarmUp-Setup.exe` and choose the new folder.
 The installer recreates the shortcuts and PATH entry; do not drag the installed folder elsewhere.

@@ -99,7 +99,7 @@ import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electr
 import { dropEnv, runEnv } from './runenv.js';
 import { deleteEnvVars, envPairs, OLD_ENV_PREFIX, ROOTS_ONLY_NAME } from '@swarmup/core';
 import { Notifier } from './notify.js';
-import { opsdConfig, roleLimits, stateDir } from './config.js';
+import { DEFAULT_MERGE_BATCH, opsdConfig, roleLimits, stateDir } from './config.js';
 import type { ProviderUsage, UsageState } from './quota.js';
 import {
   claudeUsage,
@@ -549,6 +549,17 @@ interface MergeJob {
   root: string;
   /** The text of the review request the approval answers. */
   review: string;
+}
+
+/** One task of a batch merge (AO-0381). */
+interface BatchItem {
+  ref: string;
+  /** The job as planned, for a merge of the task alone, which reads its worktree again. */
+  planned: MergeJob;
+  /** The job with what a run left uncommitted taken in, if anything. */
+  job: MergeJob;
+  /** The commit to rebase: the one the review names, or the commit of what a run left. */
+  approved: string;
 }
 
 /**
@@ -5231,9 +5242,14 @@ export class Supervisor extends EventEmitter {
     const done = views
       .filter((v) => v.status === 'done' && merge[v.root] && v.updatedAt >= since[v.root]!)
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    // The first task ready to merge, and the later ones of the same root that wait with it: they
+    // merge together, with one run of the checks (AO-0381).
+    const batch: { ref: string; job: MergeJob; last: string | null }[] = [];
     for (const v of done) {
       const ref = `${v.root}/${v.meta.id}`;
       if (v.lastEvent && this.mergeSeen.get(ref) === v.lastEvent) continue;
+      const first = batch[0];
+      if (first && v.root !== first.job.root) continue;
       const job = await this.mergeJob(ws, ref, merge[v.root]!, since[v.root]!);
       // A stop, or a merge another way started, while git answered.
       if (this.mergeHalted()) return;
@@ -5248,14 +5264,32 @@ export class Supervisor extends EventEmitter {
         }
         continue;
       }
+      if (first && !samePath(job.top, first.job.top)) continue;
       // The checkout's writing run finishes first; this task waits for the next tick.
       if (this.writerIn(job.top)) continue;
-      this.startMerge(
-        { ref, top: job.top, base: job.cfg.base, what: job.what, human: job.human, cfg: job.cfg },
-        (runner) => this.mergeOne(ref, job, runner),
+      batch.push({ ref, job, last: v.lastEvent });
+      if (batch.length >= mergeBatchSize(job.cfg)) break;
+    }
+    // A task reopened while git answered for a later one waits for the next tick.
+    const ready = batch.filter((b) => {
+      const now = this.ws().view(b.ref);
+      return now.status === 'done' && now.lastEvent === b.last;
+    });
+    const lead = ready[0];
+    if (!lead || this.writerIn(lead.job.top)) return;
+    const { job } = lead;
+    const at = { top: job.top, base: job.cfg.base, human: job.human, cfg: job.cfg };
+    if (ready.length === 1) {
+      this.startMerge({ ...at, ref: lead.ref, what: job.what }, (runner) =>
+        this.mergeOne(lead.ref, job, runner),
       );
       return;
     }
+    const ids = ready.map((b) => this.ws().resolve(b.ref).id);
+    this.startMerge(
+      { ...at, ref: lead.ref, what: `${ready.length} approved tasks (${ids.join(', ')})` },
+      (runner) => this.mergeBatch(ready, runner),
+    );
   }
 
   /**
@@ -5624,36 +5658,41 @@ export class Supervisor extends EventEmitter {
     );
     this.mergeChanged();
     let again = false;
+    // The task the merge ends on: the one it was at when it failed. In a batch that is the task
+    // being merged then, not the first one (AO-0381); the others got nothing and go on next tick.
+    let at = ref;
     merging.done = work(runner)
       .then((r) => {
         again = r === 'again';
       })
       .catch((err) => {
+        at = merging.ref;
+        const failed = at === ref ? what : merging.what;
         const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-        this.emit('warn', `merge of ${ref}: ${msg}`);
+        this.emit('warn', `merge of ${at}: ${msg}`);
         if (err instanceof GitTimeout) {
           // The step it hung in and what it printed last, so the human sees why (AO-0172).
           const output = redactSecrets(err.output);
           const out = lastLines(output);
-          const log = this.mergeLog(ref, output);
+          const log = this.mergeLog(at, output);
           const parts = [
-            `swarmupd could not merge ${what}: ${firstLines(msg)} (stage: ${err.stage ?? merging.step}).`,
+            `swarmupd could not merge ${failed}: ${firstLines(msg)} (stage: ${err.stage ?? merging.step}).`,
             out ? `Last output:\n\n\`\`\`\n${out}\n\`\`\`` : 'It printed nothing.',
           ];
           if (log) parts.push(`Full output: ${log}`);
-          this.mergeNote(ref, parts.join('\n\n'), human);
+          this.mergeNote(at, parts.join('\n\n'), human);
           return;
         }
-        this.mergeNote(ref, `swarmupd could not merge ${what}: ${firstLines(msg)}`, human);
+        this.mergeNote(at, `swarmupd could not merge ${failed}: ${firstLines(msg)}`, human);
       })
       .finally(() => {
         // The one more merge after a check timed out is for this merge only (AO-0172).
-        if (!again) this.mergeTimedOut.delete(ref);
+        if (!again) this.mergeTimedOut.delete(at);
         // A merge that wrote nothing is not tried again until the task changes; one stopped
         // with swarmupd is, by the next swarmupd, and one the PC's sleep broke, by the next tick.
         this.safe(() => {
-          const last = this.ws().view(ref).lastEvent;
-          if (last && !this.stopping && !again) this.mergeSeen.set(ref, last);
+          const last = this.ws().view(at).lastEvent;
+          if (last && !this.stopping && !again) this.mergeSeen.set(at, last);
         });
         this.mergeLine(ref, `ends after ${elapsed(this.now() - startedAt)}`);
         this.merging = null;
@@ -6120,13 +6159,7 @@ export class Supervisor extends EventEmitter {
     let job = planned;
     const { cfg, top } = job;
     let src = job.src;
-    const repo = new MergeRepo(
-      top,
-      join(this.store.dir, 'merge', job.root.replace(/[^A-Za-z0-9._-]/g, '-')),
-      this.ws().roots.map((r) => r.dir),
-      this.commandEnv(),
-      this.mergeGitTimeoutMs,
-    );
+    const repo = this.mergeRepoOf(job);
     let source = src.commit
       ? await repo.commit(src.commit)
       : src.branch
@@ -6356,6 +6389,365 @@ export class Supervisor extends EventEmitter {
     };
     this.savePendingBuild(pending);
     await this.buildMerged(pending, cfg, runner);
+  }
+
+  /**
+   * Merges approved tasks of one root together (AO-0381). Each task's commit and what a run left
+   * in its worktree are read as {@link mergeOne} reads them. A task that cannot go on now (a run
+   * still works in its worktree, git cannot read it) stays for a later tick; one whose commit is
+   * missing merges alone, which tells the human. The rest go to {@link mergeGroup}.
+   *
+   * Each task keeps its own retry state: one that got no terminal result is read again by the next
+   * tick, while one that got a merge event, send-back or final note is marked seen now.
+   */
+  private async mergeBatch(
+    items: { ref: string; job: MergeJob }[],
+    runner: CommandRunner,
+  ): Promise<void | 'again'> {
+    const lead = items[0]!.job;
+    const repo = this.mergeRepoOf(lead);
+    const ready: BatchItem[] = [];
+    const alone: BatchItem[] = [];
+    const retry = new Set(items.map((item) => item.ref));
+    const terminal = (ref: string): void => {
+      retry.delete(ref);
+      this.safe(() => {
+        const last = this.ws().view(ref).lastEvent;
+        if (last && !this.stopping) this.mergeSeen.set(ref, last);
+      });
+    };
+    for (const { ref, job } of items) {
+      if (this.stopping) return 'again';
+      const { src } = job;
+      // A git that hangs on one task's commit or worktree is that task's: it leaves the batch
+      // and merges alone, where a timeout ends the merge and tells the human about it.
+      const timedOut = (err: unknown): boolean => {
+        if (!(err instanceof GitTimeout)) return false;
+        this.mergeLine(ref, `git timed out reading it; merges alone after the batch`);
+        alone.push({ ref, planned: job, job, approved: '' });
+        return true;
+      };
+      let source: string | null;
+      try {
+        source = src.commit
+          ? await repo.commit(src.commit)
+          : src.branch
+            ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
+            : null;
+      } catch (err) {
+        if (timedOut(err)) continue;
+        throw err;
+      }
+      if (!source) {
+        alone.push({ ref, planned: job, job, approved: '' });
+        continue;
+      }
+      let left: Awaited<ReturnType<Supervisor['checkedWorktreeLeftovers']>>;
+      try {
+        left = await this.checkedWorktreeLeftovers(ref, job, source, repo);
+      } catch (err) {
+        if (timedOut(err)) continue;
+        // What `startMerge` tells for a merge of this task alone; the others go on.
+        const msg = redactSecrets(err instanceof Error ? err.message : String(err));
+        this.emit('warn', `merge of ${ref}: ${msg}`);
+        this.mergeNote(ref, `swarmupd could not merge ${job.what}: ${firstLines(msg)}`, job.human);
+        terminal(ref);
+        continue;
+      }
+      if (left === 'again' || left === 'look-again') continue;
+      this.mergeLooks.delete(ref);
+      if (left === 'held') {
+        terminal(ref);
+        continue;
+      }
+      if (!left) {
+        ready.push({ ref, planned: job, job, approved: source });
+        continue;
+      }
+      const taken = { ...job, src: { commit: left.commit, branch: left.branch }, what: left.what };
+      ready.push({ ref, planned: job, job: taken, approved: left.commit });
+    }
+    if (!(await repo.commit(`refs/heads/${lead.cfg.base}`))) {
+      // Each merge alone tells the human that the base is missing.
+      alone.unshift(...ready.splice(0));
+    }
+    await this.mergeGroup(ready, repo, runner, terminal);
+    for (const item of alone) await this.mergeAlone(item, runner, terminal);
+    return retry.size > 0 ? 'again' : undefined;
+  }
+
+  /**
+   * Merges `items` with one run of the checks on all of them rebased in turn (see
+   * {@link mergeCandidate}). When the checks fail, the group splits in two halves, each merged
+   * the same way, so only the task that breaks the checks goes back, merged alone as
+   * {@link mergeOne} merges it. A task that does not rebase onto the ones before it, adds nothing
+   * to them or changes task store files leaves the group and merges alone after it.
+   */
+  private async mergeGroup(
+    items: BatchItem[],
+    repo: MergeRepo,
+    runner: CommandRunner,
+    terminal: (ref: string) => void,
+  ): Promise<void> {
+    if (this.stopping || items.length === 0) return;
+    if (items.length === 1) {
+      await this.mergeAlone(items[0]!, runner, terminal);
+      return;
+    }
+    const r = await this.mergeCandidate(items, repo, runner, terminal);
+    if (r === 'done' || r === 'again') return;
+    if (r === 'failed') {
+      const half = Math.ceil(items.length / 2);
+      const ids = (list: BatchItem[]): string => this.batchIds(list).join(', ');
+      this.mergeLine(
+        items[0]!.ref,
+        `splits the batch: checks ${ids(items.slice(0, half))}, then ${ids(items.slice(half))}`,
+      );
+      await this.mergeGroup(items.slice(0, half), repo, runner, terminal);
+      await this.mergeGroup(items.slice(half), repo, runner, terminal);
+      return;
+    }
+    await this.mergeGroup(
+      items.filter((i) => !r.includes(i)),
+      repo,
+      runner,
+      terminal,
+    );
+    for (const item of r) await this.mergeAlone(item, runner, terminal);
+  }
+
+  /** Merges one task of a batch as a merge of it alone does (`mergeOne`). */
+  private async mergeAlone(
+    item: BatchItem,
+    runner: CommandRunner,
+    terminal: (ref: string) => void,
+  ): Promise<void> {
+    if (this.stopping) return;
+    if (this.merging) {
+      this.merging.ref = item.ref;
+      this.merging.what = item.planned.what;
+      this.mergeChanged();
+    }
+    const r = await this.mergeOne(item.ref, item.planned, runner);
+    // The one more merge after a check timed out is for this merge only (AO-0172).
+    if (r !== 'again') {
+      this.mergeTimedOut.delete(item.ref);
+      if (!this.stopping) terminal(item.ref);
+    }
+  }
+
+  /**
+   * Rebases `items` in turn onto the base in swarmupd's worktree, runs the checks once on the
+   * last commit, moves the base there and builds it. Each task gets its own merge event with the
+   * commit that holds it; the last one carries the build's result. Returns the tasks that left
+   * the group (see {@link mergeGroup}), `failed` when the checks failed on the group, else
+   * `again` when stopping or the PC's sleep left every task retryable, or `done` after a merge or
+   * a final note for every task.
+   */
+  private async mergeCandidate(
+    items: BatchItem[],
+    repo: MergeRepo,
+    runner: CommandRunner,
+    terminal: (ref: string) => void,
+  ): Promise<BatchItem[] | 'failed' | 'again' | 'done'> {
+    const { cfg, top, root, human } = items[0]!.job;
+    const lead = items[0]!.ref;
+    const ids = this.batchIds(items);
+    const named = ids.join(', ');
+    if (this.merging) {
+      this.merging.ref = lead;
+      this.merging.what = `${items.length} approved tasks (${named})`;
+      this.mergeChanged();
+    }
+    const timeout = mergeTimeout(cfg);
+    let checked: string | null = null;
+    let checks: CommandResult[] = [];
+    let refused = '';
+    let waited = false;
+    let merged: { onto: string; head: string; heads: string[] } | null = null;
+    for (let attempt = 0; attempt < MERGE_ATTEMPTS && !merged; attempt++) {
+      if (attempt > 0) await sleep(MERGE_RETRY_MS);
+      if (this.stopping) return 'again';
+      const onto = await repo.commit(`refs/heads/${cfg.base}`);
+      // Each merge alone tells the human that the base is gone.
+      if (!onto) return items;
+      this.mergeStep('rebase');
+      this.mergeLine(lead, `rebases ${named} in turn onto ${cfg.base} (${short(onto)})`);
+      await repo.ensureWorktree(onto);
+      let head = onto;
+      const heads: string[] = [];
+      const out: BatchItem[] = [];
+      for (const item of items) {
+        let r: Awaited<ReturnType<MergeRepo['rebase']>>;
+        let stored: string[] = [];
+        try {
+          r = await repo.rebase(item.approved, head);
+          if (!('conflict' in r) && r.head !== head) stored = await repo.storeFiles(head, r.head);
+        } catch (err) {
+          if (!(err instanceof GitTimeout)) throw err;
+          // A git that hangs on one task is that task's: it merges alone, where a timeout ends
+          // the merge and tells the human. The rest rebase again from a clean worktree.
+          out.push(item);
+          this.mergeLine(item.ref, `git timed out rebasing it; merges alone after the batch`);
+          break;
+        }
+        let why = '';
+        if ('conflict' in r) why = 'does not rebase onto the tasks before it in the batch';
+        else if (r.head === head) why = 'adds nothing to the base and the tasks before it';
+        else if (stored.length > 0) why = 'changes task store files';
+        if (why || 'conflict' in r) {
+          out.push(item);
+          this.mergeLine(item.ref, `${why}; merges alone after the batch`);
+          continue;
+        }
+        head = r.head;
+        heads.push(head);
+      }
+      if (out.length > 0) return out;
+      if (!checked || !(await repo.sameCode(checked, head))) {
+        // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
+        if (this.merging) this.merging.holds = false;
+        this.mergeStep('checks');
+        this.mergeLine(
+          lead,
+          `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
+        );
+        checks = await runner.runAll(
+          cfg.checks ?? [],
+          repo.worktree,
+          timeout,
+          (s) => this.mergeCommand('check', s),
+          this.electronEnv(this.commandEnv(), repo.worktree, top),
+        );
+        this.shareElectron(repo.worktree);
+        const failed = checks.find((c) => !c.ok);
+        if (failed?.why === 'stopped') return 'again';
+        if (failed?.interrupted) {
+          this.emit(
+            'warn',
+            `merge of ${named}: \`${failed.command}\` failed (${failed.why}) after the PC slept or swarmupd stopped responding; merging again`,
+          );
+          return 'again';
+        }
+        if (failed) {
+          // A timeout too: the halves run again, and a task alone keeps its one retry (AO-0172).
+          this.mergeLine(
+            lead,
+            `\`${failed.command}\` failed (${failed.why}) on the batch (${named})`,
+          );
+          return 'failed';
+        }
+        checked = head;
+      }
+      const hold = await this.holdCheckout(lead, top);
+      if (hold === 'stopped') return 'again';
+      if (hold === 'waited' && !waited) {
+        waited = true;
+        if ((await repo.commit(`refs/heads/${cfg.base}`)) !== onto) {
+          attempt--;
+          continue;
+        }
+      }
+      // Recorded before the base moves, so no task store sync sees the merged commits unapproved.
+      this.approveCommits(top, cfg.base, await repo.patchKeys(onto, head));
+      try {
+        if ((await repo.fastForward(cfg.base, onto, head)) === 'done') {
+          merged = { onto, head, heads };
+        } else refused = `${cfg.base} kept moving`;
+      } catch (err) {
+        if (err instanceof GitTimeout) {
+          err.stage = 'fast-forward';
+          throw err;
+        }
+        refused = firstLines(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (!merged) {
+      for (const item of items) {
+        this.mergeNote(
+          item.ref,
+          `swarmupd could not merge ${item.job.what} in a batch with ${ids.length - 1} other task(s); ${cfg.base} did not move: ${refused}`,
+          human,
+        );
+        terminal(item.ref);
+      }
+      return 'done';
+    }
+    const { onto, head, heads } = merged;
+    this.mergeLine(
+      lead,
+      `moved ${cfg.base} to ${short(head)} with ${named} after one run of the checks`,
+    );
+    for (const [n, item] of items.entries()) {
+      this.mergeLooks.delete(item.ref);
+      this.mergeTimedOut.delete(item.ref);
+      const { branch } = item.job.src;
+      if (branch) {
+        const at = heads[n]!;
+        this.safe(() => this.branchMerged(item.ref, root, branch, item.approved, cfg.base, at));
+      }
+    }
+    const last = items.at(-1)!;
+    // As in `mergeOne`: a code checkout with no task store pushes its base here (AO-0252).
+    if (
+      this.config.code[root] &&
+      !this.holdsStore(top) &&
+      this.config.push_branches[root] !== false
+    ) {
+      void this.syncWork(() => this.pushBase(last.ref, top, cfg.base, head));
+    }
+    const changed = await repo.changedFiles(onto, head);
+    const installDirs = lockfileDirs(changed);
+    const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
+    const passed =
+      checks.length > 0
+        ? ` Checks passed once for the batch: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
+        : '';
+    const lastId = ids.at(-1)!;
+    const others = (n: number): string => ids.filter((_, i) => i !== n).join(', ');
+    const batch = `${cfg.base} moved from ${short(onto)} to ${short(head)} (${changed.length} file(s))`;
+    for (const [n, item] of items.slice(0, -1).entries()) {
+      this.mergeRecord(
+        { ref: item.ref, base: cfg.base, branch: item.job.src.branch, commit: heads[n]! },
+        `Merged ${item.job.what} into ${cfg.base} as ${short(heads[n]!)}, in one batch with ${others(n)}: ${batch}.${passed} The build's result is on the merge event of ${lastId}.`,
+      );
+      terminal(item.ref);
+    }
+    const pending: PendingBuild = {
+      ref: last.ref,
+      root,
+      top,
+      base: cfg.base,
+      branch: last.job.src.branch,
+      commit: head,
+      what: last.job.what,
+      author: last.job.author,
+      human: last.job.human,
+      ...(opsdCode.length > 0 ? { opsdCode } : {}),
+      ...(installDirs.length > 0 ? { install: installDirs } : {}),
+      text: `Merged ${last.job.what} into ${cfg.base} as ${short(head)}, in one batch with ${others(items.length - 1)}: ${batch}.${passed}`,
+    };
+    this.savePendingBuild(pending);
+    await this.buildMerged(pending, cfg, runner);
+    if (!this.stopping) terminal(last.ref);
+    return 'done';
+  }
+
+  /** The task ids of `items`, for lines and events. */
+  private batchIds(items: BatchItem[]): string[] {
+    const ws = this.ws();
+    return items.map((i) => ws.resolve(i.ref).id);
+  }
+
+  /** The repo of a merge, with swarmupd's worktree for its rebases and checks. */
+  private mergeRepoOf(job: MergeJob): MergeRepo {
+    return new MergeRepo(
+      job.top,
+      join(this.store.dir, 'merge', job.root.replace(/[^A-Za-z0-9._-]/g, '-')),
+      this.ws().roots.map((r) => r.dir),
+      this.commandEnv(),
+      this.mergeGitTimeoutMs,
+    );
   }
 
   /**
@@ -7683,6 +8075,11 @@ function short(commit: string): string {
 /** How long each check or build command of a merge may run. */
 function mergeTimeout(cfg: MergeConfig): number {
   return (cfg.timeout_minutes ?? 30) * 60_000;
+}
+
+/** How many approved tasks one merge of `cfg`'s root takes together (AO-0381). */
+function mergeBatchSize(cfg: MergeConfig): number {
+  return cfg.batch ?? DEFAULT_MERGE_BATCH;
 }
 
 /** A time span for opsd.log: `45s` under a minute, else `1h30m`. */

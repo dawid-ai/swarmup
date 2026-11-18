@@ -178,7 +178,16 @@ export interface MergeConfig {
   install?: string[];
   /** Minutes each command may take; default 30. */
   timeout_minutes?: number;
+  /**
+   * The most approved tasks one merge takes together (AO-0381): rebased in turn onto one
+   * candidate, checked once, and the base moved once. Default `DEFAULT_MERGE_BATCH`; 1 merges
+   * each task alone.
+   */
+  batch?: number;
 }
+
+/** How many approved tasks one merge takes together when `swarmupd.merge.<root>.batch` is unset. */
+export const DEFAULT_MERGE_BATCH = 8;
 
 /**
  * Which files of one root count as tests and as check configuration, for the list of such changes
@@ -696,6 +705,10 @@ function checkMerge(raw: unknown): Record<string, MergeConfig> {
         2,
       );
     }
+    const b = e.batch;
+    if (b !== undefined && (typeof b !== 'number' || !Number.isInteger(b) || b < 1)) {
+      throw new OpsError(`swarmupd.merge.${root}.batch: use a whole number of at least 1`, 2);
+    }
     out[root] = {
       base: e.base,
       checkout: e.checkout as string | undefined,
@@ -703,6 +716,7 @@ function checkMerge(raw: unknown): Record<string, MergeConfig> {
       build: commands(e.build, `${root}.build`),
       install: commands(e.install, `${root}.install`),
       timeout_minutes: t as number | undefined,
+      ...(b !== undefined ? { batch: b as number } : {}),
     };
   }
   return out;
