@@ -3271,9 +3271,22 @@ export class Supervisor extends EventEmitter {
     const stores = ws.roots
       .map((r) => r.dir)
       .sort((a, b) => Number(inside(b, checkoutTop)) - Number(inside(a, checkoutTop)));
-    // A writing Codex run may commit in a worktree of its checkout (AO-0155).
+    // A writing Codex run in its task's worktree runs outside Codex's sandbox, so it commits
+    // there: on Windows the sandbox refuses git's writes to the shared `.git` from time to time,
+    // and the run's work then waits on a leftovers branch. `sandbox_worktrees: true` keeps the
+    // sandbox. Elsewhere, such as the checkout itself, it stays sandboxed and may commit in a
+    // worktree through its git folders (AO-0155).
+    const codexFullAccess =
+      runtimeOf(agent) === 'codex' &&
+      !readOnly &&
+      !req.chat &&
+      !!worktree &&
+      inside(cwd, worktree.path) &&
+      rc.sandbox_worktrees !== true;
     const gitDirs =
-      runtimeOf(agent) === 'codex' && !readOnly ? codexGitDirsOf(this.gitDirsOf(cwd)) : [];
+      runtimeOf(agent) === 'codex' && !readOnly && !codexFullAccess
+        ? codexGitDirsOf(this.gitDirsOf(cwd))
+        : [];
     const inv = invocation(
       rc,
       agent,
@@ -3287,6 +3300,7 @@ export class Supervisor extends EventEmitter {
       stores,
       gitDirs,
       scratch,
+      codexFullAccess,
     );
     // A reviewer that cannot run the checks reads what swarmupd ran for it (AO-0296); the whole
     // output goes to a file in the run's scratch folder.

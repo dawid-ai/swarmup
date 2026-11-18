@@ -183,6 +183,43 @@ describe('a code checkout apart from the task store (AO-0252)', () => {
     await until(() => git(remote, 'rev-parse', 'main') === head);
   });
 
+  it('starts a writing Codex run in its task worktree outside the sandbox, unless told not to', async () => {
+    const out = join(temp(), 'codex-args.json');
+    const recorder = join(temp(), 'codex.cjs');
+    writeFileSync(
+      recorder,
+      [
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));`,
+        "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));",
+      ].join('\n'),
+    );
+    const sandboxOf = (args: string[]): string => args[args.indexOf('--sandbox') + 1]!;
+    for (const sandbox_worktrees of [undefined, true]) {
+      const { code, sup, as } = setup({
+        runtimes: {
+          codex: {
+            command: process.execPath,
+            args: [recorder],
+            ...(sandbox_worktrees ? { sandbox_worktrees } : {}),
+          },
+        },
+      });
+      as('human:dawid').newTask({ title: 'Change it with Codex', owner: 'codex:engineer' });
+      const run = sup.launch({ agent: 'codex:engineer', task: '2' });
+      expect(samePath(run.cwd, join(code, 'out', 'wt-T-0002'))).toBe(true);
+      await ended(sup, run.id);
+      const args = JSON.parse(readFileSync(out, 'utf8')) as string[];
+      if (sandbox_worktrees) {
+        expect(sandboxOf(args)).toBe('workspace-write');
+        expect(args.some((a) => a.includes('.git'))).toBe(true);
+      } else {
+        expect(sandboxOf(args)).toBe('danger-full-access');
+        expect(args).not.toContain('--add-dir');
+      }
+    }
+  });
+
   it('keeps the store writable for a Codex run in a worktree of the code checkout', () => {
     const store = temp();
     const code = temp();

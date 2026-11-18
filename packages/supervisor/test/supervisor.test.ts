@@ -1175,6 +1175,50 @@ describe('runtimes', () => {
       'C:/w/.git/objects',
       '-',
     ]);
+    // In its task worktree it runs outside the sandbox instead, so git works as for Claude runs:
+    // no `--add-dir` folders, since it may write everywhere.
+    const codexFull = invocation(
+      { command: 'codex' },
+      'codex:engineer',
+      undefined,
+      'C:/w/out/wt-AO-1',
+      ['C:/w', 'D:/other'],
+      [],
+      undefined,
+      false,
+      false,
+      ['C:/w/.swarmup', 'D:/other/.swarmup'],
+      [],
+      undefined,
+      true,
+    );
+    expect(codexFull.args).toEqual([
+      'exec',
+      '--json',
+      '--sandbox',
+      'danger-full-access',
+      '--skip-git-repo-check',
+      '-C',
+      'C:/w/out/wt-AO-1',
+      '-',
+    ]);
+    // A run of a role that does not write keeps its sandbox whatever the caller asks.
+    const readOnlyFull = invocation(
+      { command: 'codex' },
+      'codex:qa',
+      undefined,
+      'C:/w/out/wt-AO-1',
+      [],
+      [],
+      undefined,
+      true,
+      false,
+      ['C:/w/.swarmup'],
+      [],
+      undefined,
+      true,
+    );
+    expect(readOnlyFull.args[readOnlyFull.args.indexOf('--sandbox') + 1]).toBe('workspace-write');
     // The rule itself: no writable folder holds another one's `.git` folder.
     const writable = [
       'C:/w/out/wt-AO-1',

@@ -42,6 +42,12 @@ export interface RuntimeConfig {
   unset_env?: string[];
   /** Most live runs of this provider on this PC; no limit when unset. */
   max_live?: number;
+  /**
+   * Codex only: `true` keeps a writing run in a task worktree in Codex's sandbox
+   * (`workspace-write`). By default such a run gets `danger-full-access`, so it can commit: on
+   * Windows the sandbox refuses git's writes to the shared `.git` from time to time.
+   */
+  sandbox_worktrees?: boolean;
   /** Overrides `usage_pause_at` for this provider. */
   pause_at?: number;
   /** Paused from Settings: swarmupd starts no new runs on this provider; live runs go on. */
@@ -509,6 +515,9 @@ export function opsdConfig(
     if (rc.max_live !== undefined) count(rc.max_live, `runtimes.${name}.max_live`, 0);
     if (rc.paused !== undefined && typeof rc.paused !== 'boolean') {
       throw new OpsError(`swarmupd.runtimes.${name}.paused: use true or false`, 2);
+    }
+    if (rc.sandbox_worktrees !== undefined && typeof rc.sandbox_worktrees !== 'boolean') {
+      throw new OpsError(`swarmupd.runtimes.${name}.sandbox_worktrees: use true or false`, 2);
     }
     if (rc.model !== undefined) checkModel(rc.model, `swarmupd.runtimes.${name}.model`);
     if (rc.effort !== undefined) checkEffort(rc.effort, `swarmupd.runtimes.${name}.effort`);

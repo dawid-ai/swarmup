@@ -1,0 +1,1 @@
+- Codex engineer runs in a task's worktree now run outside Codex's sandbox (`--sandbox danger-full-access`), so they commit their own work. On Windows the sandbox refused those commits, and the work waited on a leftovers branch. `runtimes.codex.sandbox_worktrees: true` keeps the sandbox.

@@ -287,9 +287,15 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
   did what. Codex's sandbox blocks network access and `.git` writes. A runtime's `unset_env` lists
   variables its runs must not see; no default runtime sets one.
 - `--add-dir` gives the run every data root's repo that is not inside its working folder.
-- A Codex run of a role that writes also gets `worktrees`, `objects`, `refs` and `logs` of its
-  checkout's shared git folder (`git rev-parse --git-common-dir`) as `--add-dir`, so it can
-  commit in a worktree such as `out/wt-<id>`, whose index and lock files live in
+- A Codex run of a role that writes, started in its task's worktree, runs with
+  `--sandbox danger-full-access` and no `--add-dir`, so it commits there as a Claude run does. On
+  Windows, Codex's sandbox refuses git's writes to the shared `.git` even with the folders below
+  (Codex 0.167), and the run's work then waits on a leftovers branch. Set
+  `runtimes.codex.sandbox_worktrees: true` to keep such runs in the sandbox. Codex runs of roles
+  that do not write, and writing runs anywhere else, such as the checkout itself, stay sandboxed.
+- Elsewhere, a sandboxed Codex run of a role that writes also gets `worktrees`, `objects`, `refs`
+  and `logs` of its checkout's shared git folder (`git rev-parse --git-common-dir`) as
+  `--add-dir`, so it can commit in a worktree such as `out/wt-<id>`, whose index and lock files live in
   `<common>/worktrees/<name>`. swarmupd makes `worktrees` and `logs` when they are missing. The
   shared git folder itself stays read-only: the run cannot change `config` or `hooks`, or the
   main checkout's `HEAD` and `index`.

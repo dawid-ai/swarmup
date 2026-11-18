@@ -6,9 +6,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { codexGitDirs, invocation } from '../src/index.js';
 
 /**
- * End-to-end check of AO-0155 with the real Codex CLI: a writing Codex run in a worktree can
- * `git commit` there only with {@link codexGitDirs}. It starts two Codex runs and spends model
- * tokens, so it runs only with `SWARMUP_E2E_CODEX=1` (or the deprecated `OPS_E2E_CODEX=1`, read
+ * End-to-end check with the real Codex CLI of how a writing Codex run in a worktree commits: in the
+ * sandbox with {@link codexGitDirs} (AO-0155), and outside it, as swarmupd starts a run in its task
+ * worktree. It starts three Codex runs and spends model tokens, so it runs only with `SWARMUP_E2E_CODEX=1` (or the deprecated `OPS_E2E_CODEX=1`, read
  * until 0.4) and a signed-in `codex` on PATH.
  */
 const enabled = (process.env.SWARMUP_E2E_CODEX ?? process.env.OPS_E2E_CODEX) === '1';
@@ -52,7 +52,7 @@ function repoWithWorktree(): string {
  * the checkout's read-only `.git` above the git dirs is what broke every command of a run
  * (AO-0173), and a test without it passed.
  */
-function codexCommit(wt: string, gitDirs: string[]): string {
+function codexCommit(wt: string, gitDirs: string[], fullAccess = false): string {
   // The worktree is at `<repo>/out/wt-e2e`.
   const repo = dirname(dirname(wt));
   const { args } = invocation(
@@ -67,6 +67,8 @@ function codexCommit(wt: string, gitDirs: string[]): string {
     false,
     [join(repo, '.swarmup')],
     gitDirs,
+    undefined,
+    fullAccess,
   );
   const prompt = [
     'Run these two commands in the current folder, one after the other, and nothing else:',
@@ -88,12 +90,28 @@ function codexCommit(wt: string, gitDirs: string[]): string {
 }
 
 describe.runIf(enabled)('Codex sandbox commits in a worktree (SWARMUP_E2E_CODEX=1)', () => {
-  it('commits with the git dirs as writable roots', { timeout: 300_000 }, () => {
-    const wt = repoWithWorktree();
-    const gitDirs = codexGitDirs(wt);
-    expect(gitDirs.length).toBe(4);
-    expect(codexCommit(wt, gitDirs)).toBe('e2e-commit');
-  });
+  // On Windows, Codex 0.167's sandbox refuses the commit even with the git dirs (three runs of
+  // three on 2026-11-18), which is why swarmupd starts a run in its task worktree outside the
+  // sandbox. `it.fails` turns red once a Codex update makes the sandboxed commit work again.
+  (process.platform === 'win32' ? it.fails : it)(
+    'commits with the git dirs as writable roots',
+    { timeout: 300_000 },
+    () => {
+      const wt = repoWithWorktree();
+      const gitDirs = codexGitDirs(wt);
+      expect(gitDirs.length).toBe(4);
+      expect(codexCommit(wt, gitDirs)).toBe('e2e-commit');
+    },
+  );
+
+  it(
+    'commits outside the sandbox, as swarmupd starts a run in its task worktree',
+    { timeout: 300_000 },
+    () => {
+      const wt = repoWithWorktree();
+      expect(codexCommit(wt, [], true)).toBe('e2e-commit');
+    },
+  );
 
   it('cannot commit without them, so the check above means something', { timeout: 300_000 }, () => {
     const wt = repoWithWorktree();

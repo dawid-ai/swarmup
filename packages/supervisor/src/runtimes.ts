@@ -273,7 +273,9 @@ export function runEffort(
  * {@link STORE_CHECKOUT_DENY} (AO-0135). `gitDirs` are git metadata folders a writing Codex run
  * may write besides `cwd` and `addDirs` (see {@link CODEX_GIT_DIRS}); other runs ignore them.
  * `scratch` is the run's scratch folder, which a read-only Codex run may write too (AO-0296);
- * other runs get it through `addDirs`.
+ * other runs get it through `addDirs`. `fullAccess` starts a writing Codex run with
+ * `--sandbox danger-full-access`: the caller sets it for a run in a task worktree, so the run
+ * commits there like a Claude run; `gitDirs` and the `--add-dir` folders are then not needed.
  */
 export function invocation(
   rc: RuntimeConfig,
@@ -288,6 +290,7 @@ export function invocation(
   stores: string[] = [],
   gitDirs: string[] = [],
   scratch?: string,
+  fullAccess = false,
 ): Invocation {
   const runtime = runtimeOf(agentId);
   const base = rc.args ?? [];
@@ -348,6 +351,7 @@ export function invocation(
       ...add.flatMap((d) => ['--add-dir', d]),
       '-',
     ];
+    if (!readOnly && fullAccess) return { args: exec('danger-full-access', cwd, []), unsetEnv };
     if (!readOnly) {
       return {
         args: exec('workspace-write', cwd, codexWritableDirs(cwd, addDirs, stores, gitDirs)),
