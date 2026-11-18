@@ -944,6 +944,53 @@ swarmupd:
     budget: 20m # one turn; default: the agent's budget
 ```
 
+## Projects
+
+A project is a data root that `roots` in the user config lists. Its options sit beside `roots`
+under `root_options`, keyed by the folder as `roots` lists it, so `roots` stays a list of folders
+for every reader, older builds included:
+
+```yaml
+roots:
+  - C:/dev/shop
+  - C:/dev/blog
+root_options:
+  C:/dev/shop:
+    archived: true # off the board; swarmupd starts no run on its tasks
+    name: shop # the root's own name, recorded on archive
+    label: Web shop # the name the app shows; the root's own name stays its id
+```
+
+- **Archive** leaves the root in `roots`, but no reader loads it: not swarmupd, the app or
+  `swarmup`, not from inside its repo, and not through its Master Repo copy. swarmupd wakes no
+  agent on its tasks. A run that started before the archive finishes, since swarmupd hands each
+  run its roots in `SWARMUP_ROOTS`, which the archive flag does not filter. Archive records the
+  root's own `name` too: the Master Repo copy is found by that name, so it stays hidden when the
+  folder later goes missing or cannot be read. **Unarchive** clears the flag and the name.
+- **Label** sets the name the app shows. The root's own `name` in its `config.yml` stays the id
+  that task references use.
+- **Relocate** points the entry at another folder, keeping its place in `roots` and its options.
+  The folder must hold a data root, and no other entry may list it. Nothing on disk moves.
+- **Remove** drops the entry and its options from the user config. Nothing on disk changes: the
+  folder, its tasks and its history stay, and adding the folder again brings the project back.
+  `swarmupd.code.<name>` and `swarmupd.merge.<name>` stay too.
+
+Each change edits the user config, keeping comments and other keys, and swarmupd reads it again at
+once, as after **Add project**:
+
+| Call                           | Body                                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------------- |
+| `GET /api/projects`            | Every listed root, archived ones included: `root`, `name`, `label`, `archived`, `found` |
+| `POST /api/projects/archive`   | `{ "root": "C:/dev/shop", "archived": true }` (`archived` defaults to `true`)           |
+| `POST /api/projects/unarchive` | `{ "root": "C:/dev/shop" }`                                                             |
+| `POST /api/projects/label`     | `{ "root": "C:/dev/shop", "label": "Web shop" }` (`null` or `""` clears it)             |
+| `POST /api/projects/relocate`  | `{ "root": "C:/dev/shop", "to": "D:/shop" }`                                            |
+| `POST /api/projects/remove`    | `{ "root": "C:/dev/shop" }`                                                             |
+
+Each `POST` answers with the project list after the change; runs cannot make these calls. The
+desktop app's page may make every call but `relocate`, whose folder only the main process's folder
+dialog may pick.
+
 ## Merging approved work
 
 With `swarmupd.merge.<root name>` set, swarmupd merges a task's work into a base branch once a review

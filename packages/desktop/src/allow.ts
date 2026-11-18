@@ -56,6 +56,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'repeats',
     `repeats/${SEG}/(run|pause|resume|delete)`,
     `roots/${SEG}/mirror`,
+    // Not relocate: it names a new folder, which only the main process's folder dialog may pick.
+    'projects/(archive|unarchive|label|remove)',
     'notify/test',
     'doctor/skills',
     'roles',
