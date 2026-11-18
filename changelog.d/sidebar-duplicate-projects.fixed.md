@@ -1,1 +1,0 @@
-- The sidebar no longer lists a project twice when the user config names its repo folder instead of the `.swarmup` folder inside it.

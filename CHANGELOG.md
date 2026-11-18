@@ -6,6 +6,16 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.8 (2026-11-18)
+
+### Changed
+
+- Codex engineer runs in a task's worktree now run outside Codex's sandbox (`--sandbox danger-full-access`), so they commit their own work. On Windows the sandbox refused those commits, and the work waited on a leftovers branch. `runtimes.codex.sandbox_worktrees: true` keeps the sandbox.
+
+### Fixed
+
+- The sidebar no longer lists a project twice when the user config names its repo folder instead of the `.swarmup` folder inside it.
+
 ## 0.3.0-beta.7 (2026-11-18)
 
 ### Added

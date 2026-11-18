@@ -3,6 +3,15 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.8 (2026-11-18)
+
+- **Each project shows once.** The sidebar no longer lists a project twice when your settings
+  name its repo folder.
+- **Codex agents commit their own work.** A Codex engineer working on a task now commits in the
+  task's worktree, as Claude agents do, so its work no longer waits on a separate branch. It runs
+  outside Codex's sandbox there; `runtimes.codex.sandbox_worktrees: true` in your config keeps
+  the sandbox.
+
 ## v0.3.0-beta.7 (2026-11-18)
 
 - **Manage projects from the sidebar.** Right-click a project to rename it, change its folder,
