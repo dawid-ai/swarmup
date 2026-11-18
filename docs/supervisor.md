@@ -1018,6 +1018,7 @@ swarmupd:
       build: [npm run build] # run in `checkout` after the base moved
       install: [npm install --no-save --no-audit --no-fund] # before `build`, when a lockfile changed
       timeout_minutes: 30 # per command
+      batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
 - **What it merges.** A task whose last verdict approves it, when the review that verdict answers
@@ -1083,6 +1084,17 @@ swarmupd:
   moved meanwhile (a task store sync, another merge), swarmupd rebases again, and runs the checks
   again only if code changed. Then it runs `build` in `checkout` and adds a `merge` event
   (`opsd:merge`) with the new commit to the task.
+- **Several approved tasks at once.** When more approved tasks of the root wait as a merge starts
+  (up to `batch`, default 8), swarmupd merges them together (AO-0381): it rebases them in turn,
+  oldest approval first, onto one candidate off the base, runs `checks` once on the candidate,
+  moves the base there and runs `build` once. Each task gets its own `merge` event with the
+  commit that holds its work and the other tasks of the batch; the last task's event has the
+  build's result. When the checks fail on the batch, swarmupd splits it in two halves and merges
+  each the same way, so only the task that breaks the checks goes back, with the output of a
+  merge of it alone. A task that does not rebase onto the ones before it, adds nothing to them, or
+  changes task store files leaves the batch and merges alone after it. `opsd.log` has a `merge`
+  line for the batch's rebase, its one run of the checks, each split, and the base's move. One
+  approved task alone merges as before.
 - **Tasks blocked on the work.** A task blocked `--on` an approved task stays blocked until
   swarmupd records the merge on that task, so no run starts on a base that lacks the work. A merge
   that fails keeps them blocked: a conflict or a failed check sends the approved task back, and a
