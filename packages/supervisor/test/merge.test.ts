@@ -71,9 +71,6 @@ afterEach(async () => {
     }
   } finally {
     for (const d of gone) {
-      // A sandbox may refuse to stop a timed-out Git command's whole process tree. Its hook exits
-      // after the test releases it, but Windows can keep the repo locked for more than the one
-      // second `rmSync` retries cover. Keep checking the test's own temp folder until it lets go.
       await until(() => removed(d), 30_000);
     }
   }
@@ -2566,6 +2563,9 @@ describe('merging approved work', () => {
   });
 
   it('ends the merge on a fast-forward whose git never exits, without trying it again (AO-0172)', async () => {
+    // A refused tree stop leaves the hook alive until the test releases it. A successful tree
+    // stop kills the hook, so only the refused case can wait for its normal-exit marker.
+    const treeStops = await stopsTrees();
     // Every ref update starts `sh` for the hook below, so `git worktree add` and `git checkout`
     // in the rebase stage take seconds under the full suite on Windows: only the fast-forward
     // gets the short timeout.
@@ -2603,9 +2603,7 @@ describe('merging approved work', () => {
     );
     expect(warns.join('\n')).not.toMatch(/kept moving|did not move/);
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
-    // A sandbox may refuse `taskkill /T`, leaving the hook alive after git stops. Wait for its
-    // exact exit path before afterEach removes the repo, as the AO-0251 regression below does.
-    await until(() => existsSync(left), 30_000);
+    if (!treeStops) await until(() => existsSync(left), 30_000);
   });
 
   it('says what git started may still run when the stop of a timed-out git is refused (AO-0251)', async () => {
