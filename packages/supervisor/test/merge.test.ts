@@ -2525,6 +2525,62 @@ describe('merging approved work', () => {
     );
   });
 
+  /**
+   * A git timeout that stops at once the commands `hung` picks, once `on` holds a commit, and
+   * gives every other command a minute: spawning git alone takes longer than 1 ms.
+   */
+  const hangOn = (hung: (args: readonly string[], commit: string) => boolean) => {
+    const on = { commit: '' };
+    const timeout: MergeGitTimeout = (args) => (on.commit && hung(args, on.commit) ? 1 : 60_000);
+    return { on, timeout };
+  };
+
+  /** Checks that a git timeout on task 2 of a batch is task 2's, and task 1 still merges. */
+  const secondTimesOut = async (
+    s: ReturnType<typeof mergeSetup>,
+    on: { commit: string },
+    stage: RegExp,
+  ) => {
+    const t = twoApproved(s, 'second\n');
+    on.commit = git(s.repo, 'rev-parse', 'feature2');
+    await s.merged();
+
+    // Task 1 merges alone after task 2 leaves the batch; it gets no note about task 2.
+    expect(t.events('1').at(-1)).toMatchObject({ type: 'merge', branch: 'feature' });
+    expect(t.events('1').some((e) => e.type === 'comment' && e.actor === MERGE_ACTOR)).toBe(false);
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+    expect(existsSync(join(s.repo, 'two.txt'))).toBe(false);
+    // Task 2 gets the note of a merge of it alone that hung.
+    const note = t.events('2').at(-1)!;
+    expect(note).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(note.body).toMatch(/swarmupd could not merge .*feature2.*timed out after/);
+    expect(note.body).toMatch(stage);
+    expect(
+      t.lines.some((l) => l.includes('T-0002') && l.includes('merges alone after the batch')),
+    ).toBe(true);
+    // Seen: the next tick tries neither again.
+    const tip = git(s.repo, 'rev-parse', 'main');
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(t.events('2').at(-1)).toEqual(note);
+  };
+
+  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
+    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+    const h = hangOn((args, commit) => {
+      const rev = (args[3] ?? '').replace('^{commit}', '');
+      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+    });
+    const s = mergeSetup({ gitTimeoutMs: h.timeout });
+    await secondTimesOut(s, h.on, /rev-parse/);
+  });
+
+  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
+    const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
+    const s = mergeSetup({ gitTimeoutMs: h.timeout });
+    await secondTimesOut(s, h.on, /checkout/);
+  });
+
   it('merges each task alone with batch 1 (AO-0381)', async () => {
     const s = mergeSetup({ batch: 1 });
     const t = twoApproved(s, 'second\n');

@@ -5646,36 +5646,41 @@ export class Supervisor extends EventEmitter {
     );
     this.mergeChanged();
     let again = false;
+    // The task the merge ends on: the one it was at when it failed. In a batch that is the task
+    // being merged then, not the first one (AO-0381); the others got nothing and go on next tick.
+    let at = ref;
     merging.done = work(runner)
       .then((r) => {
         again = r === 'again';
       })
       .catch((err) => {
+        at = merging.ref;
+        const failed = at === ref ? what : merging.what;
         const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-        this.emit('warn', `merge of ${ref}: ${msg}`);
+        this.emit('warn', `merge of ${at}: ${msg}`);
         if (err instanceof GitTimeout) {
           // The step it hung in and what it printed last, so the human sees why (AO-0172).
           const output = redactSecrets(err.output);
           const out = lastLines(output);
-          const log = this.mergeLog(ref, output);
+          const log = this.mergeLog(at, output);
           const parts = [
-            `swarmupd could not merge ${what}: ${firstLines(msg)} (stage: ${err.stage ?? merging.step}).`,
+            `swarmupd could not merge ${failed}: ${firstLines(msg)} (stage: ${err.stage ?? merging.step}).`,
             out ? `Last output:\n\n\`\`\`\n${out}\n\`\`\`` : 'It printed nothing.',
           ];
           if (log) parts.push(`Full output: ${log}`);
-          this.mergeNote(ref, parts.join('\n\n'), human);
+          this.mergeNote(at, parts.join('\n\n'), human);
           return;
         }
-        this.mergeNote(ref, `swarmupd could not merge ${what}: ${firstLines(msg)}`, human);
+        this.mergeNote(at, `swarmupd could not merge ${failed}: ${firstLines(msg)}`, human);
       })
       .finally(() => {
         // The one more merge after a check timed out is for this merge only (AO-0172).
-        if (!again) this.mergeTimedOut.delete(ref);
+        if (!again) this.mergeTimedOut.delete(at);
         // A merge that wrote nothing is not tried again until the task changes; one stopped
         // with swarmupd is, by the next swarmupd, and one the PC's sleep broke, by the next tick.
         this.safe(() => {
-          const last = this.ws().view(ref).lastEvent;
-          if (last && !this.stopping && !again) this.mergeSeen.set(ref, last);
+          const last = this.ws().view(at).lastEvent;
+          if (last && !this.stopping && !again) this.mergeSeen.set(at, last);
         });
         this.mergeLine(ref, `ends after ${elapsed(this.now() - startedAt)}`);
         this.merging = null;
@@ -6392,11 +6397,25 @@ export class Supervisor extends EventEmitter {
     for (const { ref, job } of items) {
       if (this.stopping) return 'again';
       const { src } = job;
-      const source = src.commit
-        ? await repo.commit(src.commit)
-        : src.branch
-          ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
-          : null;
+      // A git that hangs on one task's commit or worktree is that task's: it leaves the batch
+      // and merges alone, where a timeout ends the merge and tells the human about it.
+      const timedOut = (err: unknown): boolean => {
+        if (!(err instanceof GitTimeout)) return false;
+        this.mergeLine(ref, `git timed out reading it; merges alone after the batch`);
+        alone.push({ ref, planned: job, job, approved: '' });
+        return true;
+      };
+      let source: string | null;
+      try {
+        source = src.commit
+          ? await repo.commit(src.commit)
+          : src.branch
+            ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
+            : null;
+      } catch (err) {
+        if (timedOut(err)) continue;
+        throw err;
+      }
       if (!source) {
         alone.push({ ref, planned: job, job, approved: '' });
         continue;
@@ -6405,7 +6424,7 @@ export class Supervisor extends EventEmitter {
       try {
         left = await this.checkedWorktreeLeftovers(ref, job, source, repo);
       } catch (err) {
-        if (err instanceof GitTimeout) throw err;
+        if (timedOut(err)) continue;
         // What `startMerge` tells for a merge of this task alone; the others go on.
         const msg = redactSecrets(err instanceof Error ? err.message : String(err));
         this.emit('warn', `merge of ${ref}: ${msg}`);
@@ -6523,11 +6542,23 @@ export class Supervisor extends EventEmitter {
       const heads: string[] = [];
       const out: BatchItem[] = [];
       for (const item of items) {
-        const r = await repo.rebase(item.approved, head);
+        let r: Awaited<ReturnType<MergeRepo['rebase']>>;
+        let stored: string[] = [];
+        try {
+          r = await repo.rebase(item.approved, head);
+          if (!('conflict' in r) && r.head !== head) stored = await repo.storeFiles(head, r.head);
+        } catch (err) {
+          if (!(err instanceof GitTimeout)) throw err;
+          // A git that hangs on one task is that task's: it merges alone, where a timeout ends
+          // the merge and tells the human. The rest rebase again from a clean worktree.
+          out.push(item);
+          this.mergeLine(item.ref, `git timed out rebasing it; merges alone after the batch`);
+          break;
+        }
         let why = '';
         if ('conflict' in r) why = 'does not rebase onto the tasks before it in the batch';
         else if (r.head === head) why = 'adds nothing to the base and the tasks before it';
-        else if ((await repo.storeFiles(head, r.head)).length > 0) why = 'changes task store files';
+        else if (stored.length > 0) why = 'changes task store files';
         if (why || 'conflict' in r) {
           out.push(item);
           this.mergeLine(item.ref, `${why}; merges alone after the batch`);
