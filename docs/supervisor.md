@@ -1015,11 +1015,15 @@ swarmupd:
       base: v2 # the branch approved work goes into
       checkout: 'C:\dev\my-project' # where the base is built; default: the root's git top
       checks: # run on the rebased work, in swarmupd's own worktree
-        - npm ci --no-audit --no-fund
-        - npm run typecheck
-        - npm run lint
-        - npm test
-        - npm run leaks
+        - npm run leaks # a bare command runs on every merge
+        - run: npm ci --no-audit --no-fund # runs only when the work changes one of `paths`
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm run typecheck
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm run lint
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm test -- --changed main # only the tests the change reaches
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
       build: [npm run build] # run in `checkout` after the base moved
       install: [npm install --no-save --no-audit --no-fund] # before `build`, when a lockfile changed
       timeout_minutes: 30 # per command
@@ -1110,6 +1114,18 @@ swarmupd:
   backlog do not hold it: it finishes approved work. The review that follows covers only the
   resolution: the reviewer's prompt names each merge commit for `git show --remerge-diff`, and any
   other commit added since the approval for a full review.
+- **Checks by path (AO-0382).** A `checks` entry is a command, which runs on every merge, or
+  `{ run, paths }`, which runs only when the rebased work changes a file that `paths` selects.
+  The patterns are those of `test_changes`: a pattern without `/` matches the file name in any
+  folder, `*` and `?` stay inside one path segment and `**` crosses folders. A pattern that starts
+  with `!` takes paths out again, and the last pattern that matches a path decides, as in
+  `.gitignore`. With the example, a task that changes only Markdown, the changelog or assets runs
+  `npm run leaks` and nothing else. The `merge` event names the checks that passed and the ones
+  that did not run because the work changes none of their paths. A batch runs a check when any
+  of its tasks changes one of the check's paths. Task store files never count:
+  a branch that changes them is sent back before the checks. To run only the tests a change
+  reaches, use the test runner's own option, such as Vitest's or Jest's `--changed <base>`; the
+  worktree shares the repo, so the base branch name resolves there.
 - **Tasks blocked on the work.** A task blocked `--on` an approved task stays blocked until
   swarmupd records the merge on that task, so no run starts on a base that lacks the work. A merge
   that fails keeps them blocked: a conflict or a failed check sends the approved task back, and a

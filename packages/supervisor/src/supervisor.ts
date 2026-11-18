@@ -93,6 +93,7 @@ import {
   reviewCommits,
   reviewSources,
 } from './merge.js';
+import { checkCommand, checksFor } from './merge-checks.js';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
 import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electron-dist.js';
@@ -5466,7 +5467,12 @@ export class Supervisor extends EventEmitter {
         this.emit('warn', `review checks of ${ref}: ${msg}`);
         // The review is not held for a fault of swarmupd's own: its run starts and is told.
         if (!this.stopping) {
-          keep({ at: this.now(), commands: cfg.checks ?? [], results: [], note: firstLines(msg) });
+          keep({
+            at: this.now(),
+            commands: (cfg.checks ?? []).map(checkCommand),
+            results: [],
+            note: firstLines(msg),
+          });
         }
       })
       .finally(() => {
@@ -5490,7 +5496,7 @@ export class Supervisor extends EventEmitter {
     line: (text: string) => void,
   ): Promise<ReviewChecks | null> {
     const ws = this.ws();
-    const commands = cfg.checks ?? [];
+    const commands = (cfg.checks ?? []).map(checkCommand);
     const none = (note: string): ReviewChecks => ({ at: this.now(), commands, results: [], note });
     const root = ws.resolve(ref).root;
     const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
@@ -6284,6 +6290,7 @@ export class Supervisor extends EventEmitter {
     const timeout = mergeTimeout(cfg);
     let checked: string | null = null;
     let checks: CommandResult[] = [];
+    let skipped: string[] = [];
     let merged: { head: string; onto: string } | null = null;
     let refused = '';
     let waited = false;
@@ -6354,8 +6361,17 @@ export class Supervisor extends EventEmitter {
         // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
         if (this.merging) this.merging.holds = false;
         this.mergeStep('checks');
+        // Only the checks whose paths the work changes run (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.changedFiles(onto, r.head));
+        skipped = picked.skipped;
+        if (skipped.length > 0) {
+          this.mergeLine(
+            ref,
+            `skips checks for paths it does not change: ${skipped.map((c) => `\`${c}\``).join(', ')}`,
+          );
+        }
         checks = await runner.runAll(
-          cfg.checks ?? [],
+          picked.run,
           repo.worktree,
           timeout,
           (s) => this.mergeCommand('check', s),
@@ -6448,9 +6464,12 @@ export class Supervisor extends EventEmitter {
     const installDirs = lockfileDirs(changed);
     const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
     const passed =
-      checks.length > 0
+      (checks.length > 0
         ? ` Checks passed: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
+        : '') +
+      (skipped.length > 0
+        ? ` Not run, the work changes none of their paths: ${skipped.map((c) => `\`${c}\``).join(', ')}.`
+        : '');
     // Saved before the build, so a swarmupd that stops during it leaves the build to the next one.
     const pending: PendingBuild = {
       ref,
@@ -6641,6 +6660,7 @@ export class Supervisor extends EventEmitter {
     const timeout = mergeTimeout(cfg);
     let checked: string | null = null;
     let checks: CommandResult[] = [];
+    let skipped: string[] = [];
     let refused = '';
     let waited = false;
     let merged: { onto: string; head: string; heads: string[] } | null = null;
@@ -6691,8 +6711,17 @@ export class Supervisor extends EventEmitter {
           lead,
           `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
         );
+        // Only the checks whose paths a task of the batch changes run (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.changedFiles(onto, head));
+        skipped = picked.skipped;
+        if (skipped.length > 0) {
+          this.mergeLine(
+            lead,
+            `skips checks for paths the batch does not change: ${skipped.map((c) => `\`${c}\``).join(', ')}`,
+          );
+        }
         checks = await runner.runAll(
-          cfg.checks ?? [],
+          picked.run,
           repo.worktree,
           timeout,
           (s) => this.mergeCommand('check', s),
@@ -6779,9 +6808,12 @@ export class Supervisor extends EventEmitter {
     const installDirs = lockfileDirs(changed);
     const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
     const passed =
-      checks.length > 0
+      (checks.length > 0
         ? ` Checks passed once for the batch: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
+        : '') +
+      (skipped.length > 0
+        ? ` Not run, the batch changes none of their paths: ${skipped.map((c) => `\`${c}\``).join(', ')}.`
+        : '');
     const lastId = ids.at(-1)!;
     const others = (n: number): string => ids.filter((_, i) => i !== n).join(', ');
     const batch = `${cfg.base} moved from ${short(onto)} to ${short(head)} (${changed.length} file(s))`;
