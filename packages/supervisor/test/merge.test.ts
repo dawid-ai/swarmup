@@ -12,7 +12,15 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initRoot, PATCH_KEY_ARGS, patchKey, samePath, secretKind, Workspace } from '@swarmup/core';
+import {
+  initRoot,
+  PATCH_KEY_ARGS,
+  patchKey,
+  reviewSourcesOf,
+  samePath,
+  secretKind,
+  Workspace,
+} from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
 import type {
   MergeGitTimeout,
@@ -3695,5 +3703,72 @@ while (!existsSync(${JSON.stringify(go)})) await new Promise((r) => setTimeout(r
     for (const f of readdirSync(join(s.state, 'merge', 'logs'))) {
       expect(secretKind(text(join(s.state, 'merge', 'logs', f)))).toBeNull();
     }
+  });
+});
+
+describe('review source fields (AO-0384)', () => {
+  it('reads the fields before the prose, and a store review as naming no code', () => {
+    // AO-0328's wording: the extra word "store" misses the prose pattern.
+    const body = 'AO-0328: `98be9579` on store branch `main`; also see branch `old/x`.';
+    expect(reviewSources(body).named).toBeUndefined();
+    expect(reviewSourcesOf({ body, commit: 'ABCDEF1234', branch: 'claude/ao-0328' })).toEqual({
+      named: { commit: 'abcdef1234', branch: 'claude/ao-0328' },
+      loose: ['main', 'old/x'],
+    });
+    expect(reviewSourcesOf({ body, commit: '98be9579', branch: 'main', repo: 'store' })).toEqual({
+      loose: [],
+    });
+    // A commit without a branch (a detached HEAD) leaves the prose to name the source.
+    expect(reviewSourcesOf({ body: 'cc3d803 on branch x', commit: 'abcdef1' })).toEqual(
+      reviewSources('cc3d803 on branch x'),
+    );
+    const review = { body, commit: 'abcdef1', branch: 'claude/ao-0328', repo: 'code' as const };
+    expect(pickMergeSource([review], { branch: () => true, commit: () => true })).toEqual({
+      commit: 'abcdef1',
+      branch: 'claude/ao-0328',
+    });
+  });
+
+  it('merges the commit and branch a review recorded as fields when its prose names neither', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const eng = s.as('fake:engineer');
+    eng.start('1', 'plan');
+    const body = `T-0001: \`${commit.slice(0, 8)}\` on store branch \`main\`.`;
+    eng.review('1', body, 'human:dawid', undefined, {
+      source: { commit, branch: 'feature', repo: 'code' },
+    });
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+  });
+
+  it('closes a review of store work with no merge and no finding, and frees its waiters', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    // AO-0297's case: a store commit the code repo lacks, named as `<commit> on branch <name>`.
+    const body = 'T-0001: e4aa1570 on branch main: agent files updated.';
+    eng.review('1', body, 'human:dawid', undefined, {
+      source: { commit: 'e4aa1570', branch: 'main', repo: 'store' },
+    });
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    const human = s.as('human:dawid');
+    // Store work has no code to wait for: the approval frees the waiter on its own.
+    expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: false });
+    expect(human.view('2').unblocked).toBe(true);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, no_merge: true });
+    expect(e.body).toContain('nothing to merge: store work, synced');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    // Once only, and no finding.
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(human.views().filter((v) => v.meta.type === 'finding')).toEqual([]);
   });
 });

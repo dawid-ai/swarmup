@@ -90,8 +90,8 @@ import {
   opsdCodeChanges,
   pickMergeSource,
   reviewCommits,
-  reviewSources,
 } from './merge.js';
+import { reviewSourcesOf, storeReview, type ReviewText } from '@swarmup/core';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
 import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electron-dist.js';
@@ -548,6 +548,11 @@ interface MergeJob {
   root: string;
   /** The text of the review request the approval answers. */
   review: string;
+  /**
+   * Whether that request names `<commit> on branch <name>`, in its source fields (AO-0384) or its
+   * text: then the merge takes what it names, and no other commit of its text is looked for.
+   */
+  named: boolean;
 }
 
 /**
@@ -5278,7 +5283,7 @@ export class Supervisor extends EventEmitter {
       const id = v.meta.id;
       const named =
         !before &&
-        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSources(e.body).named);
+        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSourcesOf(e).named);
       if (named) {
         this.mergeNote(
           ref,
@@ -5825,22 +5830,29 @@ export class Supervisor extends EventEmitter {
       .filter((e) => e.type === 'review');
     const review = reviews[0];
     if (!review) return null;
-    const root = ws.resolve(ref).root;
-    const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
-    if (!top) return null;
-    const repo = new MergeRepo(top, '', [], this.commandEnv());
+    const { root, id } = ws.resolve(ref);
     // A run may ask for review before it ends, then leave files that its sandbox could not
     // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
     // the review. The approval covers the review plus that note, so it is the source to merge;
     // the branch named by the earlier review lacks the files (AO-0356).
     const committed = committedRunSource(events);
-    const src =
-      committed ??
-      (await this.pickSource(
-        repo,
-        reviews.map((e) => e.body),
-        () => this.mergeHalted(),
-      ));
+    // A review sent from the task store's own repo is store work (AO-0384): `swarmup sync` has
+    // pushed it, and the code repo has nothing of it, so nothing is merged and no finding says
+    // that the work is missing from the base. The tasks blocked on it go on.
+    if (!committed && storeReview(review)) {
+      const at = review.commit ? ` (store commit ${short(review.commit)})` : '';
+      this.mergeNothing(
+        ref,
+        `swarmupd merges nothing for ${id}: nothing to merge: store work, synced. ` +
+          `Its approved review was sent from the task store's repo${at}, which \`swarmup sync\` ` +
+          'pushes. The tasks blocked on it go on.',
+      );
+      return null;
+    }
+    const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
+    if (!top) return null;
+    const repo = new MergeRepo(top, '', [], this.commandEnv());
+    const src = committed ?? (await this.pickSource(repo, reviews, () => this.mergeHalted()));
     if (!src || src === 'halted') return null;
     const what = src.commit
       ? `${src.commit} on branch ${src.branch}`
@@ -5856,6 +5868,7 @@ export class Supervisor extends EventEmitter {
       human: root.config.human,
       root: root.name,
       review: review.body,
+      named: !!reviewSourcesOf(review).named,
     };
   }
 
@@ -5867,7 +5880,7 @@ export class Supervisor extends EventEmitter {
    */
   private async pickSource(
     repo: MergeRepo,
-    texts: string[],
+    texts: (string | ReviewText)[],
     halted: () => boolean,
   ): Promise<MergeSource | null | 'halted'> {
     const commits = new Set<string>();
@@ -6503,7 +6516,7 @@ export class Supervisor extends EventEmitter {
     source: string,
     onto: string,
   ): Promise<string[]> {
-    if (reviewSources(job.review).named) return [];
+    if (job.named) return [];
     const lacks: string[] = [];
     for (const sha of reviewCommits(job.review)) {
       const commit = await repo.commit(sha);

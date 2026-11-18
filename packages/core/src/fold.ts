@@ -11,7 +11,7 @@ import type {
 } from './model.js';
 import { MERGE_ACTOR, OPEN_STATUSES, PLAN_CHECKER } from './model.js';
 import { planChangedKeys, readPlanBody } from './plan.js';
-import { reviewSources } from './review-source.js';
+import { reviewSourcesOf } from './review-source.js';
 import { ownerMatches } from './ids.js';
 import { ulidTime } from './ulid.js';
 
@@ -331,10 +331,13 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
           at: e.at,
           body: e.body.trim().slice(0, REVIEW_LEN),
           ...(e.recommend ? { recommend: e.recommend } : {}),
+          ...(e.commit ? { commit: e.commit } : {}),
+          ...(e.branch ? { branch: e.branch } : {}),
+          ...(e.repo ? { repo: e.repo } : {}),
         };
         clearClaim();
         if (!namesBranch) {
-          const src = reviewSources(e.body);
+          const src = reviewSourcesOf(e);
           namesBranch = !!src.named || src.loose.length > 0;
         }
         break;

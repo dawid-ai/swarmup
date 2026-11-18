@@ -97,7 +97,8 @@ import {
   buildWrapped,
   wrappedText,
 } from '@swarmup/supervisor';
-import { envVar } from '@swarmup/core';
+import { envVar, reviewSources } from '@swarmup/core';
+import type { ReviewSourceFields } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
@@ -203,6 +204,92 @@ function uncommittedReview(ctx: Ctx, ref: string, message: string): string | nul
     `(${files[0]}${more}): commit them on a task branch and name '<commit> on branch <name>' ` +
     `or a PR in the message`
   );
+}
+
+/** Runs git in `cwd`; its output trimmed, or null when it fails. */
+function gitOut(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** A path as the file system spells it, so a short and a long Windows form compare equal. */
+function realPath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
+ * Whether the git checkout `top` is a task store's own repo (AO-0384): one of `stores` is in it,
+ * and its HEAD holds nothing at the top but store folders and dotfiles. A store folder inside a
+ * code repo (`.swarmup/` beside the code) leaves the checkout a code checkout.
+ */
+function isStoreCheckout(top: string, stores: string[]): boolean {
+  const realTop = realPath(top);
+  const holds = stores.some((s) => {
+    const t = gitOut(s, ['rev-parse', '--show-toplevel']);
+    return t !== null && realPath(t) === realTop;
+  });
+  if (!holds) return false;
+  const entries = gitOut(top, ['ls-tree', '--name-only', 'HEAD']);
+  if (entries === null) return false;
+  return entries
+    .split('\n')
+    .filter(Boolean)
+    .every((n) => isStoreDirName(n) || n.startsWith('.'));
+}
+
+/**
+ * Where the work of a review is (AO-0384), recorded on the review event so the merge needs no
+ * prose: the HEAD commit, branch and repo kind of the git checkout `cwd`. `--commit` and
+ * `--branch` override the checkout. When neither is given and the message names a
+ * `<commit> on branch <name>` that is not the checkout's HEAD, the message wins: the agent named
+ * other work than the folder it runs in, such as a review sent from the main checkout. Outside a
+ * checkout, only what the options name.
+ */
+function reviewSourceOf(
+  cwd: string,
+  stores: string[],
+  message: string,
+  opts: { commit?: string; branch?: string },
+): { source: ReviewSourceFields; note?: string } {
+  const top = gitOut(cwd, ['rev-parse', '--show-toplevel']);
+  const given = {
+    ...(opts.commit ? { commit: opts.commit } : {}),
+    ...(opts.branch ? { branch: opts.branch } : {}),
+  };
+  if (top === null) return { source: given };
+  const repo = isStoreCheckout(top, stores) ? 'store' : 'code';
+  if (repo === 'store') return { source: { ...given, repo } };
+  const head = gitOut(top, ['rev-parse', 'HEAD']) ?? undefined;
+  const branch = gitOut(top, ['symbolic-ref', '--short', '-q', 'HEAD']) ?? undefined;
+  const named = reviewSources(message).named;
+  if (!opts.commit && !opts.branch && named?.commit && head && !head.startsWith(named.commit)) {
+    return {
+      source: { commit: named.commit, branch: named.branch, repo },
+      note:
+        `the message names ${named.commit} on branch ${named.branch}, not ${head.slice(0, 10)} ` +
+        `(HEAD of ${top}): recorded the message's; pass --commit and --branch to choose`,
+    };
+  }
+  return {
+    source: {
+      ...(head ? { commit: head } : {}),
+      ...(branch ? { branch } : {}),
+      ...given,
+      repo,
+    },
+  };
 }
 
 /**
@@ -1432,13 +1519,16 @@ const COMMANDS: Record<string, Command> = {
       ),
   },
   review: {
-    usage: 'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT]',
+    usage:
+      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA] [--branch NAME]',
     summary:
-      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work',
+      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work; records the HEAD commit, branch and repo of the checkout it runs in for the merge (--commit, --branch override)',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },
       recommend: { type: 'string' },
+      commit: { type: 'string' },
+      branch: { type: 'string' },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
@@ -1446,10 +1536,19 @@ const COMMANDS: Record<string, Command> = {
       const msg = message(ctx, 1, true);
       const refused = uncommittedReview(ctx, ref, msg);
       if (refused) throw new OpsError(refused, 1);
+      const ws = ctx.ws();
+      const { source, note } = reviewSourceOf(
+        ctx.io.cwd,
+        ws.roots.map((r) => r.dir),
+        msg,
+        { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
+      );
+      if (note) ctx.io.err(`note: ${note}`);
       return printAct(
         ctx,
-        ctx.ws().review(ref, msg, str(ctx.opts.to), str(ctx.opts.recommend), {
+        ws.review(ref, msg, str(ctx.opts.to), str(ctx.opts.recommend), {
           human: ctx.opts.human === true,
+          source,
         }),
       );
     },

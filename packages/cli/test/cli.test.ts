@@ -1162,6 +1162,104 @@ describe('a review request for code left uncommitted (AO-0136)', () => {
   });
 });
 
+describe('a review request records where its work is (AO-0384)', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
+
+  /** A started code task in a fresh repo; `code` puts a file beside the store, as a code repo has. */
+  function started(code: boolean): string {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    swarmup(d, 'human:dawid', 'new', 'Fix login', '--to', 'claude:engineer');
+    if (code) writeFileSync(join(d, 'login.ts'), 'export {};\n');
+    git(d, 'add', '-A');
+    git(d, 'commit', '-qm', 'start');
+    swarmup(d, 'claude:engineer', 'start', '1', 'plan');
+    return d;
+  }
+
+  /** The frontmatter of the task's newest review event, as text. */
+  function lastReview(d: string): string {
+    const dir = ['.swarmup', '.agent-ops']
+      .map((s) => join(d, s, 'tasks', 'T-0001', 'events'))
+      .find((p) => existsSync(p))!;
+    const files = readdirSync(dir).sort();
+    const texts = files.map((f) => readFileSync(join(dir, f), 'utf8'));
+    return texts
+      .filter((t) => /^type: review$/m.test(t))
+      .at(-1)!
+      .split('\n---')[0]!;
+  }
+
+  it('takes the HEAD commit, branch and repo of a code checkout, without the message naming them', () => {
+    const d = started(true);
+    git(d, 'switch', '-q', '-c', 'claude/t-0001-login');
+    writeFileSync(join(d, 'login.ts'), 'export const x = 1;\n');
+    git(d, 'commit', '-qam', 'Fix login');
+    const head = git(d, 'rev-parse', 'HEAD');
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'fixed, see the commit',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    const front = lastReview(d);
+    expect(front).toContain(`commit: ${head}`);
+    expect(front).toContain('branch: claude/t-0001-login');
+    expect(front).toContain('repo: code');
+  });
+
+  it('marks a review sent from the task store repo as store work', () => {
+    const d = started(false);
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'agent notes updated',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    expect(lastReview(d)).toContain('repo: store');
+  });
+
+  it('records a commit and branch the message names over a HEAD that differs, with a note', () => {
+    const d = started(true);
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'a1b2c3d on branch claude/t-0001-login: fixed',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    expect(res.err).toMatch(/note: the message names a1b2c3d on branch claude\/t-0001-login/);
+    const front = lastReview(d);
+    expect(front).toContain('commit: a1b2c3d');
+    expect(front).toContain('branch: claude/t-0001-login');
+  });
+
+  it('takes --commit and --branch over the checkout, and refuses a commit that is no hex id', () => {
+    const d = started(true);
+    const args = ['review', '1', 'fixed', '--to', 'codex:qa'];
+    const bad = swarmup(d, 'claude:engineer', ...args, '--commit', 'nothex!');
+    expect(bad.code).toBe(2);
+    const ok = swarmup(d, 'claude:engineer', ...args, '--commit', 'ABCDEF1', '--branch', 'x/y');
+    expect(ok.code).toBe(0);
+    const front = lastReview(d);
+    expect(front).toContain('commit: abcdef1');
+    expect(front).toContain('branch: x/y');
+    expect(front).toContain('repo: code');
+  });
+});
+
 describe('swarmup repeat (AO-0142)', () => {
   it('adds, edits, pauses, runs and deletes a repeating task', () => {
     const d = repo();

@@ -1,12 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { MergeSource } from '@swarmup/core';
+import type { MergeSource, ReviewText } from '@swarmup/core';
 import {
   PATCH_KEY_ARGS,
   patchKey,
   reviewCommits,
   reviewSources,
+  reviewSourcesOf,
   ROOT_DIR_NAMES,
   samePath,
 } from '@swarmup/core';
@@ -45,7 +46,8 @@ export function mergeSource(text: string): MergeSource | null {
 
 /**
  * Picks what to merge from a task's review requests, newest first, using `has` to check names
- * against the repo (AO-0153):
+ * against the repo (AO-0153). A request is its text, or its event with the source fields
+ * `swarmup review` records, which come before the text (AO-0384, `reviewSourcesOf`):
  *
  * 1. The newest review's `<commit> on branch <name>`, as it is: a commit missing from the repo
  *    gets a note to the human, not an older commit.
@@ -56,11 +58,11 @@ export function mergeSource(text: string): MergeSource | null {
  * Returns null when no review names a branch or commit the repo has.
  */
 export function pickMergeSource(
-  reviews: string[],
+  reviews: (string | ReviewText)[],
   has: { branch: (name: string) => boolean; commit: (sha: string) => boolean },
 ): MergeSource | null {
-  for (const [i, text] of reviews.entries()) {
-    const s = reviewSources(text);
+  for (const [i, review] of reviews.entries()) {
+    const s = reviewSourcesOf(typeof review === 'string' ? { body: review } : review);
     if (i === 0 && s.named) return s.named;
     if (i > 0 && s.named) {
       if (has.branch(s.named.branch!)) return { branch: s.named.branch };

@@ -1,0 +1,2 @@
+- `swarmup review` records the HEAD commit, branch and repo of the checkout it runs in on the review, and swarmupd's merge reads them before the review's wording. Approved work no longer misses `main` because the request phrased `<commit> on branch <name>` its own way. `--commit` and `--branch` override the checkout.
+- An approved review sent from the task store's own repo closes with "nothing to merge: store work, synced" instead of a "not in main" finding, and the tasks waiting on it go on.

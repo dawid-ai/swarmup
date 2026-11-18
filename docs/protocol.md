@@ -706,6 +706,10 @@ question blocks nothing; it is its own task.
   and asks to commit first, so a reviewer never approves work with nothing to merge. A swarmupd run
   that started on a clean checkout is let through: swarmupd commits what it leaves on a task branch
   and tells the reviewer (see [the supervisor](supervisor.md)).
+- `swarmup review` records where the work is as fields of the review event (AO-0384): `commit`
+  and `branch` from the HEAD of the git checkout it runs in, and `repo` (`code`, or `store` for a
+  task store's own repo). `--commit SHA` and `--branch NAME` override the checkout. swarmupd's
+  merge reads them before the message.
 - `--force` lets anyone through and records `forced: true` in the event.
 
 ## Events
