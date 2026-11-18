@@ -633,7 +633,8 @@ wake and schedules wait for room.
     branch: to the reviewer the task's delegation expects, else the reviewer its plan item names
     (`review` in `task.md`), else the first active `qa` agent of another provider, else the
     human. If the run already asked for review, swarmupd comments to its reviewer where the
-    files went.
+    files went. An approval then merges the commit and run-suffixed branch from that run-end note,
+    not the older task branch named by the review sent before wrap-up.
   - swarmupd commits only once nothing of the run still writes: it first reaps the processes the run
     left behind and waits up to 30 seconds for the run's helpers to end, including helpers that
     ended first and are still reaping their own processes. Until then the run counts as live, so

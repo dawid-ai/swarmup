@@ -5815,11 +5815,18 @@ export class Supervisor extends EventEmitter {
     const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
     if (!top) return null;
     const repo = new MergeRepo(top, '', [], this.commandEnv());
-    const src = await this.pickSource(
-      repo,
-      reviews.map((e) => e.body),
-      () => this.mergeHalted(),
-    );
+    // A run may ask for review before it ends, then leave files that its sandbox could not
+    // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
+    // the review. The approval covers the review plus that note, so it is the source to merge;
+    // the branch named by the earlier review lacks the files (AO-0356).
+    const committed = committedRunSource(events);
+    const src =
+      committed ??
+      (await this.pickSource(
+        repo,
+        reviews.map((e) => e.body),
+        () => this.mergeHalted(),
+      ));
     if (!src || src === 'halted') return null;
     const what = src.commit
       ? `${src.commit} on branch ${src.branch}`
@@ -7524,6 +7531,40 @@ export function straysNote(paths: string[]): string {
 /** How a run-end note starts when swarmupd left what the run changed uncommitted (`commitStep`). */
 const NOT_COMMITTED = /^(cannot commit what it left in |left changes uncommitted: )/m;
 
+/** The exact start of a run-end note for files swarmupd committed during wrap-up. */
+const COMMITTED_LEFTOVERS =
+  /^left \d+ changed file\(s\); swarmupd committed them as ([0-9a-f]{7,40}) on branch ([^\s.]+(?:\.[^\s.]+)*)/m;
+
+/**
+ * The run-end of the run that made the approved review, when it lies between that review and its
+ * verdict. Events from another run or author do not describe work that approval covered.
+ */
+function approvedReviewRunEnd(events: OpsEvent[]): { review: OpsEvent; end: OpsEvent } | null {
+  let at = events.length - 1;
+  while (at >= 0 && events[at]!.type !== 'verdict') at--;
+  let asked = at - 1;
+  while (asked >= 0 && events[asked]!.type !== 'review') asked--;
+  if (asked < 0) return null;
+  const review = events[asked]!;
+  if (!review.run) return null;
+  const ends = events
+    .slice(asked + 1, at)
+    .filter((e) => e.type === 'run-end' && e.run === review.run);
+  const end = ends[0];
+  if (ends.length !== 1 || !end || end.actor !== review.actor) return null;
+  return { review, end };
+}
+
+/**
+ * What swarmupd committed during wrap-up of the run that made the approved review. This source is
+ * newer than the review's branch: sandboxed runs cannot put these files on that branch themselves.
+ */
+function committedRunSource(events: OpsEvent[]): MergeSource | null {
+  const pair = approvedReviewRunEnd(events);
+  const match = pair ? COMMITTED_LEFTOVERS.exec(pair.end.body ?? '') : null;
+  return match ? { commit: match[1]!, branch: match[2]! } : null;
+}
+
 /**
  * The run that made the approved review, when its `run-end` says that swarmupd could not commit
  * what it left; else null. Only that run's changes are swarmupd's to commit before a merge: the
@@ -7536,21 +7577,11 @@ const NOT_COMMITTED = /^(cannot commit what it left in |left changes uncommitted
  * nothing is committed for it.
  */
 export function uncommittedRun(events: OpsEvent[]): { id: string; agent: string } | null {
-  let at = events.length - 1;
-  while (at >= 0 && events[at]!.type !== 'verdict') at--;
-  let asked = at - 1;
-  while (asked >= 0 && events[asked]!.type !== 'review') asked--;
-  if (asked < 0) return null;
-  const review = events[asked]!;
-  if (!review.run) return null;
-  const ends = events
-    .slice(asked + 1, at)
-    .filter((e) => e.type === 'run-end' && e.run === review.run);
-  // A run ends once, as the review's author; any other record is not one to act on.
-  const end = ends[0];
-  if (ends.length !== 1 || !end || end.actor !== review.actor) return null;
+  const pair = approvedReviewRunEnd(events);
+  if (!pair) return null;
+  const { review, end } = pair;
   if (!NOT_COMMITTED.test(end.body ?? '')) return null;
-  return { id: review.run, agent: review.actor };
+  return { id: review.run!, agent: review.actor };
 }
 
 /**
