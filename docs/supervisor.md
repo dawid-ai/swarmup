@@ -1139,9 +1139,11 @@ swarmupd:
   cannot do (the branch or commit is missing, the base kept moving, local changes in the way) gets
   a comment to the root's human, and swarmupd does not try that task again until it changes.
 - **When a step hangs.** A check or build command stops at `timeout_minutes`, with everything it
-  started. A check that timed out is not sent back the first time: swarmupd logs a warning and merges
-  the task once more from the start, since a machine under load can stall a test run; the second
-  timeout sends it back. The one more merge belongs to that merge: a later review of the task gets
+  started. A check that timed out with no failed test in its output is not sent back the first time:
+  swarmupd logs a warning and merges the task once more from the start, with twice the limit for the
+  checks, since a machine under load can stall a test run; the second timeout sends it back. A check
+  that timed out after it printed a failed test (vitest's `FAIL` or `×` lines, node:test's `not ok`)
+  sends the task back at once. The one more merge belongs to that merge: a later review of the task gets
   its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a

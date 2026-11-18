@@ -1,0 +1,1 @@
+- Stop sending good work back when a merge check times out on a busy machine: after a check times out with no failed test, swarmupd merges the task once more with twice the time limit for the checks. A check that times out after a failed test still sends the task back at once.

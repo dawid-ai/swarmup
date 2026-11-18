@@ -452,6 +452,11 @@ export interface CommandResult {
   /** It ran past its timeout and swarmupd stopped it. */
   timedOut?: boolean;
   /**
+   * It timed out after it had printed a failed test (`showsFailedTest`), so the timeout does not
+   * hide a pass: the code failed (AO-0385). Set only with `timedOut`.
+   */
+  failedTest?: boolean;
+  /**
    * Its place, from 0, in the list `CommandRunner.runAll` got. Not its place in the results when
    * an earlier function entry had nothing to run.
    */
@@ -478,6 +483,22 @@ export interface CommandStep {
 
 /** How much of a command's output swarmupd keeps. */
 const OUTPUT_KEEP = 64 * 1024;
+
+/**
+ * Lines a test runner prints for a failed test: vitest's `FAIL  file > name`, `× name`, `❯ file
+ * (5 tests | 1 failed)` and `Tests  1 failed`, and node:test's `not ok 1 - name` and `✖ name`.
+ */
+const FAILED_TEST =
+  /^\s*(?:FAIL\s|[×✗✖]\s|not ok \d|Test(?:s| Files)\s+[1-9]\d* failed\b)|\(\d+ tests? \| [1-9]\d* failed\)/mu;
+
+/** Terminal color codes, which vitest prints when `FORCE_COLOR` is set even into a pipe. */
+// eslint-disable-next-line no-control-regex
+const COLOR_CODE = /\x1b\[[0-9;]*m/g;
+
+/** Whether a command's output shows a failed test (AO-0385). */
+export function showsFailedTest(output: string): boolean {
+  return FAILED_TEST.test(output.replace(COLOR_CODE, ''));
+}
 
 /** How often a running command looks at the wall clock, to notice that the PC slept. */
 const CLOCK_TICK_MS = 1_000;
@@ -1059,9 +1080,14 @@ export class CommandRunner {
             detached: process.platform !== 'win32',
           });
       let output = '';
+      // Read before the start of the output is dropped, so an early failure still counts.
+      let failedTest = false;
       const keep = (b: Buffer): void => {
         output += b.toString('utf8');
-        if (output.length > OUTPUT_KEEP * 2) output = output.slice(-OUTPUT_KEEP);
+        if (output.length > OUTPUT_KEEP * 2) {
+          failedTest ||= showsFailedTest(output);
+          output = output.slice(-OUTPUT_KEEP);
+        }
       };
       child.stdout?.on('data', keep);
       child.stderr?.on('data', keep);
@@ -1135,7 +1161,10 @@ export class CommandRunner {
           why: ok ? undefined : (why ?? `exit ${code}`),
         };
         if (interrupted) result.interrupted = true;
-        if (timedOut && !ok) result.timedOut = true;
+        if (timedOut && !ok) {
+          result.timedOut = true;
+          if (failedTest || showsFailedTest(output)) result.failedTest = true;
+        }
         // What the command left behind ends before the next command starts.
         const after = pid === undefined ? undefined : this.watch?.ended(pid);
         void bounded(after, WATCH_STOP_MS * 2).then(() => res(result));
@@ -1174,6 +1203,6 @@ function errorText(err: unknown): string {
 }
 
 /** A timeout for a message: `5 min`, or seconds under a minute. */
-function formatTimeout(ms: number): string {
+export function formatTimeout(ms: number): string {
   return ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`;
 }

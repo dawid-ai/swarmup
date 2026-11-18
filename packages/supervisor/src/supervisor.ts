@@ -80,6 +80,7 @@ import type {
 } from './merge.js';
 import {
   CommandRunner,
+  formatTimeout,
   GitTimeout,
   insideDir,
   installSteps,
@@ -372,6 +373,11 @@ export const SIGNED_OUT_TRY_MINUTES = 60;
  * trusting that check: it may only look for stored credentials, not whether they still work.
  */
 const CHECK_DOUBT_MS = 30 * 60_000;
+/**
+ * The merge once more after a check timed out with no failed test runs the checks with this many
+ * times the limit: the timeout was likely machine load, not the code (AO-0385).
+ */
+const RETRY_TIMEOUT_FACTOR = 2;
 /** After failing to make a task worktree, swarmupd tries again this much later (AO-0168). */
 const WORKTREE_RETRY_MS = 10 * 60_000;
 /** A checkout no run was planned or launched in for this long is no longer read each tick. */
@@ -6228,13 +6234,19 @@ export class Supervisor extends EventEmitter {
         // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
         if (this.merging) this.merging.holds = false;
         this.mergeStep('checks');
+        // The merge once more after a check timed out gives the checks twice the time (AO-0385).
+        const checksTimeout = this.mergeTimedOut.has(ref)
+          ? timeout * RETRY_TIMEOUT_FACTOR
+          : timeout;
+        if (this.merging) this.merging.timeoutMs = checksTimeout;
         checks = await runner.runAll(
           cfg.checks ?? [],
           repo.worktree,
-          timeout,
+          checksTimeout,
           (s) => this.mergeCommand('check', s),
           this.electronEnv(this.commandEnv(), repo.worktree, top),
         );
+        if (this.merging) this.merging.timeoutMs = timeout;
         this.shareElectron(repo.worktree);
         const failed = checks.find((c) => !c.ok);
         // Stopped with swarmupd: the next swarmupd merges it from the start.
@@ -6247,21 +6259,28 @@ export class Supervisor extends EventEmitter {
           );
           return 'again';
         }
-        // A check that hangs may be the machine, not the code: merged again once (AO-0172).
-        if (failed?.timedOut && !this.mergeTimedOut.has(ref)) {
+        // A check that hangs with no failed test may be the machine, not the code: merged again
+        // once, with a longer limit (AO-0172, AO-0385). A failed test before the timeout is a no.
+        if (failed?.timedOut && !failed.failedTest && !this.mergeTimedOut.has(ref)) {
           this.mergeTimedOut.add(ref);
+          const limit = formatTimeout(timeout * RETRY_TIMEOUT_FACTOR);
           this.emit(
             'warn',
-            `merge of ${ref}: \`${failed.command}\` ${failed.why}; swarmupd stopped it and merges once more`,
+            `merge of ${ref}: \`${failed.command}\` ${failed.why} with no failed test; swarmupd stopped it and merges once more, with a ${limit} limit`,
           );
           return 'again';
         }
         if (failed) {
+          const why = !failed.timedOut
+            ? failed.why
+            : failed.failedTest
+              ? `${failed.why}, after a failed test`
+              : `${failed.why}, the second time in a row`;
           this.mergeBack(
             ref,
             job.what,
             job.author,
-            `\`${failed.command}\` failed (${failed.why}) on it rebased onto ${cfg.base} (${short(onto)})`,
+            `\`${failed.command}\` failed (${why}) on it rebased onto ${cfg.base} (${short(onto)})`,
             failed.output,
           );
           return;
