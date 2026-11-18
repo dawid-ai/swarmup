@@ -534,6 +534,8 @@ export interface MergeJob {
   /** The root's human, who gets notes on merges swarmupd cannot do. */
   human?: string;
   root: string;
+  /** The task store that owns the approved task and may hold store-only work. */
+  store: string;
   /** The text of the review request the approval answers. */
   review: string;
   /**
