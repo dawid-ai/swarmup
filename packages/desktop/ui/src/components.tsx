@@ -209,12 +209,14 @@ export function Select(props: {
   onChange: (v: string) => void;
   options: Array<[string, string]>;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <select
       value={props.value}
+      disabled={props.disabled}
       onChange={(e) => props.onChange(e.target.value)}
-      className={cx(FIELD, 'h-[34px] pr-7', props.className)}
+      className={cx(FIELD, 'h-[34px] pr-7', props.disabled && 'opacity-60', props.className)}
     >
       {props.options.map(([v, label]) => (
         <option key={v} value={v} className="bg-ink-850">

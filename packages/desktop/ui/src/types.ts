@@ -516,10 +516,21 @@ export interface ChannelMessage {
 
 /** The installed app's updates, from the main process. */
 export interface UpdateState {
-  status: 'off' | 'idle' | 'checking' | 'none' | 'downloading' | 'ready' | 'error';
+  status:
+    | 'off'
+    | 'idle'
+    | 'checking'
+    | 'none'
+    | 'downloading'
+    | 'ready'
+    | 'waiting'
+    | 'installing'
+    | 'error';
+  mode: 'manual' | 'auto';
   current: string;
   version?: string;
   percent?: number;
+  live?: number;
   error?: string;
   checkedAt?: string;
   notes?: string;

@@ -45,7 +45,7 @@ vi.mock(import('../ui/src/api'), async (original) => ({
     reload: vi.fn(),
     set: vi.fn() as (data: T) => void,
   }),
-  useUpdate: () => ({ status: 'none', current: '0.3.0' }),
+  useUpdate: () => ({ status: 'none', mode: 'manual', current: '0.3.0' }),
 }));
 
 declare global {

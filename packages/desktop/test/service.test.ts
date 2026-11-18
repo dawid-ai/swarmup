@@ -68,6 +68,19 @@ describe('tray', () => {
     expect(waiting.find((i) => i.command === 'notify')?.checked).toBe(false);
   });
 
+  it('shows download, wait and install progress in the tray', () => {
+    expect(
+      trayMenu(base, true, { status: 'downloading', version: '0.4.0', percent: 42 })[1],
+    ).toMatchObject({ label: 'Downloading SwarmUp 0.4.0: 42%', enabled: false });
+    expect(trayMenu(base, true, { status: 'waiting', version: '0.4.0', live: 1 })[1]).toMatchObject(
+      { label: 'Update 0.4.0: waiting for 1 live run', enabled: false },
+    );
+    expect(trayMenu(base, true, { status: 'installing', version: '0.4.0' })[1]).toMatchObject({
+      label: 'Installing SwarmUp 0.4.0…',
+      enabled: false,
+    });
+  });
+
   it('asks before a stop or restart ends live runs, only where runs end with swarmupd', () => {
     const win = { ...base, runsOutlive: false };
     expect(stopEndsRuns({ ...base, live: 2 })).toBe(false);
@@ -411,9 +424,19 @@ describe('start at sign-in', () => {
   });
 
   it('keeps notifications on unless the config turns them off', () => {
-    expect(desktopSettings({})).toEqual({ notify: true });
-    expect(desktopSettings(null)).toEqual({ notify: true });
-    expect(desktopSettings({ desktop: { notify: false } })).toEqual({ notify: false });
-    expect(desktopSettings({ desktop: { notify: 'no' } })).toEqual({ notify: true });
+    expect(desktopSettings({})).toEqual({ notify: true, updates: 'manual' });
+    expect(desktopSettings(null)).toEqual({ notify: true, updates: 'manual' });
+    expect(desktopSettings({ desktop: { notify: false } })).toEqual({
+      notify: false,
+      updates: 'manual',
+    });
+    expect(desktopSettings({ desktop: { notify: 'no', updates: 'auto' } })).toEqual({
+      notify: true,
+      updates: 'auto',
+    });
+    expect(desktopSettings({ desktop: { updates: 'later' } })).toEqual({
+      notify: true,
+      updates: 'manual',
+    });
   });
 });

@@ -49,10 +49,11 @@ and run it. It installs, for your user only:
   checks** can repair those copies and safely remove a leftover `agent-ops` skill folder only when
   that folder contains no other files.
 
-The app updates itself from [GitHub Releases](https://github.com/dawid-ai/swarmup/releases): a
-new version downloads in the background and installs once no agent run is live and the window is
-closed. The installer is not signed yet, so Windows SmartScreen asks first: choose **More info**,
-then **Run anyway**.
+The app updates itself from [GitHub Releases](https://github.com/dawid-ai/swarmup/releases). Choose
+**Manual** or **Auto** under **Settings > Updates**: Manual installs a background download once no
+agent run is live and the window is closed, while Auto pauses new runs, lets live ones finish, then
+installs, restarts and resumes. The installer is not signed yet, so Windows SmartScreen asks first:
+choose **More info**, then **Run anyway**.
 
 On first start the app asks for your id (such as `human:you`) and the folder that holds your
 tasks, then starts swarmupd. To make a folder hold tasks, run `swarmup init` in it (see below).
