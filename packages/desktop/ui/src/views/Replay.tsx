@@ -184,6 +184,8 @@ export async function recordClip(
   if (opts.signal?.aborted) throw new RecordCancelled();
   onPicked?.();
   const bytes = await record(opts);
+  // Cancel stays on screen while the file is prepared, so a late click must still skip the save.
+  if (opts.signal?.aborted) throw new RecordCancelled();
   const name = videoFileName(opts.scene.id, opts.project, opts.aspect.id, opts.durationMs);
   const res = await bridge().saveVideo(name, bytes);
   if (!res.ok || !res.data) throw new Error(res.error ?? 'saving failed');
@@ -445,6 +447,8 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
           ...overlay,
           onProgress,
         });
+        // Cancel stays on screen after the last frame, so a late click must still skip the save.
+        if (ctrl.signal.aborted) throw new GifCancelled();
         const name = gifFileName(scene.id, subject, GIF_WIDTH, GIF_FPS, duration);
         const res = await bridge().saveGif(name, bytes);
         if (!res.ok || !res.data) throw new Error(res.error ?? 'saving failed');

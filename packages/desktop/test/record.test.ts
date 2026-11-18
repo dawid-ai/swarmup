@@ -292,6 +292,33 @@ describe('encodeClip', () => {
     expect(log.closed).toBe(1);
   });
 
+  // AO-0375: Cancel stays on screen while the encoder flushes, after the last frame's progress.
+  it('stops on a cancel during the final flush and closes the encoder', async () => {
+    const { codecs, log } = fakeCodecs();
+    const hung: Codecs = {
+      ...codecs,
+      encoder: (init) => {
+        const enc = codecs.encoder(init);
+        enc.flush = () => new Promise<void>(() => {});
+        return enc;
+      },
+    };
+    const ctrl = new AbortController();
+    const done = encodeClip({
+      stage: { width: 1920, height: 1080 },
+      frames: 30,
+      codecs: hung,
+      signal: ctrl.signal,
+      draw: () => canvas,
+      onProgress: (n, total) => {
+        if (n === total) setTimeout(() => ctrl.abort(), 0);
+      },
+    });
+    await expect(done).rejects.toBeInstanceOf(RecordCancelled);
+    expect(log.encoded).toHaveLength(30);
+    expect(log.closed).toBe(1);
+  });
+
   it('fails when the encoder reports an error', async () => {
     const { codecs, log } = fakeCodecs({ failAt: 3 });
     await expect(
@@ -816,6 +843,52 @@ describe('Record controls', () => {
     expect(status()).toBe('Saving cancelled');
     expect(box.querySelector('[data-testid="replay-busy"]')).toBeNull();
     expect(button('Save frame').disabled).toBe(false);
+  });
+
+  // AO-0375 review: Cancel is still shown in "saving the file", after the last frame's progress.
+  it('saves no MP4 when Cancel comes after the last frame, even if the recorder still returns bytes', async () => {
+    const calls: RecordOptions[] = [];
+    let finish: (bytes: Uint8Array) => void = () => {};
+    // A recorder past its last abort check: it ignores the signal and returns the clip.
+    const record = (opts: RecordOptions): Promise<Uint8Array> => {
+      calls.push(opts);
+      return new Promise<Uint8Array>((resolve) => (finish = resolve));
+    };
+    act(() => root!.render(createElement(Replay, { record })));
+    await act(async () => button('Record MP4').click());
+    act(() => calls[0]!.onProgress!(1800, 1800));
+    expect(box.textContent).toContain('Recording MP4: saving the file');
+    await act(async () => button('Cancel').click());
+    await act(async () => finish(new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70])));
+    expect(saved).toEqual([]);
+    expect(status()).toBe('Recording cancelled');
+    expect(box.querySelector('[data-testid="replay-busy"]')).toBeNull();
+  });
+
+  it('saves no GIF when Cancel comes after the last frame, even if the encoder still returns bytes', async () => {
+    const gifSaves: string[] = [];
+    window.swarmup = {
+      ...window.swarmup!,
+      saveGif: async (name: string) => {
+        gifSaves.push(name);
+        return { ok: true, data: { dir: 'C:\\clips', file: name } };
+      },
+    } as unknown as NonNullable<Window['swarmup']>;
+    const gifs: GifOptions[] = [];
+    let finish: (bytes: Uint8Array) => void = () => {};
+    const gif = (opts: GifOptions): Promise<Uint8Array> => {
+      gifs.push(opts);
+      return new Promise<Uint8Array>((resolve) => (finish = resolve));
+    };
+    act(() => root!.render(createElement(Replay, { gif })));
+    await act(async () => button('Save as GIF').click());
+    act(() => gifs[0]!.onProgress!(468, 468));
+    expect(box.textContent).toContain('Encoding GIF: saving the file');
+    await act(async () => button('Cancel').click());
+    await act(async () => finish(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x3b])));
+    expect(gifSaves).toEqual([]);
+    expect(status()).toBe('GIF export cancelled');
+    expect(box.querySelector('[data-testid="replay-busy"]')).toBeNull();
   });
 
   it('cancels a recording without saving', async () => {
