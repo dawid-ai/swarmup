@@ -551,6 +551,8 @@ export function staleWorktree(dir: string): boolean {
 
 export class MergeRepo {
   private readonly excludes: string[];
+  /** Task store folders outside this repo, which keep commits of their own. */
+  private readonly apart: string[] = [];
 
   /**
    * @param top The checkout the base branch is built in.
@@ -573,9 +575,29 @@ export class MergeRepo {
     this.excludes = ROOT_DIR_NAMES.map((n) => `:(exclude,glob)**/${n}/**`);
     for (const dir of stores) {
       const rel = relative(resolve(top), resolve(dir));
-      if (rel === '' || rel.startsWith('..') || rel.includes(':')) continue;
+      if (rel === '' || rel.startsWith('..') || rel.includes(':')) {
+        if (rel !== '') this.apart.push(dir);
+        continue;
+      }
       this.excludes.push(`:(exclude,literal)${rel.split(sep).join('/')}`);
     }
+  }
+
+  /**
+   * The designated task store folder outside this repo when its git has commit `rev`, or null.
+   * Work that changed only task store files is a commit there, which `swarmup sync` shares; it
+   * has nothing to merge into the code (AO-0377).
+   */
+  async storeWith(rev: string, store: string): Promise<string | null> {
+    for (const dir of this.apart.filter((candidate) => samePath(candidate, store))) {
+      try {
+        const out = await this.git(dir, ['rev-parse', '--verify', '-q', `${rev}^{commit}`]);
+        if (out.trim()) return dir;
+      } catch (err) {
+        if (err instanceof GitTimeout) throw err;
+      }
+    }
+    return null;
   }
 
   /** The commit `rev` names in the repo, or null. */

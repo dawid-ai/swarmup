@@ -183,6 +183,60 @@ describe('a code checkout apart from the task store (AO-0252)', () => {
     await until(() => git(remote, 'rev-parse', 'main') === head);
   });
 
+  /** A commit in the store repo only, as `swarmup sync` makes for a role file change. */
+  function storeCommit(store: string): string {
+    writeFileSync(join(store, '.swarmup', 'notes.md'), 'store-only work\n');
+    git(store, 'add', '-A');
+    git(store, 'commit', '-qm', 'Store-only work');
+    return git(store, 'rev-parse', 'HEAD').slice(0, 8);
+  }
+
+  /** Approves T-0001 with `review` after a code merge has been set up, then lets it settle. */
+  async function approveStoreWork(review: (sha: string) => string) {
+    const s = setup({ merge: { test: { base: 'main', checks: [] } } });
+    writeFileSync(
+      join(s.state, 'merge.json'),
+      JSON.stringify({ test: '2000-01-01T00:00:00.000Z' }),
+    );
+    const sha = storeCommit(s.store);
+    const tip = git(s.code, 'rev-parse', 'main');
+    s.as('human:dawid').newTask({ title: 'Waits for the role change', owner: 'fake:engineer' });
+    s.as('fake:engineer').start('2', 'plan');
+    s.as('fake:engineer').block('2', 'needs T-0001', { on: ['T-0001'] });
+    s.as('fake:engineer').start('1', 'plan');
+    s.as('fake:engineer').review('1', review(sha), 'human:dawid');
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.sup.tick();
+    await s.sup.mergeSettled();
+    return { ...s, sha, tip };
+  }
+
+  function expectStoreOnly(s: Awaited<ReturnType<typeof approveStoreWork>>): void {
+    const human = s.as('human:dawid');
+    const events = human.showEvents('1').events;
+    const last = events[events.length - 1]!;
+    expect(last).toMatchObject({ type: 'comment', actor: 'opsd:merge', no_merge: true });
+    expect(last.body).toContain(`\`${s.sha}\``);
+    expect(last.body).toContain('task store');
+    expect(events.some((e) => e.type === 'finding')).toBe(false);
+    expect(git(s.code, 'rev-parse', 'main')).toBe(s.tip);
+    expect(human.view('1').awaitsMerge).toBe(false);
+    expect(human.view('2').unblocked).toBe(true);
+  }
+
+  it('records no merge, not a finding, for a review that names a store commit loosely (AO-0377)', async () => {
+    // As AO-0297's review: no `<commit> on branch <name>`, so the source falls back to `main`.
+    const s = await approveStoreWork(
+      (sha) => `T-0001: \`${sha}\` on store branch \`main\` adds the guidance to both role files.`,
+    );
+    expectStoreOnly(s);
+  });
+
+  it('records no merge for a review whose `<commit> on branch <name>` is a store commit (AO-0377)', async () => {
+    const s = await approveStoreWork((sha) => `T-0001: ${sha} on branch main: role files.`);
+    expectStoreOnly(s);
+  });
+
   it('keeps the store writable for a Codex run in a worktree of the code checkout', () => {
     const store = temp();
     const code = temp();
