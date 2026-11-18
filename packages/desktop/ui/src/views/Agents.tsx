@@ -58,6 +58,7 @@ import { Markdown } from '../ui/markdown';
 import { MergeUnderWay } from '../ui/merge';
 import { RefText } from '../ui/refs';
 import { RoleEditor } from '../ui/roles';
+import { ProjectName } from '../ui/project-label';
 
 /** Re-renders every `ms` so elapsed times on live runs keep moving. */
 function useNow(ms: number): number {
@@ -616,7 +617,11 @@ function Waiting({
                 <span className="min-w-0 truncate text-fg">
                   <RefText text={w.title} />
                 </span>
-                {w.project && <span className="text-xs text-fg-4">{w.project}</span>}
+                {w.project && (
+                  <span className="text-xs text-fg-4">
+                    <ProjectName name={w.project} />
+                  </span>
+                )}
               </div>
               <div className="mt-1 flex items-start gap-1.5 text-xs text-fg-3">
                 <Hourglass size={12} className="mt-px shrink-0 text-warn" />
@@ -1234,7 +1239,7 @@ function LiveRun(props: {
       </div>
       {run.project && (
         <div className="mt-1 text-[11px] text-fg-4">
-          {run.project} · started {ago(run.started_at)}
+          <ProjectName name={run.project} /> · started {ago(run.started_at)}
         </div>
       )}
     </div>

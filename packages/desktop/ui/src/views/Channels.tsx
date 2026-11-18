@@ -33,6 +33,7 @@ import { renderMarkdown } from '../lib/markdown';
 import { channelUrl, parseChannelTarget } from '../lib/search';
 import type { ChannelInfo, ChannelMessage } from '../types';
 import { MentionArea } from '../ui/pickers';
+import { useProjectLabel } from '../ui/project-label';
 
 // ---- Channel identity ----------------------------------------------------------------------------
 
@@ -498,6 +499,7 @@ function Channel({
   const picked = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => groupMessages(data ?? []), [data]);
   const { color } = channelLook(name);
+  const projectLabel = useProjectLabel();
   // A search result scrolls to its post once; otherwise the newest message stays in view.
   const placed = useRef(false);
   useEffect(() => {
@@ -553,7 +555,7 @@ function Channel({
       {msg && (
         <div className="flex items-center gap-3 border-b border-white/6 bg-signal/5 px-6 py-1.5 text-xs text-fg-3">
           <span>
-            A search result{root ? ` in ${root}` : ''}, with the messages around it
+            A search result{root ? ` in ${projectLabel(root)}` : ''}, with the messages around it
             {root ? ' from that root' : ''}.
           </span>
           <button type="button" onClick={onLatest} className="ml-auto text-signal hover:underline">

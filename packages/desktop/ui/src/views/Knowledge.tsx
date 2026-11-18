@@ -8,6 +8,7 @@ import { hashColor } from '../lib/identity';
 import { renderMarkdown } from '../lib/markdown';
 import type { KbNote } from '../types';
 import { RefText } from '../ui/refs';
+import { ProjectName } from '../ui/project-label';
 
 /**
  * Learn notes from `kb/` across every root: topics on the left, search with the same matching
@@ -111,10 +112,10 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
           <article className="min-w-0 flex-1 overflow-y-auto px-8 py-6">
             {note && (
               <div className="animate-rise max-w-3xl" key={key(note)}>
-                <div
-                  className="font-mono text-xs"
-                  style={{ color: hashColor(note.topic) }}
-                >{`${note.root} · kb/${note.ref}.md`}</div>
+                <div className="font-mono text-xs" style={{ color: hashColor(note.topic) }}>
+                  <ProjectName name={note.root} />
+                  {` · kb/${note.ref}.md`}
+                </div>
                 <h2 className="mt-1 font-display text-2xl font-semibold tracking-wide">
                   <RefText text={note.title} />
                 </h2>

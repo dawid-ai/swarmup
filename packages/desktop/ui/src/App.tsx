@@ -82,6 +82,7 @@ import { Standups } from './views/Standups';
 import { SEARCH_INPUT_ID, SearchBox } from './ui/search';
 import { TaskPanel } from './views/TaskPanel';
 import { ProjectControls, type ProjectMenuRequest } from './ui/projects';
+import { projectLabels, setProjectLabels } from './ui/project-label';
 
 export type View =
   | 'inbox'
@@ -484,6 +485,9 @@ export function App() {
     settings.data?.roots,
   );
   projectList.current = projects;
+  // Every view shows a project by its label (AO-0353); a rename updates `projects` at once.
+  const labels = projectLabels(settings.data?.rootList, projects);
+  useEffect(() => setProjectLabels(labels));
   const activeProjects = projects.filter((project) => !project.archived);
   const archivedProjects = projects.filter((project) => project.archived);
   // Signed-out providers (AO-0154): a banner on every view until each is signed in again.

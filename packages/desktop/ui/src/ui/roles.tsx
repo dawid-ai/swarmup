@@ -18,6 +18,7 @@ import { identity } from '../lib/identity';
 import { splitList } from '../lib/thread';
 import type { KbNote, RoleFile, Settings } from '../types';
 import { ProviderMark } from './identity';
+import { useProjectLabel } from './project-label';
 
 const ROLE_RE = /^[a-z][a-z0-9-]*$/;
 
@@ -49,6 +50,7 @@ export function RoleEditor({
   );
   const runtimes = Object.keys(settings.data?.opsd.runtimes ?? { claude: 1, codex: 1 });
   const roots = (settings.data?.rootList ?? []).filter((r) => !r.isMirror);
+  const projectLabel = useProjectLabel();
 
   const [runtime, setRuntime] = useState(preset?.runtime ?? 'claude');
   const [role, setRole] = useState(preset?.role ?? '');
@@ -168,7 +170,7 @@ export function RoleEditor({
                 onChange={setRoot}
                 options={roots.map((r) => [
                   r.name,
-                  r.isMaster ? `${r.name} (Master Repo)` : r.name,
+                  r.isMaster ? `${projectLabel(r.name)} (Master Repo)` : projectLabel(r.name),
                 ])}
               />
             </Field>
@@ -180,7 +182,7 @@ export function RoleEditor({
               {id}
             </span>
             {existing.data?.root && (
-              <span className="text-xs text-fg-4">in {existing.data.root}</span>
+              <span className="text-xs text-fg-4">in {projectLabel(existing.data.root)}</span>
             )}
           </div>
         )}

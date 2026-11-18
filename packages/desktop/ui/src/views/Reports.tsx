@@ -8,6 +8,7 @@ import { identity } from '../lib/identity';
 import type { Report } from '../types';
 import { ProviderMark } from '../ui/identity';
 import { RefText } from '../ui/refs';
+import { ProjectName } from '../ui/project-label';
 
 const RANGES: Array<[number, string]> = [
   [1, 'Day'],
@@ -118,7 +119,9 @@ export function Reports({ nav }: { nav: Nav }) {
               <tbody>
                 {r.projects.map((p) => (
                   <tr key={p.project} className="border-t border-white/5">
-                    <td className="px-4 py-2 font-mono text-xs">{p.project}</td>
+                    <td className="px-4 py-2 font-mono text-xs">
+                      <ProjectName name={p.project} />
+                    </td>
                     <td className="px-2 py-2 text-right text-ok">{p.closed}</td>
                     <td className="px-2 py-2 text-right">{p.opened}</td>
                     <td className="px-2 py-2 text-right text-fg-3">{p.parked}</td>

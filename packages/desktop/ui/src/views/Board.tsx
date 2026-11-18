@@ -34,6 +34,7 @@ import { FilterBar } from '../ui/filters';
 import { MergeUnderWay } from '../ui/merge';
 import { useMover } from '../ui/move';
 import { onTaskRef, RefText } from '../ui/refs';
+import { ProjectName } from '../ui/project-label';
 
 /** The status a drop on each column asks for. */
 const TARGET: Record<string, Status> = {
@@ -330,7 +331,9 @@ function LaneLabel({ mode, k, progress }: { mode: Lanes; k: string; progress?: P
     );
   }
   return k ? (
-    <span className="font-mono text-sm text-fg-2">{k}</span>
+    <span className="font-mono text-sm text-fg-2">
+      <ProjectName name={k} />
+    </span>
   ) : (
     <span className="text-sm text-fg-4">No project</span>
   );
@@ -388,7 +391,11 @@ function Card(props: {
             {t.type}
           </span>
         )}
-        {t.project && <span className="truncate text-[11px] text-fg-4">{t.project}</span>}
+        {t.project && (
+          <span className="truncate text-[11px] text-fg-4">
+            <ProjectName name={t.project} />
+          </span>
+        )}
         <GripVertical
           size={14}
           className="ml-auto shrink-0 text-fg-4 opacity-0 transition group-hover:opacity-100"

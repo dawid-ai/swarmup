@@ -21,6 +21,7 @@ import { FilterChip } from '../ui/filters';
 import { Markdown } from '../ui/markdown';
 import { RefText } from '../ui/refs';
 import { Highlight } from '../ui/search';
+import { ProjectName } from '../ui/project-label';
 
 const PAGE = 100;
 
@@ -161,11 +162,19 @@ export function Activity({ nav }: { nav: Nav }) {
             label="Project"
             icon={<History size={14} />}
             value={project}
-            display={<span className="font-mono text-xs">{project}</span>}
+            display={
+              <span className="font-mono text-xs">
+                <ProjectName name={project} />
+              </span>
+            }
             onChange={setProject}
             options={projects.map((p) => ({
               value: p,
-              node: <span className="font-mono text-xs">{p}</span>,
+              node: (
+                <span className="font-mono text-xs">
+                  <ProjectName name={p} />
+                </span>
+              ),
             }))}
           />
         )}

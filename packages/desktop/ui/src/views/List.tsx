@@ -20,6 +20,7 @@ import { dueLabel, STATUSES } from '../lib/identity';
 import type { Task } from '../types';
 import { FilterBar, FilterChip } from '../ui/filters';
 import { onTaskRef, RefText } from '../ui/refs';
+import { ProjectName } from '../ui/project-label';
 
 const OPEN = new Set(['todo', 'claimed', 'in-progress', 'blocked', 'needs-review']);
 const CLOSED = new Set(['done', 'parked']);
@@ -198,7 +199,7 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
                           </span>
                           {t.project && (
                             <span className="shrink-0 rounded-md bg-white/5 px-1.5 font-mono text-[10px] text-fg-3 ring-1 ring-white/8 ring-inset">
-                              {t.project}
+                              <ProjectName name={t.project} />
                             </span>
                           )}
                           {(t.labels ?? []).slice(0, 2).map((l) => (

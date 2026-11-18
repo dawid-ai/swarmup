@@ -9,6 +9,7 @@ import { PriorityIcon, PriorityTag } from '../ui/identity';
 import { Menu } from '../ui/pickers';
 import { RefText } from '../ui/refs';
 import { TriageActions, waitsOn } from '../ui/triage';
+import { ProjectName } from '../ui/project-label';
 
 const OPEN = new Set(['todo', 'claimed', 'in-progress', 'blocked', 'needs-review']);
 
@@ -76,7 +77,11 @@ function FindingCard({ t, nav, index }: { t: Task; nav: Nav; index: number }) {
             </button>
             {t.createdBy && <Who id={t.createdBy} label size="xs" />}
             <span>{ago(t.createdAt ?? t.updatedAt)}</span>
-            {t.project && <span className="font-mono">{t.project}</span>}
+            {t.project && (
+              <span className="font-mono">
+                <ProjectName name={t.project} />
+              </span>
+            )}
           </div>
         </div>
         <Menu
