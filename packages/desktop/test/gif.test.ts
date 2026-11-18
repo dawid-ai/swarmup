@@ -14,6 +14,7 @@ import {
   recordGifScene,
 } from '../ui/src/lib/gif';
 import type { Rasterizer } from '../ui/src/lib/png';
+import { paintBreaks } from '../ui/src/lib/yield';
 import { aspectById } from '../ui/src/lib/record';
 import { sceneById } from '../ui/src/replay/scenes';
 import { fixture } from './replay-fixture';
@@ -71,6 +72,57 @@ describe('GIF export', () => {
     ]);
     expect(indexed).toHaveLength(4);
     expect(new Set(indexed)).toEqual(new Set([0, 1]));
+  });
+
+  // AO-0375: the bar stayed at 0 because the export never returned to the event loop.
+  it('reports progress from the first palette frame, and lets the page paint while it runs', async () => {
+    const timeline = fixture();
+    timeline.time.playbackMs = 200;
+    const calls: Array<[number, number]> = [];
+    let ticks = 0;
+    // A timer the page queues: it runs only if the export yields a macrotask.
+    const timer = setInterval(() => ticks++, 0);
+    const slow = (width: number, height: number): Rasterizer => {
+      const fake = fakeRasterizer(width, height, [[220, 30, 30]]);
+      return {
+        ...fake,
+        draw: async (frame) => {
+          // 60 ms of busy work per frame, more than one paint break.
+          const until = performance.now() + 60;
+          while (performance.now() < until);
+          return fake.draw(frame);
+        },
+      };
+    };
+    try {
+      await recordGifScene({
+        scene: sceneById('events'),
+        timeline,
+        aspect: aspectById('16x9'),
+        durationMs: 200,
+        width: 8,
+        rasterizer: slow,
+        onProgress: (done, total) => calls.push([done, total]),
+      });
+    } finally {
+      clearInterval(timer);
+    }
+    // 3 palette sample frames, then 3 encoded frames.
+    expect(calls).toEqual([1, 2, 3, 4, 5, 6].map((d) => [d, 6]));
+    expect(ticks).toBeGreaterThan(0);
+  });
+
+  it('pauses for a macrotask only after the given time has passed', async () => {
+    let now = 0;
+    const pause = paintBreaks(50, () => now);
+    let ran = false;
+    setTimeout(() => (ran = true), 0);
+    now = 49;
+    await pause();
+    expect(ran).toBe(false);
+    now = 50;
+    await pause();
+    expect(ran).toBe(true);
   });
 
   it('writes a browser GIF and merges unchanged adjacent frames into their delay', async () => {

@@ -11,6 +11,7 @@ import { createRasterizer } from './png';
 import type { Rasterizer } from './png';
 import { frameCount, frameTime } from './record';
 import type { Aspect } from './record';
+import { paintBreaks } from './yield';
 
 /** Web-friendly defaults: enough motion for UI animation without 1080p/60 fps GIF sizes. */
 export const GIF_FPS = 15;
@@ -215,6 +216,7 @@ async function clipPalette(
   stage: Stage,
   frames: number,
   fps: number,
+  step: () => Promise<void>,
 ): Promise<GifPalette> {
   const picks = sampledFrames(frames);
   const every = Math.max(
@@ -247,6 +249,7 @@ async function clipPalette(
       sample[at++] = rgba[source + 2]!;
       sample[at++] = 255;
     }
+    await step();
   }
   // One slot stays free for the transparent index.
   return quantize(sample.subarray(0, at), MAX_COLORS, { format: 'rgb565' });
@@ -268,8 +271,19 @@ export async function recordGifScene(opts: GifOptions): Promise<Uint8Array> {
   const frames = frameCount(opts.durationMs, fps);
   const data = opts.scene.prepare(opts.timeline, stage, opts.choice);
   const raster = (opts.rasterizer ?? createRasterizer)(stage.width, stage.height);
+  // Progress counts the palette's sample frames too, so the bar moves from the first frame drawn.
+  const total = sampledFrames(frames).length + frames;
+  let done = 0;
+  const pause = paintBreaks();
+  const step = async (): Promise<void> => {
+    opts.onProgress?.(++done, total);
+    await pause();
+  };
   try {
-    const colors = (await clipPalette(raster, opts, data, stage, frames, fps)).slice(0, MAX_COLORS);
+    const colors = (await clipPalette(raster, opts, data, stage, frames, fps, step)).slice(
+      0,
+      MAX_COLORS,
+    );
     // GIF color tables hold a power of two entries. Pad to the next one above the colors and make
     // the last entry the transparent index; dithering picks only from `colors`, never that slot.
     let size = 2;
@@ -340,7 +354,7 @@ export async function recordGifScene(opts: GifOptions): Promise<Uint8Array> {
           delay += frameDelay;
         }
       }
-      opts.onProgress?.(i + 1, frames);
+      await step();
     }
     write();
     gif.finish();

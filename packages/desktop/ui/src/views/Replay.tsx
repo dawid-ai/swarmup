@@ -3,6 +3,7 @@ import {
   Film,
   ImageDown,
   Images,
+  Loader2,
   Pause,
   Play,
   Repeat,
@@ -126,6 +127,14 @@ export function frameFileName(scene: string, project: string, t: number): string
   return `${slug}.png`;
 }
 
+/** Thrown when Cancel stops a PNG export. */
+export class SaveCancelled extends Error {
+  constructor() {
+    super('Saving cancelled');
+    this.name = 'SaveCancelled';
+  }
+}
+
 /** Rasterizes frames at the given times and saves them through the desktop bridge. */
 async function saveFrames(
   scene: Scene<unknown>,
@@ -133,12 +142,24 @@ async function saveFrames(
   duration: number,
   shots: Array<{ name: string; t: number }>,
   overlay: FrameOverlay,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
 ): Promise<string> {
+  // Cancel ends the wait at once, even inside a frame that is still rasterizing.
+  const cancelled = new Promise<never>((_, reject) =>
+    signal.addEventListener('abort', () => reject(new SaveCancelled()), { once: true }),
+  );
+  cancelled.catch(() => {});
   const files = [];
   for (const s of shots) {
+    if (signal.aborted) throw new SaveCancelled();
+    onProgress(files.length, shots.length);
     const svg = frameMarkup(renderFrame(scene, data, { ...STAGE_16_9, t: s.t, duration }, overlay));
-    files.push({ name: s.name, data: await svgToPng(svg, STAGE_16_9.width, STAGE_16_9.height) });
+    const png = svgToPng(svg, STAGE_16_9.width, STAGE_16_9.height);
+    files.push({ name: s.name, data: await Promise.race([png, cancelled]) });
   }
+  if (signal.aborted) throw new SaveCancelled();
+  onProgress(files.length, shots.length);
   const res = await bridge().saveImages(files);
   if (!res.ok || !res.data) {
     if (res.error === 'cancelled') return '';
@@ -155,17 +176,93 @@ async function saveFrames(
 export async function recordClip(
   opts: RecordOptions & { project: string },
   record: (opts: RecordOptions) => Promise<Uint8Array> = recordScene,
+  /** Called once the folder is picked, just before recording starts. */
+  onPicked?: () => void,
 ): Promise<string> {
   const folder = await bridge().videoFolder();
   if (!folder.ok) {
     if (folder.error === 'cancelled') return '';
     throw new Error(folder.error ?? 'no folder');
   }
+  if (opts.signal?.aborted) throw new RecordCancelled();
+  onPicked?.();
   const bytes = await record(opts);
+  // Cancel stays on screen while the file is prepared, so a late click must still skip the save.
+  if (opts.signal?.aborted) throw new RecordCancelled();
   const name = videoFileName(opts.scene.id, opts.project, opts.aspect.id, opts.durationMs);
   const res = await bridge().saveVideo(name, bytes);
   if (!res.ok || !res.data) throw new Error(res.error ?? 'saving failed');
   return `Saved ${res.data.file} to ${res.data.dir}`;
+}
+
+/** An export that runs, from the click until its file is saved. */
+export interface Busy {
+  kind: 'png' | 'mp4' | 'gif';
+  /** `folder`: the folder dialog is open; `render`: drawing frames; `save`: writing the file. */
+  stage: 'folder' | 'render' | 'save';
+  /** Frames (or PNGs) done of `total`; `total` is 0 until the first one is counted. */
+  done: number;
+  total: number;
+}
+
+/** The busy line's text, such as `Recording MP4 42% · 756 / 1800 frames`. */
+export function busyText(b: Busy): string {
+  const what = { png: 'Saving PNG', mp4: 'Recording MP4', gif: 'Encoding GIF' }[b.kind];
+  if (b.stage === 'folder') return `${what}: pick a folder`;
+  if (b.stage === 'save') return `${what}: saving the file`;
+  if (b.total === 0) return `${what}: starting`;
+  const pct = Math.floor((b.done / b.total) * 100);
+  const unit = b.kind === 'png' ? (b.total === 1 ? 'image' : 'images') : 'frames';
+  return `${what} ${pct}% · ${b.done} / ${b.total} ${unit}`;
+}
+
+/**
+ * The busy line beside the export buttons: a bar (filling with the frames done, or pulsing while
+ * the folder dialog is open, the encoder starts or the file is written), its text and Cancel.
+ */
+function ExportProgress({ busy, onCancel }: { busy: Busy; onCancel: () => void }) {
+  const known = busy.stage === 'render' && busy.total > 0;
+  const pct = known ? Math.floor((busy.done / busy.total) * 100) : 0;
+  const label = { png: 'PNG export', mp4: 'MP4 export', gif: 'GIF export' }[busy.kind];
+  const line = useRef<HTMLDivElement>(null);
+  // The export row sits under the stage, often at the bottom edge of the window.
+  useEffect(() => {
+    // Braces: Chromium's scrollIntoView returns a promise, which React would call as cleanup.
+    void line.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [busy.kind, busy.stage]);
+  return (
+    <div
+      ref={line}
+      // Fills the rest of the export row; the bar shrinks first, so the row does not wrap.
+      className="flex min-w-[24rem] flex-1 items-center gap-2.5 rounded-lg border border-signal/25 bg-signal/5 py-0.5 pr-0.5 pl-2.5"
+      data-testid="replay-busy"
+      role="status"
+    >
+      <Loader2 size={15} className="animate-spin text-signal" />
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={known ? pct : undefined}
+        className="h-2 min-w-16 flex-1 overflow-hidden rounded-full bg-white/10"
+      >
+        <div
+          className={cx('h-full bg-signal transition-[width]', !known && 'animate-pulse')}
+          style={{ width: known ? `${pct}%` : '100%', opacity: known ? 1 : 0.4 }}
+        />
+      </div>
+      <span className="font-mono text-xs whitespace-nowrap text-fg-2">{busyText(busy)}</span>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-fg-3 hover:bg-white/6 hover:text-fg"
+      >
+        <X size={15} />
+        Cancel
+      </button>
+    </div>
+  );
 }
 
 /** Calls `onFrame` with the wall-clock ms since the last frame while `on` is true. */
@@ -204,7 +301,6 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
   const [sceneId, setSceneId] = useState(SCENES[0]!.id);
   const [showProject, setShowProject] = useState(true);
   const scene = sceneById(sceneId);
-  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<{ text: string; error: boolean } | null>(null);
   const tasks = useData<Task[]>('/api/tasks?all');
   const settings = useData<Settings>('/api/settings');
@@ -262,31 +358,51 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
   const subject = choice || [root, project].filter(Boolean).join('-');
   const cards = scene.id === 'wrapped' && timeline?.wrapped ? (data as WrappedData).cards : [];
 
-  const save = (shots: Array<{ name: string; t: number }>): void => {
-    if (saving || data === null || shots.length === 0) return;
-    setSaving(true);
-    setSaved(null);
-    saveFrames(scene, data, duration, shots, overlay)
-      .then((text) => setSaved(text ? { text, error: false } : null))
-      .catch((err: Error) => setSaved({ text: err.message, error: true }))
-      .finally(() => setSaving(false));
-  };
-  const saveFrame = (): void => save([{ name: frameFileName(scene.id, subject, p.t), t: p.t }]);
-
   const [aspectId, setAspectId] = useState<Aspect['id']>('16x9');
-  // Whole percent done while recording; null when idle.
-  const [recording, setRecording] = useState<number | null>(null);
-  const [gifRecording, setGifRecording] = useState<number | null>(null);
+  // The export that runs, shown from the click until its file is saved; null when idle.
+  const [busy, setBusy] = useState<Busy | null>(null);
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
-  const startRecording = (): void => {
-    if (recording !== null || gifRecording !== null || saving || !timeline || duration <= 0) return;
+  /** Starts an export: stops playback, clears the last result and shows the busy state at once. */
+  const begin = (kind: Busy['kind'], stage: Busy['stage']): AbortController => {
     const ctrl = new AbortController();
     abort.current = ctrl;
     setP((old) => ({ ...old, playing: false }));
     setSaved(null);
-    setRecording(0);
-    let shown = 0;
+    setBusy({ kind, stage, done: 0, total: 0 });
+    return ctrl;
+  };
+  /** Progress for the bar, one update per percent: a re-render per frame would slow it down. */
+  const progress = (kind: Busy['kind']) => {
+    let shown = -1;
+    return (done: number, total: number): void => {
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+      if (pct === shown) return;
+      shown = pct;
+      setBusy({ kind, stage: done >= total ? 'save' : 'render', done, total });
+    };
+  };
+  const end = (): void => {
+    abort.current = null;
+    setBusy(null);
+  };
+
+  const save = (shots: Array<{ name: string; t: number }>): void => {
+    if (busy || data === null || shots.length === 0) return;
+    const ctrl = begin('png', 'render');
+    saveFrames(scene, data, duration, shots, overlay, ctrl.signal, progress('png'))
+      .then((text) => setSaved(text ? { text, error: false } : null))
+      .catch((err: Error) =>
+        setSaved({ text: err.message, error: !(err instanceof SaveCancelled) }),
+      )
+      .finally(end);
+  };
+  const saveFrame = (): void => save([{ name: frameFileName(scene.id, subject, p.t), t: p.t }]);
+
+  const startRecording = (): void => {
+    if (busy || !timeline || duration <= 0) return;
+    const ctrl = begin('mp4', 'folder');
+    const onProgress = progress('mp4');
     recordClip(
       {
         scene,
@@ -297,13 +413,10 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
         aspect: aspectById(aspectId),
         durationMs: duration,
         signal: ctrl.signal,
-        // One update per percent: a re-render per frame would slow the recording down.
-        onProgress: (done, total) => {
-          const pct = Math.floor((done / total) * 100);
-          if (pct !== shown) setRecording((shown = pct));
-        },
+        onProgress,
       },
       record,
+      () => setBusy({ kind: 'mp4', stage: 'render', done: 0, total: 0 }),
     )
       .then((text) => setSaved(text ? { text, error: false } : null))
       .catch((err: Error) =>
@@ -313,19 +426,12 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
             : { text: `Recording failed: ${err.message}`, error: true },
         ),
       )
-      .finally(() => {
-        abort.current = null;
-        setRecording(null);
-      });
+      .finally(end);
   };
   const startGif = (): void => {
-    if (recording !== null || gifRecording !== null || saving || !timeline || duration <= 0) return;
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    setP((old) => ({ ...old, playing: false }));
-    setSaved(null);
-    setGifRecording(0);
-    let shown = 0;
+    if (busy || !timeline || duration <= 0) return;
+    const ctrl = begin('gif', 'folder');
+    const onProgress = progress('gif');
     bridge()
       .videoFolder()
       .then(async (folder) => {
@@ -333,6 +439,8 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
           if (folder.error === 'cancelled') return null;
           throw new Error(folder.error ?? 'no folder');
         }
+        if (ctrl.signal.aborted) throw new GifCancelled();
+        setBusy({ kind: 'gif', stage: 'render', done: 0, total: 0 });
         const bytes = await gif({
           scene,
           timeline,
@@ -341,11 +449,10 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
           durationMs: duration,
           signal: ctrl.signal,
           ...overlay,
-          onProgress: (done, total) => {
-            const pct = Math.floor((done / total) * 100);
-            if (pct !== shown) setGifRecording((shown = pct));
-          },
+          onProgress,
         });
+        // Cancel stays on screen after the last frame, so a late click must still skip the save.
+        if (ctrl.signal.aborted) throw new GifCancelled();
         const name = gifFileName(scene.id, subject, GIF_WIDTH, GIF_FPS, duration);
         const res = await bridge().saveGif(name, bytes);
         if (!res.ok || !res.data) throw new Error(res.error ?? 'saving failed');
@@ -359,10 +466,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
             : { text: `GIF export failed: ${err.message}`, error: true },
         ),
       )
-      .finally(() => {
-        abort.current = null;
-        setGifRecording(null);
-      });
+      .finally(end);
   };
   const saveCards = (): void => {
     const w = timeline?.wrapped;
@@ -603,7 +707,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
                 <button
                   type="button"
                   onClick={saveCards}
-                  disabled={saving || recording !== null || gifRecording !== null}
+                  disabled={busy !== null}
                   title="Save each Wrapped card as a 1920 x 1080 PNG"
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
                 >
@@ -621,7 +725,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
                     type="button"
                     title={`${a.stage.width} x ${a.stage.height}`}
                     aria-pressed={a.id === aspectId}
-                    disabled={recording !== null || gifRecording !== null}
+                    disabled={busy !== null}
                     onClick={() => setAspectId(a.id)}
                     className={cx(
                       'rounded-md px-2 py-1 font-mono text-xs transition disabled:opacity-50',
@@ -636,65 +740,56 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
                 <button
                   type="button"
                   onClick={saveFrame}
-                  disabled={saving || recording !== null || gifRecording !== null}
+                  disabled={busy !== null}
+                  aria-busy={busy?.kind === 'png'}
                   title="Save this frame as a 1920 x 1080 PNG"
                   className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs text-fg-3 hover:bg-white/6 hover:text-fg disabled:opacity-50"
                 >
-                  <ImageDown size={15} />
+                  {busy?.kind === 'png' ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <ImageDown size={15} />
+                  )}
                   Save frame
                 </button>
                 <button
                   type="button"
                   onClick={startRecording}
-                  disabled={saving || recording !== null || gifRecording !== null}
+                  disabled={busy !== null}
+                  aria-busy={busy?.kind === 'mp4'}
                   title={`Record the whole clip as an MP4 at 60 fps, ${aspectById(aspectId).stage.width} x ${aspectById(aspectId).stage.height}`}
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
                 >
-                  <Film size={15} />
+                  {busy?.kind === 'mp4' ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Film size={15} />
+                  )}
                   Record MP4
                 </button>
                 <button
                   type="button"
                   onClick={startGif}
-                  disabled={saving || recording !== null || gifRecording !== null}
+                  disabled={busy !== null}
+                  aria-busy={busy?.kind === 'gif'}
                   title={`Save the whole clip as a dithered GIF at ${GIF_FPS} fps and ${GIF_WIDTH} px wide`}
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-signal/15 px-2.5 text-xs text-signal hover:bg-signal/25 disabled:opacity-50"
                 >
-                  <Images size={15} />
+                  {busy?.kind === 'gif' ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Images size={15} />
+                  )}
                   Save as GIF
                 </button>
               </div>
-              {(recording !== null || gifRecording !== null) && (
-                <>
-                  <div
-                    role="progressbar"
-                    aria-label={recording !== null ? 'Recording' : 'GIF export'}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={recording ?? gifRecording ?? 0}
-                    className="h-2 w-36 overflow-hidden rounded-full bg-white/10"
-                  >
-                    <div
-                      className="h-full bg-signal"
-                      style={{ width: `${recording ?? gifRecording ?? 0}%` }}
-                    />
-                  </div>
-                  <span className="font-mono text-xs text-fg-3">
-                    {recording !== null ? 'Recording' : 'Encoding GIF'} {recording ?? gifRecording}%
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => abort.current?.abort()}
-                    className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs text-fg-3 hover:bg-white/6 hover:text-fg"
-                  >
-                    <X size={15} />
-                    Cancel
-                  </button>
-                </>
+              {busy ? (
+                <ExportProgress busy={busy} onCancel={() => abort.current?.abort()} />
+              ) : (
+                <span className="text-xs text-fg-4">
+                  GIF: clip-wide palette, dithering, {GIF_FPS} fps, {GIF_WIDTH} px wide
+                </span>
               )}
-              <span className="text-xs text-fg-4">
-                GIF: clip-wide palette, dithering, {GIF_FPS} fps, {GIF_WIDTH} px wide
-              </span>
             </div>
             {saved && (
               <div
