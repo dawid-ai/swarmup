@@ -2525,6 +2525,24 @@ describe('merging approved work', () => {
     );
   });
 
+  it('records each terminal batch note once and does nothing on the next tick (AO-0381)', async () => {
+    const s = mergeSetup();
+    const t = twoApproved(s, 'second\n');
+    git(s.repo, 'checkout', '-q', '--detach');
+    git(s.repo, 'branch', '-D', 'main');
+    await s.merged();
+
+    const notes = ['1', '2'].map((id) => t.events(id).at(-1)!);
+    for (const note of notes) {
+      expect(note).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+      expect(note.body).toContain('no branch main');
+    }
+
+    await s.merged();
+    expect(t.events('1').at(-1)).toEqual(notes[0]);
+    expect(t.events('2').at(-1)).toEqual(notes[1]);
+  });
+
   /**
    * A git timeout that stops at once the commands `hung` picks, once `on` holds a commit, and
    * gives every other command a minute: spawning git alone takes longer than 1 ms.

@@ -6383,17 +6383,25 @@ export class Supervisor extends EventEmitter {
    * still works in its worktree, git cannot read it) stays for a later tick; one whose commit is
    * missing merges alone, which tells the human. The rest go to {@link mergeGroup}.
    *
-   * Always `again`: a task that got no merge event or send-back is read again by the next tick,
-   * and one that did is skipped there.
+   * Each task keeps its own retry state: one that got no terminal result is read again by the next
+   * tick, while one that got a merge event, send-back or final note is marked seen now.
    */
   private async mergeBatch(
     items: { ref: string; job: MergeJob }[],
     runner: CommandRunner,
-  ): Promise<'again'> {
+  ): Promise<void | 'again'> {
     const lead = items[0]!.job;
     const repo = this.mergeRepoOf(lead);
     const ready: BatchItem[] = [];
     const alone: BatchItem[] = [];
+    const retry = new Set(items.map((item) => item.ref));
+    const terminal = (ref: string): void => {
+      retry.delete(ref);
+      this.safe(() => {
+        const last = this.ws().view(ref).lastEvent;
+        if (last && !this.stopping) this.mergeSeen.set(ref, last);
+      });
+    };
     for (const { ref, job } of items) {
       if (this.stopping) return 'again';
       const { src } = job;
@@ -6429,11 +6437,15 @@ export class Supervisor extends EventEmitter {
         const msg = redactSecrets(err instanceof Error ? err.message : String(err));
         this.emit('warn', `merge of ${ref}: ${msg}`);
         this.mergeNote(ref, `swarmupd could not merge ${job.what}: ${firstLines(msg)}`, job.human);
+        terminal(ref);
         continue;
       }
       if (left === 'again' || left === 'look-again') continue;
       this.mergeLooks.delete(ref);
-      if (left === 'held') continue;
+      if (left === 'held') {
+        terminal(ref);
+        continue;
+      }
       if (!left) {
         ready.push({ ref, planned: job, job, approved: source });
         continue;
@@ -6445,9 +6457,9 @@ export class Supervisor extends EventEmitter {
       // Each merge alone tells the human that the base is missing.
       alone.unshift(...ready.splice(0));
     }
-    await this.mergeGroup(ready, repo, runner);
-    for (const item of alone) await this.mergeAlone(item, runner);
-    return 'again';
+    await this.mergeGroup(ready, repo, runner, terminal);
+    for (const item of alone) await this.mergeAlone(item, runner, terminal);
+    return retry.size > 0 ? 'again' : undefined;
   }
 
   /**
@@ -6461,14 +6473,15 @@ export class Supervisor extends EventEmitter {
     items: BatchItem[],
     repo: MergeRepo,
     runner: CommandRunner,
+    terminal: (ref: string) => void,
   ): Promise<void> {
     if (this.stopping || items.length === 0) return;
     if (items.length === 1) {
-      await this.mergeAlone(items[0]!, runner);
+      await this.mergeAlone(items[0]!, runner, terminal);
       return;
     }
-    const r = await this.mergeCandidate(items, repo, runner);
-    if (r === 'done') return;
+    const r = await this.mergeCandidate(items, repo, runner, terminal);
+    if (r === 'done' || r === 'again') return;
     if (r === 'failed') {
       const half = Math.ceil(items.length / 2);
       const ids = (list: BatchItem[]): string => this.batchIds(list).join(', ');
@@ -6476,20 +6489,25 @@ export class Supervisor extends EventEmitter {
         items[0]!.ref,
         `splits the batch: checks ${ids(items.slice(0, half))}, then ${ids(items.slice(half))}`,
       );
-      await this.mergeGroup(items.slice(0, half), repo, runner);
-      await this.mergeGroup(items.slice(half), repo, runner);
+      await this.mergeGroup(items.slice(0, half), repo, runner, terminal);
+      await this.mergeGroup(items.slice(half), repo, runner, terminal);
       return;
     }
     await this.mergeGroup(
       items.filter((i) => !r.includes(i)),
       repo,
       runner,
+      terminal,
     );
-    for (const item of r) await this.mergeAlone(item, runner);
+    for (const item of r) await this.mergeAlone(item, runner, terminal);
   }
 
   /** Merges one task of a batch as a merge of it alone does (`mergeOne`). */
-  private async mergeAlone(item: BatchItem, runner: CommandRunner): Promise<void> {
+  private async mergeAlone(
+    item: BatchItem,
+    runner: CommandRunner,
+    terminal: (ref: string) => void,
+  ): Promise<void> {
     if (this.stopping) return;
     if (this.merging) {
       this.merging.ref = item.ref;
@@ -6498,7 +6516,10 @@ export class Supervisor extends EventEmitter {
     }
     const r = await this.mergeOne(item.ref, item.planned, runner);
     // The one more merge after a check timed out is for this merge only (AO-0172).
-    if (r !== 'again') this.mergeTimedOut.delete(item.ref);
+    if (r !== 'again') {
+      this.mergeTimedOut.delete(item.ref);
+      if (!this.stopping) terminal(item.ref);
+    }
   }
 
   /**
@@ -6506,14 +6527,15 @@ export class Supervisor extends EventEmitter {
    * last commit, moves the base there and builds it. Each task gets its own merge event with the
    * commit that holds it; the last one carries the build's result. Returns the tasks that left
    * the group (see {@link mergeGroup}), `failed` when the checks failed on the group, else
-   * `done`: merged, stopped, broken by the PC's sleep (the next tick merges again), or the base
-   * kept moving (each task gets a note).
+   * `again` when stopping or the PC's sleep left every task retryable, or `done` after a merge or
+   * a final note for every task.
    */
   private async mergeCandidate(
     items: BatchItem[],
     repo: MergeRepo,
     runner: CommandRunner,
-  ): Promise<BatchItem[] | 'failed' | 'done'> {
+    terminal: (ref: string) => void,
+  ): Promise<BatchItem[] | 'failed' | 'again' | 'done'> {
     const { cfg, top, root, human } = items[0]!.job;
     const lead = items[0]!.ref;
     const ids = this.batchIds(items);
@@ -6531,7 +6553,7 @@ export class Supervisor extends EventEmitter {
     let merged: { onto: string; head: string; heads: string[] } | null = null;
     for (let attempt = 0; attempt < MERGE_ATTEMPTS && !merged; attempt++) {
       if (attempt > 0) await sleep(MERGE_RETRY_MS);
-      if (this.stopping) return 'done';
+      if (this.stopping) return 'again';
       const onto = await repo.commit(`refs/heads/${cfg.base}`);
       // Each merge alone tells the human that the base is gone.
       if (!onto) return items;
@@ -6585,13 +6607,13 @@ export class Supervisor extends EventEmitter {
         );
         this.shareElectron(repo.worktree);
         const failed = checks.find((c) => !c.ok);
-        if (failed?.why === 'stopped') return 'done';
+        if (failed?.why === 'stopped') return 'again';
         if (failed?.interrupted) {
           this.emit(
             'warn',
             `merge of ${named}: \`${failed.command}\` failed (${failed.why}) after the PC slept or swarmupd stopped responding; merging again`,
           );
-          return 'done';
+          return 'again';
         }
         if (failed) {
           // A timeout too: the halves run again, and a task alone keeps its one retry (AO-0172).
@@ -6604,7 +6626,7 @@ export class Supervisor extends EventEmitter {
         checked = head;
       }
       const hold = await this.holdCheckout(lead, top);
-      if (hold === 'stopped') return 'done';
+      if (hold === 'stopped') return 'again';
       if (hold === 'waited' && !waited) {
         waited = true;
         if ((await repo.commit(`refs/heads/${cfg.base}`)) !== onto) {
@@ -6633,6 +6655,7 @@ export class Supervisor extends EventEmitter {
           `swarmupd could not merge ${item.job.what} in a batch with ${ids.length - 1} other task(s); ${cfg.base} did not move: ${refused}`,
           human,
         );
+        terminal(item.ref);
       }
       return 'done';
     }
@@ -6674,6 +6697,7 @@ export class Supervisor extends EventEmitter {
         { ref: item.ref, base: cfg.base, branch: item.job.src.branch, commit: heads[n]! },
         `Merged ${item.job.what} into ${cfg.base} as ${short(heads[n]!)}, in one batch with ${others(n)}: ${batch}.${passed} The build's result is on the merge event of ${lastId}.`,
       );
+      terminal(item.ref);
     }
     const pending: PendingBuild = {
       ref: last.ref,
@@ -6691,6 +6715,7 @@ export class Supervisor extends EventEmitter {
     };
     this.savePendingBuild(pending);
     await this.buildMerged(pending, cfg, runner);
+    if (!this.stopping) terminal(last.ref);
     return 'done';
   }
 
