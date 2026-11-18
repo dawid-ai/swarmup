@@ -318,7 +318,8 @@ export interface OpsdConfig {
   /**
    * Run the root's merge `checks` on the reviewed commit before a review run that cannot run them
    * itself (a Codex run of a role that does not write), and put the results in its prompt
-   * (AO-0296). On unless set to false.
+   * (AO-0296). Off unless set to true: a review judges the work and runs no checks; the merge runs
+   * the checks of what changed, and the full suite runs before a release (2026-11-18).
    */
   review_checks: boolean;
   /**
@@ -464,7 +465,7 @@ export function opsdConfig(
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
     scratch_days: raw.scratch_days ?? 7,
     repair_stores: raw.repair_stores ?? true,
-    review_checks: raw.review_checks ?? true,
+    review_checks: raw.review_checks ?? false,
     remove_stale_temp: raw.remove_stale_temp ?? false,
   };
   const count = (v: unknown, name: string, min: number): void => {

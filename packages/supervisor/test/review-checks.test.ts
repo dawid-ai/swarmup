@@ -109,6 +109,7 @@ function reviewSetup(opsd: Record<string, unknown> = {}) {
       },
       agents: { 'codex:reviewer': { wake: true }, 'claude:reviewer': { wake: true } },
       merge: { test: { base: 'main', checks: ['node check.mjs', 'node check.mjs again'] } },
+      review_checks: true,
       ...opsd,
     },
   });
@@ -152,6 +153,9 @@ describe('checks for a reviewer that cannot run them (AO-0296)', () => {
       false,
     );
     expect(needsReviewChecks('codex:reviewer', false, true, undefined)).toBe(false);
+    // Off unless the config turns them on: a review judges the work and runs no checks.
+    expect(opsdConfig({}).review_checks).toBe(false);
+    expect(opsdConfig({ opsd: { review_checks: true } }).review_checks).toBe(true);
   });
 
   it('writes the results, the failed output and the checks not run into the prompt', () => {

@@ -303,8 +303,10 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
   keeps every `.git` read-only and has no network, so the run's `swarmup sync --session-end`
   only reports that and exits 0. If the run has no task store, it gets `--sandbox read-only` in
   its checkout instead.
-- **Checks for a reviewer that cannot run them (AO-0296).** A build, a test run and an install
-  all fail in that sandbox. So before a review run of a Codex agent whose role does not write,
+- **Checks for a reviewer that cannot run them (AO-0296).** Off by default: a review judges the
+  work and runs no checks, the merge runs the checks of what changed, and the full test suite runs
+  before a release (2026-11-18). With `swarmupd.review_checks: true`: a build, a test run and an
+  install all fail in that sandbox. So before a review run of a Codex agent whose role does not write,
   swarmupd runs the root's merge `checks` (`swarmupd.merge.<root>.checks`) itself: it checks out
   the commit the newest review request names (`<commit> on branch <name>`, else the branch tip,
   as a merge picks it), as it is and not rebased, in a worktree of its own
@@ -321,7 +323,7 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   the PC's sleep run again; results are kept in memory, so a review that has not started when
   swarmupd restarts gets its checks run again. The swarmupd log has a `review-checks` line for
   each step. Reviewers of other runtimes run their own checks and get none of this; a root
-  without `checks` gets none either. Set `swarmupd.review_checks: false` to turn it off.
+  without `checks` gets none either.
 - The working folder is `--cwd`, then the agent's `cwd` in the config, then the top of the task's
   repo.
 - When the working folder is a data root's checkout (the git checkout that holds a `.swarmup/`
@@ -840,7 +842,7 @@ swarmupd:
   reclaim_after_minutes: 60 # how long a task stays closed before that
   scratch_days: 7 # how long a run's scratch folder stays after the run
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
-  review_checks: true # run the merge checks for a Codex reviewer, whose sandbox cannot
+  review_checks: false # true: run the merge checks for a Codex reviewer, whose sandbox cannot
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:

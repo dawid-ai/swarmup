@@ -171,16 +171,16 @@ describe('role files from the app', () => {
     expect(question).not.toContain('done when');
   });
 
-  it('tells a reviewer to run the checks and to review against the done-when (AO-0289)', () => {
+  it('tells a reviewer to judge the work, run no checks, and review against the done-when (AO-0289)', () => {
     const review = runPrompt({ agent: 'codex:reviewer', task: 'AO-0001', review: true });
-    // The reviewer builds and runs the checks itself, in a worktree, and says what it ran.
-    expect(review).not.toContain('Do not edit, build');
-    expect(review).toContain('- Build the reviewed commit and run its tests and checks');
-    expect(review).toContain('in a worktree, never in the checkout swarmupd merges into');
-    expect(review).toContain('usually `out/wt-AO-0001`');
-    expect(review).toContain('git worktree add --detach "$SWARMUP_SCRATCH/review" <commit>');
-    expect(review).toContain('- Name each command you ran and its result in the verdict.');
-    expect(review).toContain('For a check you could not run');
+    // The reviewer judges the work of any kind and runs nothing: the merge runs the checks of what
+    // changed, and the full suite runs before a release.
+    expect(review).toContain('- Judge the work itself: does it do what the task asks');
+    expect(review).toContain('what belongs in the knowledge base');
+    expect(review).toContain('- Do not run tests, lint, typecheck, builds or installs');
+    expect(review).toContain('the full test suite runs before a release');
+    expect(review).not.toContain('Build the reviewed commit');
+    expect(review).not.toContain('git worktree add');
     // It still changes nothing.
     expect(review).toContain('- Never edit files, commit or push.');
     // The task and its "Done when" are what it reviews against; the rest is a finding.
@@ -197,7 +197,7 @@ describe('role files from the app', () => {
     // A work run and a question run get none of it.
     const work = runPrompt({ agent: 'claude:engineer', task: 'AO-0001' });
     expect(work).not.toContain('Review against the task text');
-    expect(work).not.toContain('Build the reviewed commit');
+    expect(work).not.toContain('Judge the work itself');
   });
 
   it('refuses bad ids, secrets, and an agents folder that is a link', async () => {

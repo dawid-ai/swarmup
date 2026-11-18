@@ -675,15 +675,18 @@ const DONE_WHEN_WORK = [
 /** The same for a review run: the list is what the reviewer checks the request against. */
 const DONE_WHEN_REVIEW = [
   '- If it prints a `done when:` list, check every line against the commands and output the request',
-  '  names and against your own runs; a line with no evidence is a reason for `changes`.',
+  '  names and against the diff; a line with no evidence is a reason for `changes`.',
 ];
 
 /**
- * What a review run does (AO-0289). The reviewer runs the build, tests and checks of the reviewed
- * commit itself, in a worktree, so the checkout swarmupd merges into stays as it was; it still
- * never edits, commits or pushes. It reviews against the task text and its "Done when", so each
- * round checks the same thing: style and matters outside the task become findings, not change
- * requests. The role files of the reviewers say the same.
+ * What a review run does (AO-0289). The reviewer judges the work: whether it does what the task
+ * asks, the work itself (code, copy, design or content), what would make it better, and what
+ * belongs in the knowledge base. It runs no tests, lint, typecheck, builds or installs: the merge
+ * runs the checks of what changed, and the full suite runs before a release (2026-11-18). Work of
+ * any kind comes to review, such as copy for a page, where a test run only costs time. It reviews
+ * against the task text and its "Done when", so each round checks the same thing: style and
+ * matters outside the task become findings, not change requests. It never edits, commits or
+ * pushes. The role files of the reviewers say the same.
  */
 function reviewLines(task: string): string[] {
   return [
@@ -693,15 +696,13 @@ function reviewLines(task: string): string[] {
     '- Review against the task text and its "Done when": approve work that meets them, and ask for',
     '  changes only where it does not. Leave style and matters outside the task out of the verdict;',
     `  file those with \`swarmup finding "<title>" --task ${task} -m "where, evidence, suggested fix"\`.`,
-    '- Build the reviewed commit and run its tests and checks (the ones the task, the review request',
-    "  and the repo's AGENTS.md name) in a worktree, never in the checkout swarmupd merges into: the",
-    `  task's own worktree (\`git worktree list\`, usually \`out/wt-${task}\`) when it is clean and at that`,
-    '  commit, else one you add with `git worktree add --detach "$SWARMUP_SCRATCH/review" <commit>`',
-    '  and install. Leave a worktree as clean as you found it (`git status`).',
-    '- Name each command you ran and its result in the verdict. For a check you could not run (a',
-    '  read-only sandbox, no network), say which one and why, and judge that part from the diff.',
-    '- Never edit files, commit or push. Logs and test output go in `$SWARMUP_SCRATCH`, never in a',
-    '  repo.',
+    '- Judge the work itself: does it do what the task asks, is it right and clear (code, copy,',
+    '  design or content), what would make it better, and what belongs in the knowledge base. Read',
+    '  the diff (`git show <commit>`, `git diff <base>...<commit>`) and the files around it.',
+    '- Do not run tests, lint, typecheck, builds or installs: the merge runs the checks of what',
+    '  changed, and the full test suite runs before a release. Copy, content and other work that is',
+    '  not code gets read and judged, nothing else.',
+    '- Never edit files, commit or push. Notes you keep go in `$SWARMUP_SCRATCH`, never in a repo.',
     'Finish with exactly one verdict:',
     `\`swarmup verdict ${task} approve "why"\` or \`swarmup verdict ${task} changes "what to fix, file:line"\`.`,
   ];
