@@ -62,6 +62,39 @@ export function withoutScriptEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
+ * The npm settings, without `npm_config_`, that choose which dependency types an install puts in
+ * `node_modules`: pnpm 9 reads `production`, `dev`, `only` and `optional`, npm also the rest.
+ */
+const DEPENDENCY_SET_SETTINGS = [
+  'production',
+  'dev',
+  'development',
+  'only',
+  'optional',
+  'also',
+  'include',
+  'omit',
+];
+
+/**
+ * A copy of `env` for an install swarmupd runs in a checkout: without `NODE_ENV` and the
+ * `npm_config_*` variables that choose which dependency types it installs (AO-0391). pnpm
+ * records those types in `node_modules/.modules.yaml`, and the next install with other ones
+ * removes every package directory and reinstalls them all: inherited `NODE_ENV=production`
+ * leaves out the dev dependencies, and the next plain `pnpm install` there asks to purge.
+ * Settings in `.npmrc` files still apply. Names match in any case, as npm reads them.
+ */
+export function installEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const drop = new Set([
+    'NODE_ENV',
+    ...DEPENDENCY_SET_SETTINGS.map((s) => `NPM_CONFIG_${s.toUpperCase()}`),
+  ]);
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const k of Object.keys(out)) if (drop.has(k.toUpperCase())) delete out[k];
+  return out;
+}
+
+/**
  * Deletes `names` from `env`. Windows environment names ignore case, but a copied env is a plain
  * object, so on Windows every key that matches a name in any case goes (`Github_Token` for
  * `GITHUB_TOKEN`).

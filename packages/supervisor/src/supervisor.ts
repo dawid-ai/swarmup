@@ -6845,8 +6845,15 @@ export class Supervisor extends EventEmitter {
     const steps = cfg.build ?? [];
     const dirs = p.install === true ? ['.'] : (p.install ?? []);
     const install = steps.length > 0 ? installSteps(cfg.install, p.top, dirs) : [];
-    let build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
-      this.mergeCommand('build', s),
+    // The installs run without an inherited `NODE_ENV` or dependency-type setting, which would
+    // make the next plain install in the checkout purge `node_modules` (AO-0391).
+    let build = await runner.runAll(
+      [...install, ...steps],
+      p.top,
+      timeout,
+      (s) => this.mergeCommand('build', s),
+      undefined,
+      install.length,
     );
     let installs = install.length;
     // An install step with nothing to do leaves no result (AO-0229), so a result's place in the
@@ -6871,8 +6878,13 @@ export class Supervisor extends EventEmitter {
         'warn',
         `merge of ${p.ref}: build \`${broke.command}\` failed (${broke.why}) in ${p.top}; swarmupd installs the dependencies there and builds once more`,
       );
-      build = await runner.runAll([...again, ...steps], p.top, timeout, (s) =>
-        this.mergeCommand('build', s),
+      build = await runner.runAll(
+        [...again, ...steps],
+        p.top,
+        timeout,
+        (s) => this.mergeCommand('build', s),
+        undefined,
+        again.length,
       );
       installs = again.length;
       broke = build.find((c) => !c.ok);
