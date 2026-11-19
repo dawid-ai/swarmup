@@ -22,6 +22,7 @@ import type {
   RunRecord,
 } from '../src/index.js';
 import { Checkout } from '../src/checkout.js';
+import { gitAsync } from '../src/git.js';
 import {
   CommandRunner,
   DEFAULT_INSTALL,
@@ -203,14 +204,11 @@ const ID = {
   GIT_COMMITTER_NAME: 'Swarmupd Test',
   GIT_COMMITTER_EMAIL: 'swarmupd@example.com',
 };
-const git = (cwd: string, ...args: string[]): string =>
-  execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...ID },
-  }).trim();
+// Off the event loop: each synchronous git start held the vitest worker's event loop, 0.2-0.5 s
+// alone on Windows and several times that under merge-check load, against vitest's fixed 60 s RPC
+// timeout (AO-0392).
+const git = async (cwd: string, ...args: string[]): Promise<string> =>
+  (await gitAsync(cwd, args, { env: { ...process.env, ...ID } })).trim();
 const text = (file: string): string => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 
 /**
@@ -301,7 +299,7 @@ while (!existsSync(process.env.RUN_GO)) await new Promise((r) => setTimeout(r, 5
  * A project repo on `main` with code, check and build scripts and its task store committed, a
  * task `1` owned by `fake:engineer`, and swarmupd set to merge approved work into `main`.
  */
-function mergeSetup(
+async function mergeSetup(
   opts: {
     procs?: () => ProcLister;
     self?: (repo: string) => OpsdSelf;
@@ -325,7 +323,7 @@ function mergeSetup(
   } = {},
 ) {
   const repo = temp();
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, windowsHide: true });
+  await gitAsync(repo, ['init', '-q', '-b', 'main']);
   initRoot(repo, { name: 'test', human: 'human:dawid' });
   writeFileSync(join(repo, 'code.txt'), 'one\n');
   writeFileSync(join(repo, 'check.mjs'), CHECK);
@@ -360,8 +358,8 @@ function mergeSetup(
   const as = (actor: string, run?: string) => new Workspace({ cwd: repo, env, actor, user, run });
   as('human:dawid').newTask({ title: 'Change the code', owner: 'fake:engineer' });
   as('human:dawid').newTask({ title: 'Other work', owner: 'fake:engineer' });
-  git(repo, 'add', '-A');
-  git(repo, 'commit', '-qm', 'start');
+  await git(repo, 'add', '-A');
+  await git(repo, 'commit', '-qm', 'start');
   // Every verdict in these tests comes after swarmupd first saw the merge setting.
   writeFileSync(
     join(state, 'merge.json'),
@@ -407,24 +405,24 @@ function mergeSetup(
   const sup = opsd();
 
   /** A branch `feature` from main's tip, in a worktree of its own, with `code.txt` as `code`. */
-  const branch = (code: string, files: Record<string, string> = {}): string => {
+  const branch = async (code: string, files: Record<string, string> = {}): Promise<string> => {
     const wt = join(temp(), 'wt');
-    git(repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
+    await git(repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
     writeFileSync(join(wt, 'code.txt'), code);
     for (const [f, content] of Object.entries(files)) {
       mkdirSync(dirname(join(wt, f)), { recursive: true });
       writeFileSync(join(wt, f), content);
     }
-    git(wt, 'add', '-A');
-    git(wt, 'commit', '-qm', 'Change the code');
-    return git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'add', '-A');
+    await git(wt, 'commit', '-qm', 'Change the code');
+    return await git(wt, 'rev-parse', 'HEAD');
   };
   /** A commit on main in the repo's own checkout, as another merge or a sync makes. */
-  const onMain = (file: string, content: string): string => {
+  const onMain = async (file: string, content: string): Promise<string> => {
     writeFileSync(join(repo, file), content);
-    git(repo, 'add', '--', file);
-    git(repo, 'commit', '-qm', `Change ${file}`);
-    return git(repo, 'rev-parse', 'HEAD');
+    await git(repo, 'add', '--', file);
+    await git(repo, 'commit', '-qm', `Change ${file}`);
+    return await git(repo, 'rev-parse', 'HEAD');
   };
   /** Task 1 through review and approval, with the review naming `commit` on `feature`. */
   const approve = (commit: string): void => {
@@ -676,15 +674,15 @@ describe('merging approved work', () => {
   });
 
   /** The worktree that has `branch` checked out. */
-  const worktreeOf = (repo: string, branch: string): string => {
-    const block = git(repo, 'worktree', 'list', '--porcelain')
+  const worktreeOf = async (repo: string, branch: string): Promise<string> => {
+    const block = (await git(repo, 'worktree', 'list', '--porcelain'))
       .split(/\r?\n\r?\n/)
       .find((b) => b.includes(`branch refs/heads/${branch}`))!;
     return /^worktree (.+)$/m.exec(block)![1]!.trim();
   };
   /** Task 1 approved, with the review naming `commit` and a run-end of its author before the verdict. */
   const approveAfterRun = (
-    s: ReturnType<typeof mergeSetup>,
+    s: Awaited<ReturnType<typeof mergeSetup>>,
     commit: string,
     runEnd: string,
   ): void => {
@@ -696,12 +694,12 @@ describe('merging approved work', () => {
   };
 
   it('commits what a run could not commit in the worktree, then merges it (AO-0300)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     // As the AO-0287 run left it: a staged new file and a changed one on top of its commit.
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
     approveAfterRun(
       s,
@@ -716,18 +714,18 @@ describe('merging approved work', () => {
     expect(text(join(s.repo, 'code.txt'))).toBe('two\nthree\n');
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('two\nthree\n');
     // The commit holds the reviewed one, and the worktree is back on it with nothing left.
-    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
-    expect(git(wt, 'status', '--porcelain')).toBe('');
-    expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(await git(wt, 'status', '--porcelain')).toBe('');
+    expect(await git(wt, 'rev-parse', 'HEAD')).toBe(commit);
   });
 
   it('commits staged work before recording that the reviewed branch is already in main (AO-0330)', async () => {
-    const s = mergeSetup();
-    const commit = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const commit = await git(s.repo, 'rev-parse', 'main');
     const wt = join(temp(), 'wt');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     approveAfterRun(
       s,
       commit,
@@ -741,15 +739,15 @@ describe('merging approved work', () => {
     expect(e.body).not.toContain('already in main; nothing to merge');
     expect(e.body).toContain('1 file(s) run R1 left uncommitted');
     expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
-    expect(git(wt, 'status', '--porcelain')).toBe('');
-    expect(git(wt, 'rev-parse', 'HEAD')).toBe(commit);
+    expect(await git(wt, 'status', '--porcelain')).toBe('');
+    expect(await git(wt, 'rev-parse', 'HEAD')).toBe(commit);
   });
 
   it('looks again before recording no merge when staged work appears during the merge (AO-0330)', async () => {
-    const s = mergeSetup();
-    const commit = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const commit = await git(s.repo, 'rev-parse', 'main');
     const wt = join(temp(), 'wt');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, commit);
     approveAfterRun(
       s,
       commit,
@@ -763,14 +761,14 @@ describe('merging approved work', () => {
     ) {
       const result = await original.call(this, source, onto);
       writeFileSync(join(wt, 'extra.txt'), 'staged late\n');
-      git(wt, 'add', 'extra.txt');
+      await git(wt, 'add', 'extra.txt');
       return result;
     });
     try {
       await s.merged();
       expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
-      expect(git(wt, 'status', '--porcelain')).toBe('');
-      expect(git(s.repo, 'branch', '--list', 'fake/t-0001-r1-merge')).toContain(
+      expect(await git(wt, 'status', '--porcelain')).toBe('');
+      expect(await git(s.repo, 'branch', '--list', 'fake/t-0001-r1-merge')).toContain(
         'fake/t-0001-r1-merge',
       );
 
@@ -791,11 +789,11 @@ describe('merging approved work', () => {
 
   it('merges the commit of what a run left when the merge starts again after it (AO-0300)', async () => {
     let slept = 0;
-    const s = mergeSetup({ now: () => Date.now() + slept });
-    const commit = s.branch('nap\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup({ now: () => Date.now() + slept });
+    const commit = await s.branch('nap\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     await s.sup.tick();
     await until(() => existsSync(join(s.state, 'napped.txt')), STAGE_MS);
@@ -804,22 +802,22 @@ describe('merging approved work', () => {
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
     await s.sup.mergeSettled();
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
-    expect(git(wt, 'status', '--porcelain')).toBe('');
-    const left = git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
+    expect(await git(wt, 'status', '--porcelain')).toBe('');
+    const left = await git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'fake/t-0001-r1-merge' });
     expect(e.body).toContain('what run R1 left uncommitted');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
-    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(left);
+    expect(await git(s.repo, 'rev-parse', 'main^')).toBe(commit);
     expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
   });
 
   it('sends the task back when its worktree has changes no run-end accounts for (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'stray.txt'), 'whose?\n');
     s.approve(commit);
     await s.merged();
@@ -832,13 +830,17 @@ describe('merging approved work', () => {
     });
     expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
     expect(e.body).toContain('no run-end');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(wt, 'stray.txt'))).toBe('whose?\n');
-    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
   });
 
   /** Run R1 asks for review and ends with changes swarmupd could not commit; the review gets `changes`. */
-  const olderUncommittedRun = (s: ReturnType<typeof mergeSetup>, commit: string, wt: string) => {
+  const olderUncommittedRun = (
+    s: Awaited<ReturnType<typeof mergeSetup>>,
+    commit: string,
+    wt: string,
+  ) => {
     const eng = s.as('fake:engineer', 'R1');
     eng.start('1', 'plan');
     eng.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
@@ -853,14 +855,14 @@ describe('merging approved work', () => {
   };
 
   it('commits nothing for a later review when only an older run ended with changes uncommitted (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     const eng = olderUncommittedRun(s, commit, wt);
     // A later review, made outside that run: it does not cover the files now in the worktree.
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     eng.start('1', 'fix');
     eng.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
     s.as('human:dawid').verdict('1', 'approve', 'looks right');
@@ -874,36 +876,36 @@ describe('merging approved work', () => {
     });
     expect(e.body).toContain('1 uncommitted change(s) (`extra.txt`)');
     expect(e.body).toContain('no run-end of the run that asked for this review');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
-    expect(git(wt, 'status', '--porcelain')).toBe('A  extra.txt');
-    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(wt, 'status', '--porcelain')).toBe('A  extra.txt');
+    expect(await git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
   });
 
   it('leaves the leftover branch of an older run out of the merge of a later review (AO-0300)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     const eng = olderUncommittedRun(s, commit, wt);
     // What an earlier start of a merge would have committed for run R1, on the reviewed commit.
-    git(wt, 'checkout', '-q', '-b', 'fake/t-0001-r1-merge');
+    await git(wt, 'checkout', '-q', '-b', 'fake/t-0001-r1-merge');
     writeFileSync(join(wt, 'extra.txt'), 'stale\n');
-    git(wt, 'add', 'extra.txt');
-    git(wt, 'commit', '-qm', 'What run R1 left');
-    git(wt, 'checkout', '-q', 'feature');
+    await git(wt, 'add', 'extra.txt');
+    await git(wt, 'commit', '-qm', 'What run R1 left');
+    await git(wt, 'checkout', '-q', 'feature');
     eng.start('1', 'fix');
     eng.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
     s.as('human:dawid').verdict('1', 'approve', 'looks right');
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(commit);
     expect(existsSync(join(s.repo, 'extra.txt'))).toBe(false);
   });
 
   it('commits nothing for the review of run R2 when the run-end of run R1 comes after it (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     // Run R1 asks for review and gets `changes` before swarmupd records its end.
     const r1 = s.as('fake:engineer', 'R1');
     r1.recordRun('1', 'run-start', { run: 'R1' }, 'fake run');
@@ -915,7 +917,7 @@ describe('merging approved work', () => {
     r2.recordRun('1', 'run-start', { run: 'R2' }, 'fake run');
     r2.start('1', 'fix');
     writeFileSync(join(wt, 'extra.txt'), 'not reviewed\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     r2.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
     r1.recordRun(
       '1',
@@ -935,25 +937,25 @@ describe('merging approved work', () => {
     });
     expect(e.body).toContain('1 uncommitted change(s) (`extra.txt`)');
     expect(e.body).toContain('no run-end of the run that asked for this review');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
-    expect(git(wt, 'status', '--porcelain')).toBe('A  extra.txt');
-    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(wt, 'status', '--porcelain')).toBe('A  extra.txt');
+    expect(await git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
   });
 
   it('leaves the leftover branch of run R1 out when its run-end comes after the review of run R2 (AO-0300)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     const r1 = s.as('fake:engineer', 'R1');
     r1.start('1', 'plan');
     r1.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
     s.as('human:dawid').verdict('1', 'changes', 'not yet');
     // What an earlier start of a merge would have committed for run R1, on the reviewed commit.
-    git(wt, 'checkout', '-q', '-b', 'fake/t-0001-r1-merge');
+    await git(wt, 'checkout', '-q', '-b', 'fake/t-0001-r1-merge');
     writeFileSync(join(wt, 'extra.txt'), 'stale\n');
-    git(wt, 'add', 'extra.txt');
-    git(wt, 'commit', '-qm', 'What run R1 left');
-    git(wt, 'checkout', '-q', 'feature');
+    await git(wt, 'add', 'extra.txt');
+    await git(wt, 'commit', '-qm', 'What run R1 left');
+    await git(wt, 'checkout', '-q', 'feature');
     const r2 = s.as('fake:engineer', 'R2');
     r2.start('1', 'fix');
     r2.review('1', `${commit.slice(0, 7)} on branch feature: ready`, 'human:dawid');
@@ -966,13 +968,13 @@ describe('merging approved work', () => {
     s.as('human:dawid').verdict('1', 'approve', 'looks right');
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(commit);
     expect(existsSync(join(s.repo, 'extra.txt'))).toBe(false);
   });
 
-  it('records the run that asks on the review event (AO-0300)', () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
+  it('records the run that asks on the review event (AO-0300)', async () => {
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
     const r1 = s.as('fake:engineer', 'R1');
     r1.start('1', 'plan');
     r1.review('1', `${commit.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
@@ -1024,17 +1026,17 @@ describe('merging approved work', () => {
   });
 
   /** A branch `feature` checked out in the repo's own checkout, as a run without a task worktree leaves it. */
-  const featureInRepo = (repo: string): string => {
-    git(repo, 'checkout', '-q', '-b', 'feature');
+  const featureInRepo = async (repo: string): Promise<string> => {
+    await git(repo, 'checkout', '-q', '-b', 'feature');
     writeFileSync(join(repo, 'code.txt'), 'two\n');
-    git(repo, 'commit', '-qam', 'Change the code');
-    return git(repo, 'rev-parse', 'HEAD');
+    await git(repo, 'commit', '-qam', 'Change the code');
+    return await git(repo, 'rev-parse', 'HEAD');
   };
 
   it("sends the task back when the repo's own checkout is on the reviewed branch with changes (AO-0300)", async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = featureInRepo(s.repo);
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await featureInRepo(s.repo);
     writeFileSync(join(s.repo, 'stray.txt'), 'whose?\n');
     s.approve(commit);
     await s.merged();
@@ -1046,16 +1048,16 @@ describe('merging approved work', () => {
       to: 'fake:engineer',
     });
     expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(s.repo, 'stray.txt'))).toBe('whose?\n');
   });
 
   it("looks at the repo's own checkout when another root's base has the reviewed branch's name (AO-0300)", async () => {
     // A second root merges into a branch named `feature` in a repo of its own. That name says
     // nothing about this repo, where `feature` is the reviewed branch.
-    const s = mergeSetup({ otherMerge: { other: { base: 'feature' } } });
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = featureInRepo(s.repo);
+    const s = await mergeSetup({ otherMerge: { other: { base: 'feature' } } });
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await featureInRepo(s.repo);
     writeFileSync(join(s.repo, 'stray.txt'), 'whose?\n');
     s.approve(commit);
     await s.merged();
@@ -1067,15 +1069,15 @@ describe('merging approved work', () => {
       to: 'fake:engineer',
     });
     expect(e.body).toContain('1 uncommitted change(s) (`stray.txt`)');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(s.repo, 'stray.txt'))).toBe('whose?\n');
   });
 
   it("takes what a run could not commit in the repo's own checkout on the reviewed branch (AO-0300)", async () => {
-    const s = mergeSetup();
-    const commit = featureInRepo(s.repo);
+    const s = await mergeSetup();
+    const commit = await featureInRepo(s.repo);
     writeFileSync(join(s.repo, 'extra.txt'), 'staged\n');
-    git(s.repo, 'add', 'extra.txt');
+    await git(s.repo, 'add', 'extra.txt');
     approveAfterRun(
       s,
       commit,
@@ -1083,38 +1085,38 @@ describe('merging approved work', () => {
     );
     await s.merged();
     // The run's file is in a commit on top of the reviewed one, and the merge works with that.
-    const left = git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
-    expect(git(s.repo, 'rev-parse', `${left}^`)).toBe(commit);
-    expect(git(s.repo, 'show', `${left}:extra.txt`)).toBe('staged');
+    const left = await git(s.repo, 'rev-parse', 'fake/t-0001-r1-merge');
+    expect(await git(s.repo, 'rev-parse', `${left}^`)).toBe(commit);
+    expect(await git(s.repo, 'show', `${left}:extra.txt`)).toBe('staged');
     expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
-    expect(git(s.repo, 'status', '--porcelain', '--', 'extra.txt')).toBe('');
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(left);
+    expect(await git(s.repo, 'status', '--porcelain', '--', 'extra.txt')).toBe('');
   });
 
   it('sends the task back when the worktree with the changes is not on the commit to merge (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
-    git(wt, 'commit', '-qam', 'One more line');
+    await git(wt, 'commit', '-qam', 'One more line');
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\nfour\n');
     approveAfterRun(s, commit, 'left changes uncommitted: 1 process(es) of the run still alive');
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
     expect(e.body).toContain('not on the commit to merge');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
   });
 
   it('merges nothing when a file changes while swarmupd commits what the run left (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     // `code.txt` changes between the commit and the look that follows it (the `check` index).
@@ -1141,21 +1143,21 @@ describe('merging approved work', () => {
     expect(e.body).toContain('`code.txt`');
     expect(e.body).toContain('on branch `fake/t-0001-r1-merge`');
     // The commit holds the older `code.txt`: the base stays, and the newer content stays in the file.
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
-    expect(git(s.repo, 'show', 'fake/t-0001-r1-merge:code.txt')).toBe('two\nthree');
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'show', 'fake/t-0001-r1-merge:code.txt')).toBe('two\nthree');
     expect(text(join(wt, 'code.txt'))).toBe('two\nthree\nfour\n');
-    expect(git(s.repo, 'show', 'fake/t-0001-r1-merge:extra.txt')).toBe('staged');
+    expect(await git(s.repo, 'show', 'fake/t-0001-r1-merge:extra.txt')).toBe('staged');
   });
 
   it('merges nothing when the worktree stays changed with nothing in it to commit (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     // A staged version of `code.txt`, and the file changed back: the files equal the commit, so
     // the commit of what the run left has nothing to hold, and git still reports the change.
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
-    git(wt, 'add', 'code.txt');
+    await git(wt, 'add', 'code.txt');
     writeFileSync(join(wt, 'code.txt'), 'two\n');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     await s.merged();
@@ -1169,18 +1171,18 @@ describe('merging approved work', () => {
     expect(e.body).toContain('1 uncommitted change(s) (`code.txt`)');
     expect(e.body).toContain('found nothing in them to commit');
     // The base stays, no branch is made, and the staged version stays in the index.
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
-    expect(git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
-    expect(git(wt, 'show', ':code.txt')).toBe('two\nthree');
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(wt, 'show', ':code.txt')).toBe('two\nthree');
   });
 
   it('merges nothing when the worktree is still changed after the commit of what the run left (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     // A file appears after the commit and its restore, before the worktree is read again.
     const real = Checkout.prototype.commitLeftovers;
@@ -1201,46 +1203,46 @@ describe('merging approved work', () => {
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
     expect(e.body).toContain('1 file(s) there still show as changed after the commit (`late.txt`)');
     expect(e.body).toContain('on branch `fake/t-0001-r1-merge`');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(text(join(wt, 'late.txt'))).toBe('late\n');
   });
 
   /** Makes git fail in the worktree `wt` (a broken index); the returned function repairs it. */
-  const breakIndex = (wt: string): (() => void) => {
-    const index = join(git(wt, 'rev-parse', '--absolute-git-dir'), 'index');
+  const breakIndex = async (wt: string): Promise<() => void> => {
+    const index = join(await git(wt, 'rev-parse', '--absolute-git-dir'), 'index');
     const good = readFileSync(index);
     writeFileSync(index, 'not an index\n');
     return () => writeFileSync(index, good);
   };
 
   it('merges nothing while git cannot read the task worktree, then what the run left (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
-    const repair = breakIndex(wt);
+    const repair = await breakIndex(wt);
     await s.merged();
     // The reviewed commit lacks `extra.txt`: with the worktree unread, the base stays.
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
     expect(warns.join('\n')).toContain('cannot read the worktree');
     repair();
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
-    expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main^')).toBe(commit);
     expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
   });
 
   it('tells the human and merges nothing when the task worktree stays unreadable (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const repair = breakIndex(worktreeOf(s.repo, 'feature'));
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const repair = await breakIndex(await worktreeOf(s.repo, 'feature'));
     s.approve(commit);
     await s.merged();
     await s.merged();
@@ -1254,14 +1256,14 @@ describe('merging approved work', () => {
     repair();
     await s.merged();
     expect(s.last().id).toBe(e.id);
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
   });
 
   it('merges nothing while git cannot list the worktrees (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    writeFileSync(join(worktreeOf(s.repo, 'feature'), 'stray.txt'), 'whose?\n');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    writeFileSync(join(await worktreeOf(s.repo, 'feature'), 'stray.txt'), 'whose?\n');
     s.approve(commit);
     const list = vi
       .spyOn(MergeRepo.prototype, 'worktreeList')
@@ -1269,24 +1271,24 @@ describe('merging approved work', () => {
     try {
       await s.merged();
       expect(list).toHaveBeenCalledTimes(1);
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
       expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
       // The next look reads the list and finds the changes.
       await s.merged();
       expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
     } finally {
       list.mockRestore();
     }
   });
 
   it('merges nothing while the folder of the task worktree cannot be looked at (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
+    await git(wt, 'add', 'extra.txt');
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
@@ -1302,12 +1304,12 @@ describe('merging approved work', () => {
       expect(gone).toHaveBeenCalledTimes(1);
       expect(samePath(gone.mock.calls[0]![0], wt)).toBe(true);
       // The reviewed commit lacks `extra.txt`: with the folder unseen, the base stays.
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
       expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
       expect(warns.join('\n')).toContain('cannot read the worktree');
       await s.merged();
       expect(s.last()).toMatchObject({ type: 'merge', branch: 'fake/t-0001-r1-merge' });
-      expect(git(s.repo, 'rev-parse', 'main^')).toBe(commit);
+      expect(await git(s.repo, 'rev-parse', 'main^')).toBe(commit);
       expect(text(join(s.repo, 'extra.txt'))).toBe('staged\n');
     } finally {
       gone.mockRestore();
@@ -1315,15 +1317,15 @@ describe('merging approved work', () => {
   });
 
   it('merges the reviewed commit when the folder of the task worktree is deleted (AO-0300)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     // Git still lists the worktree (prunable); nothing is left in it to miss.
     rmSync(wt, { recursive: true, force: true });
     s.approve(commit);
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(commit);
   });
 
   it('pathGone says gone only for a path the file system reports missing (AO-0300)', () => {
@@ -1347,18 +1349,18 @@ describe('merging approved work', () => {
   });
 
   it('merges nothing while git cannot read the branch of an earlier start of the merge (AO-0300)', async () => {
-    const s = mergeSetup();
-    const start = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('two\n');
-    const wt = worktreeOf(s.repo, 'feature');
+    const s = await mergeSetup();
+    const start = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('two\n');
+    const wt = await worktreeOf(s.repo, 'feature');
     // As an earlier start of the merge left it: the changes committed on their branch, the
     // worktree clean on the reviewed commit.
     writeFileSync(join(wt, 'extra.txt'), 'staged\n');
-    git(wt, 'add', 'extra.txt');
-    git(wt, 'commit', '-qm', 'What the run left');
-    const left = git(wt, 'rev-parse', 'HEAD');
-    git(wt, 'branch', 'fake/t-0001-r1-merge');
-    git(wt, 'reset', '-q', '--hard', commit);
+    await git(wt, 'add', 'extra.txt');
+    await git(wt, 'commit', '-qm', 'What the run left');
+    const left = await git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'branch', 'fake/t-0001-r1-merge');
+    await git(wt, 'reset', '-q', '--hard', commit);
     approveAfterRun(s, commit, `cannot commit what it left in ${wt}: HEAD moved during the run`);
     const tip = vi
       .spyOn(MergeRepo.prototype, 'branchOn')
@@ -1366,100 +1368,100 @@ describe('merging approved work', () => {
     try {
       await s.merged();
       expect(tip).toHaveBeenCalledTimes(1);
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(start);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(start);
       await s.merged();
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(left);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(left);
     } finally {
       tip.mockRestore();
     }
   });
 
   it('merges the branch an earlier review names when the approved review names none (AO-0153)', async () => {
-    const s = mergeSetup();
-    const first = s.branch('two\n');
+    const s = await mergeSetup();
+    const first = await s.branch('two\n');
     const eng = s.as('fake:engineer');
     eng.start('1', 'plan');
     eng.review('1', `${first.slice(0, 7)} on branch feature: changes the code`, 'human:dawid');
     s.as('human:dawid').verdict('1', 'changes', 'one more line');
     // The fix lands on the branch; the next review names no source, only prose.
-    const block = git(s.repo, 'worktree', 'list', '--porcelain')
+    const block = (await git(s.repo, 'worktree', 'list', '--porcelain'))
       .split(/\r?\n\r?\n/)
       .find((b) => b.includes('branch refs/heads/feature'))!;
     const wt = /^worktree (.+)$/m.exec(block)![1]!.trim();
     writeFileSync(join(wt, 'code.txt'), 'two\nthree\n');
-    git(wt, 'commit', '-qam', 'One more line');
-    const tip = git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'commit', '-qam', 'One more line');
+    const tip = await git(wt, 'rev-parse', 'HEAD');
     eng.start('1', 'fix');
     eng.review('1', 'Added the line; this branch is ready and the tests pass.', 'human:dawid');
     s.as('human:dawid').verdict('1', 'approve', 'looks right');
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(text(join(s.repo, 'code.txt'))).toBe('two\nthree\n');
   });
 
   it('makes its worktree again when it is left from another repo (AO-0273)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     // swarmupd's worktree as an earlier merge left it, when the code checkout was another repo.
     const old = temp();
-    git(old, 'init', '-q', '-b', 'main');
-    git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(old, 'init', '-q', '-b', 'main');
+    await git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(s.state, 'merge', 'test');
     mkdirSync(dirname(wt), { recursive: true });
-    git(old, 'worktree', 'add', '-q', '--detach', wt);
+    await git(old, 'worktree', 'add', '-q', '--detach', wt);
     writeFileSync(join(wt, 'left.txt'), 'from an earlier merge\n');
-    const commit = s.branch('two\n');
+    const commit = await s.branch('two\n');
     s.approve(commit);
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(commit);
     // The folder is a worktree of the checkout now, and the old repo lists it no more.
-    const listed = (repo: string): string[] =>
-      git(repo, 'worktree', 'list', '--porcelain')
+    const listed = async (repo: string): Promise<string[]> =>
+      (await git(repo, 'worktree', 'list', '--porcelain'))
         .split(/\r?\n/)
         .filter((l) => l.startsWith('worktree '))
         .map((l) => l.slice('worktree '.length).trim());
-    expect(listed(s.repo).some((p) => samePath(p, wt))).toBe(true);
-    expect(listed(old)).toHaveLength(1);
+    expect((await listed(s.repo)).some((p) => samePath(p, wt))).toBe(true);
+    expect(await listed(old)).toHaveLength(1);
     const entries = join(old, '.git', 'worktrees');
     expect(existsSync(entries) ? readdirSync(entries) : []).toEqual([]);
     expect(existsSync(join(wt, 'left.txt'))).toBe(false);
   });
 
   it('leaves a folder inside another checkout alone and names its repo (AO-0273)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     const other = temp();
-    git(other, 'init', '-q', '-b', 'main');
-    git(other, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(other, 'init', '-q', '-b', 'main');
+    await git(other, 'commit', '-q', '--allow-empty', '-m', 'start');
     const inside = join(other, 'merge');
     mkdirSync(inside);
     writeFileSync(join(inside, 'notes.txt'), 'someone else\n');
     const repo = new MergeRepo(s.repo, inside, [], { ...process.env, ...ID });
-    await expect(repo.ensureWorktree(git(s.repo, 'rev-parse', 'main'))).rejects.toThrow(
+    await expect(repo.ensureWorktree(await git(s.repo, 'rev-parse', 'main'))).rejects.toThrow(
       /belongs to the repo at .* remove it/,
     );
     expect(text(join(inside, 'notes.txt'))).toBe('someone else\n');
   });
 
   it('makes its worktree again when its old repo was deleted (AO-0275)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     const old = temp();
-    git(old, 'init', '-q', '-b', 'main');
-    git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(old, 'init', '-q', '-b', 'main');
+    await git(old, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(s.state, 'merge', 'test');
     mkdirSync(dirname(wt), { recursive: true });
-    git(old, 'worktree', 'add', '-q', '--detach', wt);
+    await git(old, 'worktree', 'add', '-q', '--detach', wt);
     writeFileSync(join(wt, 'left.txt'), 'from an earlier merge\n');
     rmSync(old, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    const commit = s.branch('two\n');
+    const commit = await s.branch('two\n');
     s.approve(commit);
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(commit);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(commit);
     expect(
       samePath(
-        git(wt, 'rev-parse', '--path-format=absolute', '--git-common-dir'),
+        await git(wt, 'rev-parse', '--path-format=absolute', '--git-common-dir'),
         join(s.repo, '.git'),
       ),
     ).toBe(true);
@@ -1467,8 +1469,8 @@ describe('merging approved work', () => {
   });
 
   it('keeps a folder whose .git names no missing worktree entry (AO-0275)', async () => {
-    const s = mergeSetup();
-    const at = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const at = await git(s.repo, 'rev-parse', 'main');
     const cases: [string, (dir: string) => void][] = [
       ['no .git', () => undefined],
       ['a .git folder', (dir) => mkdirSync(join(dir, '.git'))],
@@ -1493,8 +1495,8 @@ describe('merging approved work', () => {
   });
 
   it('keeps a task blocked on approved work until the merge is recorded (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    const commit = s.branch('slow\n');
+    const s = await mergeSetup({ userMerge: true });
+    const commit = await s.branch('slow\n');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs the change of T-0001', { on: ['T-0001'] });
@@ -1514,7 +1516,7 @@ describe('merging approved work', () => {
   });
 
   it('frees a task blocked on approved work that has nothing to merge (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true });
+    const s = await mergeSetup({ userMerge: true });
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -1538,7 +1540,7 @@ describe('merging approved work', () => {
   });
 
   it('keeps a task blocked on approved work whose merge failed (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true });
+    const s = await mergeSetup({ userMerge: true });
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -1562,9 +1564,9 @@ describe('merging approved work', () => {
 
   it('keeps the worktree of approved work whose merge failed (AO-0228)', async () => {
     let now = Date.now();
-    const s = mergeSetup({ userMerge: true, now: () => now });
+    const s = await mergeSetup({ userMerge: true, now: () => now });
     const wt = join(s.repo, 'out', 'wt-T-0001');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'fake/t-0001', wt, 'main');
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'fake/t-0001', wt, 'main');
     // The review names a commit the repo lacks, so the merge fails with a note.
     s.approve('0123abc');
     await s.merged();
@@ -1584,7 +1586,7 @@ describe('merging approved work', () => {
   });
 
   it('keeps a task blocked on approved work that the repo lacks, and tells the human (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true });
+    const s = await mergeSetup({ userMerge: true });
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -1612,8 +1614,8 @@ describe('merging approved work', () => {
   });
 
   it('frees a task blocked on work approved before the merge setting (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true, since: '2999-01-01T00:00:00.000Z' });
-    const commit = s.branch('two\n');
+    const s = await mergeSetup({ userMerge: true, since: '2999-01-01T00:00:00.000Z' });
+    const commit = await s.branch('two\n');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -1628,8 +1630,8 @@ describe('merging approved work', () => {
   });
 
   it('frees a task blocked on work approved before the merge setting and commented on after it (AO-0228)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    const commit = s.branch('two\n');
+    const s = await mergeSetup({ userMerge: true });
+    const commit = await s.branch('two\n');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -1656,24 +1658,24 @@ describe('merging approved work', () => {
   });
 
   it('rebases onto the base, runs the checks, fast-forwards the base, builds and records it', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
     // main moves on after the branch was cut, so the merge is a real rebase.
-    const before = s.onMain('other.txt', 'other\n');
+    const before = await s.onMain('other.txt', 'other\n');
     s.approve(commit);
     // The task store has events no commit holds; a merge leaves them alone.
-    const pending = git(s.repo, 'status', '--porcelain', '--', '.swarmup');
+    const pending = await git(s.repo, 'status', '--porcelain', '--', '.swarmup');
     expect(pending).not.toBe('');
     await s.merged();
 
-    const tip = git(s.repo, 'rev-parse', 'main');
-    expect(git(s.repo, 'rev-parse', `${tip}^`)).toBe(before);
-    expect(git(s.repo, 'log', '-1', '--format=%s', tip)).toBe('Change the code');
+    const tip = await git(s.repo, 'rev-parse', 'main');
+    expect(await git(s.repo, 'rev-parse', `${tip}^`)).toBe(before);
+    expect(await git(s.repo, 'log', '-1', '--format=%s', tip)).toBe('Change the code');
     // The checkout follows main, and the build ran there.
     expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
     expect(text(join(s.repo, 'other.txt'))).toBe('other\n');
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('two\n');
-    expect(git(s.repo, 'status', '--porcelain', '--', '.swarmup')).toBe(pending);
+    expect(await git(s.repo, 'status', '--porcelain', '--', '.swarmup')).toBe(pending);
 
     expect(s.as('human:dawid').view('1').status).toBe('done');
     const e = s.last();
@@ -1690,7 +1692,7 @@ describe('merging approved work', () => {
 
     // Done once: a second tick merges nothing again.
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(
       s
         .as('human:dawid')
@@ -1702,7 +1704,7 @@ describe('merging approved work', () => {
   it("runs the checks without the installed app's swarmupd entry and Electron host flags (AO-0235)", async () => {
     const out = join(temp(), 'env.json');
     // What swarmupd has in its environment when the installed desktop app hosts it.
-    const s = mergeSetup({
+    const s = await mergeSetup({
       env: {
         SWARMUP_DAEMON_ENTRY: 'C:/app/swarmupd.mjs',
         OPS_DAEMON_ENTRY: 'C:/app/opsd.mjs',
@@ -1717,7 +1719,7 @@ describe('merging approved work', () => {
         INIT_CWD: 'C:/engine',
       },
     });
-    s.approve(s.branch('two\n'));
+    s.approve(await s.branch('two\n'));
     await s.merged();
     expect(s.as('human:dawid').view('1').status).toBe('done');
     // A check that starts swarmupd, as this repo's tests do, starts its own checkout's build.
@@ -1726,13 +1728,13 @@ describe('merging approved work', () => {
 
   it('approves the merged patch for its own repo and base only, for 30 days (AO-0193)', async () => {
     let now = Date.now();
-    const s = mergeSetup({ now: () => now });
-    const commit = s.branch('two\n');
-    s.onMain('other.txt', 'other\n');
+    const s = await mergeSetup({ now: () => now });
+    const commit = await s.branch('two\n');
+    await s.onMain('other.txt', 'other\n');
     s.approve(commit);
     await s.merged();
-    const tip = git(s.repo, 'rev-parse', 'main');
-    const key = patchKey(git(s.repo, ...PATCH_KEY_ARGS, tip));
+    const tip = await git(s.repo, 'rev-parse', 'main');
+    const key = patchKey(await git(s.repo, ...PATCH_KEY_ARGS, tip));
     expect(key).toBeTruthy();
     type Approving = { approved(): (top: string, branch: string) => ReadonlySet<string> };
     const approved = (top: string, branch: string, sup = s.sup) => [
@@ -1742,7 +1744,7 @@ describe('merging approved work', () => {
     // Another branch of the repo, or another repo with an equal patch on main, is not approved.
     expect(approved(s.repo, 'feature')).toEqual([]);
     const other = temp();
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: other, windowsHide: true });
+    await gitAsync(other, ['init', '-q', '-b', 'main']);
     expect(approved(other, 'main')).toEqual([]);
     // A swarmupd started later reads the same file.
     expect(approved(s.repo, 'main', s.opsd())).toEqual([key]);
@@ -1757,9 +1759,9 @@ describe('merging approved work', () => {
   });
 
   it('installs dependencies in the checkout before the build when the merge changed a lockfile (AO-0185)', async () => {
-    const s = mergeSetup({ install: ['node install.mjs'] });
+    const s = await mergeSetup({ install: ['node install.mjs'] });
     const installed = join(s.state, 'installed.txt');
-    const commit = s.branch('two\n', { 'package-lock.json': '{"lockfileVersion":3}\n' });
+    const commit = await s.branch('two\n', { 'package-lock.json': '{"lockfileVersion":3}\n' });
     s.approve(commit);
     await s.merged();
     expect(s.as('human:dawid').view('1').status).toBe('done');
@@ -1770,10 +1772,10 @@ describe('merging approved work', () => {
   });
 
   it('installs in each directory whose lockfile the merge changed, without a root lockfile (AO-0185)', async () => {
-    const s = mergeSetup({
+    const s = await mergeSetup({
       install: (repo) => [`node "${join(repo, 'install-where.mjs').replace(/\\/g, '/')}"`],
     });
-    const commit = s.branch('two\n', {
+    const commit = await s.branch('two\n', {
       'site/package-lock.json': '{"lockfileVersion":3}\n',
       'app/web/npm-shrinkwrap.json': '{"lockfileVersion":3}\n',
       'docs/note.md': 'a note\n',
@@ -1790,8 +1792,8 @@ describe('merging approved work', () => {
   });
 
   it('skips the install when the merge left the lockfiles alone (AO-0185)', async () => {
-    const s = mergeSetup({ install: ['node install.mjs'] });
-    const commit = s.branch('two\n', { 'docs/note.md': 'a note\n' });
+    const s = await mergeSetup({ install: ['node install.mjs'] });
+    const commit = await s.branch('two\n', { 'docs/note.md': 'a note\n' });
     s.approve(commit);
     await s.merged();
     expect(existsSync(join(s.state, 'installed.txt'))).toBe(false);
@@ -1800,9 +1802,9 @@ describe('merging approved work', () => {
   });
 
   it('installs in the checkout and builds once more when the build fails there (AO-0232)', async () => {
-    const s = mergeSetup({ install: ['node install.mjs'] });
+    const s = await mergeSetup({ install: ['node install.mjs'] });
     // No lockfile change, so no install before the build; the build misses its dependencies.
-    const commit = s.branch('deps\n');
+    const commit = await s.branch('deps\n');
     s.approve(commit);
     await s.merged();
     expect(s.as('human:dawid').view('1').status).toBe('done');
@@ -1815,9 +1817,9 @@ describe('merging approved work', () => {
   });
 
   it('tells the human, not the author, when the install in the checkout fails (AO-0232)', async () => {
-    const s = mergeSetup({ install: ['node fail.mjs'] });
+    const s = await mergeSetup({ install: ['node fail.mjs'] });
     const fail = "console.error('EBUSY: resource busy or locked'); process.exit(3);\n";
-    const commit = s.branch('deps\n', { 'fail.mjs': fail });
+    const commit = await s.branch('deps\n', { 'fail.mjs': fail });
     s.approve(commit);
     await s.merged();
     // The merge landed and its code passed the checks: the task stays closed.
@@ -1837,8 +1839,8 @@ describe('merging approved work', () => {
   });
 
   it('sends the task back when the build still fails after the install (AO-0232)', async () => {
-    const s = mergeSetup({ install: ['node install.mjs'] });
-    const commit = s.branch('broken\n');
+    const s = await mergeSetup({ install: ['node install.mjs'] });
+    const commit = await s.branch('broken\n');
     s.approve(commit);
     await s.merged();
     expect(text(join(s.state, 'installed.txt'))).toBe('broken\n');
@@ -1852,8 +1854,8 @@ describe('merging approved work', () => {
   });
 
   it('builds once when the checkout has nothing to install (AO-0232)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('broken\n');
+    const s = await mergeSetup();
+    const commit = await s.branch('broken\n');
     s.approve(commit);
     await s.merged();
     const e = s.last();
@@ -1863,11 +1865,11 @@ describe('merging approved work', () => {
   });
 
   it('sends the task back when the build fails after a default install with nothing left out (AO-0229)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     // The default install runs npm; with no packages it is quick and needs no network. Its
     // second step has nothing to install and leaves no result, so the failed build is the
     // second result of three entries: still a build step, not an install.
-    const commit = s.branch('broken\n', {
+    const commit = await s.branch('broken\n', {
       'package.json': '{"name":"t","version":"1.0.0","private":true}\n',
       'package-lock.json':
         '{"name":"t","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"t","version":"1.0.0"}}}\n',
@@ -2180,16 +2182,28 @@ describe('merging approved work', () => {
     expect(missingOptionalPackages(bare, win)).toEqual(['win@1.32.0']);
   });
 
-  it("reads the registry of a scope from npm's configuration (AO-0229)", () => {
+  it("reads the registry of a scope from npm's configuration (AO-0229)", async () => {
+    // Each lookup starts `npm config get` synchronously, 0.7-3 s on Windows; the vitest worker
+    // gets its event loop back between them, so their sum never holds it past its RPC timeout
+    // (AO-0392).
+    const breathe = () => new Promise((r) => setImmediate(r));
+    const registry = async (...args: Parameters<typeof npmRegistry>) => {
+      await breathe();
+      return npmRegistry(...args);
+    };
+    const missing = async (...args: Parameters<typeof missingOptionalPackages>) => {
+      await breathe();
+      return missingOptionalPackages(...args);
+    };
     const dir = temp();
     writeFileSync(join(dir, 'package.json'), '{"name":"app"}');
     writeFileSync(
       join(dir, '.npmrc'),
       'registry=https://npm.example.com/all/\n@scope:registry=https://npm.example.com/scope/\n',
     );
-    expect(npmRegistry(dir, undefined)).toBe('https://npm.example.com/all/');
-    expect(npmRegistry(dir, '@scope')).toBe('https://npm.example.com/scope/');
-    expect(npmRegistry(dir, '@other')).toBe('https://npm.example.com/all/');
+    expect(await registry(dir, undefined)).toBe('https://npm.example.com/all/');
+    expect(await registry(dir, '@scope')).toBe('https://npm.example.com/scope/');
+    expect(await registry(dir, '@other')).toBe('https://npm.example.com/all/');
     // A swarmupd started with `pnpm swarmup` has pnpm's registry in its environment, and npm
     // takes that variable over an `.npmrc` file; the project's own registry still answers (AO-0307).
     const script = {
@@ -2197,12 +2211,12 @@ describe('merging approved work', () => {
       npm_config_registry: 'https://registry.example.org/',
       npm_config_user_agent: 'pnpm/9.15.4 npm/? node/v22.0.0 win32 x64',
     };
-    expect(npmRegistry(dir, undefined, script)).toBe('https://npm.example.com/all/');
-    expect(npmRegistry(dir, '@scope', script)).toBe('https://npm.example.com/scope/');
+    expect(await registry(dir, undefined, script)).toBe('https://npm.example.com/all/');
+    expect(await registry(dir, '@scope', script)).toBe('https://npm.example.com/scope/');
     // A variable a person set for their shell, with no script around it, still wins, as in npm.
     const shell = withoutScriptEnv(process.env);
     shell.npm_config_registry = 'https://registry.example.org/';
-    expect(npmRegistry(dir, undefined, shell)).toBe('https://registry.example.org/');
+    expect(await registry(dir, undefined, shell)).toBe('https://registry.example.org/');
     // The default lookup of `missingOptionalPackages` is this one, in the directory it reads.
     const here = { os: 'win32', cpu: 'x64' };
     const write = (host: string) =>
@@ -2220,9 +2234,9 @@ describe('merging approved work', () => {
         }),
       );
     write('npm.example.com');
-    expect(missingOptionalPackages(dir, here)).toEqual(['pkg@1.0.0']);
+    expect(await missing(dir, here)).toEqual(['pkg@1.0.0']);
     write('example.com');
-    expect(missingOptionalPackages(dir, here)).toEqual([]);
+    expect(await missing(dir, here)).toEqual([]);
     vi.unstubAllEnvs();
   }, 60_000);
 
@@ -2326,12 +2340,12 @@ describe('merging approved work', () => {
 
   it("tells the human once when a merge changes swarmupd's own code (AO-0156)", async () => {
     // swarmupd runs from somewhere else, as the installed app does.
-    const s = mergeSetup({ self: () => ({ dir: temp(), stamp: () => 'new' }), build: 'old' });
+    const s = await mergeSetup({ self: () => ({ dir: temp(), stamp: () => 'new' }), build: 'old' });
     const pkg = JSON.stringify({ name: '@swarmup/supervisor' });
     mkdirSync(join(s.repo, 'packages', 'supervisor'), { recursive: true });
-    s.onMain('packages/supervisor/package.json', pkg);
+    await s.onMain('packages/supervisor/package.json', pkg);
     expect(isEngineRepo(s.repo)).toBe(true);
-    const commit = s.branch('two\n', {
+    const commit = await s.branch('two\n', {
       'packages/supervisor/src/x.ts': 'export const x = 1;\n',
       'packages/supervisor/test/x.test.ts': '// test\n',
     });
@@ -2361,13 +2375,16 @@ describe('merging approved work', () => {
 
   it('says to restart when swarmupd runs from the checkout it just built (AO-0156)', async () => {
     // swarmupd's code is inside the repo it merges into, and the build there wrote a new stamp.
-    const s = mergeSetup({
+    const s = await mergeSetup({
       self: (repo) => ({ dir: join(repo, 'packages', 'supervisor', 'dist'), stamp: () => 'new' }),
       build: 'old',
     });
     mkdirSync(join(s.repo, 'packages', 'supervisor'), { recursive: true });
-    s.onMain('packages/supervisor/package.json', JSON.stringify({ name: '@swarmup/supervisor' }));
-    s.approve(s.branch('two\n', { 'packages/core/src/y.ts': 'export const y = 1;\n' }));
+    await s.onMain(
+      'packages/supervisor/package.json',
+      JSON.stringify({ name: '@swarmup/supervisor' }),
+    );
+    s.approve(await s.branch('two\n', { 'packages/core/src/y.ts': 'export const y = 1;\n' }));
     await s.merged();
     const body = s
       .as('human:dawid')
@@ -2377,8 +2394,8 @@ describe('merging approved work', () => {
   });
 
   it('sends no notice for a repo that is not the engine, even with the same folders', async () => {
-    const s = mergeSetup({ self: () => ({ dir: temp(), stamp: () => 'new' }), build: 'old' });
-    s.approve(s.branch('two\n', { 'packages/supervisor/src/x.ts': 'x\n' }));
+    const s = await mergeSetup({ self: () => ({ dir: temp(), stamp: () => 'new' }), build: 'old' });
+    s.approve(await s.branch('two\n', { 'packages/supervisor/src/x.ts': 'x\n' }));
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge' });
     expect(
@@ -2390,13 +2407,13 @@ describe('merging approved work', () => {
   });
 
   it('sends the task back on a conflict and leaves the base alone', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    const before = s.onMain('code.txt', 'three\n');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    const before = await s.onMain('code.txt', 'three\n');
     s.approve(commit);
     await s.merged();
 
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(text(join(s.repo, 'code.txt'))).toBe('three\n');
     expect(existsSync(join(s.repo, 'dist'))).toBe(false);
     const v = s.as('human:dawid').view('1');
@@ -2423,13 +2440,13 @@ describe('merging approved work', () => {
   });
 
   it('sends the task back with the output when a check fails', async () => {
-    const s = mergeSetup();
-    const before = git(s.repo, 'rev-parse', 'main');
-    const commit = s.branch('bad\n');
+    const s = await mergeSetup();
+    const before = await git(s.repo, 'rev-parse', 'main');
+    const commit = await s.branch('bad\n');
     s.approve(commit);
     await s.merged();
 
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(existsSync(join(s.repo, 'dist'))).toBe(false);
     expect(s.as('human:dawid').view('1').status).toBe('todo');
     const e = s.last();
@@ -2445,15 +2462,15 @@ describe('merging approved work', () => {
    * Task 1 approved on `feature` with `code.txt` as `two`, then task 2 on `feature2` with
    * `two.txt` as `second`; the merge lines swarmupd logs go to `lines`.
    */
-  const twoApproved = (s: ReturnType<typeof mergeSetup>, second: string) => {
-    const first = s.branch('two\n');
+  const twoApproved = async (s: Awaited<ReturnType<typeof mergeSetup>>, second: string) => {
+    const first = await s.branch('two\n');
     s.approve(first);
     const wt = join(temp(), 'wt2');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature2', wt, 'main');
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'feature2', wt, 'main');
     writeFileSync(join(wt, 'two.txt'), second);
-    git(wt, 'add', '-A');
-    git(wt, 'commit', '-qm', 'Other work');
-    const commit = git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'add', '-A');
+    await git(wt, 'commit', '-qm', 'Other work');
+    const commit = await git(wt, 'rev-parse', 'HEAD');
     s.as('fake:engineer').start('2', 'plan');
     s.as('fake:engineer').review(
       '2',
@@ -2470,14 +2487,14 @@ describe('merging approved work', () => {
   };
 
   it('merges two approved tasks that wait together after one run of the checks (AO-0381)', async () => {
-    const s = mergeSetup();
-    const before = git(s.repo, 'rev-parse', 'main');
-    const t = twoApproved(s, 'second\n');
+    const s = await mergeSetup();
+    const before = await git(s.repo, 'rev-parse', 'main');
+    const t = await twoApproved(s, 'second\n');
     await s.merged();
 
     expect(t.checks()).toBe('x');
-    const tip = git(s.repo, 'rev-parse', 'main');
-    expect(git(s.repo, 'rev-parse', `${tip}~2`)).toBe(before);
+    const tip = await git(s.repo, 'rev-parse', 'main');
+    expect(await git(s.repo, 'rev-parse', `${tip}~2`)).toBe(before);
     expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
     expect(text(join(s.repo, 'two.txt'))).toBe('second\n');
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('two\n');
@@ -2486,7 +2503,7 @@ describe('merging approved work', () => {
     const two = t.events('2').at(-1)!;
     expect(one).toMatchObject({
       type: 'merge',
-      commit: git(s.repo, 'rev-parse', `${tip}^`),
+      commit: await git(s.repo, 'rev-parse', `${tip}^`),
       branch: 'feature',
     });
     expect(two).toMatchObject({ type: 'merge', commit: tip, branch: 'feature2' });
@@ -2503,13 +2520,13 @@ describe('merging approved work', () => {
 
     // Done once: a second tick merges nothing again.
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(t.checks()).toBe('x');
   });
 
   it('splits a batch whose checks fail and sends back only the task that breaks them (AO-0381)', async () => {
-    const s = mergeSetup();
-    const t = twoApproved(s, 'bad\n');
+    const s = await mergeSetup();
+    const t = await twoApproved(s, 'bad\n');
     await s.merged();
 
     // The batch, then each half alone.
@@ -2528,10 +2545,10 @@ describe('merging approved work', () => {
   });
 
   it('records each terminal batch note once and does nothing on the next tick (AO-0381)', async () => {
-    const s = mergeSetup();
-    const t = twoApproved(s, 'second\n');
-    git(s.repo, 'checkout', '-q', '--detach');
-    git(s.repo, 'branch', '-D', 'main');
+    const s = await mergeSetup();
+    const t = await twoApproved(s, 'second\n');
+    await git(s.repo, 'checkout', '-q', '--detach');
+    await git(s.repo, 'branch', '-D', 'main');
     await s.merged();
 
     const notes = ['1', '2'].map((id) => t.events(id).at(-1)!);
@@ -2557,12 +2574,12 @@ describe('merging approved work', () => {
 
   /** Checks that a git timeout on task 2 of a batch is task 2's, and task 1 still merges. */
   const secondTimesOut = async (
-    s: ReturnType<typeof mergeSetup>,
+    s: Awaited<ReturnType<typeof mergeSetup>>,
     on: { commit: string },
     stage: RegExp,
   ) => {
-    const t = twoApproved(s, 'second\n');
-    on.commit = git(s.repo, 'rev-parse', 'feature2');
+    const t = await twoApproved(s, 'second\n');
+    on.commit = await git(s.repo, 'rev-parse', 'feature2');
     await s.merged();
 
     // Task 1 merges alone after task 2 leaves the batch; it gets no note about task 2.
@@ -2579,31 +2596,31 @@ describe('merging approved work', () => {
       t.lines.some((l) => l.includes('T-0002') && l.includes('merges alone after the batch')),
     ).toBe(true);
     // Seen: the next tick tries neither again.
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(t.events('2').at(-1)).toEqual(note);
   };
 
   it('merges past an index.lock that a stopped git left in its worktree', async () => {
-    const s = mergeSetup();
-    s.approve(s.branch('two\n'));
+    const s = await mergeSetup();
+    s.approve(await s.branch('two\n'));
     await s.merged();
     expect(s.last()).toMatchObject({ type: 'merge' });
     // A git that swarmupd stopped for its timeout mid-write keeps the lock in swarmupd's worktree.
-    const own = git(s.repo, 'worktree', 'list', '--porcelain')
+    const own = (await git(s.repo, 'worktree', 'list', '--porcelain'))
       .split('\n\n')
       .map((b) => b.split('\n')[0]!.slice('worktree '.length))
       .find((p) => !samePath(p, s.repo) && !p.includes('wt'))!;
-    const lock = join(git(own, 'rev-parse', '--absolute-git-dir'), 'index.lock');
+    const lock = join(await git(own, 'rev-parse', '--absolute-git-dir'), 'index.lock');
     writeFileSync(lock, '');
-    s.onMain('code.txt', 'three\n');
+    await s.onMain('code.txt', 'three\n');
     const wt = join(temp(), 'wt-next');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature3', wt, 'main');
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'feature3', wt, 'main');
     writeFileSync(join(wt, 'next.txt'), 'next\n');
-    git(wt, 'add', '-A');
-    git(wt, 'commit', '-qm', 'Next work');
-    const next = git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'add', '-A');
+    await git(wt, 'commit', '-qm', 'Next work');
+    const next = await git(wt, 'rev-parse', 'HEAD');
     s.as('fake:engineer').start('2', 'plan');
     s.as('fake:engineer').review(
       '2',
@@ -2630,7 +2647,7 @@ describe('merging approved work', () => {
         const rev = (args[3] ?? '').replace('^{commit}', '');
         return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
       });
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      const s = await mergeSetup({ gitTimeoutMs: h.timeout });
       await secondTimesOut(s, h.on, /rev-parse/);
     },
   );
@@ -2642,14 +2659,14 @@ describe('merging approved work', () => {
     { retry: 3 },
     async () => {
       const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      const s = await mergeSetup({ gitTimeoutMs: h.timeout });
       await secondTimesOut(s, h.on, /checkout/);
     },
   );
 
   it('merges each task alone with batch 1 (AO-0381)', async () => {
-    const s = mergeSetup({ batch: 1 });
-    const t = twoApproved(s, 'second\n');
+    const s = await mergeSetup({ batch: 1 });
+    const t = await twoApproved(s, 'second\n');
     await s.merged();
     await s.merged();
 
@@ -2661,18 +2678,18 @@ describe('merging approved work', () => {
 
   it('merges again instead of sending the task back when the PC slept during the checks (AO-0151)', async () => {
     let slept = 0;
-    const s = mergeSetup({ now: () => Date.now() + slept });
+    const s = await mergeSetup({ now: () => Date.now() + slept });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('nap\n'));
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('nap\n'));
     await s.sup.tick();
     await until(() => existsSync(join(s.state, 'napped.txt')), STAGE_MS);
     // The PC sleeps for an hour; the check fails on wake.
     slept = 60 * 60_000;
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
     await s.sup.mergeSettled();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.as('human:dawid').view('1').status).toBe('done');
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
     expect(warns.join('\n')).toMatch(
@@ -2687,8 +2704,8 @@ describe('merging approved work', () => {
 
   it('builds again instead of sending the task back when the PC slept during the build (AO-0151)', async () => {
     let slept = 0;
-    const s = mergeSetup({ now: () => Date.now() + slept });
-    s.approve(s.branch('doze\n'));
+    const s = await mergeSetup({ now: () => Date.now() + slept });
+    s.approve(await s.branch('doze\n'));
     await s.sup.tick();
     await until(() => existsSync(join(s.state, 'dozed.txt')), STAGE_MS);
     slept = 60 * 60_000;
@@ -2714,17 +2731,17 @@ describe('merging approved work', () => {
     // As the AO-0165 merge: the PC sleeps during a check that hangs, and its timeout ends it on
     // wake. 0.05 min is 3 s.
     let slept = 0;
-    const s = mergeSetup({ timeoutMinutes: 0.05, now: () => Date.now() + slept });
+    const s = await mergeSetup({ timeoutMinutes: 0.05, now: () => Date.now() + slept });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('slow\n'));
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('slow\n'));
     await s.sup.tick();
     // The rebase before the check can take over 10 s under the full suite.
     await until(() => existsSync(join(s.state, 'checks.txt')), 30_000);
     slept = 60 * 60_000;
     await s.sup.mergeSettled();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
     expect(warns.join('\n')).toMatch(
       /`node check\.mjs` failed \(timed out after \d+ min\) after the PC slept or swarmupd stopped responding; merging again/,
@@ -2745,11 +2762,11 @@ describe('merging approved work', () => {
 
   it('stops a check past its timeout, merges once more, then sends the task back and frees the checkout (AO-0172)', async () => {
     // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
-    const s = mergeSetup({ timeoutMinutes: 0.05 });
+    const s = await mergeSetup({ timeoutMinutes: 0.05 });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('slow\n'));
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('slow\n'));
     await s.merged();
     expect(s.sup.merge).toBeNull();
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
@@ -2765,7 +2782,7 @@ describe('merging approved work', () => {
     expect(warns.filter((w) => w.includes('merges once more'))).toHaveLength(1);
     const checks = join(s.state, 'checks.txt');
     expect(existsSync(checks) ? text(checks) : '').toMatch(/^x{0,2}$/);
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     const e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
     expect(e.body).toContain('`node check.mjs` failed (timed out after');
@@ -2779,40 +2796,40 @@ describe('merging approved work', () => {
   });
 
   it('merges a branch that merged main to resolve its conflict, which a rebase would hit again', async () => {
-    const s = mergeSetup();
-    const first = s.branch('two\n');
-    const before = s.onMain('code.txt', 'three\n');
+    const s = await mergeSetup();
+    const first = await s.branch('two\n');
+    const before = await s.onMain('code.txt', 'three\n');
     s.approve(first);
     await s.merged();
     expect(s.last().body).toContain(`it conflicts with main (${before.slice(0, 7)})`);
 
     // The author merges main into the branch, as the send-back says, and resolves the conflict.
-    const wt = git(s.repo, 'worktree', 'list', '--porcelain')
+    const wt = (await git(s.repo, 'worktree', 'list', '--porcelain'))
       .split('\n\n')
       .find((b) => b.includes('branch refs/heads/feature'))!
       .split('\n')[0]!
       .slice('worktree '.length);
     try {
-      git(wt, 'merge', '-q', 'main');
+      await git(wt, 'merge', '-q', 'main');
     } catch {
       // The conflict this test is about.
     }
     writeFileSync(join(wt, 'code.txt'), 'two and three\n');
-    git(wt, 'add', 'code.txt');
-    git(wt, 'commit', '-q', '--no-edit');
-    const resolved = git(wt, 'rev-parse', 'HEAD');
+    await git(wt, 'add', 'code.txt');
+    await git(wt, 'commit', '-q', '--no-edit');
+    const resolved = await git(wt, 'rev-parse', 'HEAD');
     // A rebase replays `first` onto main and conflicts again; the merge takes the resolution.
     s.approve(resolved);
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(resolved);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(resolved);
     expect(text(join(s.repo, 'code.txt'))).toBe('two and three\n');
     expect(s.last().body).not.toContain('it conflicts with');
   });
 
   it('starts the fix of a merge conflict past the per-project limit and the review backlog', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    s.onMain('code.txt', 'three\n');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    await s.onMain('code.txt', 'three\n');
     s.approve(commit);
     await s.merged();
     expect(s.last().body).toContain('it conflicts with main');
@@ -2836,24 +2853,24 @@ describe('merging approved work', () => {
   });
 
   it('gives a later review its own merge once more after a check timeout, when the earlier merge ended another way (AO-0172)', async () => {
-    const s = mergeSetup({ timeoutMinutes: 0.01 });
+    const s = await mergeSetup({ timeoutMinutes: 0.01 });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
     const once = () => warns.filter((w) => w.includes('swarmupd stopped it and merges once more'));
-    const commit = s.branch('slow\n');
+    const commit = await s.branch('slow\n');
     s.approve(commit);
     await s.merged();
     expect(once()).toHaveLength(1);
 
     // The merge once more ends on a conflict, before any check.
-    s.onMain('code.txt', 'three\n');
+    await s.onMain('code.txt', 'three\n');
     await s.merged();
     let e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
     expect(e.body).toContain('it conflicts with main');
 
     // A later review of the same work: its first check timeout gets its own merge once more.
-    s.onMain('code.txt', 'one\n');
+    await s.onMain('code.txt', 'one\n');
     s.approve(commit);
     await s.merged();
     expect(once()).toHaveLength(2);
@@ -2865,7 +2882,7 @@ describe('merging approved work', () => {
   it('stops a git command of the merge that never exits, with what it started, and tells the human (AO-0172)', async () => {
     // Probed before the merge starts, so the size check follows the merge's end at once.
     const treeStops = await stopsTrees();
-    const s = mergeSetup({ gitTimeoutMs: hangOnly('rebase', '-q') });
+    const s = await mergeSetup({ gitTimeoutMs: hangOnly('rebase', '-q') });
     const beat = join(s.state, 'beat.txt').split(sep).join('/');
     // A pre-rebase hook that says why it waits, never ends by itself, and leaves a mark every
     // 100 ms.
@@ -2874,14 +2891,14 @@ describe('merging approved work', () => {
       `#!/bin/sh\necho 'hook waits for the lock' >&2\nwhile [ ! -f "$MERGE_GO" ]; do printf x >> '${beat}'; sleep 0.1; done\nexit 1\n`,
       { mode: 0o755 },
     );
-    const commit = s.branch('two\n');
+    const commit = await s.branch('two\n');
     // main moves on, so the merge has to rebase and git runs the hook.
-    const before = s.onMain('other.txt', 'other\n');
+    const before = await s.onMain('other.txt', 'other\n');
     s.approve(commit);
     await s.merged();
 
     expect(s.sup.merge).toBeNull();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     // Where the stop is refused, the note says the hook may still run instead (AO-0251).
@@ -2918,7 +2935,7 @@ describe('merging approved work', () => {
     // Every ref update starts `sh` for the hook below, so `git worktree add` and `git checkout`
     // in the rebase stage take seconds under the full suite on Windows: only the fast-forward
     // gets the short timeout.
-    const s = mergeSetup({ gitTimeoutMs: hangOnly('merge', '-q', '--ff-only') });
+    const s = await mergeSetup({ gitTimeoutMs: hangOnly('merge', '-q', '--ff-only') });
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
     const beat = join(s.state, 'beat.txt').split(sep).join('/');
@@ -2937,8 +2954,8 @@ describe('merging approved work', () => {
       ].join('\n'),
       { mode: 0o755 },
     );
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('two\n'));
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('two\n'));
     await s.merged();
 
     expect(s.sup.merge).toBeNull();
@@ -2958,16 +2975,16 @@ describe('merging approved work', () => {
   it('says what git started may still run when the stop of a timed-out git is refused (AO-0251)', async () => {
     const repo = temp();
     const state = temp();
-    git(repo, 'init', '-q', '-b', 'main');
+    await git(repo, 'init', '-q', '-b', 'main');
     writeFileSync(join(repo, 'code.txt'), 'one\n');
-    git(repo, 'add', '.');
-    git(repo, 'commit', '-q', '-m', 'one');
-    const from = git(repo, 'rev-parse', 'HEAD');
-    git(repo, 'checkout', '-q', '-b', 'work');
+    await git(repo, 'add', '.');
+    await git(repo, 'commit', '-q', '-m', 'one');
+    const from = await git(repo, 'rev-parse', 'HEAD');
+    await git(repo, 'checkout', '-q', '-b', 'work');
     writeFileSync(join(repo, 'code.txt'), 'two\n');
-    git(repo, 'commit', '-q', '-am', 'two');
-    const to = git(repo, 'rev-parse', 'HEAD');
-    git(repo, 'checkout', '-q', 'main');
+    await git(repo, 'commit', '-q', '-am', 'two');
+    const to = await git(repo, 'rev-parse', 'HEAD');
+    await git(repo, 'checkout', '-q', 'main');
     const beat = join(state, 'beat.txt').split(sep).join('/');
     const go = join(state, 'go.txt').split(sep).join('/');
     const left = join(state, 'left.txt').split(sep).join('/');
@@ -3024,45 +3041,45 @@ describe('merging approved work', () => {
   }, 120_000);
 
   it('rebases again when the base moves during the checks, and checks again only for code', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     const count = () =>
       existsSync(join(s.state, 'checks.txt')) ? text(join(s.state, 'checks.txt')).length : 0;
-    const commit = s.branch('slow\n');
+    const commit = await s.branch('slow\n');
     s.approve(commit);
     await s.sup.tick();
     await until(() => count() === 1, STAGE_MS);
     // A task store sync lands on main while the check runs: no code changed.
-    const synced = s.onMain('.swarmup/sync-note.md', 'note\n');
+    const synced = await s.onMain('.swarmup/sync-note.md', 'note\n');
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
     await s.sup.mergeSettled();
-    const tip = git(s.repo, 'rev-parse', 'main');
-    expect(git(s.repo, 'rev-parse', `${tip}^`)).toBe(synced);
+    const tip = await git(s.repo, 'rev-parse', 'main');
+    expect(await git(s.repo, 'rev-parse', `${tip}^`)).toBe(synced);
     expect(count()).toBe(1);
     expect(s.last()).toMatchObject({ type: 'merge', commit: tip });
   });
 
   it('records work already in the base without moving it', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    git(s.repo, 'merge', '-q', '--ff-only', 'feature');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    await git(s.repo, 'merge', '-q', '--ff-only', 'feature');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     s.approve(commit);
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(existsSync(join(s.state, 'checks.txt'))).toBe(false);
     expect(s.last()).toMatchObject({ type: 'merge', commit: tip });
     expect(s.last().body).toContain('is already in main; nothing to merge');
   });
 
   it("merges the run-suffixed branch that holds a reviewed run's leftover files (AO-0356)", async () => {
-    const s = mergeSetup();
-    const committed = s.branch('two\n');
+    const s = await mergeSetup();
+    const committed = await s.branch('two\n');
     const branch = 'fake/t-0001-r1';
-    git(s.repo, 'branch', '-m', 'feature', branch);
+    await git(s.repo, 'branch', '-m', 'feature', branch);
     // The review was sent before wrap-up. Its task branch has no work, while swarmupd's later
     // run-end records the branch where it committed the files the sandboxed run left.
-    git(s.repo, 'branch', 'feature', 'main');
-    const reviewed = git(s.repo, 'rev-parse', 'feature');
+    await git(s.repo, 'branch', 'feature', 'main');
+    const reviewed = await git(s.repo, 'rev-parse', 'feature');
     const eng = s.as('fake:engineer', 'R1');
     eng.start('1', 'plan');
     eng.review(
@@ -3083,14 +3100,14 @@ describe('merging approved work', () => {
     expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch });
     expect(s.last().body).not.toContain('nothing to merge');
     expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(committed);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(committed);
   });
 
   it('takes the commit the approved review names in code font, not the branch of an earlier review (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    const commit = s.branch('two\n');
+    const s = await mergeSetup({ userMerge: true });
+    const commit = await s.branch('two\n');
     // The branch of an earlier round: it points at main, as an import that failed left it.
-    git(s.repo, 'branch', 'stale', 'main');
+    await git(s.repo, 'branch', 'stale', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3111,9 +3128,9 @@ describe('merging approved work', () => {
   });
 
   it('merges nothing when the commit the approved review names in code font is not in the repo (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    git(s.repo, 'branch', 'stale', 'main');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    await git(s.repo, 'branch', 'stale', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3132,15 +3149,15 @@ describe('merging approved work', () => {
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     expect(e.body).toContain('swarmupd cannot merge 0456def on branch final');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
     expect(s.as('human:dawid').view('2')).toMatchObject({ status: 'blocked', unblocked: false });
   });
 
   it('files a finding, not a merge, when a fallback source is in the base and the approved review names a commit that is not (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    git(s.repo, 'branch', 'stale', 'main');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    await git(s.repo, 'branch', 'stale', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3158,7 +3175,7 @@ describe('merging approved work', () => {
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'finding', actor: MERGE_ACTOR });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     const human = s.as('human:dawid');
     expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
     expect(human.view('2')).toMatchObject({ status: 'blocked', unblocked: false });
@@ -3177,9 +3194,9 @@ describe('merging approved work', () => {
   });
 
   it('takes the commit the approved review names in underscore bold, not the branch of an earlier review (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    const commit = s.branch('two\n');
-    git(s.repo, 'branch', 'stale', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    const commit = await s.branch('two\n');
+    await git(s.repo, 'branch', 'stale', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3205,10 +3222,10 @@ describe('merging approved work', () => {
   ])(
     'takes a branch whose name has underscores at both ends from code font, not the branch of an earlier review: %s (AO-0325)',
     async (_form, request) => {
-      const s = mergeSetup({ userMerge: true });
-      const commit = s.branch('two\n');
-      git(s.repo, 'branch', '-m', 'feature', '__wip__');
-      git(s.repo, 'branch', 'stale', 'main');
+      const s = await mergeSetup({ userMerge: true });
+      const commit = await s.branch('two\n');
+      await git(s.repo, 'branch', '-m', 'feature', '__wip__');
+      await git(s.repo, 'branch', 'stale', 'main');
       const eng = s.as('fake:engineer');
       eng.start('2', 'plan');
       eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3232,11 +3249,11 @@ describe('merging approved work', () => {
   ])(
     'does not take the branch a code span names when a longer word runs on from the span: %s (AO-0325)',
     async (_form, request) => {
-      const s = mergeSetup({ userMerge: true });
-      const commit = s.branch('two\n');
-      git(s.repo, 'branch', '-m', 'feature', 'feature-old');
+      const s = await mergeSetup({ userMerge: true });
+      const commit = await s.branch('two\n');
+      await git(s.repo, 'branch', '-m', 'feature', 'feature-old');
       // The stale branch whose name the code span holds: it is already in `main`.
-      git(s.repo, 'branch', 'feature', 'main');
+      await git(s.repo, 'branch', 'feature', 'main');
       const eng = s.as('fake:engineer');
       eng.start('2', 'plan');
       eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3270,11 +3287,11 @@ describe('merging approved work', () => {
   )(
     'does not take the branch a code span names when unpaired underscores follow the span: %s, %s (AO-0325)',
     async (_form, tail, request) => {
-      const s = mergeSetup({ userMerge: true });
-      const commit = s.branch('two\n');
-      git(s.repo, 'branch', '-m', 'feature', `feature${tail}`);
+      const s = await mergeSetup({ userMerge: true });
+      const commit = await s.branch('two\n');
+      await git(s.repo, 'branch', '-m', 'feature', `feature${tail}`);
       // The stale branch whose name the code span holds: it is already in `main`.
-      git(s.repo, 'branch', 'feature', 'main');
+      await git(s.repo, 'branch', 'feature', 'main');
       const eng = s.as('fake:engineer');
       eng.start('2', 'plan');
       eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3297,9 +3314,9 @@ describe('merging approved work', () => {
   );
 
   it('takes the commit the approved review names in capitals, not the branch of an earlier review (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    const commit = s.branch('two\n');
-    git(s.repo, 'branch', 'stale', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    const commit = await s.branch('two\n');
+    await git(s.repo, 'branch', 'stale', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3320,9 +3337,9 @@ describe('merging approved work', () => {
   });
 
   it('merges nothing when the commit the approved review names in capitals is not in the repo (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    git(s.repo, 'branch', 'stale', 'main');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    await git(s.repo, 'branch', 'stale', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3340,15 +3357,15 @@ describe('merging approved work', () => {
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     expect(e.body).toContain('swarmupd cannot merge abcdefa on branch final');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
     expect(s.as('human:dawid').view('2')).toMatchObject({ status: 'blocked', unblocked: false });
   });
 
   it('merges nothing when the commit the approved review names in underscore bold is not in the repo (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    git(s.repo, 'branch', 'stale', 'main');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    await git(s.repo, 'branch', 'stale', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3366,15 +3383,15 @@ describe('merging approved work', () => {
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     expect(e.body).toContain('swarmupd cannot merge 0456def on branch final');
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     expect(s.as('human:dawid').view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
     expect(s.as('human:dawid').view('2')).toMatchObject({ status: 'blocked', unblocked: false });
   });
 
   it('files a finding when a fallback source is in the base and the approved review names an unmerged commit in underscore bold (AO-0325)', async () => {
-    const s = mergeSetup({ userMerge: true });
-    git(s.repo, 'branch', 'stale', 'main');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup({ userMerge: true });
+    await git(s.repo, 'branch', 'stale', 'main');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('2', 'plan');
     eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3388,7 +3405,7 @@ describe('merging approved work', () => {
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'finding', actor: MERGE_ACTOR });
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
     const human = s.as('human:dawid');
     expect(human.showEvents(e.ref!).body).toContain('`0456def`');
     expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
@@ -3407,9 +3424,9 @@ describe('merging approved work', () => {
   ])(
     'files a finding when a fallback source is in the base and the approved review names an unmerged commit of %s (AO-0325)',
     async (_form, says, sha) => {
-      const s = mergeSetup({ userMerge: true });
-      git(s.repo, 'branch', 'stale', 'main');
-      const tip = git(s.repo, 'rev-parse', 'main');
+      const s = await mergeSetup({ userMerge: true });
+      await git(s.repo, 'branch', 'stale', 'main');
+      const tip = await git(s.repo, 'rev-parse', 'main');
       const eng = s.as('fake:engineer');
       eng.start('2', 'plan');
       eng.block('2', 'needs T-0001', { on: ['T-0001'] });
@@ -3423,7 +3440,7 @@ describe('merging approved work', () => {
       await s.merged();
       const e = s.last();
       expect(e).toMatchObject({ type: 'finding', actor: MERGE_ACTOR });
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
       const human = s.as('human:dawid');
       expect(human.showEvents(e.ref!).body).toContain(`\`${sha}\``);
       expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: true });
@@ -3432,10 +3449,10 @@ describe('merging approved work', () => {
   );
 
   it('records a fallback source already in the base when the approved review names no commit the base lacks (AO-0325)', async () => {
-    const s = mergeSetup();
-    const commit = s.branch('two\n');
-    git(s.repo, 'merge', '-q', '--ff-only', 'feature');
-    const tip = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const commit = await s.branch('two\n');
+    await git(s.repo, 'merge', '-q', '--ff-only', 'feature');
+    const tip = await git(s.repo, 'rev-parse', 'main');
     const eng = s.as('fake:engineer');
     eng.start('1', 'plan');
     eng.review('1', `T-0001: ${commit.slice(0, 7)} on branch feature`, 'human:dawid');
@@ -3453,28 +3470,28 @@ describe('merging approved work', () => {
   });
 
   it('sends back a branch that changes task store files', async () => {
-    const s = mergeSetup();
-    const before = git(s.repo, 'rev-parse', 'main');
+    const s = await mergeSetup();
+    const before = await git(s.repo, 'rev-parse', 'main');
     const wt = join(temp(), 'wt');
-    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
+    await git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
     writeFileSync(join(wt, 'code.txt'), 'two\n');
     writeFileSync(join(wt, '.swarmup', 'stray.md'), 'stray\n');
-    git(wt, 'add', '-A');
-    git(wt, 'commit', '-qm', 'Change the code');
-    s.approve(git(wt, 'rev-parse', 'HEAD'));
+    await git(wt, 'add', '-A');
+    await git(wt, 'commit', '-qm', 'Change the code');
+    s.approve(await git(wt, 'rev-parse', 'HEAD'));
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
     expect(s.last().body).toContain('changes task store files (.swarmup/stray.md)');
   });
 
   it('merges nothing approved before swarmupd first saw the merge setting', async () => {
-    const s = mergeSetup();
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('two\n'));
+    const s = await mergeSetup();
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('two\n'));
     rmSync(join(s.state, 'merge.json'));
     await s.merged();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.last().type).toBe('verdict');
   });
 
@@ -3520,9 +3537,9 @@ describe('merging approved work', () => {
   }
 
   it('merges nothing when the task is reopened while git answers the merge plan (AO-0169)', async () => {
-    const s = mergeSetup();
-    const before = git(s.repo, 'rev-parse', 'main');
-    s.approve(s.branch('two\n'));
+    const s = await mergeSetup();
+    const before = await git(s.repo, 'rev-parse', 'main');
+    s.approve(await s.branch('two\n'));
     const g = gateGit('branches');
     try {
       const tick = s.sup.tick();
@@ -3535,7 +3552,7 @@ describe('merging approved work', () => {
       g.restore();
     }
     expect(s.sup.merge).toBeNull();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     const events = s.as('human:dawid').showEvents('1').events;
     expect(events.some((e) => e.actor === MERGE_ACTOR)).toBe(false);
     expect(s.last().type).toBe('reopen');
@@ -3547,8 +3564,8 @@ describe('merging approved work', () => {
   ] as const)(
     'ends the merge plan at the git answer to %s when swarmupd stops meanwhile (AO-0169)',
     async (method, probes) => {
-      const s = mergeSetup();
-      const before = git(s.repo, 'rev-parse', 'main');
+      const s = await mergeSetup();
+      const before = await git(s.repo, 'rev-parse', 'main');
       const eng = s.as('fake:engineer');
       // Two earlier reviews name commits on branches the repo lacks, so planning asks git about
       // both commits; the approved review names no source.
@@ -3577,22 +3594,22 @@ describe('merging approved work', () => {
         g.restore();
       }
       expect(s.sup.merge).toBeNull();
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
       expect(s.last()).toMatchObject({ type: 'verdict', actor: 'human:dawid' });
     },
   );
 
   it('waits for a writing run in the checkout, lets runs start during the checks, and holds the checkout from the fast-forward (AO-0160)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     // The check waits for go.txt; the build waits for build-go.txt, then builds.
-    const commit = s.branch('slow hold\n');
+    const commit = await s.branch('slow hold\n');
     s.approve(commit);
-    const before = git(s.repo, 'rev-parse', 'main');
+    const before = await git(s.repo, 'rev-parse', 'main');
     const runGo = join(s.state, 'run-go.txt');
     const run = s.sup.launch({ agent: 'fake:engineer', task: '2' });
     await s.merged();
     expect(s.sup.merge).toBeNull();
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.last().type).toBe('verdict');
 
     // Each run ends by itself: a killed run's process may outlive the kill on Windows, keeping
@@ -3611,9 +3628,9 @@ describe('merging approved work', () => {
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
     await until(() => s.sup.merge?.holds === true);
     await new Promise((r) => setTimeout(r, 300));
-    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(await git(s.repo, 'rev-parse', 'main')).toBe(before);
     // A task store sync lands on main during the wait: the merge rebases onto it, checks once.
-    const synced = s.onMain('.swarmup/sync-note.md', 'note\n');
+    const synced = await s.onMain('.swarmup/sync-note.md', 'note\n');
 
     end = ended(s.sup, during.id);
     writeFileSync(runGo, 'go\n');
@@ -3622,7 +3639,7 @@ describe('merging approved work', () => {
     await s.sup.tick();
     // The build waits for build-go.txt: the checkout is held until it is over.
     await until(() => existsSync(join(s.state, 'building.txt')), STAGE_MS);
-    expect(git(s.repo, 'rev-parse', 'main^')).toBe(synced);
+    expect(await git(s.repo, 'rev-parse', 'main^')).toBe(synced);
     expect(text(join(s.state, 'checks.txt'))).toHaveLength(1);
     expect(() => s.sup.launch({ agent: 'fake:engineer', task: '2' })).toThrow(
       /^swarmupd merges test\/T-0001 into main in /,
@@ -3631,16 +3648,19 @@ describe('merging approved work', () => {
     await s.sup.mergeSettled();
     expect(s.sup.merge).toBeNull();
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('slow hold\n');
-    expect(s.last()).toMatchObject({ type: 'merge', commit: git(s.repo, 'rev-parse', 'main') });
+    expect(s.last()).toMatchObject({
+      type: 'merge',
+      commit: await git(s.repo, 'rev-parse', 'main'),
+    });
   });
 
   it('shows the merge under way with its step and command, marks the work it holds, and logs each step (AO-0161)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     const lines: string[] = [];
     s.sup.on('merge', (m: string) => lines.push(m));
     expect(s.sup.mergeStatus()).toBeNull();
     // The check waits for go.txt; the build waits for build-go.txt.
-    s.approve(s.branch('slow hold\n'));
+    s.approve(await s.branch('slow hold\n'));
     await s.sup.tick();
     await until(() => existsSync(join(s.state, 'checks.txt')), STAGE_MS);
     const checking = s.sup.mergeStatus()!;
@@ -3697,7 +3717,7 @@ describe('merging approved work', () => {
   });
 
   it('sends each change of the merge under way on the event stream, so open app windows read it again (AO-0161)', async () => {
-    const s = mergeSetup();
+    const s = await mergeSetup();
     const api = await startApi(s.sup, { port: 0, token: 'merge-token', version: 't' });
     const merges: Array<MergeStatus | null> = [];
     let hello = false;
@@ -3726,7 +3746,7 @@ describe('merging approved work', () => {
       // The check waits for go.txt; the build waits for build-go.txt.
       // `slow` and `hold` make them wait; without them both end at once, and on a fast machine
       // the stream had moved past each step before the test read it (AO-0240).
-      s.approve(s.branch('slow hold stream\n'));
+      s.approve(await s.branch('slow hold stream\n'));
       await s.sup.tick();
       await until(() => merges.some((m) => m?.command?.text === 'node check.mjs'), STAGE_MS);
       expect(merges[0]).toMatchObject({ task: 'test/T-0001', base: 'main', step: 'rebase' });
@@ -3752,13 +3772,13 @@ describe('merging approved work', () => {
   it.runIf(precise)(
     'records the merge when swarmupd stops during the build, ends what the build started, and builds again after a restart',
     async () => {
-      const s = mergeSetup();
-      const commit = s.branch('hold\n');
+      const s = await mergeSetup();
+      const commit = await s.branch('hold\n');
       s.approve(commit);
       await s.sup.tick();
       await until(() => existsSync(join(s.state, 'building.txt')), STAGE_MS);
       const build = Number(text(join(s.state, 'building.txt')));
-      const tip = git(s.repo, 'rev-parse', 'main');
+      const tip = await git(s.repo, 'rev-parse', 'main');
       expect(text(join(s.repo, 'code.txt'))).toBe('hold\n');
       s.sup.stop();
       await s.sup.close();
@@ -3778,7 +3798,7 @@ describe('merging approved work', () => {
       await next.tick();
       await next.mergeSettled();
       expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('hold\n');
-      expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+      expect(await git(s.repo, 'rev-parse', 'main')).toBe(tip);
       expect(s.last()).toMatchObject({ type: 'comment', actor: MERGE_ACTOR });
       expect(s.last().body).toContain(
         'Built main with `node build.mjs` after the earlier build did not finish',
@@ -3802,9 +3822,9 @@ describe('merging approved work', () => {
   it.runIf(precise && !WIN)(
     'waits for a build no kill could end before it builds again',
     async () => {
-      const s = mergeSetup({ procs: refusingLister });
+      const s = await mergeSetup({ procs: refusingLister });
       const warns: string[] = [];
-      s.approve(s.branch('hold\n'));
+      s.approve(await s.branch('hold\n'));
       await s.sup.tick();
       await until(() => existsSync(join(s.state, 'building.txt')), STAGE_MS);
       const build = Number(text(join(s.state, 'building.txt')));
@@ -3849,8 +3869,8 @@ describe('merging approved work', () => {
     async () => {
       // The sandbox case: no process list, no kill by PID. Only the job object can end the build.
       let lister = blindLister();
-      const s = mergeSetup({ procs: () => lister });
-      s.approve(s.branch('hold\n'));
+      const s = await mergeSetup({ procs: () => lister });
+      s.approve(await s.branch('hold\n'));
       await s.sup.tick();
       await until(() => existsSync(join(s.state, 'building.txt')), STAGE_MS);
       const build = Number(text(join(s.state, 'building.txt')));
@@ -3959,8 +3979,8 @@ while (!existsSync(${JSON.stringify(go)})) await new Promise((r) => setTimeout(r
   });
 
   it('keeps secret-looking output out of the send-back and the log', async () => {
-    const s = mergeSetup();
-    s.approve(s.branch('leak\n'));
+    const s = await mergeSetup();
+    s.approve(await s.branch('leak\n'));
     await s.merged();
     const e = s.last();
     expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });

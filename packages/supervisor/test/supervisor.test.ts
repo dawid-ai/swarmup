@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   initRoot,
-  mirrorPair,
+  mirrorPairAsync,
   parsePlan,
   planBody,
   Root,
@@ -250,7 +250,10 @@ function setup(
 ) {
   const repo = opts.repo ?? temp();
   mkdirSync(repo, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+  // `setupAsync` ran it already, off the event loop.
+  if (!existsSync(join(repo, '.git'))) {
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+  }
   initRoot(repo, { name: 'test', human: 'human:dawid' });
   const agentFile = join(temp(), 'fake-agent.mjs');
   writeFileSync(agentFile, FAKE_AGENT);
@@ -304,6 +307,28 @@ function setup(
   const sup = opsd();
   const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user: {}, now: opts.now });
   return { repo, sup, as, state, opsd };
+}
+
+/**
+ * {@link setup} with `git init` off the event loop. Each synchronous git start holds the vitest
+ * worker's event loop, 0.2-0.5 s alone on Windows and several times that under merge-check load,
+ * against vitest's fixed 60 s RPC timeout (AO-0392).
+ */
+async function setupAsync(
+  opts: Parameters<typeof setup>[0] = {},
+): Promise<ReturnType<typeof setup>> {
+  const repo = opts.repo ?? temp();
+  mkdirSync(repo, { recursive: true });
+  await gitAsync(repo, ['init', '-q']);
+  return setup({ ...opts, repo });
+}
+
+/** `git init` and a task store in a new temp folder, with git off the event loop (AO-0392). */
+async function initRootAsync(opts: Parameters<typeof initRoot>[1]): Promise<string> {
+  const repo = temp();
+  await gitAsync(repo, ['init', '-q']);
+  initRoot(repo, opts);
+  return repo;
 }
 
 /** A runtime whose runs hang until stopped. */
@@ -4696,10 +4721,8 @@ describe('runtime backoff (AO-0150)', () => {
 
 describe('same role, different projects', () => {
   it('runs one engineer per project at once, each in its own repo', async () => {
-    const { repo: siteRepo, state } = setup({ mode: 'hang' });
-    const apiRepo = temp();
-    execFileSync('git', ['init', '-q'], { cwd: apiRepo, windowsHide: true });
-    initRoot(apiRepo, { name: 'api', prefix: 'API', human: 'human:dawid' });
+    const { repo: siteRepo, state } = await setupAsync({ mode: 'hang' });
+    const apiRepo = await initRootAsync({ name: 'api', prefix: 'API', human: 'human:dawid' });
     const agentFile = join(temp(), 'fake-agent.mjs');
     writeFileSync(agentFile, FAKE_AGENT);
     const env = {
@@ -4735,8 +4758,9 @@ describe('same role, different projects', () => {
       human.roots.find((r) => r.name === 'api'),
     );
 
-    const site = sup.launch({ agent: 'fake:engineer', task: 'test/T-0001' });
-    const api = sup.launch({ agent: 'fake:engineer', task: 'api/API-0001' });
+    // As the API launches: the checkouts are read off the event loop first (AO-0392).
+    const site = await sup.launchFresh({ agent: 'fake:engineer', task: 'test/T-0001' });
+    const api = await sup.launchFresh({ agent: 'fake:engineer', task: 'api/API-0001' });
     expect(
       sup
         .runs({ live: true })
@@ -4759,10 +4783,8 @@ describe('same role, different projects', () => {
 
 describe('Master Repo', () => {
   it('starts no run on a project known only from the Master Repo unless given a folder', async () => {
-    const { repo: projectRepo, state } = setup({ mode: 'hang' });
-    const hubRepo = temp();
-    execFileSync('git', ['init', '-q'], { cwd: hubRepo, windowsHide: true });
-    initRoot(hubRepo, { name: 'hub', prefix: 'HUB', human: 'human:dawid' });
+    const { repo: projectRepo, state } = await setupAsync({ mode: 'hang' });
+    const hubRepo = await initRootAsync({ name: 'hub', prefix: 'HUB', human: 'human:dawid' });
     const project = new Root(join(projectRepo, '.swarmup'));
     new Workspace({
       cwd: projectRepo,
@@ -4773,7 +4795,7 @@ describe('Master Repo', () => {
       title: 'mirrored work',
       owner: 'fake:engineer',
     });
-    mirrorPair(project, new Root(join(hubRepo, '.swarmup')));
+    await mirrorPairAsync(project, new Root(join(hubRepo, '.swarmup')));
     const agentFile = join(temp(), 'fake-agent.mjs');
     writeFileSync(agentFile, FAKE_AGENT);
     const env = {
@@ -4802,21 +4824,20 @@ describe('Master Repo', () => {
         .roots.map((r) => `${r.name}${r.isMirror ? ' (mirror)' : ''}`)
         .sort(),
     ).toEqual(['hub', 'test (mirror)']);
-    expect(() => sup.launch({ agent: 'fake:engineer', task: 'test/T-0001' })).toThrow(
+    // As the API launches: the checkouts are read off the event loop first (AO-0392).
+    await expect(sup.launchFresh({ agent: 'fake:engineer', task: 'test/T-0001' })).rejects.toThrow(
       /no checkout here/,
     );
     // Nothing was claimed by the refused launch.
     expect(sup.ws('human:dawid').view('test/T-0001').claimedBy).toBeNull();
     const work = temp();
-    const run = sup.launch({ agent: 'fake:engineer', task: 'test/T-0001', cwd: work });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: 'test/T-0001', cwd: work });
     expect(realpathSync(run.cwd).toLowerCase()).toBe(realpathSync(work).toLowerCase());
   });
 
   it('checks the plans of a project known only from the Master Repo (AO-0109)', async () => {
-    const { repo: projectRepo, state } = setup();
-    const hubRepo = temp();
-    execFileSync('git', ['init', '-q'], { cwd: hubRepo, windowsHide: true });
-    initRoot(hubRepo, { name: 'hub', prefix: 'HUB', human: 'human:dawid' });
+    const { repo: projectRepo, state } = await setupAsync();
+    const hubRepo = await initRootAsync({ name: 'hub', prefix: 'HUB', human: 'human:dawid' });
     const agents = join(projectRepo, '.swarmup', 'agents');
     mkdirSync(agents, { recursive: true });
     for (const id of ['fake:pm', 'fake:engineer']) {
@@ -4831,7 +4852,10 @@ describe('Master Repo', () => {
       actor: 'human:dawid',
       user: {},
     }).newTask({ title: 'Merge approved branches', owner: 'fake:engineer' });
-    mirrorPair(new Root(join(projectRepo, '.swarmup')), new Root(join(hubRepo, '.swarmup')));
+    await mirrorPairAsync(
+      new Root(join(projectRepo, '.swarmup')),
+      new Root(join(hubRepo, '.swarmup')),
+    );
     const agentFile = join(temp(), 'fake-agent.mjs');
     writeFileSync(agentFile, FAKE_AGENT);
     const promptFile = join(temp(), 'prompt.txt');
@@ -4931,34 +4955,31 @@ describe('what runs leave in the checkout', () => {
     GIT_COMMITTER_NAME: 'Swarmupd Test',
     GIT_COMMITTER_EMAIL: 'swarmupd@example.com',
   };
-  const git = (cwd: string, ...args: string[]) =>
-    execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      windowsHide: true,
-      env: { ...process.env, ...ID },
-    }).trim();
+  // Off the event loop: these tests start dozens of git processes, and each synchronous one held
+  // the vitest worker's event loop, 4-7 s per test alone and 13-31 s under load (AO-0392).
+  const git = async (cwd: string, ...args: string[]) =>
+    (await gitAsync(cwd, args, { env: { ...process.env, ...ID } })).trim();
   /** A file's text with Windows line endings (`core.autocrlf`) read as Unix ones. */
   const text = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 
   /** A checkout with code and the task store committed, as in a project repo. */
-  function codeSetup(mode: string, env: Record<string, string> = {}, procs?: ProcLister) {
-    const s = setup({ mode, env: { ...ID, ...env }, procs });
+  async function codeSetup(mode: string, env: Record<string, string> = {}, procs?: ProcLister) {
+    const s = await setupAsync({ mode, env: { ...ID, ...env }, procs });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     writeFileSync(join(s.repo, '.gitignore'), 'dist/\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
-    git(s.repo, 'add', '-A');
-    git(s.repo, 'commit', '-qm', 'start');
+    await git(s.repo, 'add', '-A');
+    await git(s.repo, 'commit', '-qm', 'start');
     return {
       ...s,
-      start: git(s.repo, 'rev-parse', 'HEAD'),
-      branch: git(s.repo, 'branch', '--show-current'),
+      start: await git(s.repo, 'rev-parse', 'HEAD'),
+      branch: await git(s.repo, 'branch', '--show-current'),
     };
   }
 
   it('commits what a run left on a branch of its own, restores the checkout and asks for review', async () => {
-    const { repo, sup, as, start, branch } = codeSetup('edit');
+    const { repo, sup, as, start, branch } = await codeSetup('edit');
     // Ignored output is no change of the checkout.
     mkdirSync(join(repo, 'dist'));
     writeFileSync(join(repo, 'dist', 'out.js'), 'built\n');
@@ -4966,21 +4987,21 @@ describe('what runs leave in the checkout', () => {
     await ended(sup, run.id);
 
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
-    const commit = git(repo, 'rev-parse', name);
-    expect(git(repo, 'rev-parse', `${commit}^`)).toBe(start);
-    expect(git(repo, 'log', '-1', '--format=%B', commit)).toBe(
+    const commit = await git(repo, 'rev-parse', name);
+    expect(await git(repo, 'rev-parse', `${commit}^`)).toBe(start);
+    expect(await git(repo, 'log', '-1', '--format=%B', commit)).toBe(
       `Fix the parser\n\nChanges left by run ${run.id} (fake:engineer).`,
     );
     // Only the run's code: the task store's new events never go into the branch.
-    expect(git(repo, 'diff-tree', '-r', '--no-renames', '--name-status', start, commit)).toBe(
+    expect(await git(repo, 'diff-tree', '-r', '--no-renames', '--name-status', start, commit)).toBe(
       ['D\tgone.txt', 'A\tsrc/new/added.txt', 'M\ttracked.txt'].join('\n'),
     );
-    expect(git(repo, 'show', `${commit}:tracked.txt`)).toBe('changed by the run');
+    expect(await git(repo, 'show', `${commit}:tracked.txt`)).toBe('changed by the run');
 
     // The checkout is back on its branch and commit, clean outside the task store.
-    expect(git(repo, 'branch', '--show-current')).toBe(branch);
-    expect(git(repo, 'rev-parse', 'HEAD')).toBe(start);
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    expect(await git(repo, 'branch', '--show-current')).toBe(branch);
+    expect(await git(repo, 'rev-parse', 'HEAD')).toBe(start);
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
     expect(text(join(repo, 'tracked.txt'))).toBe('original\n');
     expect(existsSync(join(repo, 'gone.txt'))).toBe(true);
     expect(existsSync(join(repo, 'src'))).toBe(false);
@@ -5001,10 +5022,10 @@ describe('what runs leave in the checkout', () => {
   });
 
   it("sends the review to another provider's qa agent", async () => {
-    const { repo, sup, as } = codeSetup('edit');
+    const { repo, sup, as } = await codeSetup('edit');
     as('human:dawid').saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'qa role');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'qa role');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1')).toMatchObject({
@@ -5014,31 +5035,31 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('sends what a run left on a release task to the person, not a qa agent', async () => {
-    const { repo, sup, as } = codeSetup('edit');
+    const { repo, sup, as } = await codeSetup('edit');
     const h = as('human:dawid');
     h.newTask({ title: 'Cut 0.2.0', owner: 'fake:engineer', labels: ['release'] });
     h.saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'release task');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'release task');
     const run = sup.launch({ agent: 'fake:engineer', task: '2' });
     await ended(sup, run.id);
     expect(h.view('2')).toMatchObject({ status: 'needs-review', reviewer: 'human:dawid' });
   });
 
   it('sends what a run left to the reviewer agent of another provider', async () => {
-    const { repo, sup, as } = codeSetup('edit');
+    const { repo, sup, as } = await codeSetup('edit');
     const h = as('human:dawid');
     h.saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
     h.saveRole({ id: 'claude:reviewer', status: 'active' }, { create: true });
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'roles');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'roles');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(h.view('1')).toMatchObject({ status: 'needs-review', reviewer: 'claude:reviewer' });
   });
 
   it('tells the reviewer where the files went when the run asked for review itself', async () => {
-    const { sup, as } = codeSetup('edit-review');
+    const { sup, as } = await codeSetup('edit-review');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1').status).toBe('needs-review');
@@ -5049,11 +5070,11 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('leaves runs that commit themselves alone', async () => {
-    const { repo, sup, as, start } = codeSetup('commit');
+    const { repo, sup, as, start } = await codeSetup('commit');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
-    expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
-    expect(git(repo, 'rev-parse', 'HEAD^')).toBe(start);
+    expect(await git(repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(repo, 'rev-parse', 'HEAD^')).toBe(start);
     expect(as('human:dawid').view('1').status).toBe('done');
     const end = as('human:dawid')
       .showEvents('1')
@@ -5062,14 +5083,14 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('starts no writing run in a checkout with uncommitted changes, and says why it waits', async () => {
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       mode: 'hang',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
     });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     // New tasks and events in the task store are no changes of the checkout.
     const t = as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
@@ -5086,21 +5107,21 @@ describe('what runs leave in the checkout', () => {
     // Roles that only read start anyway.
     sup.launch({ agent: 'fake:qa' });
     // Once the checkout is clean, the writer starts.
-    git(repo, 'checkout', '--', 'tracked.txt');
+    await git(repo, 'checkout', '--', 'tracked.txt');
     rmSync(join(repo, 'notes.txt'));
     sup.launch({ agent: 'fake:engineer', task: '1' });
     expect(sup.runs({ live: true })).toHaveLength(2);
   });
 
   it('tells the human once per checkout that its changes hold a writing run (AO-0137)', async () => {
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       mode: 'hang',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
     });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const t = as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     const notices = () =>
       as('human:dawid')
@@ -5129,7 +5150,7 @@ describe('what runs leave in the checkout', () => {
     await sup.tick();
     expect(notices()).toHaveLength(1);
     // Clean again, the writer starts; changes made later are news.
-    git(repo, 'checkout', '--', 'tracked.txt');
+    await git(repo, 'checkout', '--', 'tracked.txt');
     rmSync(join(repo, 'notes.txt'));
     await sup.tick();
     const writer = sup.runs({ live: true });
@@ -5147,29 +5168,29 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('commits what a read-only run left when it started on a clean checkout (AO-0136)', async () => {
-    const { repo, sup, start, branch } = codeSetup('edit');
+    const { repo, sup, start, branch } = await codeSetup('edit');
     const run = sup.launch({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBe(start);
     const name = `fake/run-${run.id.toLowerCase()}`;
     expect(sup.run(run.id)).toMatchObject({ leftovers: { branch: name } });
-    expect(git(repo, 'rev-parse', `${name}^`)).toBe(start);
+    expect(await git(repo, 'rev-parse', `${name}^`)).toBe(start);
     // The checkout is clean again, so writing runs there start.
-    expect(git(repo, 'branch', '--show-current')).toBe(branch);
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    expect(await git(repo, 'branch', '--show-current')).toBe(branch);
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
   });
 
   it('wraps up a run without blocking the event loop on git: commit, sync, branch push (AO-0205)', async () => {
-    const s = setup({ mode: 'edit', env: ID, opsd: { sync: true } });
+    const s = await setupAsync({ mode: 'edit', env: ID, opsd: { sync: true } });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
-    git(s.repo, 'add', '-A');
-    git(s.repo, 'commit', '-qm', 'start');
+    await git(s.repo, 'add', '-A');
+    await git(s.repo, 'commit', '-qm', 'start');
     const remote = temp();
-    git(remote, 'init', '-q', '--bare');
-    git(s.repo, 'remote', 'add', 'origin', remote);
-    git(s.repo, 'push', '-q', '-u', 'origin', 'HEAD');
+    await git(remote, 'init', '-q', '--bare');
+    await git(s.repo, 'remote', 'add', 'origin', remote);
+    await git(s.repo, 'push', '-q', '-u', 'origin', 'HEAD');
     const sup = s.sup;
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
@@ -5180,20 +5201,20 @@ describe('what runs leave in the checkout', () => {
       await synced;
       // The branch push follows the sync on the same queue.
       const until = Date.now() + 30_000;
-      while (!git(remote, 'branch', '--list', name) && Date.now() < until) {
+      while (!(await git(remote, 'branch', '--list', name)) && Date.now() < until) {
         await new Promise((r) => setTimeout(r, 100));
       }
     } finally {
       spy.restore();
     }
     expect(sup.run(run.id)).toMatchObject({ wrap_up: 'done', leftovers: { branch: name } });
-    expect(git(remote, 'branch', '--list', name)).toContain(name);
+    expect(await git(remote, 'branch', '--list', name)).toContain(name);
     // Each of these held every API request for 0.5-2 s on a loaded Windows machine.
     expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
   });
 
   it('starts a writing run from a tick or the API without running git on the event loop (AO-0215)', async () => {
-    const s = setup({
+    const s = await setupAsync({
       mode: 'edit',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
@@ -5201,9 +5222,9 @@ describe('what runs leave in the checkout', () => {
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
-    git(s.repo, 'add', '-A');
-    git(s.repo, 'commit', '-qm', 'start');
-    const start = git(s.repo, 'rev-parse', 'HEAD');
+    await git(s.repo, 'add', '-A');
+    await git(s.repo, 'commit', '-qm', 'start');
+    const start = await git(s.repo, 'rev-parse', 'HEAD');
     const sup = s.sup;
     // The app's Waiting list plans first: opsd learns the checkout, and each tick reads it.
     expect(sup.waits().map((w) => w.reason)).toEqual(['starts at the next tick']);
@@ -5242,13 +5263,13 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('never commits changes a read-only run found in the checkout (AO-0136)', async () => {
-    const { repo, sup } = codeSetup('edit');
+    const { repo, sup } = await codeSetup('edit');
     writeFileSync(join(repo, 'notes.txt'), 'a person at work\n');
     const run = sup.launch({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBeUndefined();
     expect(sup.run(run.id)?.leftovers).toBeUndefined();
-    expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(text(join(repo, 'notes.txt'))).toBe('a person at work\n');
   });
 
@@ -5264,7 +5285,7 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2), prompt }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
@@ -5305,13 +5326,13 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2) }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
-    git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
-    git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    await git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
     const run = sup.launch({ agent: 'codex:engineer', cwd: wt });
     await ended(sup, run.id);
     const call = JSON.parse(text(out)) as { args: string[] };
@@ -5334,13 +5355,13 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2) }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
-    git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
-    git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    await git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
     // The first launch there teaches swarmupd the checkout; each later one reads it beforehand.
     await ended(sup, (await sup.launchFresh({ agent: 'codex:engineer', cwd: wt })).id);
     rmSync(out);
@@ -5361,12 +5382,12 @@ describe('what runs leave in the checkout', () => {
     }
   });
 
-  it('gives a writing Codex run no git dirs that git itself refuses (AO-0215)', () => {
+  it('gives a writing Codex run no git dirs that git itself refuses (AO-0215)', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
-    git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
+    await git(repo, 'init', '-q');
+    await git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
-    git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
+    await git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
     expect(codexGitDirs(wt).length).toBe(4);
     expect(codexGitDirs(temp())).toEqual([]);
 
@@ -5405,10 +5426,10 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('lets a chat turn neither hold a checkout nor wait on one (AO-0136)', async () => {
-    const { repo, sup, as } = setup({ mode: 'hang', env: ID });
+    const { repo, sup, as } = await setupAsync({ mode: 'hang', env: ID });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     as('human:dawid').newTask({ title: 'b', owner: 'fake:planner' });
     // A chat turn of a role that writes starts beside a writing run in the same checkout...
@@ -5422,7 +5443,7 @@ describe('what runs leave in the checkout', () => {
     const turn = sup.launch({ agent: 'fake:planner', chat: { session: 's1', resume: false } });
     expect(turn.base).toBeUndefined();
     // A live chat turn holds no writing run in its checkout.
-    git(repo, 'checkout', '--', 'tracked.txt');
+    await git(repo, 'checkout', '--', 'tracked.txt');
     expect(sup.blocker('fake:engineer', 'test', { cwd: repo, live: [turn] })).toBeNull();
     const engineer = sup.runs({ live: true }).find((r) => r.agent === 'fake:engineer')!;
     expect(sup.blocker('fake:qa', 'test', { cwd: repo, live: [turn, engineer] })).toBeNull();
@@ -5433,13 +5454,13 @@ describe('what runs leave in the checkout', () => {
 
   it('keeps a file whose staged version is in neither HEAD nor the commit', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'a.txt'), 'one\n');
     writeFileSync(join(repo, 'b.txt'), 'one\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     writeFileSync(join(repo, 'a.txt'), 'staged\n');
-    git(repo, 'add', 'a.txt');
+    await git(repo, 'add', 'a.txt');
     writeFileSync(join(repo, 'a.txt'), 'working\n');
     writeFileSync(join(repo, 'b.txt'), 'two\n');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
@@ -5447,9 +5468,9 @@ describe('what runs leave in the checkout', () => {
     expect(co.changes().sort()).toEqual(['a.txt', 'b.txt']);
     const left = (await co.commitLeftovers('codex/t-0009-run', 'T\n', head))!;
     expect(left).toMatchObject({ files: ['a.txt', 'b.txt'], kept: ['a.txt'] });
-    expect(git(repo, 'show', `${left.commit}:a.txt`)).toBe('working');
+    expect(await git(repo, 'show', `${left.commit}:a.txt`)).toBe('working');
     // The staged version stays staged and the work stays in the file.
-    expect(git(repo, 'show', ':a.txt')).toBe('staged');
+    expect(await git(repo, 'show', ':a.txt')).toBe('staged');
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('working\n');
     expect(text(join(repo, 'b.txt'))).toBe('one\n');
     expect(await co.commitLeftovers('codex/again', 'T\n', head)).toMatchObject({
@@ -5460,10 +5481,10 @@ describe('what runs leave in the checkout', () => {
 
   it('never touches a checkout that is itself a task store', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     writeFileSync(join(repo, 'x.txt'), 'y\n');
     const co = new Checkout(repo, [repo], { ...process.env, ...ID });
     expect(co.isStore).toBe(true);
@@ -5475,12 +5496,12 @@ describe('what runs leave in the checkout', () => {
   it('leaves package caches out of the dirty check and the leftover commit', async () => {
     // AO-0372: a run's `.pnpm-store` put 19,498 cache files on a review branch.
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     // One cache folder the repo ignores, the others it doesn't: neither kind is a change.
     writeFileSync(join(repo, '.gitignore'), '.pnpm-store/\n');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     const head = co.head();
     for (const dir of [
@@ -5503,10 +5524,10 @@ describe('what runs leave in the checkout', () => {
 
   it('refuses a leftover commit of more files than the limit and leaves them', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     const head = co.head();
     mkdirSync(join(repo, 'build'));
@@ -5514,20 +5535,20 @@ describe('what runs leave in the checkout', () => {
     await expect(co.commitLeftovers('codex/big', 'T\n', head)).rejects.toThrow(
       `${LEFTOVER_FILE_LIMIT + 1} changed files, more than ${LEFTOVER_FILE_LIMIT}`,
     );
-    expect(git(repo, 'branch', '--list', 'codex/big')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'codex/big')).toBe('');
     expect(existsSync(join(repo, 'build', '0'))).toBe(true);
   });
 
   it('commits only from the commit the run started on', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     const start = co.head()!;
     writeFileSync(join(repo, 'x.txt'), 'y\n');
-    git(repo, 'commit', '-qam', 'moved');
+    await git(repo, 'commit', '-qam', 'moved');
     // Committed by the run itself and nothing left: nothing to do.
     expect(await co.commitLeftovers('codex/a', 'T\n', start)).toBeNull();
     writeFileSync(join(repo, 'x.txt'), 'z\n');
@@ -5537,44 +5558,44 @@ describe('what runs leave in the checkout', () => {
     await expect(co.commitLeftovers('codex/c', 'T\n', null)).rejects.toThrow(
       /no start commit recorded/,
     );
-    expect(git(repo, 'branch', '--list', 'codex/*')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'codex/*')).toBe('');
     expect(text(join(repo, 'x.txt'))).toBe('z\n');
   });
 
   it('counts no linked worktree inside the checkout as a change and never commits it (AO-0135)', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     // A code branch in a worktree the repo does not ignore, as the run prompt asks for.
-    git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
+    await git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
     writeFileSync(join(repo, 'out', 'wt-T-0001', 'x.txt'), 'work in the worktree\n');
-    expect(git(repo, 'status', '--porcelain')).toContain('out/');
+    expect(await git(repo, 'status', '--porcelain')).toContain('out/');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     expect(co.changes()).toEqual([]);
     writeFileSync(join(repo, 'y.txt'), 'left in the checkout\n');
     expect(co.changes()).toEqual(['y.txt']);
     const left = (await co.commitLeftovers('fake/run-x', 'T\n', co.head()))!;
     expect(left.files).toEqual(['y.txt']);
-    expect(git(repo, 'ls-tree', '-r', '--name-only', left.commit)).toBe('x.txt\ny.txt');
+    expect(await git(repo, 'ls-tree', '-r', '--name-only', left.commit)).toBe('x.txt\ny.txt');
     // The worktree and its work stay as they were.
     expect(text(join(repo, 'out', 'wt-T-0001', 'x.txt'))).toBe('work in the worktree\n');
   });
 
   it('commits what a run left when its worktrees are in an ignored folder (AO-0197)', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, '.gitignore'), 'out/\n');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     // `git add` exits 1 when a pathspec names an ignored path, an exclude one too.
-    git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
-    git(repo, 'worktree', 'add', '-q', 'out/wt-T-0002', '-b', 'fake/t-0002');
+    await git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
+    await git(repo, 'worktree', 'add', '-q', 'out/wt-T-0002', '-b', 'fake/t-0002');
     writeFileSync(join(repo, 'out', 'wt-T-0001', 'x.txt'), 'work in the worktree\n');
     // One outside the ignored folder still needs its exclude.
-    git(repo, 'worktree', 'add', '-q', 'side/wt-T-0003', '-b', 'fake/t-0003');
+    await git(repo, 'worktree', 'add', '-q', 'side/wt-T-0003', '-b', 'fake/t-0003');
     writeFileSync(join(repo, 'side', 'wt-T-0003', 'x.txt'), 'work in the side worktree\n');
     // A task store in the ignored folder takes no exclude either.
     const store = join(repo, 'out', 'store');
@@ -5585,27 +5606,29 @@ describe('what runs leave in the checkout', () => {
     expect(co.changes()).toEqual(['y.txt']);
     const left = (await co.commitLeftovers('fake/run-y', 'T\n', co.head()))!;
     expect(left).toMatchObject({ files: ['y.txt'], kept: [] });
-    expect(git(repo, 'ls-tree', '-r', '--name-only', left.commit)).toBe('.gitignore\nx.txt\ny.txt');
+    expect(await git(repo, 'ls-tree', '-r', '--name-only', left.commit)).toBe(
+      '.gitignore\nx.txt\ny.txt',
+    );
     expect(existsSync(join(repo, 'y.txt'))).toBe(false);
     expect(text(join(repo, 'out', 'wt-T-0001', 'x.txt'))).toBe('work in the worktree\n');
   });
 
-  it('reads the worktree list again only after a worktree is added or removed (AO-0171)', () => {
+  it('reads the worktree list again only after a worktree is added or removed (AO-0171)', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     expect(co.changes()).toEqual([]);
     // A worktree added after the list was read still stays out of the changes.
-    git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
+    await git(repo, 'worktree', 'add', '-q', 'out/wt-T-0001', '-b', 'fake/t-0001');
     writeFileSync(join(repo, 'out', 'wt-T-0001', 'x.txt'), 'one\n');
     expect(co.changes()).toEqual([]);
-    git(repo, 'worktree', 'add', '-q', 'out/wt-T-0002', '-b', 'fake/t-0002');
+    await git(repo, 'worktree', 'add', '-q', 'out/wt-T-0002', '-b', 'fake/t-0002');
     expect(new Checkout(repo, [], { ...process.env, ...ID }).changes()).toEqual([]);
     // After a removal, the folder it left is an ordinary untracked change again.
-    git(repo, 'worktree', 'remove', '--force', 'out/wt-T-0002');
+    await git(repo, 'worktree', 'remove', '--force', 'out/wt-T-0002');
     mkdirSync(join(repo, 'out', 'wt-T-0002'), { recursive: true });
     writeFileSync(join(repo, 'out', 'wt-T-0002', 'left.txt'), 'left\n');
     expect(co.changes()).toEqual(['out/wt-T-0002/left.txt']);
@@ -5613,19 +5636,19 @@ describe('what runs leave in the checkout', () => {
 
   it("tells runs in a data root's checkout to branch in worktrees, and no run in a worktree (AO-0135)", async () => {
     const promptFile = join(temp(), 'prompt.txt');
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       env: { ...ID, FAKE_PROMPT: promptFile },
       opsd: {
         schedules: [{ name: 'digest', every: '24h', agent: 'fake:writer', prompt: 'Write it.' }],
       },
     });
     writeFileSync(join(repo, 'x.txt'), 'x\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
-    const top = git(repo, 'rev-parse', '--show-toplevel');
+    const top = await git(repo, 'rev-parse', '--show-toplevel');
     let prompt = readFileSync(promptFile, 'utf8');
     expect(prompt).toContain(
       `- ${top} holds the task store: keep its branch checked out and never`,
@@ -5654,7 +5677,7 @@ describe('what runs leave in the checkout', () => {
 
     // A run in a linked worktree of the repo is in no data root's checkout.
     const wt = join(temp(), 'wt');
-    git(repo, 'worktree', 'add', '-q', wt, '-b', 'code');
+    await git(repo, 'worktree', 'add', '-q', wt, '-b', 'code');
     as('human:dawid').newTask({ title: 'b', owner: 'fake:engineer' });
     const inWorktree = sup.launch({ agent: 'fake:engineer', task: '2', cwd: wt });
     await ended(sup, inWorktree.id);
@@ -5662,11 +5685,11 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('leaves the changes alone when HEAD moved during the run', async () => {
-    const { repo, sup, as, start } = codeSetup('edit-move');
+    const { repo, sup, as, start } = await codeSetup('edit-move');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     expect(run.base).toBe(start);
     await ended(sup, run.id);
-    expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(text(join(repo, 'tracked.txt'))).toBe('changed after the move\n');
     const end = as('human:dawid')
       .showEvents('1')
@@ -5676,7 +5699,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('tells the reviewer when a run asked for review with changes swarmupd could not commit (AO-0300)', async () => {
-    const { repo, sup, as } = codeSetup('edit-move-review');
+    const { repo, sup, as } = await codeSetup('edit-move-review');
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(text(join(repo, 'tracked.txt'))).toBe('changed after the move\n');
@@ -5727,7 +5750,7 @@ describe('what runs leave in the checkout', () => {
       ownPids: () => real.ownPids?.() ?? [],
       close: () => real.close(),
     };
-    const { repo, sup, start } = codeSetup('edit-wait', { FAKE_GO: go }, lister);
+    const { repo, sup, start } = await codeSetup('edit-wait', { FAKE_GO: go }, lister);
     repoDir = repo;
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
     wrapStep = () => sup.store.get(run.id)?.wrap_up;
@@ -5741,14 +5764,14 @@ describe('what runs leave in the checkout', () => {
     expect(wrapAtReap).toBe('pending');
     expect(sup.run(run.id).wrap_up).toBe('done');
 
-    const commit = git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
-    expect(git(repo, 'rev-parse', `${commit}^`)).toBe(start);
-    expect(git(repo, 'show', `${commit}:late.txt`)).toBe('written while dying');
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    const commit = await git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
+    expect(await git(repo, 'rev-parse', `${commit}^`)).toBe(start);
+    expect(await git(repo, 'show', `${commit}:late.txt`)).toBe('written while dying');
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
   });
 
   it('commits only after the helpers of the run ended', async () => {
-    const { repo, sup, as, start } = codeSetup('edit-wait', {
+    const { repo, sup, as, start } = await codeSetup('edit-wait', {
       FAKE_GO: join(temp(), 'never'),
       FAKE_HELPER_GO: 'helper.txt',
     });
@@ -5761,10 +5784,10 @@ describe('what runs leave in the checkout', () => {
     sup.kill(run.id);
     await ended(sup, run.id, 30_000);
     expect(sup.run(helper.id).status).toBe('ended');
-    const commit = git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
-    expect(git(repo, 'rev-parse', `${commit}^`)).toBe(start);
-    expect(git(repo, 'show', `${commit}:helper.txt`)).not.toBe('');
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    const commit = await git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
+    expect(await git(repo, 'rev-parse', `${commit}^`)).toBe(start);
+    expect(await git(repo, 'show', `${commit}:helper.txt`)).not.toBe('');
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
   });
 
   /**
@@ -5803,7 +5826,7 @@ describe('what runs leave in the checkout', () => {
         }
         await until(() => sup.run(parentId).status === 'ended');
         const wait = Date.now() + 3000;
-        while (Date.now() < wait && git(repoDir, 'branch', '--list', 'fake/*') === '') {
+        while (Date.now() < wait && (await git(repoDir, 'branch', '--list', 'fake/*')) === '') {
           await new Promise((r) => setTimeout(r, 50));
         }
         writeFileSync(join(repoDir, 'late.txt'), 'written while dying\n');
@@ -5814,7 +5837,7 @@ describe('what runs leave in the checkout', () => {
       ownPids: () => real.ownPids?.() ?? [],
       close: () => real.close(),
     };
-    const s = codeSetup('edit-wait', { FAKE_GO: go, FAKE_HELPER_GO: 'helper.txt' }, lister);
+    const s = await codeSetup('edit-wait', { FAKE_GO: go, FAKE_HELPER_GO: 'helper.txt' }, lister);
     const { repo, sup, as } = s;
     repoDir = repo;
     const run = sup.launch({ agent: 'fake:engineer', task: '1' });
@@ -5839,17 +5862,17 @@ describe('what runs leave in the checkout', () => {
     const s = await helperEndsFirst(true);
     if (!s) return;
     const { repo, run, start } = s;
-    const commit = git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
-    expect(git(repo, 'rev-parse', `${commit}^`)).toBe(start);
-    expect(git(repo, 'show', `${commit}:late.txt`)).toBe('written while dying');
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    const commit = await git(repo, 'rev-parse', `fake/t-0001-${run.id.toLowerCase()}`);
+    expect(await git(repo, 'rev-parse', `${commit}^`)).toBe(start);
+    expect(await git(repo, 'show', `${commit}:late.txt`)).toBe('written while dying');
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
   });
 
   it('commits nothing while a process a helper left behind is still alive', async () => {
     const s = await helperEndsFirst(false);
     if (!s) return;
     const { repo, as } = s;
-    expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(text(join(repo, 'tracked.txt'))).toBe('changed by the run\n');
     const end = as('human:dawid')
       .showEvents('1')
@@ -5864,7 +5887,10 @@ describe('what runs leave in the checkout', () => {
    * A run of `fake:engineer` on task 1 that ended under an earlier swarmupd, which stopped before
    * the wrap-up was over: its record says how far it got, and it left the usual edits.
    */
-  function endedBeforeRestart(s: ReturnType<typeof codeSetup>, patch: Partial<RunRecord> = {}) {
+  function endedBeforeRestart(
+    s: Awaited<ReturnType<typeof codeSetup>>,
+    patch: Partial<RunRecord> = {},
+  ) {
     const id = '01RESUME00000000000000000A';
     s.sup.ws('fake:engineer', id).claim('1');
     writeFileSync(join(s.repo, 'tracked.txt'), 'changed by the run');
@@ -5897,7 +5923,7 @@ describe('what runs leave in the checkout', () => {
   }
 
   it('resumes a wrap-up that a restart of swarmupd cut off', async () => {
-    const s = codeSetup('edit');
+    const s = await codeSetup('edit');
     const { repo, as, start, branch } = s;
     const id = endedBeforeRestart(s);
     const next = s.opsd();
@@ -5908,11 +5934,11 @@ describe('what runs leave in the checkout', () => {
     await done;
 
     const name = `fake/t-0001-${id.toLowerCase()}`;
-    const commit = git(repo, 'rev-parse', name);
-    expect(git(repo, 'rev-parse', `${commit}^`)).toBe(start);
-    expect(git(repo, 'show', `${commit}:tracked.txt`)).toBe('changed by the run');
-    expect(git(repo, 'branch', '--show-current')).toBe(branch);
-    expect(git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
+    const commit = await git(repo, 'rev-parse', name);
+    expect(await git(repo, 'rev-parse', `${commit}^`)).toBe(start);
+    expect(await git(repo, 'show', `${commit}:tracked.txt`)).toBe('changed by the run');
+    expect(await git(repo, 'branch', '--show-current')).toBe(branch);
+    expect(await git(repo, 'status', '--porcelain', '--', '.', ':(exclude).swarmup')).toBe('');
     expect(next.run(id)).toMatchObject({ wrap_up: 'done', leftovers: { commit, branch: name } });
     expect(as('human:dawid').view('1')).toMatchObject({
       status: 'needs-review',
@@ -5933,7 +5959,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('resumes a wrap-up from the step it got to', async () => {
-    const s = codeSetup('edit');
+    const s = await codeSetup('edit');
     const { repo, as } = s;
     // Committed and recorded already: only the review is left.
     const leftovers = {
@@ -5951,7 +5977,7 @@ describe('what runs leave in the checkout', () => {
     next.adopt();
     await done;
     // Nothing committed again, no second run-end event.
-    expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
+    expect(await git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(text(join(repo, 'tracked.txt'))).toBe('changed by the run');
     const { events } = as('human:dawid').showEvents('1');
     expect(events.filter((e) => e.type === 'run-end')).toHaveLength(0);
@@ -5963,20 +5989,20 @@ describe('what runs leave in the checkout', () => {
   it('resumes a wrap-up after a restart without running git on the event loop (AO-0205)', async () => {
     // A new swarmupd knows no git top yet: the resumed or adopted run's wrap-up, the store sync
     // and the branch push must find them off the event loop too.
-    const base = setup({ mode: 'edit', env: ID, opsd: { sync: true } });
+    const base = await setupAsync({ mode: 'edit', env: ID, opsd: { sync: true } });
     writeFileSync(join(base.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(base.repo, 'gone.txt'), 'deleted by the run\n');
     base.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
-    git(base.repo, 'add', '-A');
-    git(base.repo, 'commit', '-qm', 'start');
+    await git(base.repo, 'add', '-A');
+    await git(base.repo, 'commit', '-qm', 'start');
     const remote = temp();
-    git(remote, 'init', '-q', '--bare');
-    git(base.repo, 'remote', 'add', 'origin', remote);
-    git(base.repo, 'push', '-q', '-u', 'origin', 'HEAD');
+    await git(remote, 'init', '-q', '--bare');
+    await git(base.repo, 'remote', 'add', 'origin', remote);
+    await git(base.repo, 'push', '-q', '-u', 'origin', 'HEAD');
     const s = {
       ...base,
-      start: git(base.repo, 'rev-parse', 'HEAD'),
-      branch: git(base.repo, 'branch', '--show-current'),
+      start: await git(base.repo, 'rev-parse', 'HEAD'),
+      branch: await git(base.repo, 'branch', '--show-current'),
     };
     const id = endedBeforeRestart(s);
     const name = `fake/t-0001-${id.toLowerCase()}`;
@@ -5989,24 +6015,24 @@ describe('what runs leave in the checkout', () => {
       await done;
       await synced;
       const until = Date.now() + 30_000;
-      while (!git(remote, 'branch', '--list', name) && Date.now() < until) {
+      while (!(await git(remote, 'branch', '--list', name)) && Date.now() < until) {
         await new Promise((r) => setTimeout(r, 100));
       }
     } finally {
       spy.restore();
     }
     expect(next.run(id)).toMatchObject({ wrap_up: 'done', leftovers: { branch: name } });
-    expect(git(remote, 'branch', '--list', name)).toContain(name);
+    expect(await git(remote, 'branch', '--list', name)).toContain(name);
     expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
   });
 
   it('finishes the restore of a commit an earlier wrap-up made', async () => {
     const repo = temp();
-    git(repo, 'init', '-q');
+    await git(repo, 'init', '-q');
     writeFileSync(join(repo, 'a.txt'), 'one\n');
     writeFileSync(join(repo, 'b.txt'), 'one\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-qm', 'start');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-qm', 'start');
     const co = new Checkout(repo, [], { ...process.env, ...ID });
     const head = co.head();
     writeFileSync(join(repo, 'a.txt'), 'two\n');
@@ -6024,8 +6050,8 @@ describe('what runs leave in the checkout', () => {
     expect(existsSync(join(repo, 'c.txt'))).toBe(false);
     // A branch of that name on another commit is not this run's.
     writeFileSync(join(repo, 'a.txt'), 'three\n');
-    git(repo, 'branch', 'codex/other', first.commit);
-    git(repo, 'commit', '-qam', 'moved');
+    await git(repo, 'branch', 'codex/other', first.commit);
+    await git(repo, 'commit', '-qam', 'moved');
     await expect(co.commitLeftovers('codex/other', 'T\n', co.head())).rejects.toThrow(
       /branch codex\/other exists and does not start from /,
     );
