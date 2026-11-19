@@ -784,6 +784,25 @@ export class MergeRepo {
     );
   }
 
+  /**
+   * As {@link changedFiles}, but a renamed file lists both its old and its new path, so moving
+   * code into a path a check skips still counts as changing code (AO-0382).
+   */
+  async touchedFiles(a: string, b: string): Promise<string[]> {
+    return lines(
+      await this.git(this.top, [
+        'diff',
+        '--no-renames',
+        '--name-only',
+        a,
+        b,
+        '--',
+        '.',
+        ...this.excludes,
+      ]),
+    );
+  }
+
   /** Task store files that differ between two commits. */
   async storeFiles(a: string, b: string): Promise<string[]> {
     const code = new Set(await this.changedFiles(a, b));

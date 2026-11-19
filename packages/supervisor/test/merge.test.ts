@@ -1724,6 +1724,25 @@ describe('merging approved work', () => {
     expect(e.body).toContain('Not run, the work changes none of their paths: `node check.mjs`.');
   });
 
+  it('runs a check when the work renames code into a path the check skips (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [{ run: 'node check.mjs', paths: ['**', '!**/*.md'] }],
+    });
+    const wt = join(temp(), 'wt');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
+    mkdirSync(join(wt, 'docs'));
+    // A pure rename: git's rename detection names only `docs/held.md`, which the check skips.
+    git(wt, 'mv', 'held.mjs', 'docs/held.md');
+    git(wt, 'commit', '-qm', 'Move the code');
+    s.approve(git(wt, 'rev-parse', 'HEAD'));
+    await s.merged();
+
+    expect(text(join(s.state, 'checks.txt'))).toBe('x');
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge' });
+    expect(e.body).toContain('Checks passed: `node check.mjs`.');
+  });
+
   it('runs a check whose paths the change reaches (AO-0382)', async () => {
     const s = mergeSetup({
       checks: [
@@ -2570,6 +2589,33 @@ describe('merging approved work', () => {
     expect(
       t.lines.some((l) => l.includes('skips checks for paths the batch does not change')),
     ).toBe(true);
+  });
+
+  it('runs a check when a task of the batch renames code into a path the check skips (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [{ run: 'node check.mjs', paths: ['**', '!**/*.md'] }],
+    });
+    // Task 1 changes Markdown only; task 2 moves code into a Markdown path.
+    s.approve(s.branch('one\n', { 'docs/guide.md': '# Guide\n' }));
+    const wt = join(temp(), 'wt2');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature2', wt, 'main');
+    mkdirSync(join(wt, 'docs'), { recursive: true });
+    git(wt, 'mv', 'held.mjs', 'docs/held.md');
+    git(wt, 'commit', '-qm', 'Move the code');
+    const commit = git(wt, 'rev-parse', 'HEAD');
+    s.as('fake:engineer').start('2', 'plan');
+    s.as('fake:engineer').review(
+      '2',
+      `${commit.slice(0, 7)} on branch feature2: moves held.mjs`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('2', 'approve', 'looks right');
+    await s.merged();
+
+    expect(text(join(s.state, 'checks.txt'))).toBe('x');
+    const one = s.as('human:dawid').showEvents('1').events.at(-1)!;
+    expect(one).toMatchObject({ type: 'merge' });
+    expect(one.body).toContain('Checks passed once for the batch: `node check.mjs`.');
   });
 
   it('splits a batch whose checks fail and sends back only the task that breaks them (AO-0381)', async () => {

@@ -6361,8 +6361,8 @@ export class Supervisor extends EventEmitter {
         // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
         if (this.merging) this.merging.holds = false;
         this.mergeStep('checks');
-        // Only the checks whose paths the work changes run (AO-0382).
-        const picked = checksFor(cfg.checks ?? [], await repo.changedFiles(onto, r.head));
+        // Only the checks whose paths the work changes run, both sides of a rename (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, r.head));
         skipped = picked.skipped;
         if (skipped.length > 0) {
           this.mergeLine(
@@ -6711,8 +6711,9 @@ export class Supervisor extends EventEmitter {
           lead,
           `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
         );
-        // Only the checks whose paths a task of the batch changes run (AO-0382).
-        const picked = checksFor(cfg.checks ?? [], await repo.changedFiles(onto, head));
+        // Only the checks whose paths a task of the batch changes run, both sides of a rename
+        // (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, head));
         skipped = picked.skipped;
         if (skipped.length > 0) {
           this.mergeLine(

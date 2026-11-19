@@ -1022,7 +1022,7 @@ swarmupd:
           paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
         - run: npm run lint
           paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
-        - run: npm test -- --changed main # only the tests the change reaches
+        - run: npm test -- --changed v2 # only the tests the change reaches; name the `base`
           paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
       build: [npm run build] # run in `checkout` after the base moved
       install: [npm install --no-save --no-audit --no-fund] # before `build`, when a lockfile changed
@@ -1122,10 +1122,12 @@ swarmupd:
   `.gitignore`. With the example, a task that changes only Markdown, the changelog or assets runs
   `npm run leaks` and nothing else. The `merge` event names the checks that passed and the ones
   that did not run because the work changes none of their paths. A batch runs a check when any
-  of its tasks changes one of the check's paths. Task store files never count:
+  of its tasks changes one of the check's paths. A renamed file counts at both its old and its
+  new path, so moving code into `docs/` still runs the code checks. Task store files never count:
   a branch that changes them is sent back before the checks. To run only the tests a change
-  reaches, use the test runner's own option, such as Vitest's or Jest's `--changed <base>`; the
-  worktree shares the repo, so the base branch name resolves there.
+  reaches, use the test runner's own option, such as Vitest's or Jest's `--changed <base>`, with
+  the root's `base` (`v2` in the example); the worktree shares the repo, so the base branch name
+  resolves there.
 - **Tasks blocked on the work.** A task blocked `--on` an approved task stays blocked until
   swarmupd records the merge on that task, so no run starts on a base that lacks the work. A merge
   that fails keeps them blocked: a conflict or a failed check sends the approved task back, and a
