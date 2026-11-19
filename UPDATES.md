@@ -3,7 +3,7 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
-## v0.3.0-beta.9 (2026-11-19)
+## v0.3.0-beta.10 (2026-11-19)
 
 - **Renamed projects show their new name everywhere.** After **Edit name**, the new name shows in
   project dropdowns and filters, **New task**, task cards, the task panel, **Replay** and its
@@ -20,6 +20,8 @@ ones, is in [CHANGELOG.md](CHANGELOG.md).
 - **Fixes.** New task worktrees of pnpm repos get their dependencies installed before the run
   starts, and a paused agent on another model no longer stops stalled reviews from moving to
   another reviewer.
+- **Merges recover from a stuck git.** A git command that swarmupd stopped for taking too long no
+  longer leaves a lock behind that fails the next merge.
 
 ## v0.3.0-beta.8 (2026-11-18)
 
