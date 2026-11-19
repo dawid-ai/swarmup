@@ -6,6 +6,30 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.9 (2026-11-19)
+
+### Added
+
+- swarmupd merges approved tasks that wait together in one batch: it rebases them in turn onto
+  one candidate branch, runs the root's merge checks once, and moves the base once. When the
+  checks fail, it splits the batch and checks the halves, so only the task that breaks the checks
+  goes back. Each task keeps its own merge event. `swarmupd.merge.<root>.batch` sets the most
+  tasks per batch (default 8); `1` merges each task alone.
+- Preview and import historical Markdown decision tables and `kb/decisions/` notes with
+  `swarmup decision --import` and `swarmup decision --import-notes`, including safe repeat runs,
+  exclusions and explicit supersede or narrow mappings.
+
+### Changed
+
+- A merge that conflicts with the base no longer sends approved work back through the whole queue. swarmupd first tries a merge commit, which takes a branch that already merged the base to resolve a conflict. When that conflicts too, the author merges the base into the branch instead of rebasing, the fix starts ahead of other work and past the project's run limit, and the review covers only the resolution.
+
+### Fixed
+
+- A project renamed with **Edit name** now shows its new name everywhere the app names it, not only in the sidebar: project dropdowns and filters, New task, task cards, the task panel, Replay and its exported frames, Runs, Agents, Reports and Settings.
+- Model-specific provider holds now consider only agents that can wake, so a disabled agent on another model no longer prevents stalled reviews from falling back.
+- Show Replay's exports working: **Save frame**, **Record MP4** and **Save as GIF** show a busy line with a progress bar, frame count and **Cancel** beside the export buttons from the click until the file is saved. GIF and fast MP4 exports no longer freeze the page until they finish.
+- Install dependencies with `pnpm install --frozen-lockfile --offline` in each new task worktree of a pnpm repo before its run starts, so the run can type-check and test without a manual install.
+
 ## 0.3.0-beta.8 (2026-11-18)
 
 ### Changed

@@ -3,6 +3,24 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.9 (2026-11-19)
+
+- **Renamed projects show their new name everywhere.** After **Edit name**, the new name shows in
+  project dropdowns and filters, **New task**, task cards, the task panel, **Replay** and its
+  exports, **Runs**, **Agents**, **Reports** and **Settings**, not only in the sidebar.
+- **Merge conflicts get fixed faster.** When approved work conflicts with `main`, the agent merges
+  `main` into its branch, the fix starts ahead of other work, and the review covers only the
+  resolution instead of the whole task again.
+- **Approved tasks merge in batches.** Tasks that wait together go through the merge checks once
+  as a batch; a failing check splits the batch, so only the task that breaks it goes back.
+- **Replay export progress.** **Save frame**, **Record MP4** and **Save as GIF** show a progress
+  bar with **Cancel**, and the page no longer freezes while a GIF or MP4 renders.
+- **Import old decisions.** `swarmup decision --import` and `--import-notes` bring decision tables
+  and `kb/decisions/` notes into the decision log.
+- **Fixes.** New task worktrees of pnpm repos get their dependencies installed before the run
+  starts, and a paused agent on another model no longer stops stalled reviews from moving to
+  another reviewer.
+
 ## v0.3.0-beta.8 (2026-11-18)
 
 - **Each project shows once.** The sidebar no longer lists a project twice when your settings
