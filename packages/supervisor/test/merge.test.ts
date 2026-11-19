@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, sep } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initRoot, PATCH_KEY_ARGS, patchKey, samePath, secretKind, Workspace } from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
@@ -2690,23 +2691,53 @@ describe('merging approved work', () => {
   });
 
   /**
-   * A git timeout that stops at once the commands `hung` picks, once `on` holds a commit, and
-   * gives every other command a minute: spawning git alone takes longer than 1 ms.
+   * A git timeout that stops at once the commands `hung` picks, once `arm` names a commit, and
+   * gives every other command a minute.
+   *
+   * Off Windows, `env` puts a `git` first on swarmupd's PATH that runs those commands as a `sleep`
+   * that does not end, and every other command as the real git, so the timeout always wins: with
+   * the real git, a fast Linux machine finished the command inside the 1 ms and both tasks merged
+   * (AO-0395). `hungSh` is `hung` as a shell function of git's arguments and `$commit`. On
+   * Windows, libuv finds only `.exe` and `.com` files for `git`, so no script can stand in for it;
+   * there, starting a process alone takes longer than 1 ms.
    */
-  const hangOn = (hung: (args: readonly string[], commit: string) => boolean) => {
-    const on = { commit: '' };
-    const timeout: MergeGitTimeout = (args) => (on.commit && hung(args, on.commit) ? 1 : 60_000);
-    return { on, timeout };
+  const hangOn = (hung: (args: readonly string[], commit: string) => boolean, hungSh: string) => {
+    let commit = '';
+    const timeout: MergeGitTimeout = (args) => (commit && hung(args, commit) ? 1 : 60_000);
+    const env: Record<string, string> = {};
+    const file = join(temp(), 'hang-commit.txt');
+    if (!WIN) {
+      const bin = temp();
+      const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      writeFileSync(
+        join(bin, 'git'),
+        [
+          '#!/bin/sh',
+          `commit=$(cat '${file}' 2>/dev/null)`,
+          `hung() { ${hungSh}; }`,
+          'if [ -n "$commit" ] && hung "$@"; then exec sleep 600; fi',
+          `exec '${real}' "$@"`,
+          '',
+        ].join('\n'),
+      );
+      chmodSync(join(bin, 'git'), 0o755);
+      env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`;
+    }
+    const arm = (c: string): void => {
+      commit = c;
+      writeFileSync(file, c);
+    };
+    return { arm, timeout, env };
   };
 
   /** Checks that a git timeout on task 2 of a batch is task 2's, and task 1 still merges. */
   const secondTimesOut = async (
     s: ReturnType<typeof mergeSetup>,
-    on: { commit: string },
+    arm: (commit: string) => void,
     stage: RegExp,
   ) => {
     const t = twoApproved(s, 'second\n');
-    on.commit = git(s.repo, 'rev-parse', 'feature2');
+    arm(git(s.repo, 'rev-parse', 'feature2'));
     await s.merged();
 
     // Task 1 merges alone after task 2 leaves the batch; it gets no note about task 2.
@@ -2838,33 +2869,24 @@ describe('merging approved work', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
-  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
-  it(
-    'blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)',
-    { retry: 3 },
-    async () => {
-      // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
-      const h = hangOn((args, commit) => {
-        const rev = (args[3] ?? '').replace('^{commit}', '');
-        return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
-      });
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
-      await secondTimesOut(s, h.on, /rev-parse/);
-    },
-  );
+  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
+    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+    const h = hangOn((args, commit) => {
+      const rev = (args[3] ?? '').replace('^{commit}', '');
+      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+    }, '[ "$1" = rev-parse ] || return 1; rev=${4%%^*}; [ ${#rev} -ge 7 ] || return 1; ' + 'case $commit in "$rev"*) return 0;; esac; return 1');
+    const s = mergeSetup({ gitTimeoutMs: h.timeout, env: h.env });
+    await secondTimesOut(s, h.arm, /rev-parse/);
+  });
 
-  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
-  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
-  it(
-    'blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)',
-    { retry: 3 },
-    async () => {
-      const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
-      await secondTimesOut(s, h.on, /checkout/);
-    },
-  );
+  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
+    const h = hangOn(
+      (args, commit) => args[0] === 'checkout' && args.includes(commit),
+      '[ "$1" = checkout ] || return 1; for a; do [ "$a" = "$commit" ] && return 0; done; return 1',
+    );
+    const s = mergeSetup({ gitTimeoutMs: h.timeout, env: h.env });
+    await secondTimesOut(s, h.arm, /checkout/);
+  });
 
   it('merges each task alone with batch 1 (AO-0381)', async () => {
     const s = mergeSetup({ batch: 1 });
@@ -3727,6 +3749,10 @@ describe('merging approved work', () => {
     const s = mergeSetup();
     const before = git(s.repo, 'rev-parse', 'main');
     s.approve(s.branch('two\n'));
+    // A verdict in the same millisecond as swarmupd's first look counts as after it; a fast Linux
+    // machine got there inside one millisecond and merged (AO-0395).
+    const verdictAt = Date.parse(s.last().at);
+    await until(() => Date.now() > verdictAt);
     rmSync(join(s.state, 'merge.json'));
     await s.merged();
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
