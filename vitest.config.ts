@@ -20,9 +20,12 @@ export default defineConfig({
     testTimeout: 180_000,
     hookTimeout: 60_000,
     // Every file spawns git and node processes, so one worker per core starves them: in a merge
-    // check the 1-test mirror files took 60-90 s and supervisor.test.ts 810 s. Half the cores
-    // keeps those processes fed; supervisor.test.ts alone sets the wall time either way.
+    // check the 1-test mirror files took 60-90 s and the old supervisor.test.ts 810 s. Half the
+    // cores keeps those processes fed. The slowest file sets the wall time, so keep each git-heavy
+    // file under about 8 minutes of tests: supervisor.test.ts and merge.test.ts each ran 25-28
+    // minutes in merge checks and were split into supervisor-*.test.ts and merge-*.test.ts (AO-0397).
     maxWorkers: '50%',
+    globalSetup: ['./vitest.global-setup.ts'],
     setupFiles: ['./vitest.setup.ts'],
   },
 });
