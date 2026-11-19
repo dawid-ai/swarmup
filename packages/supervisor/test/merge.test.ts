@@ -2585,21 +2585,67 @@ describe('merging approved work', () => {
     expect(t.events('2').at(-1)).toEqual(note);
   };
 
-  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
-    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
-    const h = hangOn((args, commit) => {
-      const rev = (args[3] ?? '').replace('^{commit}', '');
-      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+  it('merges past an index.lock that a stopped git left in its worktree', async () => {
+    const s = mergeSetup();
+    s.approve(s.branch('two\n'));
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge' });
+    // A git that swarmupd stopped for its timeout mid-write keeps the lock in swarmupd's worktree.
+    const own = git(s.repo, 'worktree', 'list', '--porcelain')
+      .split('\n\n')
+      .map((b) => b.split('\n')[0]!.slice('worktree '.length))
+      .find((p) => !samePath(p, s.repo) && !p.includes('wt'))!;
+    const lock = join(git(own, 'rev-parse', '--absolute-git-dir'), 'index.lock');
+    writeFileSync(lock, '');
+    s.onMain('code.txt', 'three\n');
+    const wt = join(temp(), 'wt-next');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature3', wt, 'main');
+    writeFileSync(join(wt, 'next.txt'), 'next\n');
+    git(wt, 'add', '-A');
+    git(wt, 'commit', '-qm', 'Next work');
+    const next = git(wt, 'rev-parse', 'HEAD');
+    s.as('fake:engineer').start('2', 'plan');
+    s.as('fake:engineer').review(
+      '2',
+      `${next.slice(0, 7)} on branch feature3: next`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('2', 'approve', 'looks right');
+    await s.merged();
+    expect(s.as('human:dawid').showEvents('2').events.at(-1)).toMatchObject({
+      type: 'merge',
+      branch: 'feature3',
     });
-    const s = mergeSetup({ gitTimeoutMs: h.timeout });
-    await secondTimesOut(s, h.on, /rev-parse/);
+    expect(existsSync(lock)).toBe(false);
   });
 
-  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
-    const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
-    const s = mergeSetup({ gitTimeoutMs: h.timeout });
-    await secondTimesOut(s, h.on, /checkout/);
-  });
+  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
+  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
+  it(
+    'blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)',
+    { retry: 3 },
+    async () => {
+      // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+      const h = hangOn((args, commit) => {
+        const rev = (args[3] ?? '').replace('^{commit}', '');
+        return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+      });
+      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      await secondTimesOut(s, h.on, /rev-parse/);
+    },
+  );
+
+  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
+  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
+  it(
+    'blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)',
+    { retry: 3 },
+    async () => {
+      const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
+      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      await secondTimesOut(s, h.on, /checkout/);
+    },
+  );
 
   it('merges each task alone with batch 1 (AO-0381)', async () => {
     const s = mergeSetup({ batch: 1 });

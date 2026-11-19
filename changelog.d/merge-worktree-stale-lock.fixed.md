@@ -1,0 +1,1 @@
+- A git command that swarmupd stopped for its timeout no longer leaves an `index.lock` in swarmupd's merge worktree that fails the next merge, or the rest of a merge batch, with `index.lock: File exists`.
