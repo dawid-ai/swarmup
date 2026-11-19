@@ -251,6 +251,7 @@ EOF
   machine's normal git and `gh` login for code; never print, store or export tokens.
 - Finish with `swarmup review ID "PR: <url>" --to <reviewer>`, or, without a PR,
   `swarmup review ID "<commit> on branch <name>: what changed, tests" --to <reviewer>`.
+- Run `swarmup review` in the checkout that holds the work, after the commit: it records that checkout's HEAD commit, branch and repo on the review, and the merge takes those. Sent from elsewhere, pass `--commit SHA --branch NAME`.
 - If you cannot commit, push or open a PR (no GitHub sign-in, read-only `.git`), never ask a person
   for access or to push for you: finish with `swarmup review` naming the commit and branch, or the
   changed files and where they are. The orchestrator commits and pushes.
