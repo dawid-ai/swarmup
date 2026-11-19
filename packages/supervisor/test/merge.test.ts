@@ -2585,6 +2585,20 @@ describe('merging approved work', () => {
     expect(t.events('2').at(-1)).toEqual(note);
   };
 
+  it('starts no merge while swarmupd is paused, and merges once it resumes', async () => {
+    const s = mergeSetup();
+    const before = git(s.repo, 'rev-parse', 'main');
+    s.sup.config.paused = true;
+    s.approve(s.branch('two\n'));
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+    s.sup.config.paused = false;
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+  });
+
   it('merges past an index.lock that a stopped git left in its worktree', async () => {
     const s = mergeSetup();
     s.approve(s.branch('two\n'));

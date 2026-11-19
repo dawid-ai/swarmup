@@ -12,7 +12,7 @@ swarmup daemon status           # pid, port, version; exit 3 when not running
 swarmup daemon stop             # runs keep going; the next swarmupd adopts them
 swarmup daemon stop --kill-runs # also stop every run
 swarmup daemon restart          # stop and start; live runs keep going and are adopted
-swarmup daemon pause            # no new runs or schedules until resumed; live runs finish
+swarmup daemon pause            # no new runs, schedules or merges until resumed; live runs and a merge under way finish
 swarmup daemon resume
 swarmup daemon run              # in this terminal, until Ctrl+C
 ```
@@ -71,7 +71,8 @@ run, or install a new build of the app when it runs the installed app.
 A pause is `swarmupd.paused: true` in the user config, so it holds across restarts, and a stopped
 `swarmupd` starts paused. While paused, `swarmupd` refuses every new run (wakes, schedules,
 `swarmup launch`, **Run now**) with the reason in `swarmup waits`; helper runs of live runs still start.
-Sync, notifications, presence and the API keep working.
+No new merge of approved work starts either, so a person can work on the base without swarmupd
+moving it; a merge under way finishes. Sync, notifications, presence and the API keep working.
 
 The `swarmupd` command (`packages/supervisor/dist/main.js`) takes the same verbs. Start swarmupd from a
 folder inside a data root, or list roots in the user config, so it finds the tasks.

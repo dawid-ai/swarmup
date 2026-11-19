@@ -5296,6 +5296,9 @@ export class Supervisor extends EventEmitter {
 
   private async planMerge(): Promise<void> {
     if (this.mergeHalted()) return;
+    // Paused: no new merge starts either, so a person can work on the base undisturbed; a merge
+    // under way finishes.
+    if (this.config.paused) return;
     // Review checks use the machine now; a merge's checks beside them make both time out.
     if (this.reviewChecking) return;
     // What an earlier merge command left running goes first, so nothing races it.

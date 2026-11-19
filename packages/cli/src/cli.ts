@@ -207,6 +207,55 @@ function uncommittedReview(ctx: Ctx, ref: string, message: string): string | nul
   );
 }
 
+/** Branches that are a base the work merges into, never a task branch. */
+const BASE_BRANCHES = new Set(['main', 'master', 'v2', 'develop', 'trunk']);
+
+/** Git in `cwd`, or null when it fails; read-only. */
+function gitRead(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The work a review request names, so swarmupd merges exactly what was reviewed instead of
+ * guessing it from the text (AO-0355, AO-0358, AO-0396). `--commit` and `--branch` name it;
+ * else, when the message names no `<commit> on branch <name>`, the branch checked out at the
+ * caller's folder and its tip do, unless that is a base branch or a detached HEAD. The message
+ * gets the pair as its last line, which the merge and the review diff read.
+ */
+function reviewWork(
+  ctx: Ctx,
+  msg: string,
+): { message: string; source?: { commit: string; branch: string } } {
+  const cwd = ctx.io.cwd;
+  const commitOpt = str(ctx.opts.commit);
+  const branchOpt = str(ctx.opts.branch);
+  if ((commitOpt === undefined) !== (branchOpt === undefined)) {
+    usageError('--commit and --branch go together');
+  }
+  let source: { commit: string; branch: string } | null = null;
+  if (commitOpt && branchOpt) {
+    const commit = gitRead(cwd, ['rev-parse', '--verify', '-q', `${commitOpt}^{commit}`]);
+    if (!commit) throw new OpsError(`--commit ${commitOpt}: no such commit in ${gitTop(cwd)}`, 2);
+    source = { commit, branch: branchOpt };
+  } else if (!NAMES_COMMIT.test(msg) && !NAMES_PR.test(msg)) {
+    const branch = gitRead(cwd, ['symbolic-ref', '-q', '--short', 'HEAD']);
+    const commit = branch ? gitRead(cwd, ['rev-parse', '--verify', '-q', 'HEAD']) : null;
+    if (branch && commit && !BASE_BRANCHES.has(branch)) source = { commit, branch };
+  }
+  if (!source) return { message: msg };
+  const line = `Work: ${source.commit.slice(0, 10)} on branch \`${source.branch}\``;
+  return { message: `${msg.replace(/\s+$/, '')}\n\n${line}\n`, source };
+}
+
 /**
  * True inside a top-level swarmupd run with a start commit: swarmupd commits what that run leaves on a
  * task branch when it ends (see `Supervisor.writesLeftovers`).
@@ -1459,13 +1508,16 @@ const COMMANDS: Record<string, Command> = {
       ),
   },
   review: {
-    usage: 'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT]',
+    usage:
+      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA --branch NAME]',
     summary:
       'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },
       recommend: { type: 'string' },
+      commit: { type: 'string' },
+      branch: { type: 'string' },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
@@ -1473,10 +1525,12 @@ const COMMANDS: Record<string, Command> = {
       const msg = message(ctx, 1, true);
       const refused = uncommittedReview(ctx, ref, msg);
       if (refused) throw new OpsError(refused, 1);
+      const work = reviewWork(ctx, msg);
       return printAct(
         ctx,
-        ctx.ws().review(ref, msg, str(ctx.opts.to), str(ctx.opts.recommend), {
+        ctx.ws().review(ref, work.message, str(ctx.opts.to), str(ctx.opts.recommend), {
           human: ctx.opts.human === true,
+          ...(work.source ?? {}),
         }),
       );
     },

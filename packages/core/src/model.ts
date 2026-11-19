@@ -234,9 +234,9 @@ export interface OpsEvent {
   reason?: string;
   /** run-end: minutes the run took. */
   minutes?: number;
-  /** merge: the commit the base branch moved to. */
+  /** merge: the commit the base branch moved to. review: the commit the work is in. */
   commit?: string;
-  /** merge: the branch the work came from. */
+  /** merge: the branch the work came from. review: the branch that holds the work. */
   branch?: string;
   /** merge: the base branch it went into. */
   into?: string;
