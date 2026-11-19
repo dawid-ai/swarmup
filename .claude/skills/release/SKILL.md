@@ -27,9 +27,10 @@ CI, builds and smoke-tests the installer, and uploads `SwarmUp-Setup.exe`, its b
 
 1. On `main`, up to date with `origin/main`: follow steps 1 to 3 of RELEASING.md (set the
    version, fold the changelog, add the `UPDATES.md` entry).
-2. Run the full suite on the release tree. Merges run only the checks of what changed (D-0017),
-   so this step is the only place where the whole suite runs before users get the code. Run it
-   in `C:\dev\swarmup` after step 1, with no changes other than the release edits
+2. Run the full suite, build the installer and smoke-test the packaged app on the release tree.
+   Merges run only the checks of what changed (D-0017), so this step is the only place where the
+   whole suite runs before users get the code. Run it in `C:\dev\swarmup` after step 1, with no
+   changes other than the release edits
    (`git status` lists only `package.json` files, `CHANGELOG.md`, `UPDATES.md` and the removed
    `changelog.d/` fragments):
 
@@ -40,6 +41,8 @@ CI, builds and smoke-tests the installer, and uploads `SwarmUp-Setup.exe`, its b
    pnpm run lint
    pnpm test
    node scripts/check-leaks.mjs --deny <your deny file>
+   pnpm run dist
+   node scripts/desktop-smoke.mjs --packaged
    ```
 
    The repo uses pnpm, so `pnpm install --frozen-lockfile` is the clean install (the `npm ci`
