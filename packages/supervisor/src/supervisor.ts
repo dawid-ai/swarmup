@@ -68,6 +68,8 @@ import {
   MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
+import { StateDb } from './state-db.js';
+import type { MergeAttempt, MergeCount, MergeOutcome, RunRow } from './state-db.js';
 import { isMergeConflictBack, MERGE_CONFLICT, resolutionNote } from './merge-conflict.js';
 import type { GitDirs } from './checkout.js';
 import type { MergeConfig, OpsdConfig, ScheduleConfig } from './config.js';
@@ -890,6 +892,10 @@ export class Supervisor extends EventEmitter {
   private readonly mergeGitTimeoutMs?: MergeGitTimeout;
   /** Tasks whose merge check timed out once; the next timeout sends the task back (AO-0172). */
   private readonly mergeTimedOut = new Set<string>();
+  /** swarmupd's own state on this PC, for every project: `state.db` in the state folder. */
+  readonly state: StateDb | null;
+  /** The open merge attempt of each task, by `state.db` id. */
+  private readonly attempts = new Map<string, number>();
   /**
    * The task whose merge checks run again after they timed out once: no new run starts beside
    * them, so the second try has the machine to itself (AO-0385).
@@ -1066,6 +1072,7 @@ export class Supervisor extends EventEmitter {
     this.cfg = opts.config ?? opsdConfig(this.user);
     this.store = new RunStore(opts.stateDir ?? stateDir(this.env));
     this.now = opts.now ?? Date.now;
+    this.state = openState(this.store);
     this.listerOpt = opts.procs;
     this.sandboxOwned = opts.sandboxOwned;
     // The API accepts launches before the first timed tick. Hold Codex from construction until
@@ -4753,6 +4760,10 @@ export class Supervisor extends EventEmitter {
   stop(opts: { killRuns?: boolean } = {}): void {
     this.stopping = true;
     this.stopAbort.abort();
+    // Closed once the merge under way, if any, has recorded how it ended; at once without one, so
+    // the state folder can go right after a stop (Windows keeps an open file's folder).
+    if (this.merging) void this.merging.done.finally(() => this.closeState());
+    else this.closeState();
     // A merge stops before the base moves; the next swarmupd starts it again.
     this.merging?.runner.stop();
     // Review checks stop too; the next swarmupd runs them again before the review starts.
@@ -5778,6 +5789,11 @@ export class Supervisor extends EventEmitter {
         this.mergeNote(at, `swarmupd could not merge ${failed}: ${firstLines(msg)}`, human);
       })
       .finally(() => {
+        // A task of the job with no outcome goes round again at a later tick, or the merge
+        // stopped with swarmupd.
+        for (const open of [...this.attempts.keys()]) {
+          this.attemptEnd(open, this.stopping ? 'stopped' : 'again');
+        }
         // The one more merge after a check timed out is for this merge only (AO-0172).
         if (!again) this.mergeTimedOut.delete(at);
         // A merge that wrote nothing is not tried again until the task changes; one stopped
@@ -6250,6 +6266,7 @@ export class Supervisor extends EventEmitter {
   ): Promise<void | 'again'> {
     let job = planned;
     const { cfg, top } = job;
+    this.attemptStart(ref, job);
     let src = job.src;
     const repo = this.mergeRepoOf(job);
     let source = src.commit
@@ -6657,6 +6674,7 @@ export class Supervisor extends EventEmitter {
     terminal: (ref: string) => void,
   ): Promise<BatchItem[] | 'failed' | 'again' | 'done'> {
     const { cfg, top, root, human } = items[0]!.job;
+    for (const item of items) this.attemptStart(item.ref, item.job);
     const lead = items[0]!.ref;
     const ids = this.batchIds(items);
     const named = ids.join(', ');
@@ -7057,10 +7075,63 @@ export class Supervisor extends EventEmitter {
   }
 
   /** The merge event, with the commit the base moved to. */
+  /** Records in `state.db` that a merge of `ref` starts, unless one is open already. */
+  private attemptStart(ref: string, job: MergeJob): void {
+    if (!this.state || this.attempts.has(ref)) return;
+    this.safe(() => {
+      const id = this.state!.mergeStarted({
+        ref,
+        root: job.root,
+        what: job.what,
+        commit: job.src.commit,
+        branch: job.src.branch,
+        at: new Date(this.now()).toISOString(),
+      });
+      this.attempts.set(ref, id);
+    });
+  }
+
+  /**
+   * Records how the open merge attempt of `ref` ended; the first outcome wins. An outcome with no
+   * open attempt, such as a note from planning, gets an attempt of its own.
+   */
+  private attemptEnd(ref: string, outcome: MergeOutcome, reason?: string, head?: string): void {
+    if (!this.state) return;
+    this.safe(() => {
+      const at = new Date(this.now()).toISOString();
+      let id = this.attempts.get(ref);
+      if (id === undefined) {
+        id = this.state!.mergeStarted({ ref, root: ref.split('/')[0]!, what: '', at });
+      }
+      this.state!.mergeEnded(id, outcome, at, reason, head);
+      this.attempts.delete(ref);
+    });
+  }
+
+  /** The merge attempts of `ref`, or of every task, newest first. */
+  mergeAttempts(ref?: string, limit?: number): MergeAttempt[] {
+    return this.state?.mergeAttempts(ref, limit) ?? [];
+  }
+
+  /** How many merge attempts since `since` ended in each outcome. */
+  mergeCounts(since?: string): MergeCount[] {
+    return this.state?.mergeCounts(since) ?? [];
+  }
+
+  private closeState(): void {
+    try {
+      this.state?.close();
+    } catch {
+      // Already closed.
+    }
+  }
+
   private mergeRecord(
     p: { ref: string; base: string; branch?: string; commit: string },
     text: string,
   ): void {
+    const nothing = /nothing to merge/.test(text);
+    this.attemptEnd(p.ref, nothing ? 'nothing' : 'merged', firstLines(text), p.commit);
     this.ws(MERGE_ACTOR).recordMerge(
       p.ref,
       { commit: p.commit, into: p.base, branch: p.branch },
@@ -7087,6 +7158,7 @@ export class Supervisor extends EventEmitter {
     files: string[],
     output: string,
   ): void {
+    this.attemptEnd(ref, 'conflict', files.join(', ') || firstLines(output));
     const safe = redactSecrets(output);
     const log = this.mergeLog(ref, safe);
     const where = files.length > 0 ? ` in ${files.map((f) => `\`${f}\``).join(', ')}` : '';
@@ -7102,6 +7174,7 @@ export class Supervisor extends EventEmitter {
   }
 
   private mergeBack(ref: string, what: string, author: string, why: string, output: string): void {
+    this.attemptEnd(ref, /^`[^`]+` failed \(/.test(why) ? 'check-failed' : 'sent-back', why);
     const safe = redactSecrets(output);
     const log = this.mergeLog(ref, safe);
     const head = `swarmupd did not merge ${what}: ${why}.`;
@@ -7167,6 +7240,7 @@ export class Supervisor extends EventEmitter {
     output: string,
     limitMs: number,
   ): void {
+    this.attemptEnd(ref, 'timeout', `\`${command}\` timed out twice`);
     const log = this.mergeLog(ref, redactSecrets(output));
     const text = [
       `swarmupd did not merge ${job.what}: \`${command}\` timed out twice, the second time after ${formatMinutes(Math.round(limitMs / 60_000))} with no new run beside it.`,
@@ -7179,11 +7253,13 @@ export class Supervisor extends EventEmitter {
   }
 
   private mergeNote(ref: string, text: string, to?: string): void {
+    this.attemptEnd(ref, 'note', firstLines(text));
     this.safe(() => this.ws(MERGE_ACTOR).comment(ref, text, to));
   }
 
   /** A comment from swarmupd that it has nothing to merge for `ref`; tasks blocked on it go on. */
   private mergeNothing(ref: string, text: string): void {
+    this.attemptEnd(ref, 'nothing', firstLines(text));
     this.safe(() => this.ws(MERGE_ACTOR).noMerge(ref, text));
   }
 
@@ -8237,4 +8313,46 @@ function samePath(a: string, b: string): boolean {
 function inside(child: string, parent: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
   return rel === '' || (!rel.startsWith('..') && !rel.includes(':'));
+}
+
+/**
+ * Opens `state.db` in the state folder of `store`, mirrors each run record `store` saves into it,
+ * and imports the run files kept before it. Null when it cannot be opened: swarmupd then works
+ * from its JSON files alone, as before `state.db`.
+ */
+function openState(store: RunStore): StateDb | null {
+  let db: StateDb;
+  try {
+    db = new StateDb(store.dir);
+  } catch {
+    return null;
+  }
+  const row = (r: unknown): RunRow | null => {
+    const x = r as Partial<RunRecord>;
+    if (typeof x.id !== 'string' || typeof x.agent !== 'string') return null;
+    return {
+      id: x.id,
+      agent: x.agent,
+      task: x.task,
+      root: x.root,
+      status: x.status ?? 'ended',
+      started_at: x.started_at ?? '',
+      ended_at: x.ended_at,
+    };
+  };
+  try {
+    db.importRunFiles(row);
+  } catch {
+    // The runs come in as they are saved from now on.
+  }
+  store.mirror = (r) => {
+    const rr = row(r);
+    if (!rr) return;
+    try {
+      db.saveRun(rr, r);
+    } catch {
+      // The run file holds it.
+    }
+  };
+  return db;
 }

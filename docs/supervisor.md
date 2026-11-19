@@ -90,6 +90,22 @@ State lives in `~/.swarmup/swarmupd/` (or `SWARMUP_STATE_DIR`) and is never comm
 | `schedules.json`     | when each schedule last ran                                                                                                                                                                                                                      |
 | `wake.json`          | which inbox items each waking agent was last started for                                                                                                                                                                                         |
 
+## State on this PC
+
+swarmupd keeps what only this PC's swarmupd needs in `state.db`, a SQLite file in its state folder
+(`~/.swarmup/swarmupd`, or `SWARMUP_STATE_DIR`), for every project it runs. It is part of the
+install and never in a project repo; tasks, events, decisions and the KB stay files in git.
+
+- **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`, and swarmupd
+  imports the run files it lacks when it starts. Readers still use the files for now.
+- **Merge attempts.** Each merge of a task, alone or in a batch, is a row of `merge_attempts`: the
+  work it named (commit, branch), when it started and ended, and how it ended (`merged`, `nothing`,
+  `conflict`, `check-failed`, `timeout`, `sent-back`, `note`, `again` for one that goes round at a
+  later tick, `stopped`). `GET /api/merges` lists them (`?task=<root/id>`, `?limit=`) with the
+  count per outcome (`?since=<ISO time>`).
+- It needs Node 22.13 or later (`node:sqlite`); the app's Electron has it. When the file cannot be
+  opened, swarmupd works from its JSON files alone.
+
 ## Runs
 
 ```bash

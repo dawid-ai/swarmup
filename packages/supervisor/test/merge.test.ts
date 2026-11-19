@@ -2585,6 +2585,44 @@ describe('merging approved work', () => {
     expect(t.events('2').at(-1)).toEqual(note);
   };
 
+  it('records each merge attempt and how it ended in state.db', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    s.onMain('code.txt', 'three\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.last().body).toContain('it conflicts with main');
+    let attempts = s.sup.mergeAttempts('test/T-0001');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      outcome: 'conflict',
+      reason: 'code.txt',
+      branch: 'feature',
+      root: 'test',
+    });
+    expect(attempts[0]!.commit).toBe(commit.slice(0, 7));
+    expect(attempts[0]!.ended_at).not.toBeNull();
+
+    // The other task merges; both attempts are in state.db, the newest first.
+    s.onMain('code.txt', 'one\n');
+    s.approve(commit);
+    await s.merged();
+    attempts = s.sup.mergeAttempts('test/T-0001');
+    expect(attempts.map((a) => a.outcome)).toEqual(['merged', 'conflict']);
+    expect(s.sup.mergeCounts()).toEqual(
+      expect.arrayContaining([
+        { outcome: 'merged', count: 1 },
+        { outcome: 'conflict', count: 1 },
+      ]),
+    );
+    // Runs are mirrored too: a run's record is in state.db once saved.
+    const run = s.sup.launch({ agent: 'fake:engineer', task: '2' });
+    expect(s.sup.state!.run(run.id)).toMatchObject({ id: run.id, agent: 'fake:engineer' });
+    const end = ended(s.sup, run.id);
+    writeFileSync(join(s.state, 'run-go.txt'), 'go\n');
+    await end;
+  });
+
   it('starts no merge while swarmupd is paused, and merges once it resumes', async () => {
     const s = mergeSetup();
     const before = git(s.repo, 'rev-parse', 'main');

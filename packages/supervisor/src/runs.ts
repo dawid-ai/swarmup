@@ -202,6 +202,9 @@ export class RunStore {
   /** Parsed run files by file name, with the mtime and size they were read at. */
   private readonly cache = new Map<string, { mtimeMs: number; size: number; record: RunRecord }>();
 
+  /** Called with each record `save` writes: swarmupd keeps its runs in `state.db` too. */
+  mirror?: (r: RunRecord) => void;
+
   constructor(readonly dir: string) {
     mkdirSync(join(dir, 'runs'), { recursive: true });
     mkdirSync(join(dir, 'logs'), { recursive: true });
@@ -228,6 +231,7 @@ export class RunStore {
     replaceFile(tmp, file);
     // Two saves of the same size inside one mtime tick would look unchanged to `list`.
     this.cache.delete(`${r.id}.json`);
+    this.mirror?.(r);
   }
 
   get(id: string): RunRecord | undefined {
