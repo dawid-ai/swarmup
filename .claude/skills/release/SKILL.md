@@ -21,20 +21,53 @@ CI, builds and smoke-tests the installer, and uploads `SwarmUp-Setup.exe`, its b
 - The task store and internal docs (proposals, launch drafts, research, the 0.2 notes) live in the
   private `dawid-ai/swarmup-store`, never in this repo.
 - Don't release while a swarmupd merge runs in `C:\dev\swarmup` (`swarmup runs`).
+- Don't tag a commit that has not passed the full suite of step 2.
 
 ## Steps
 
-1. On `main`, up to date with `origin/main`: follow steps 1 to 4 of RELEASING.md (set the
-   version, fold the changelog, add the `UPDATES.md` entry, check locally).
-2. After Dawid asked for the release: commit `Release <version>`, `git tag v<version>`, then
-   `git push origin main v<version>`.
-3. Watch the run: `gh run list -R dawid-ai/swarmup -L 3`, then
+1. On `main`, up to date with `origin/main`: follow steps 1 to 3 of RELEASING.md (set the
+   version, fold the changelog, add the `UPDATES.md` entry).
+2. Run the full suite, build the installer and smoke-test the packaged app on the release tree.
+   Merges run only the checks of what changed (D-0017), so this step is the only place where the
+   whole suite runs before users get the code. Run it in `C:\dev\swarmup` after step 1, with no
+   changes other than the release edits
+   (`git status` lists only `package.json` files, `CHANGELOG.md`, `UPDATES.md` and the removed
+   `changelog.d/` fragments):
+
+   ```sh
+   pnpm install --frozen-lockfile
+   node scripts/check-release.mjs <version>
+   pnpm run typecheck
+   pnpm run lint
+   pnpm test
+   node scripts/check-leaks.mjs --deny <your deny file>
+   pnpm run dist
+   node scripts/desktop-smoke.mjs --packaged
+   ```
+
+   The repo uses pnpm, so `pnpm install --frozen-lockfile` is the clean install (the `npm ci`
+   equivalent): it fails when `pnpm-lock.yaml` does not match `package.json`. Keep the deny list
+   outside the repo; without `--deny` the leak check can't catch org names, logins or machine
+   names.
+
+   **Stop rule:** any command that exits non-zero stops the release. Don't commit, tag or push.
+   Fix the cause on a branch and merge it, or file a finding and tell Dawid which command failed
+   and why, then start again from step 1. A test that fails, then passes when you rerun the whole
+   suite, is a flake: file a finding for it, and release only on a full green run.
+
+   Record each command and its result (`pnpm test`: 1234 passed) in the release task with
+   `swarmup comment`, or in the message that asks Dawid for the go-ahead.
+
+3. After Dawid asked for the release and step 2 is green: commit `Release <version>`,
+   `git tag v<version>`, then `git push origin main v<version>`. If anything but the commit
+   itself changed since step 2 (a pull, a merge), run step 2 again first.
+4. Watch the run: `gh run list -R dawid-ai/swarmup -L 3`, then
    `gh run watch <id> -R dawid-ai/swarmup --exit-status`. A failed test that passes alone is a
    flake: `gh run rerun <id> -R dawid-ai/swarmup --failed`, and file a finding.
-4. Check the assets: `gh release view v<version> -R dawid-ai/swarmup` lists
+5. Check the assets: `gh release view v<version> -R dawid-ai/swarmup` lists
    `SwarmUp-Setup.exe`, `SwarmUp-Setup.exe.blockmap` and `latest.yml`, and `latest.yml` names
    the new version.
-5. swarmup.tech needs no step: its download page asks GitHub for the newest release in the
+6. swarmup.tech needs no step: its download page asks GitHub for the newest release in the
    browser. Docs changes go live with the daily `pages` run of `dawid-ai/swarmup-web`, or right
    away with `gh workflow run pages -R dawid-ai/swarmup-web`.
 
