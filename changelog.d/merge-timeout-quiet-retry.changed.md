@@ -1,0 +1,1 @@
+- A merge check that times out no longer sends approved work back to its author. swarmupd runs the checks once more with twice the time and no new agent run beside them; when they time out again, the work stays approved and the root's human gets a note on raising `timeout_minutes`.

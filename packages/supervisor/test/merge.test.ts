@@ -2743,7 +2743,7 @@ describe('merging approved work', () => {
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('slow\n');
   });
 
-  it('stops a check past its timeout, merges once more, then sends the task back and frees the checkout (AO-0172)', async () => {
+  it('stops a check past its timeout, merges once more with the machine to itself, then tells the human and frees the checkout (AO-0172, AO-0385)', async () => {
     // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
     const s = mergeSetup({ timeoutMinutes: 0.05 });
     const warns: string[] = [];
@@ -2757,8 +2757,15 @@ describe('merging approved work', () => {
       /merge of test\/T-0001: `node check\.mjs` timed out after \d+ min; swarmupd stopped it and merges once more/,
     );
 
-    await s.merged();
+    // The retry runs with no new run beside it, and twice the time.
+    const retry = s.merged();
+    await until(() => s.sup.mergeStatus()?.step === 'checks', STAGE_MS);
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toMatch(
+      /runs the merge checks of test\/T-0001 again, with no new runs beside them/,
+    );
+    await retry;
     expect(s.sup.merge).toBeNull();
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toBeNull();
     // One retry and no more. checks.txt counts only the checks that got as far as writing it
     // before their stop, and under the full suite Node can take longer than the 3 s to start:
     // an exact count of 2 failed the AO-0247 merge. So bound it instead.
@@ -2766,10 +2773,19 @@ describe('merging approved work', () => {
     const checks = join(s.state, 'checks.txt');
     expect(existsSync(checks) ? text(checks) : '').toMatch(/^x{0,2}$/);
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    // Not sent back to the author: the human hears of it, and the work stays approved.
     const e = s.last();
-    expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
-    expect(e.body).toContain('`node check.mjs` failed (timed out after');
-    expect(s.as('human:dawid').view('1').status).toBe('todo');
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('`node check.mjs` timed out twice');
+    expect(e.body).toContain('was not sent back');
+    expect(e.body).toContain('swarmupd.merge.test.timeout_minutes');
+    expect(s.as('human:dawid').view('1').status).not.toBe('todo');
+    expect(
+      s
+        .as('human:dawid')
+        .showEvents('1')
+        .events.some((x) => x.type === 'verdict' && x.verdict === 'changes'),
+    ).toBe(false);
 
     // Nothing holds the checkout: a writing run starts there.
     const run = s.sup.launch({ agent: 'fake:engineer', task: '2' });

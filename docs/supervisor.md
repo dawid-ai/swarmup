@@ -1156,7 +1156,7 @@ swarmupd:
   start, the timeout per command, and whether it holds `checkout`. Work it holds is marked
   `merge: true` in the waits. `opsd.log` has a `merge` line for its start, each check and build
   command as it starts and ends, the hold of `checkout`, and its end.
-- **When it fails.** A conflict, a failed check, a check that timed out twice in a row, or a
+- **When it fails.** A conflict, a failed check, or a
   branch that changes task store files sends the task back to its owner: a `changes` verdict from `opsd:merge` with the end of
   the output, and the whole output in `<state>/merge/logs/`. Lines of the output that look like a
   secret (the patterns `swarmup` refuses in events), and private key blocks whole, are taken out
@@ -1166,10 +1166,14 @@ swarmupd:
   cannot do (the branch or commit is missing, the base kept moving, local changes in the way) gets
   a comment to the root's human, and swarmupd does not try that task again until it changes.
 - **When a step hangs.** A check or build command stops at `timeout_minutes`, with everything it
-  started. A check that timed out is not sent back the first time: swarmupd logs a warning and merges
-  the task once more from the start, since a machine under load can stall a test run; the second
-  timeout sends it back. The one more merge belongs to that merge: a later review of the task gets
-  its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
+  started. A check that timed out is not sent back: swarmupd logs a warning and merges the task
+  once more from the start, since a machine busy with agents' own test runs can stall a test run.
+  That second time the checks get twice `timeout_minutes`, and no new agent run starts until they
+  end (`swarmup waits` says so; runs already going finish, and helpers, chat turns and questions
+  still start). When they time out again, the work stays approved and swarmupd comments to the
+  root's human instead of sending it back, since the author cannot make the machine faster: raise
+  `timeout_minutes` or make the checks faster, then comment on the task, and swarmupd merges it
+  again. The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a
   process it started outlives the stop and keeps git's output open, swarmupd stops reading after 5

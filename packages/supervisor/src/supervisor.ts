@@ -890,6 +890,11 @@ export class Supervisor extends EventEmitter {
   private readonly mergeGitTimeoutMs?: MergeGitTimeout;
   /** Tasks whose merge check timed out once; the next timeout sends the task back (AO-0172). */
   private readonly mergeTimedOut = new Set<string>();
+  /**
+   * The task whose merge checks run again after they timed out once: no new run starts beside
+   * them, so the second try has the machine to itself (AO-0385).
+   */
+  private mergeQuiet: string | null = null;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
   private readonly electronDists = new Set<string>();
   /** Per task, the merges in a row that could not read the task's worktrees (AO-0300). */
@@ -1269,6 +1274,11 @@ export class Supervisor extends EventEmitter {
     const freeGb = this.freeMem() / 2 ** 30;
     if (freeGb < this.config.min_free_gb) {
       return `${freeGb.toFixed(1)} GB of memory free; min_free_gb is ${this.config.min_free_gb}`;
+    }
+    // A merge check that timed out once runs again with no new run beside it (AO-0385). A helper,
+    // a chat turn and a question run are small and someone waits for them.
+    if (this.mergeQuiet && !opts.child && !opts.chat && !opts.question) {
+      return `swarmupd runs the merge checks of ${this.mergeQuiet} again, with no new runs beside them, since they timed out once`;
     }
     const provider = runtimeOf(agent);
     const rc = this.config.runtimes[provider];
@@ -6354,13 +6364,21 @@ export class Supervisor extends EventEmitter {
         // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
         if (this.merging) this.merging.holds = false;
         this.mergeStep('checks');
-        checks = await runner.runAll(
-          cfg.checks ?? [],
-          repo.worktree,
-          timeout,
-          (s) => this.mergeCommand('check', s),
-          this.electronEnv(this.commandEnv(), repo.worktree, top),
-        );
+        // The checks timed out once: this time no new run starts beside them, and they get twice
+        // the time (AO-0385). A machine busy with agents' own test runs is what usually slows them.
+        const retry = this.mergeTimedOut.has(ref);
+        if (retry) this.mergeQuiet = ref;
+        try {
+          checks = await runner.runAll(
+            cfg.checks ?? [],
+            repo.worktree,
+            retry ? timeout * 2 : timeout,
+            (s) => this.mergeCommand('check', s),
+            this.electronEnv(this.commandEnv(), repo.worktree, top),
+          );
+        } finally {
+          if (retry && this.mergeQuiet === ref) this.mergeQuiet = null;
+        }
         this.shareElectron(repo.worktree);
         const failed = checks.find((c) => !c.ok);
         // Stopped with swarmupd: the next swarmupd merges it from the start.
@@ -6381,6 +6399,12 @@ export class Supervisor extends EventEmitter {
             `merge of ${ref}: \`${failed.command}\` ${failed.why}; swarmupd stopped it and merges once more`,
           );
           return 'again';
+        }
+        // Timed out again, with the machine to itself: a slow suite or a busy PC, which the author
+        // cannot change, so the work stays approved and the human hears of it (AO-0385).
+        if (failed?.timedOut) {
+          this.mergeTimeoutNote(ref, job, failed.command, failed.output, timeout * 2);
+          return;
         }
         if (failed) {
           this.mergeBack(
@@ -7129,6 +7153,28 @@ export class Supervisor extends EventEmitter {
    * A comment from swarmupd on a merge it did not do, for a person. The work is still not in the
    * base, so the tasks blocked on `ref` keep waiting (AO-0228).
    */
+  /**
+   * Tells the human that a merge check timed out twice, the second time with no new run beside it
+   * and twice the time. The work is not sent back: the author cannot make the machine faster.
+   */
+  private mergeTimeoutNote(
+    ref: string,
+    job: MergeJob,
+    command: string,
+    output: string,
+    limitMs: number,
+  ): void {
+    const log = this.mergeLog(ref, redactSecrets(output));
+    const text = [
+      `swarmupd did not merge ${job.what}: \`${command}\` timed out twice, the second time after ${formatMinutes(Math.round(limitMs / 60_000))} with no new run beside it.`,
+      '',
+      "The work stays approved and was not sent back: a slow suite or a busy PC is not the author's to fix.",
+      `- To merge it, raise \`swarmupd.merge.${job.root}.timeout_minutes\` in the config, or make the checks faster, then comment on this task: swarmupd tries again when the task changes.`,
+      ...(log ? ['', `Full output: ${log}`] : []),
+    ].join('\n');
+    this.mergeNote(ref, text, job.human);
+  }
+
   private mergeNote(ref: string, text: string, to?: string): void {
     this.safe(() => this.ws(MERGE_ACTOR).comment(ref, text, to));
   }
