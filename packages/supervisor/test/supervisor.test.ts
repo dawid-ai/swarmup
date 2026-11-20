@@ -365,7 +365,7 @@ describe('runs', () => {
   it('claims, runs the agent to the end and records the run on the task', async () => {
     const { sup, as } = setup();
     as('human:dawid').newTask({ title: 'fake work', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: 'T-0001' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
     expect(as('human:dawid').view('1').claimedBy).toBe('fake:engineer');
     expect(() => sup.launch({ agent: 'fake:engineer' })).toThrow(
       /1 engineer run\(s\) live on test; per_project is 1/,
@@ -398,7 +398,7 @@ describe('runs', () => {
       title: 'Taskkill refused leaves the process tree alive',
       body: 'Use a job object.',
     });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(readFileSync(promptFile, 'utf8')).toContain(
       '- `windows/taskkill-refused-leaves-the-process-tree-alive`: Taskkill refused leaves the ' +
@@ -428,7 +428,7 @@ describe('runs', () => {
     }).meta.id;
     for (let i = 1; i <= 31; i++) human.recordDecision({ text: `rule ${i} of r`, project: 'r' });
     const promptOf = async (req: { task?: string; extra?: string }): Promise<string> => {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', ...req }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', ...req })).id);
       return readFileSync(promptFile, 'utf8');
     };
 
@@ -462,7 +462,7 @@ describe('runs', () => {
   it('frees the task when the run ends without finishing', async () => {
     const { sup, as } = setup({ mode: 'crash' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-    const r = await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+    const r = await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     expect(r).toMatchObject({ exit: 3, reason: 'exit' });
     const { events } = as('human:dawid').showEvents('1');
     expect(events.at(-1)).toMatchObject({ type: 'release', actor: 'fake:engineer' });
@@ -513,12 +513,13 @@ describe('runs', () => {
       ['fake:engineer', opus.id],
       ['fake:qa', fable.id],
     ] as const) {
-      for (let i = 0; i < 2; i++) await ended(sup, sup.launch({ agent, task }).id);
+      for (let i = 0; i < 2; i++) await ended(sup, (await sup.launchFresh({ agent, task })).id);
     }
     // The third runs end while the Fable window is past pause_at.
-    const third = [opus.id, fable.id].map((task, i) =>
-      sup.launch({ agent: i === 0 ? 'fake:engineer' : 'fake:qa', task }),
-    );
+    const third = [
+      await sup.launchFresh({ agent: 'fake:engineer', task: opus.id }),
+      await sup.launchFresh({ agent: 'fake:qa', task: fable.id }),
+    ];
     fableWindowFull(sup);
     for (const r of third) await ended(sup, r.id);
     // The Opus run is not paused: its task is stuck and stopped. The Fable run is paused: its
@@ -541,7 +542,7 @@ describe('runs', () => {
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     // The first two runs free the task, and say what their logs say.
     for (let i = 0; i < 2; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
       expect(as('human:dawid').view('1').status).toBe('todo');
     }
     const release = as('human:dawid').showEvents('1').events.at(-1)!;
@@ -553,7 +554,10 @@ describe('runs', () => {
     expect(release.body).toContain('[line removed: it looks like a GitHub token]');
     expect(release.body).not.toContain('ghp_');
     // The third is stopped: blocked for the PM of another provider, not freed for a fourth.
-    const third = await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+    const third = await ended(
+      sup,
+      (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id,
+    );
     const v = as('human:dawid').view('1');
     expect(v.status).toBe('blocked');
     expect(v.waitingOn).toBe('claude:pm');
@@ -584,7 +588,7 @@ describe('runs', () => {
     roleFiles(repo, ['claude:pm', 'fake:pm', 'fake:engineer']);
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     for (let i = 0; i < 3; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     }
     const v = as('human:dawid').view('1');
     expect(v.status).toBe('blocked');
@@ -602,7 +606,7 @@ describe('runs', () => {
     const { sup, as } = setup({ mode: 'sandbox-fail', opsd: { stuck_runs: 0 } });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     for (let i = 0; i < 3; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     }
     expect(as('human:dawid').view('1').status).toBe('todo');
   });
@@ -866,8 +870,8 @@ describe('runs', () => {
     const { sup, as } = setup({ mode: 'hang', now: () => now });
     as('human:dawid').newTask({ title: 'slow', owner: 'fake:engineer' });
     as('human:dawid').newTask({ title: 'hungry', owner: 'fake:qa' });
-    const slow = sup.launch({ agent: 'fake:engineer', task: '1', budget: '5m' });
-    const hungry = sup.launch({ agent: 'fake:qa', task: '2', tokens: '100' });
+    const slow = await sup.launchFresh({ agent: 'fake:engineer', task: '1', budget: '5m' });
+    const hungry = await sup.launchFresh({ agent: 'fake:qa', task: '2', tokens: '100' });
     await until(() => readFileSync(hungry.log, 'utf8').includes('usage'));
     await until(() => as('human:dawid').view('2').status === 'in-progress');
     await sup.tick();
@@ -885,7 +889,7 @@ describe('runs', () => {
     let now = Date.now();
     const { sup, as } = setup({ mode: 'hang', now: () => now });
     as('human:dawid').newTask({ title: 'long', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1', budget: '10h' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1', budget: '10h' });
     await until(() => as('human:dawid').view('1').status === 'in-progress');
     await sup.tick();
     expect(
@@ -1681,7 +1685,7 @@ describe('api', () => {
         body: JSON.stringify(body),
       });
     try {
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       expect((await post({ ifIdle: true })).status).toBe(409);
       // Callers such as the desktop's update install tell the refusal apart by its status.
       const info = {
@@ -1726,7 +1730,7 @@ describe('api', () => {
         headers: { authorization: 'Bearer secret-test-token' },
       });
       expect(((await health.json()) as { runs_outlive: boolean }).runs_outlive).toBe(false);
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       const res = await post({ killRuns: false });
       expect(res.status).toBe(409);
       expect(((await res.json()) as { error: string }).error).toMatch(/1 live run would end/);
@@ -2310,7 +2314,7 @@ describe('fail-closed identity', () => {
   it('records the creation time before the run command starts, so it can be adopted', async () => {
     const mark = join(temp(), 'started');
     const { sup } = setup({ mode: 'hang', env: { FAKE_MARK: mark } });
-    const run = sup.launch({ agent: 'fake:engineer' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer' });
     if (process.platform !== 'win32') {
       expect(sup.store.get(run.id)?.proc_start).toBeTruthy();
     } else {
@@ -2361,7 +2365,7 @@ describe('fail-closed identity', () => {
           env: { FAKE_MARK: mark },
         });
         as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-        const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+        const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
         expect(run.pid).toBe(run.shim_pid);
         sup.stop();
         await sup.close();
@@ -2412,7 +2416,7 @@ describe('fail-closed identity', () => {
           env: { FAKE_MARK: mark, FAKE_PID: agentPid },
         });
         as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-        const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+        const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
         await until(() => existsSync(mark) && existsSync(agentPid));
         const launcher = sup.store.get(run.id)!.pid;
         expect(launcher).not.toBe(run.shim_pid);
@@ -2523,7 +2527,7 @@ describe('fail-closed identity', () => {
       as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
       // A launcher that never gets its command, as when swarmupd cannot record it in time.
       Object.assign(sup, { handOver: () => Promise.resolve() });
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       sup.stop();
       await sup.close();
       expect(sup.store.get(run.id)).toMatchObject({ status: 'ended', reason: 'shutdown' });
@@ -2563,7 +2567,7 @@ describe('fail-closed identity', () => {
       const mark = join(temp(), 'started');
       const { sup, as } = setup({ mode: 'hang', env: { FAKE_MARK: mark } });
       as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       sup.kill(run.id);
       expect((await ended(sup, run.id)).reason).toBe('killed');
       expect(as('human:dawid').view('1').claimedBy).toBeNull();
@@ -2822,7 +2826,7 @@ describe('process ledger', () => {
   it('records what a run started and kills a grandchild left behind after its parent exited', async () => {
     const { env, marker } = orphanScripts();
     const { sup } = setup({ mode: 'orphan', env });
-    const run = sup.launch({ agent: 'fake:engineer' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer' });
     await until(() => existsSync(marker) && readFileSync(marker, 'utf8') !== '');
     const cPid = Number(readFileSync(marker, 'utf8'));
     const cSeen = Date.now();
@@ -2973,25 +2977,26 @@ describe('run limits', () => {
     h.newTask({ title: 'site work', owner: 'fake:engineer', project: 'site' });
     h.newTask({ title: 'ops work', owner: 'fake:engineer', project: 'ops' });
     h.newTask({ title: 'more site work', owner: 'fake:engineer', project: 'site' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     // Another project's engineer works in another checkout: one writing run per checkout.
-    const b = sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    const b = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     expect(a.project).toBe('site');
     expect(b.project).toBe('ops');
     expect(() => sup.launch({ agent: 'fake:engineer', task: '3' })).toThrow(
       /1 engineer run\(s\) live on site; per_project is 1/,
     );
-    for (let i = 0; i < 3; i++) sup.launch({ agent: 'fake:qa' });
+    for (let i = 0; i < 3; i++) await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(
       /3 qa run\(s\) live on test; per_project is 3/,
     );
     expect(sup.runs({ live: true })).toHaveLength(5);
   });
 
-  it('lists live runs newest first without reading every run record', () => {
+  it('lists live runs newest first without reading every run record', async () => {
     // AO-0164: GET /api/health and /api/runs?live read all run files, ~85 ms with 1,500 runs.
     const { sup } = setup({ mode: 'hang' });
-    const ids = [0, 1, 2].map(() => sup.launch({ agent: 'fake:qa' }).id);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) ids.push((await sup.launchFresh({ agent: 'fake:qa' })).id);
     const ended = {
       ...sup.run(ids[0]!),
       id: '00000000000000000000000000',
@@ -3013,7 +3018,7 @@ describe('run limits', () => {
     expect(sup.runs().map((r) => r.id)).toContain('00000000000000000000000000');
   });
 
-  it('counts every provider against the role limit', () => {
+  it('counts every provider against the role limit', async () => {
     const { sup, as } = setup({
       mode: 'hang',
       opsd: {
@@ -3024,7 +3029,7 @@ describe('run limits', () => {
     });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer', project: 'site' });
     as('human:dawid').newTask({ title: 'y', project: 'site' });
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(() => sup.launch({ agent: 'other:engineer', task: '2' })).toThrow(
       /1 engineer run\(s\) live on site/,
     );
@@ -3034,7 +3039,7 @@ describe('run limits', () => {
     const { sup, as, repo } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     as('fake:engineer').claim('1');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(new Root(join(repo, '.swarmup')).claimRecord('T-0001').run).toBe(run.id);
     const asRun = (id: string) =>
       new Workspace({
@@ -3051,7 +3056,7 @@ describe('run limits', () => {
   it('never renews or releases a claim that another run of the agent took over', async () => {
     const { sup, as, repo } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     // The claim now belongs to run B, as after A lost it and B claimed again.
     new Workspace({
       cwd: repo,
@@ -3071,9 +3076,9 @@ describe('run limits', () => {
     ).not.toContain('release');
   });
 
-  it('keeps to max_runs on this PC', () => {
+  it('keeps to max_runs on this PC', async () => {
     const { sup } = setup({ mode: 'hang', opsd: { max_runs: 1 } });
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:engineer' })).toThrow(/1 runs live; max_runs is 1/);
   });
 
@@ -3081,8 +3086,8 @@ describe('run limits', () => {
     const { sup, as } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'site', owner: 'fake:engineer', project: 'site' });
     as('human:dawid').newTask({ title: 'ops', owner: 'fake:engineer', project: 'ops' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
-    const b = sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
+    const b = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     const runA = as('fake:engineer');
     const asRun = (run: string) =>
       new Workspace({
@@ -3211,7 +3216,7 @@ describe('run limits', () => {
     expect(outsideSession(later, { token: 'T2' })?.at).toBe(Date.parse(at(9)));
   });
 
-  it('keeps to the PC, provider and role settings', () => {
+  it('keeps to the PC, provider and role settings', async () => {
     let free = 64 * 2 ** 30;
     const { sup } = setup({
       mode: 'hang',
@@ -3228,8 +3233,8 @@ describe('run limits', () => {
         },
       },
     });
-    sup.launch({ agent: 'fake:qa' });
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(/2 fake runs live; max_live is 2/);
     expect(sup.blocker('fake:qa', 'test')).toMatch(/max_live is 2/);
     free = 2 * 2 ** 30;
@@ -3246,7 +3251,7 @@ describe('run limits', () => {
       env: { FAKE_RESET: String(reset) },
       now: () => now,
     });
-    const r = sup.launch({ agent: 'fake:qa' });
+    const r = await sup.launchFresh({ agent: 'fake:qa' });
     await ended(sup, r.id);
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(
       /fake usage at 95% of the seven_day window \(pause at 90%\)/,
@@ -3332,7 +3337,7 @@ describe('run limits', () => {
     titles();
     expect(plans).toHaveBeenCalledTimes(3);
     // A run started outside a tick plans again: its task no longer waits.
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.waits().map((w) => [w.title, w.reason])).toEqual([
       ['second', 'fake:engineer: 1 engineer run(s) live on test; per_project is 1'],
     ]);
@@ -3387,7 +3392,7 @@ describe('run limits', () => {
     h.newTask({ title: 'labeled', owner: 'fake:engineer', project: 'v2' });
     h.newTask({ title: 'unlabeled', owner: 'fake:engineer' });
     h.newTask({ title: 'docs', owner: 'fake:writer', project: 'docs' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(a.project).toBe('v2');
     // Another project in the same checkout, by the same role or another role that writes.
     expect(() => sup.launch({ agent: 'fake:engineer', task: '2' })).toThrow(
@@ -3402,8 +3407,8 @@ describe('run limits', () => {
       /one writing run per checkout/,
     );
     // Roles that only read share it; a run in another checkout starts.
-    sup.launch({ agent: 'fake:qa' });
-    sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    await sup.launchFresh({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     expect(sup.runs({ live: true })).toHaveLength(3);
   });
 
@@ -3420,7 +3425,7 @@ describe('run limits', () => {
     h.newTask({ title: 'core', owner: 'fake:engineer', project: 'v2' });
     h.newTask({ title: 'cli', owner: 'fake:engineer', project: 'other' });
     h.newTask({ title: 'docs', owner: 'fake:writer', project: 'docs' });
-    sup.launch({ agent: 'fake:engineer', task: '1', cwd: sub('core') });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1', cwd: sub('core') });
     // An explicit launch folder in another subfolder of the same checkout.
     expect(() => sup.launch({ agent: 'fake:engineer', task: '2', cwd: sub('cli') })).toThrow(
       /one writing run per checkout/,
@@ -4962,7 +4967,7 @@ describe('what runs leave in the checkout', () => {
     // Ignored output is no change of the checkout.
     mkdirSync(join(repo, 'dist'));
     writeFileSync(join(repo, 'dist', 'out.js'), 'built\n');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
 
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
@@ -5005,7 +5010,7 @@ describe('what runs leave in the checkout', () => {
     as('human:dawid').saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'qa role');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1')).toMatchObject({
       status: 'needs-review',
@@ -5020,7 +5025,7 @@ describe('what runs leave in the checkout', () => {
     h.saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'release task');
-    const run = sup.launch({ agent: 'fake:engineer', task: '2' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '2' });
     await ended(sup, run.id);
     expect(h.view('2')).toMatchObject({ status: 'needs-review', reviewer: 'human:dawid' });
   });
@@ -5032,14 +5037,14 @@ describe('what runs leave in the checkout', () => {
     h.saveRole({ id: 'claude:reviewer', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'roles');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(h.view('1')).toMatchObject({ status: 'needs-review', reviewer: 'claude:reviewer' });
   });
 
   it('tells the reviewer where the files went when the run asked for review itself', async () => {
     const { sup, as } = codeSetup('edit-review');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1').status).toBe('needs-review');
     const last = as('human:dawid').showEvents('1').events.at(-1)!;
@@ -5050,7 +5055,7 @@ describe('what runs leave in the checkout', () => {
 
   it('leaves runs that commit themselves alone', async () => {
     const { repo, sup, as, start } = codeSetup('commit');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(git(repo, 'rev-parse', 'HEAD^')).toBe(start);
@@ -5084,11 +5089,11 @@ describe('what runs leave in the checkout', () => {
     expect(sup.runs({ live: true })).toHaveLength(0);
     expect(as('human:dawid').view('1').status).toBe('todo');
     // Roles that only read start anyway.
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     // Once the checkout is clean, the writer starts.
     git(repo, 'checkout', '--', 'tracked.txt');
     rmSync(join(repo, 'notes.txt'));
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.runs({ live: true })).toHaveLength(2);
   });
 
@@ -5108,7 +5113,7 @@ describe('what runs leave in the checkout', () => {
         .filter((i) => i.kind === 'mention' && i.from === 'opsd:checkout');
     // A live run in the checkout may be what made the changes: no notice while it runs.
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
-    const qa = sup.launch({ agent: 'fake:qa' });
+    const qa = await sup.launchFresh({ agent: 'fake:qa' });
     await sup.tick();
     expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['fake:qa']);
     expect(notices()).toHaveLength(0);
@@ -5148,7 +5153,7 @@ describe('what runs leave in the checkout', () => {
 
   it('commits what a read-only run left when it started on a clean checkout (AO-0136)', async () => {
     const { repo, sup, start, branch } = codeSetup('edit');
-    const run = sup.launch({ agent: 'fake:qa' });
+    const run = await sup.launchFresh({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBe(start);
     const name = `fake/run-${run.id.toLowerCase()}`;
@@ -5171,7 +5176,7 @@ describe('what runs leave in the checkout', () => {
     git(s.repo, 'remote', 'add', 'origin', remote);
     git(s.repo, 'push', '-q', '-u', 'origin', 'HEAD');
     const sup = s.sup;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
     const synced = new Promise<void>((res) => sup.on('sync', () => res()));
     const spy = spySyncProcs();
@@ -5241,10 +5246,37 @@ describe('what runs leave in the checkout', () => {
     await ended(sup, next.id);
   });
 
+  it('starts the first API run in a checkout it has not seen without git on the event loop (AO-0398)', async () => {
+    const s = setup({ mode: 'edit', env: ID });
+    writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
+    git(s.repo, 'add', '-A');
+    git(s.repo, 'commit', '-qm', 'start');
+    const start = git(s.repo, 'rev-parse', 'HEAD');
+    const other = temp();
+    git(other, 'init', '-q');
+    git(other, 'commit', '-q', '--allow-empty', '-m', 'other');
+    // No tick or wait plan ran: swarmupd knows neither checkout's top nor its state.
+    const spy = spySyncProcs();
+    let run: RunRecord;
+    let elsewhere: RunRecord;
+    try {
+      run = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
+      elsewhere = await s.sup.launchFresh({ agent: 'fake:qa', cwd: other });
+    } finally {
+      spy.restore();
+    }
+    expect(run).toMatchObject({ task: 'T-0001', base: start });
+    expect(elsewhere.cwd).toBe(other);
+    expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
+    await ended(s.sup, run.id);
+    await ended(s.sup, elsewhere.id);
+  });
+
   it('never commits changes a read-only run found in the checkout (AO-0136)', async () => {
     const { repo, sup } = codeSetup('edit');
     writeFileSync(join(repo, 'notes.txt'), 'a person at work\n');
-    const run = sup.launch({ agent: 'fake:qa' });
+    const run = await sup.launchFresh({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBeUndefined();
     expect(sup.run(run.id)?.leftovers).toBeUndefined();
@@ -5268,7 +5300,7 @@ describe('what runs leave in the checkout', () => {
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
-    const run = sup.launch({ agent: 'codex:qa' });
+    const run = await sup.launchFresh({ agent: 'codex:qa' });
     await ended(sup, run.id);
     const call = JSON.parse(text(out)) as { args: string[]; prompt: string };
     const store = join(repo, '.swarmup');
@@ -5282,7 +5314,7 @@ describe('what runs leave in the checkout', () => {
     expect(call.prompt).toContain('You can also write your scratch folder');
     expect(call.prompt).toContain('swarmupd commits and pushes the task store when this run ends');
     // A writing Codex run still works in its checkout.
-    const writer = sup.launch({ agent: 'codex:engineer' });
+    const writer = await sup.launchFresh({ agent: 'codex:engineer' });
     await ended(sup, writer.id);
     const wcall = JSON.parse(text(out)) as { args: string[]; prompt: string };
     expect(samePath(wcall.args[wcall.args.indexOf('-C') + 1]!, repo)).toBe(true);
@@ -5312,7 +5344,7 @@ describe('what runs leave in the checkout', () => {
     git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
     git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
-    const run = sup.launch({ agent: 'codex:engineer', cwd: wt });
+    const run = await sup.launchFresh({ agent: 'codex:engineer', cwd: wt });
     await ended(sup, run.id);
     const call = JSON.parse(text(out)) as { args: string[] };
     const added = call.args.filter((_, i) => call.args[i - 1] === '--add-dir');
@@ -5412,14 +5444,17 @@ describe('what runs leave in the checkout', () => {
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     as('human:dawid').newTask({ title: 'b', owner: 'fake:planner' });
     // A chat turn of a role that writes starts beside a writing run in the same checkout...
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.blocker('fake:planner', 'test', { cwd: repo })).toMatch(
       /one writing run per checkout/,
     );
     expect(sup.blocker('fake:planner', 'test', { cwd: repo, chat: true })).toBeNull();
     // ...and on a checkout with changes, and gets no start commit there.
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
-    const turn = sup.launch({ agent: 'fake:planner', chat: { session: 's1', resume: false } });
+    const turn = await sup.launchFresh({
+      agent: 'fake:planner',
+      chat: { session: 's1', resume: false },
+    });
     expect(turn.base).toBeUndefined();
     // A live chat turn holds no writing run in its checkout.
     git(repo, 'checkout', '--', 'tracked.txt');
@@ -5623,7 +5658,7 @@ describe('what runs leave in the checkout', () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'start');
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     const top = git(repo, 'rev-parse', '--show-toplevel');
     let prompt = readFileSync(promptFile, 'utf8');
@@ -5645,7 +5680,7 @@ describe('what runs leave in the checkout', () => {
     expect(prompt).toContain(`- ${top} holds the task store: keep \`v2\` checked out`);
 
     // A custom prompt is used as given, with the rule appended.
-    const custom = sup.launch({ agent: 'fake:engineer', prompt: 'Look into X.\n' });
+    const custom = await sup.launchFresh({ agent: 'fake:engineer', prompt: 'Look into X.\n' });
     await ended(sup, custom.id);
     prompt = readFileSync(promptFile, 'utf8');
     expect(prompt.startsWith('Look into X.\n\nRule for this folder:\n')).toBe(true);
@@ -5656,14 +5691,14 @@ describe('what runs leave in the checkout', () => {
     const wt = join(temp(), 'wt');
     git(repo, 'worktree', 'add', '-q', wt, '-b', 'code');
     as('human:dawid').newTask({ title: 'b', owner: 'fake:engineer' });
-    const inWorktree = sup.launch({ agent: 'fake:engineer', task: '2', cwd: wt });
+    const inWorktree = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: wt });
     await ended(sup, inWorktree.id);
     expect(readFileSync(promptFile, 'utf8')).not.toContain('holds the task store');
   });
 
   it('leaves the changes alone when HEAD moved during the run', async () => {
     const { repo, sup, as, start } = codeSetup('edit-move');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(run.base).toBe(start);
     await ended(sup, run.id);
     expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
@@ -5677,7 +5712,7 @@ describe('what runs leave in the checkout', () => {
 
   it('tells the reviewer when a run asked for review with changes swarmupd could not commit (AO-0300)', async () => {
     const { repo, sup, as } = codeSetup('edit-move-review');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(text(join(repo, 'tracked.txt'))).toBe('changed after the move\n');
     expect(as('human:dawid').view('1').status).toBe('needs-review');
@@ -5729,7 +5764,7 @@ describe('what runs leave in the checkout', () => {
     };
     const { repo, sup, start } = codeSetup('edit-wait', { FAKE_GO: go }, lister);
     repoDir = repo;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     wrapStep = () => sup.store.get(run.id)?.wrap_up;
     await until(() => existsSync(join(repo, 'src', 'new', 'added.txt')));
     await sup.trackProcs();
@@ -5752,9 +5787,13 @@ describe('what runs leave in the checkout', () => {
       FAKE_GO: join(temp(), 'never'),
       FAKE_HELPER_GO: 'helper.txt',
     });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await until(() => as('human:dawid').view('1').status === 'in-progress');
-    const helper = sup.launch({ agent: 'fake:engineer', parent: run.id, prompt: 'help' });
+    const helper = await sup.launchFresh({
+      agent: 'fake:engineer',
+      parent: run.id,
+      prompt: 'help',
+    });
     // Helpers write until they are killed; the parent ends first. The file exists before its
     // first line is in it, so wait for the content the commit must hold (AO-0239).
     await until(() => !!statSync(join(repo, 'helper.txt'), { throwIfNoEntry: false })?.size);
@@ -5817,10 +5856,14 @@ describe('what runs leave in the checkout', () => {
     const s = codeSetup('edit-wait', { FAKE_GO: go, FAKE_HELPER_GO: 'helper.txt' }, lister);
     const { repo, sup, as } = s;
     repoDir = repo;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     parentId = run.id;
     await until(() => as('human:dawid').view('1').status === 'in-progress');
-    const helper = sup.launch({ agent: 'fake:engineer', parent: run.id, prompt: 'help' });
+    const helper = await sup.launchFresh({
+      agent: 'fake:engineer',
+      parent: run.id,
+      prompt: 'help',
+    });
     await until(() => existsSync(join(repo, 'helper.txt')));
     await sup.trackProcs();
     Object.assign(late, { alive: true, ppid: sup.run(helper.id).pid, start: Date.now() });

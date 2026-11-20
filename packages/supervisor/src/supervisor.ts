@@ -3100,6 +3100,7 @@ export class Supervisor extends EventEmitter {
       }
     }
     if (needsReleases(req.agent)) await this.releasesTick();
+    await this.learnLaunchCheckouts(req);
     // A task worktree that is not there yet is made and installed off the event loop, and the
     // launch runs again once it is (AO-0380). The second launch makes it in place if it must.
     for (let attempt = 0; ; attempt++) {
@@ -3116,6 +3117,55 @@ export class Supervisor extends EventEmitter {
         this.tickStates = null;
       }
       await pending;
+    }
+  }
+
+  /**
+   * Learns, off the event loop, the git tops a launch of `req` asks for: the roots' folders and
+   * code checkouts, and the checkout or task worktree the run works in, which
+   * {@link readCheckouts} then reads. A checkout swarmupd had not seen yet otherwise cost the
+   * launch `git rev-parse` and `git status` on the event loop (AO-0398).
+   */
+  private async learnLaunchCheckouts(req: LaunchRequest): Promise<void> {
+    const want = async (dir: string): Promise<void> => {
+      const top = await this.gitTopAsync(resolve(dir));
+      if (top && !this.wantedTops.has(top)) this.wantedTops.set(top, this.now());
+    };
+    try {
+      const ws = this.ws();
+      let found: ReturnType<Workspace['resolve']> | undefined;
+      if (req.task && !req.parent) {
+        try {
+          found = ws.resolve(req.task);
+        } catch {
+          // The launch names what is wrong with the task.
+        }
+      }
+      const parentCwd = req.parent ? this.live.get(req.parent)?.record.cwd : undefined;
+      const root = found?.root ?? ws.roots[0];
+      // The folder `launch` picks without a worktree; see `checkoutOf`.
+      const runDir = resolve(
+        parentCwd ??
+          req.cwd ??
+          this.config.agents[req.agent]?.cwd ??
+          (root ? this.codeDirOf(root) : this.cwd),
+      );
+      const others = new Set(
+        [this.cwd, ...ws.roots.flatMap((r) => [r.dir, this.codeDirOf(r)])].map((d) => resolve(d)),
+      );
+      others.delete(runDir);
+      await Promise.all([...[...others].map((d) => this.gitTopAsync(d)), want(runDir)]);
+      // A code task's worktree that is there already is the run's folder instead. With the tops
+      // above known, finding it runs no git.
+      if (found && !req.cwd && !req.review && !req.chat) {
+        const type = ws.view(`${found.root.name}/${found.id}`).meta.type;
+        if (type !== QUESTION_TYPE) {
+          const wt = this.codeWorktree(ws, req.agent, found.root.name, found.id, type);
+          if (wt?.ready) await want(wt.path);
+        }
+      }
+    } catch {
+      // The launch names what is wrong, or reads the checkout itself.
     }
   }
 
