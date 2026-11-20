@@ -76,6 +76,7 @@ import type { GitDirs } from './checkout.js';
 import type { MergeConfig, OpsdConfig, ScheduleConfig } from './config.js';
 import type { CommandWatch, MergeGitTimeout, MergeSource, OpsdSelf } from './merge.js';
 import { CommandRunner, insideDir, MergeRepo } from './merge.js';
+import { checkCommand } from './merge-checks.js';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
 import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electron-dist.js';
@@ -535,6 +536,11 @@ export interface MergeJob {
   root: string;
   /** The text of the review request the approval answers. */
   review: string;
+  /**
+   * Whether that request names `<commit> on branch <name>`, in its source fields (AO-0384) or its
+   * text: then the merge takes what it names, and no other commit of its text is looked for.
+   */
+  named: boolean;
 }
 
 /** One task of a batch merge (AO-0381). */
@@ -5302,7 +5308,12 @@ export class Supervisor extends EventEmitter {
         this.emit('warn', `review checks of ${ref}: ${msg}`);
         // The review is not held for a fault of swarmupd's own: its run starts and is told.
         if (!this.stopping) {
-          keep({ at: this.now(), commands: cfg.checks ?? [], results: [], note: firstLines(msg) });
+          keep({
+            at: this.now(),
+            commands: (cfg.checks ?? []).map(checkCommand),
+            results: [],
+            note: firstLines(msg),
+          });
         }
       })
       .finally(() => {
@@ -5326,7 +5337,7 @@ export class Supervisor extends EventEmitter {
     line: (text: string) => void,
   ): Promise<ReviewChecks | null> {
     const ws = this.ws();
-    const commands = cfg.checks ?? [];
+    const commands = (cfg.checks ?? []).map(checkCommand);
     const none = (note: string): ReviewChecks => ({ at: this.now(), commands, results: [], note });
     const root = ws.resolve(ref).root;
     const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);

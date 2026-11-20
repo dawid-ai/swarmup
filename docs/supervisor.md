@@ -1037,17 +1037,37 @@ swarmupd:
       base: v2 # the branch approved work goes into
       checkout: 'C:\dev\my-project' # where the base is built; default: the root's git top
       checks: # run on the rebased work, in swarmupd's own worktree
-        - npm ci --no-audit --no-fund
-        - npm run typecheck
-        - npm run lint
-        - npm test
-        - npm run leaks
+        - npm run leaks # a bare command runs on every merge
+        - run: npm ci --no-audit --no-fund # runs only when the work changes one of `paths`
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm run typecheck
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm run lint
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
+        - run: npm test -- --changed v2 # only the tests the change reaches; name the `base`
+          paths: ['**', '!**/*.md', '!changelog.d/**', '!assets/**']
       build: [npm run build] # run in `checkout` after the base moved
       install: [npm install --no-save --no-audit --no-fund] # before `build`, when a lockfile changed
       timeout_minutes: 30 # per command
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Where the work is (AO-0384).** `swarmup review` records the HEAD commit, the branch and the
+  repo kind (`code` or `store`) of the git checkout it runs in as the fields `commit`, `branch` and
+  `repo` of the review event (no commit or branch on a base branch or a detached HEAD);
+  `--commit` with `--branch` overrides the checkout, and a `<commit> on branch <name>` in the
+  message that is not the checkout's HEAD wins over it, with a note. The merge reads these fields
+  before the review's text, so the wording no longer decides what is merged. A checkout counts as
+  the store's repo when a root's task store is in it and either that root's code is a checkout of
+  its own (`swarmupd.code.<root>`, as for a store repo that holds several roots beside notes and
+  docs) or its HEAD holds nothing at the top but store folders and dotfiles. From the store's repo,
+  a commit named in the message that the store repo does not have, or one named by `--commit` that
+  only a root's code checkout has, is recorded as `repo: code`, with a note, so code work named
+  from the store folder is still merged; a `--commit` neither has is refused. An approved review with `repo: store`
+  is store work that `swarmup sync` already pushed: swarmupd records "nothing to merge: store work,
+  synced" (a `no_merge` comment), files no finding, and the tasks blocked on it go on; the
+  approval itself does not hold them for a merge. Reviews without the fields (older ones, or sent
+  from outside a checkout, or from a detached HEAD) are read from their text, as below.
 - **What it merges.** A task whose last verdict approves it, when the review that verdict answers
   names `<commit> on branch <name>` (the form `swarmup review` asks for, and the one swarmupd's own
   leftover reviews use) or `branch <name>`, which merges the branch tip. The commit wins over the
@@ -1132,6 +1152,20 @@ swarmupd:
   backlog do not hold it: it finishes approved work. The review that follows covers only the
   resolution: the reviewer's prompt names each merge commit for `git show --remerge-diff`, and any
   other commit added since the approval for a full review.
+- **Checks by path (AO-0382).** A `checks` entry is a command, which runs on every merge, or
+  `{ run, paths }`, which runs only when the rebased work changes a file that `paths` selects.
+  The patterns are those of `test_changes`: a pattern without `/` matches the file name in any
+  folder, `*` and `?` stay inside one path segment and `**` crosses folders. A pattern that starts
+  with `!` takes paths out again, and the last pattern that matches a path decides, as in
+  `.gitignore`. With the example, a task that changes only Markdown, the changelog or assets runs
+  `npm run leaks` and nothing else. The `merge` event names the checks that passed and the ones
+  that did not run because the work changes none of their paths. A batch runs a check when any
+  of its tasks changes one of the check's paths. A renamed file counts at both its old and its
+  new path, so moving code into `docs/` still runs the code checks. Task store files never count:
+  a branch that changes them is sent back before the checks. To run only the tests a change
+  reaches, use the test runner's own option, such as Vitest's or Jest's `--changed <base>`, with
+  the root's `base` (`v2` in the example); the worktree shares the repo, so the base branch name
+  resolves there.
 - **Tasks blocked on the work.** A task blocked `--on` an approved task stays blocked until
   swarmupd records the merge on that task, so no run starts on a base that lacks the work. A merge
   that fails keeps them blocked: a conflict or a failed check sends the approved task back, and a
@@ -1195,7 +1229,9 @@ swarmupd:
   still start). When they time out again, the work stays approved and swarmupd comments to the
   root's human instead of sending it back, since the author cannot make the machine faster: raise
   `timeout_minutes` or make the checks faster, then comment on the task, and swarmupd merges it
-  again. The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
+  again. A check that timed out after it printed a failed test (vitest's `FAIL` or `×` lines,
+  node:test's `not ok`) is the code, not the machine: it sends the task back at once, on either try.
+  The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a
   process it started outlives the stop and keeps git's output open, swarmupd stops reading after 5
