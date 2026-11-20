@@ -18,6 +18,10 @@ them in at release time (see [RELEASING.md](RELEASING.md)).
 - A paused swarmupd starts no new merge of approved work either, so you can work on the base without it moving; a merge under way finishes.
 - `swarmup review` records the commit and branch it names: from `--commit` and `--branch`, or, when the message names none, from the task branch checked out where it runs. The message gets them as its last line and the review event as fields, so swarmupd merges exactly what was reviewed instead of guessing the branch from the text.
 
+### Fixed
+
+- `swarmup sync` now pushes when two registered roots share one git repo, such as `.swarmup/` and `web/.swarmup/` in one store repo. Before, each root held back the other's commits; commits that change other files are still held back.
+
 ## 0.3.0-beta.10 (2026-11-19)
 
 ### Added
