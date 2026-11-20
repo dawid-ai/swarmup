@@ -20,6 +20,7 @@ import { identity, PRIORITIES } from '../lib/identity';
 import type { Task } from '../types';
 import { PriorityIcon, PriorityTag, ProviderMark, ROLE_ICONS, Who } from './identity';
 import { Popover } from './pickers';
+import { useProjectLabel } from './project-label';
 
 /** A filter chip with a dropdown of rich rows; `value` empty means the filter is off. */
 export function FilterChip(props: {
@@ -111,6 +112,7 @@ export function FilterBar(props: {
   const o = useMemo(() => filterOptions(props.tasks), [props.tasks]);
   const set = (patch: TaskFilter) => props.onChange({ ...f, ...patch });
   const n = activeFilters(f);
+  const label = useProjectLabel();
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative">
@@ -128,9 +130,9 @@ export function FilterBar(props: {
           label="Project"
           icon={<Folder size={14} />}
           value={f.project ?? ''}
-          display={mono(f.project ?? '')}
+          display={mono(label(f.project))}
           onChange={(project) => set({ project })}
-          options={o.projects.map((p) => ({ value: p, node: mono(p) }))}
+          options={o.projects.map((p) => ({ value: p, node: mono(label(p)) }))}
         />
       )}
       <FilterChip

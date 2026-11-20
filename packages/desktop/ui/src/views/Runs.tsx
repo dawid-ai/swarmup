@@ -43,6 +43,7 @@ import { runLoop } from '../lib/statusloop';
 import type { ProcView, RunPage, RunRecord } from '../types';
 import { AgentPicker } from '../ui/pickers';
 import { StatusLoop } from '../ui/statusloop';
+import { ProjectName } from '../ui/project-label';
 
 type Filter = 'all' | 'live' | 'ended' | 'errors';
 
@@ -578,7 +579,11 @@ function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
               <Target run={run} nav={nav} />
-              {run.project && <span className="text-xs text-fg-3">{run.project}</span>}
+              {run.project && (
+                <span className="text-xs text-fg-3">
+                  <ProjectName name={run.project} />
+                </span>
+              )}
               <span className="text-xs text-fg-4">started {ago(run.started_at)}</span>
             </div>
           </div>

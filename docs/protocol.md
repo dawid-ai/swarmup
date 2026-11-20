@@ -115,6 +115,8 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | `tally D-ID`, `decisions [--all]`                                                                  | Shows a vote or a recorded decision, or lists open votes.                                                                                                                                                                           |
 | `decide D-ID CHOICE [REASON] [--scope project\|tree]`                                              | Adds `outcomes/<ulid>.md` and comments on the linked task. Outcomes are never edited: a human's `--force` adds one more, and the newest is the result.                                                                              |
 | `decision TEXT [--project P] [--task ID] [--scope project\|tree] [--source REF]`                   | Records a decision a person made, in one line of 200 characters at most, as `decisions/D-<n>/decision.md` with `kind: record`. `--supersedes D-ID` replaces earlier decisions; `--narrows D-ID` is an exception in a smaller scope. |
+| `decision --import FILE --project P [--dry-run]`                                                   | Previews or imports decision rows from Markdown tables under `Decisions` headings. Existing rows are skipped.                                                                                                                       |
+| `decision --import-notes [--project P] [--dry-run] [...]`                                          | Previews or imports `kb/decisions/`, with `--except`, `--supersedes-note` and `--narrows-note` mappings. Existing notes are skipped.                                                                                                |
 | `decisions --log [--project P] [--task ID] [--all]`                                                | Lists the decisions in force, newest first: recorded decisions and decided votes. `--task` lists what applies to one task; `--all` adds superseded ones.                                                                            |
 
 A recorded decision and a decided vote are both lines of the decision log. `decision`,
@@ -490,6 +492,31 @@ swarmup decision TEXT [--project P] [--task ID] [--scope project|tree] [--supers
 
 The command prints the new id. `-m` or `--body-file` holds context for the body.
 
+Import old decision tables and decisions-topic learn notes only after a person reviews the dry run:
+
+```bash
+swarmup decision --import C:/agent-ops/CLAUDE.md --project agent-ops --dry-run
+swarmup decision --import-notes --project agent-ops --dry-run
+swarmup decision --import-notes --project agent-ops \
+  --except propose-a-vote-only-when-its-quorum-can-be-reached \
+  --supersedes-note ask-dawid-only-for-crucial-decisions-agents-triage-findings=D-0019 \
+  --dry-run
+```
+
+- `--import` reads Markdown tables below a heading that contains `Decisions`. It accepts a
+  `Decision` or `What` column and a `Date` or `When` column. Historical `Topic | Decision | Why`
+  tables take their date from a surrounding dated heading; without either date, the row is
+  skipped. Other columns become the record body. A source is `FILE#heading, row N`.
+- `--import-notes` reads the selected root's `kb/decisions/`. `--except SLUG[,SLUG]` leaves agent
+  lessons out. Repeatable `--supersedes-note SLUG=D-ID[,D-ID]` and
+  `--narrows-note SLUG=D-ID` preserve the relation to existing records. Every mapping is checked
+  before any record is written; the dry run says when the old decision stays in force outside
+  the imported record's scope. A title over 200 characters is skipped instead of cut.
+- A dry run writes no file. A real import creates append-only records with
+  `created_by: human:dawid`, the source's date, and `imported_by` naming the actor that ran it.
+  Tables and notes stay in place. A table row with the same source and text, or a note with the
+  same source, is skipped on later runs.
+
 Mark a decision as you write a task event:
 
 ```bash
@@ -706,11 +733,16 @@ question blocks nothing; it is its own task.
   and asks to commit first, so a reviewer never approves work with nothing to merge. A swarmupd run
   that started on a clean checkout is let through: swarmupd commits what it leaves on a task branch
   and tells the reviewer (see [the supervisor](supervisor.md)).
-- `swarmup review` records where the work is as fields of the review event (AO-0384): `commit`
-  and `branch` from the HEAD of the git checkout it runs in, and `repo` (`code`, or `store` for a
-  task store's own repo). `--commit SHA` and `--branch NAME` override the checkout. swarmupd's
-  merge reads them before the message.
 - `--force` lets anyone through and records `forced: true` in the event.
+- `swarmup review` records where the work is as fields of the review event (AO-0384, AO-0396):
+  `commit` and `branch`, and `repo` (`code`, or `store` for a task store's own repo). In a code
+  checkout they come from its HEAD and branch, unless that is a base branch (`main`, `master`,
+  `v2`, `develop`, `trunk`) or a detached HEAD. `--commit SHA --branch NAME` go together and
+  override the checkout; the commit must exist there. When neither the options nor the checkout
+  name the work, a `<commit> on branch <name>` in the message does. When the options or the
+  checkout gave the pair and the message names no work, the message gets
+  ``Work: <commit> on branch `<name>` `` as its last line, which the review diff reads. swarmupd's
+  merge reads the fields before the message, so it merges exactly the commit that was reviewed.
 
 ## Events
 

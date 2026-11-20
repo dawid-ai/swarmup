@@ -923,6 +923,46 @@ function screenshotDir(): string | undefined {
   return process.env.SWARMUP_SCREENSHOTS ?? process.env.AGENT_OPS_SCREENSHOTS;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const busyBar = `document.querySelector('[data-testid="replay-busy"] [role="progressbar"]')`;
+
+/**
+ * Starts a Replay export (`mp4` or `gif`) and waits until its bar shows 10-90%. Each poll needs the
+ * page to answer, so an export that never yields to the event loop fails here.
+ */
+async function midExport(kind: string): Promise<void> {
+  const label = kind === 'gif' ? 'Save as GIF' : 'Record MP4';
+  await win!.webContents.executeJavaScript(
+    `Array.from(document.querySelectorAll('[aria-label="Exports"] button')).find((b) => b.textContent.trim() === ${JSON.stringify(label)})?.click()`,
+  );
+  let pct = -1;
+  const until = Date.now() + 60_000;
+  while (Date.now() < until) {
+    pct = (await win!.webContents.executeJavaScript(
+      `Number(${busyBar}?.getAttribute('aria-valuenow') ?? -1)`,
+    )) as number;
+    if (pct >= 10 && pct <= 90) break;
+    await sleep(50);
+  }
+  if (pct < 10 || pct > 90)
+    problems.push(`Replay ${kind} export showed no progress (bar at ${pct})`);
+  else process.stdout.write(`[smoke] replay ${kind} export at ${pct}%\n`);
+  // Offscreen frames paint at 10 fps: let one show the bar.
+  await sleep(300);
+}
+
+/** Clicks Cancel on the running export and checks that the busy line goes away. */
+async function cancelExport(kind: string): Promise<void> {
+  await win!.webContents.executeJavaScript(
+    `Array.from(document.querySelectorAll('[data-testid="replay-busy"] button')).find((b) => b.textContent.trim() === 'Cancel')?.click()`,
+  );
+  for (let i = 0; i < 100; i++) {
+    if (!(await win!.webContents.executeJavaScript(`Boolean(${busyBar})`))) return;
+    await sleep(50);
+  }
+  problems.push(`Replay ${kind} export did not stop on Cancel`);
+}
+
 /** `SWARMUP_SCREENSHOTS=<dir>`: capture each view to PNG, then quit. For docs and checks. */
 async function screenshots(dir: string): Promise<void> {
   const views = (
@@ -953,6 +993,10 @@ async function screenshots(dir: string): Promise<void> {
         );
       }
     }
+    // `replay:export-mp4` and `replay:export-gif` start that export and capture it mid-way
+    // (AO-0375), then cancel it.
+    const exporting = view === 'replay' && id?.startsWith('export-') ? id.slice(7) : null;
+    if (exporting) await midExport(exporting);
     if (view === 'settings' && id) {
       const selected = (await win!.webContents.executeJavaScript(
         `document.querySelector('[role="tab"][aria-selected="true"]')?.dataset.settingsCategory ?? null`,
@@ -963,6 +1007,7 @@ async function screenshots(dir: string): Promise<void> {
     }
     const img = lastFrame ?? (await win!.webContents.capturePage());
     writeFileSync(join(dir, `${v.replace(/[:/]/g, '-')}.png`), img.toPNG());
+    if (exporting) await cancelExport(exporting);
   }
   // The window has no menu bar and shows the usage status bar instead (AO-0340).
   if (process.platform !== 'darwin' && Menu.getApplicationMenu() !== null) {
@@ -1397,7 +1442,12 @@ let videoDir: string | null = null;
 ipcMain.handle('swarmup:video-folder', async (e) => {
   if (!fromPage(e)) return { ok: false, error: 'not allowed from this page' };
   try {
-    if (offscreen) throw new Error('not in screenshot mode');
+    if (offscreen) {
+      // A smoke run names the folder in `SWARMUP_SCREENSHOT_PICKS`, as for Add project.
+      videoDir = screenshotPicks.shift() ?? null;
+      if (!videoDir) throw new Error('not in screenshot mode');
+      return { ok: true, data: { dir: videoDir } };
+    }
     const pick = await dialog.showOpenDialog(win!, {
       title: 'Save the recording in',
       properties: ['openDirectory', 'createDirectory'],

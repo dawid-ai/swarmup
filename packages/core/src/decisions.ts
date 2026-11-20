@@ -43,6 +43,8 @@ export interface DecisionMeta {
   narrows?: string[];
   /** Records: who wrote it down, when that is not the decider in `created_by`. */
   recorded_by?: string;
+  /** One-time imports: who ran the import that attributed the record to `created_by`. */
+  imported_by?: string;
   created_by: string;
   created_at: string;
 }

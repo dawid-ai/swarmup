@@ -16,7 +16,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -27,7 +27,8 @@ import {
   Root,
   samePath,
   secretKind,
-  syncRoot,
+  syncAllAsync,
+  syncRootAsync,
   Workspace,
 } from '@swarmup/core';
 import type { OpsEvent } from '@swarmup/core';
@@ -36,7 +37,7 @@ import {
   chatPrompt,
   clock,
   daemonCall,
-  processStartSync,
+  processStart,
   codexGitDirs,
   codexWritableDirs,
   invocation,
@@ -60,6 +61,7 @@ import {
   withStoreCheckoutRule,
 } from '../src/index.js';
 import { Checkout, LEFTOVER_FILE_LIMIT } from '../src/checkout.js';
+import { gitAsync } from '../src/git.js';
 import { killOwn } from './own-procs.js';
 import { spySyncProcs } from './sync-procs.js';
 import { until, WAIT_MS } from './until.js';
@@ -324,6 +326,21 @@ function gitCommit(repo: string): void {
     ],
     { cwd: repo, windowsHide: true },
   );
+}
+
+/**
+ * The creation time of `pid`, once it can be read. `processStartSync` starts PowerShell on Windows
+ * and holds the event loop while it runs, up to its 15 s limit under load; these reads come from
+ * a worker thread instead, so they never add to a stall of the vitest worker (AO-0389).
+ */
+async function startOf(pid: number, ms = WAIT_MS): Promise<string> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const start = await processStart(pid);
+    if (start !== null) return start;
+    if (Date.now() > end) throw new Error(`no creation time for pid ${pid}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 function ended(sup: Supervisor, id: string, ms = WAIT_MS): Promise<RunRecord> {
@@ -945,30 +962,33 @@ describe('runs', () => {
 });
 
 describe('claim races across clones', () => {
+  // These two tests set up two clones with about 15 git commands. Run synchronously, the setup held
+  // the worker's event loop 13-17 s alone, so under a merge check's load it ran past vitest's fixed
+  // 60 s RPC timeout ('Timeout calling "onTaskUpdate"', AO-0389). `g` runs git off the event loop.
+  const g = (cwd: string, ...args: string[]) => gitAsync(cwd, args);
+
   it('stops a live run whose claim lost to one pushed first from another clone', async () => {
     const remote = temp();
-    execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: remote, windowsHide: true });
+    await g(remote, 'init', '-q', '--bare', '-b', 'main');
     // An idle run: a run that starts the task after the sync's pull sees the winner's claim and
     // exits by itself, as it did on Linux, before swarmupd reports the lost claim (AO-0240).
     const { repo, sup, as } = setup({ mode: 'idle', opsd: { sync: true } });
-    const g = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8' });
     for (const [k, v] of [
       ['user.name', 'Test'],
       ['user.email', 'test@example.invalid'],
     ] as const) {
-      g(repo, 'config', k, v);
+      await g(repo, 'config', k, v);
     }
     as('human:dawid').newTask({ title: 'raced', owner: 'fake:engineer' });
-    g(repo, 'checkout', '-q', '-b', 'main');
-    g(repo, 'add', '-A');
-    g(repo, 'commit', '-q', '-m', 'init');
-    g(repo, 'remote', 'add', 'origin', remote);
-    g(repo, 'push', '-q', '-u', 'origin', 'main');
+    await g(repo, 'checkout', '-q', '-b', 'main');
+    await g(repo, 'add', '-A');
+    await g(repo, 'commit', '-q', '-m', 'init');
+    await g(repo, 'remote', 'add', 'origin', remote);
+    await g(repo, 'push', '-q', '-u', 'origin', 'main');
     const other = temp();
-    g(other, 'clone', '-q', remote, '.');
-    g(other, 'config', 'user.name', 'Test');
-    g(other, 'config', 'user.email', 'test@example.invalid');
+    await g(other, 'clone', '-q', remote, '.');
+    await g(other, 'config', 'user.name', 'Test');
+    await g(other, 'config', 'user.email', 'test@example.invalid');
     const otherEnv = {
       ...process.env,
       SWARMUP_CONFIG: join(other, 'none.yml'),
@@ -977,7 +997,7 @@ describe('claim races across clones', () => {
     const winner = new Workspace({ cwd: other, env: otherEnv, actor: 'fake:engineer', user: {} })
       .claim('T-0001')
       .events.find((e) => e.type === 'claim')!.token;
-    syncRoot(new Root(join(other, '.swarmup')), {});
+    await syncRootAsync(new Root(join(other, '.swarmup')), {});
 
     const run = sup.launch({ agent: 'fake:engineer', task: 'T-0001' });
     // The wait covers the tick's whole pull and push, about 5 s alone and past 15 s under the
@@ -1000,42 +1020,59 @@ describe('claim races across clones', () => {
 
   it('queues the coordinated sync of its claim and stops the run when the claim lost (AO-0169)', async () => {
     const remote = temp();
-    execFileSync('git', ['init', '-q', '--bare', '-b', 'main'], { cwd: remote, windowsHide: true });
+    await g(remote, 'init', '-q', '--bare', '-b', 'main');
     // Idle, as in the test before: the run must not see the winner's claim first (AO-0240).
     const { repo, sup, as } = setup({ mode: 'idle' });
-    const g = (cwd: string, ...args: string[]) =>
-      execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8' });
-    g(repo, 'config', 'user.name', 'Test');
-    g(repo, 'config', 'user.email', 'test@example.invalid');
+    await g(repo, 'config', 'user.name', 'Test');
+    await g(repo, 'config', 'user.email', 'test@example.invalid');
     const cfg = join(repo, '.swarmup', 'config.yml');
     writeFileSync(
       cfg,
       readFileSync(cfg, 'utf8').replace('policy: checkpoint', 'policy: coordinated'),
     );
     as('human:dawid').newTask({ title: 'raced', owner: 'fake:engineer' });
-    g(repo, 'checkout', '-q', '-b', 'main');
-    g(repo, 'add', '-A');
-    g(repo, 'commit', '-q', '-m', 'init');
-    g(repo, 'remote', 'add', 'origin', remote);
-    g(repo, 'push', '-q', '-u', 'origin', 'main');
+    await g(repo, 'checkout', '-q', '-b', 'main');
+    await g(repo, 'add', '-A');
+    await g(repo, 'commit', '-q', '-m', 'init');
+    await g(repo, 'remote', 'add', 'origin', remote);
+    await g(repo, 'push', '-q', '-u', 'origin', 'main');
     const other = temp();
-    g(other, 'clone', '-q', remote, '.');
-    g(other, 'config', 'user.name', 'Test');
-    g(other, 'config', 'user.email', 'test@example.invalid');
+    await g(other, 'clone', '-q', remote, '.');
+    await g(other, 'config', 'user.name', 'Test');
+    await g(other, 'config', 'user.email', 'test@example.invalid');
     const otherEnv = {
       ...process.env,
       SWARMUP_CONFIG: join(other, 'none.yml'),
     } as NodeJS.ProcessEnv;
     delete otherEnv.SWARMUP_ROOTS;
-    // The other clone's claim syncs at once under coordinated sync: it is pushed first.
-    const winner = new Workspace({ cwd: other, env: otherEnv, actor: 'fake:engineer', user: {} })
+    // The other clone's claim syncs at once under coordinated sync: it is pushed first. It takes
+    // the sync as swarmupd does (`queueConfirm`, then `syncAllAsync`), so the pull and push run off
+    // the event loop; the CLI's synchronous form held it for 7 s alone.
+    let confirm: Root[] = [];
+    const winner = new Workspace({
+      cwd: other,
+      env: otherEnv,
+      actor: 'fake:engineer',
+      user: {},
+      queueConfirm: (roots) => (confirm = roots),
+    })
       .claim('T-0001')
       .events.find((e) => e.type === 'claim')!.token;
-    const pushed = g(remote, 'rev-parse', 'main');
+    expect(confirm).toHaveLength(1);
+    await syncAllAsync(confirm, {}, { pull: true, push: true });
+    const pushed = await g(remote, 'rev-parse', 'main');
 
-    // swarmupd's claim returns before any git runs; the queued sync finds the lost race, with no tick.
+    // swarmupd's claim returns before any git runs; the queued sync finds the lost race, with no
+    // tick. The read right after the launch stays synchronous: it must run before the queued sync
+    // gets a turn.
     const run = sup.launch({ agent: 'fake:engineer', task: 'T-0001' });
-    expect(g(remote, 'rev-parse', 'main')).toBe(pushed);
+    expect(
+      execFileSync('git', ['rev-parse', 'main'], {
+        cwd: remote,
+        windowsHide: true,
+        encoding: 'utf8',
+      }),
+    ).toBe(pushed);
     const r = await ended(sup, run.id, 60_000);
     expect(r.reason).toBe('lost-claim');
     expect(as('human:dawid').view('T-0001').claimToken).toBe(winner);
@@ -2076,8 +2113,7 @@ describe('review fixes', () => {
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
       windowsHide: true,
     });
-    await until(() => processStartSync(child.pid!) !== null);
-    const start = processStartSync(child.pid!)!;
+    const start = await startOf(child.pid!);
     const base = {
       agent: 'fake:engineer',
       command: 'x',
@@ -2116,8 +2152,7 @@ describe('review fixes', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
-      const start = processStartSync(child.pid!)!;
+      const start = await startOf(child.pid!);
       // Adopted while the PID was the run's; by the kill, the PID runs another process (another
       // creation time in the snapshot).
       const killed: ProcTarget[] = [];
@@ -2285,7 +2320,7 @@ describe('fail-closed identity', () => {
       await until(() => existsSync(mark), 20_000);
       const r = sup.store.get(run.id)!;
       expect(r.pid).not.toBe(run.shim_pid);
-      expect(r.proc_start).toBe(processStartSync(r.pid));
+      expect(r.proc_start).toBe(await processStart(r.pid));
     }
     sup.kill(run.id);
     await ended(sup, run.id);
@@ -2335,7 +2370,7 @@ describe('fail-closed identity', () => {
         expect(handed.status).toBe('running');
         expect(handed.pid).not.toBe(run.shim_pid);
         expect(handed.image).toBe('node.exe');
-        expect(processStartSync(handed.pid)).toBe(handed.proc_start);
+        expect(await processStart(handed.pid)).toBe(handed.proc_start);
         // The agent is the launcher's child: the exact process the record names.
         await until(() => existsSync(mark));
         expect(Number(readFileSync(mark, 'utf8'))).toBe(handed.pid);
@@ -2408,8 +2443,7 @@ describe('fail-closed identity', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
-      const start = processStartSync(child.pid!)!;
+      const start = await startOf(child.pid!);
       const killed: ProcTarget[] = [];
       const lister: ProcLister = {
         precise: true,
@@ -2452,7 +2486,7 @@ describe('fail-closed identity', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
+      const start = await startOf(child.pid!);
       const { sup, state } = setup({ procs: listers.failing!() });
       const warns: string[] = [];
       sup.on('warn', (m: string) => warns.push(m));
@@ -2468,7 +2502,7 @@ describe('fail-closed identity', () => {
         tokens: 0,
         pid: child.pid!,
         image: 'node.exe',
-        proc_start: processStartSync(child.pid!)!,
+        proc_start: start,
       });
       sup.adopt();
       sup.kill('01BBBBBBBBBBBBBBBBBBBBBBB5');
@@ -2551,7 +2585,7 @@ describe('fail-closed identity', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
+      const start = await startOf(child.pid!);
       // Alive, with no creation time to compare: refuse rather than guess.
       writeFileSync(lock, JSON.stringify({ pid: child.pid, start: null }));
       await expect(runDaemon({ env, port: 0, log: () => {} })).rejects.toThrow(/cannot tell/);
@@ -2560,7 +2594,7 @@ describe('fail-closed identity', () => {
       writeFileSync(lock, '');
       await expect(runDaemon({ env, port: 0, log: () => {} })).rejects.toThrow(/cannot tell/);
       // Alive with the same creation time: a running swarmupd.
-      writeFileSync(lock, JSON.stringify({ pid: child.pid, start: processStartSync(child.pid!) }));
+      writeFileSync(lock, JSON.stringify({ pid: child.pid, start }));
       await expect(runDaemon({ env, port: 0, log: () => {} })).rejects.toThrow(/already runs/);
       // Same PID, another creation time: a reused PID, so the lock is stale.
       writeFileSync(lock, JSON.stringify({ pid: child.pid, start: 'long-gone' }));
@@ -2596,7 +2630,7 @@ describe('lock takeover', () => {
     const running = runDaemon({ env, port: 0, log: () => {} });
     await until(() => readDaemon(env)?.pid === process.pid);
     const held = JSON.parse(readFileSync(lock, 'utf8')) as { pid: number; start: string };
-    expect(held.start).toBe(processStartSync(process.pid));
+    expect(held.start).toBe(await processStart(process.pid));
     await stopDaemon({ env }).catch(() => false);
     await running;
     expect(existsSync(lock)).toBe(false);
@@ -2664,9 +2698,8 @@ describe('takeover guard', () => {
     const gone = spawn(process.execPath, ['-e', ''], { windowsHide: true });
     await new Promise((r) => gone.once('exit', r));
     try {
-      await until(() => processStartSync(a.pid!) !== null);
       const staleLock = JSON.stringify({ pid: gone.pid, start: 'dead' });
-      const guardText = JSON.stringify({ pid: a.pid, start: processStartSync(a.pid!) });
+      const guardText = JSON.stringify({ pid: a.pid, start: await startOf(a.pid!) });
       writeFileSync(lock, staleLock);
       writeFileSync(guard, guardText);
       // Make the guard look old: age alone must not matter.
@@ -4092,7 +4125,7 @@ describe('helper runs', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
+      const start = await startOf(child.pid!);
       const base = {
         agent: 'fake:engineer',
         command: 'x',
@@ -4118,7 +4151,7 @@ describe('helper runs', () => {
         ...base,
         id: '01CHILD000000000000000000A',
         pid: child.pid!,
-        proc_start: processStartSync(child.pid!)!,
+        proc_start: start,
         status: 'running',
         parent: '01PARENT00000000000000000A',
       });
@@ -6103,6 +6136,108 @@ describe('task worktrees (AO-0168)', () => {
     );
   });
 
+  // AO-0380: a worktree with no `node_modules` could not type-check.
+  /**
+   * A store setup whose `pnpm` is a fake first on PATH: it writes its arguments to
+   * `node_modules/installed.txt` in the folder it runs in, then exits with `exit`.
+   */
+  function fakePnpmSetup(exit: number) {
+    const bin = temp();
+    writeFileSync(
+      join(bin, 'pnpm.cmd'),
+      `@mkdir node_modules 2>nul\r\n@echo %*> node_modules\\installed.txt\r\n@exit /b ${exit}\r\n`,
+    );
+    writeFileSync(
+      join(bin, 'pnpm'),
+      `#!/bin/sh\nmkdir -p node_modules\necho "$@" > node_modules/installed.txt\nexit ${exit}\n`,
+      { mode: 0o755 },
+    );
+    const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const s = storeSetup({
+      mode: 'hang',
+      env: { [key]: `${bin}${delimiter}${process.env[key] ?? ''}` },
+      opsd: { agents: { 'fake:engineer': { wake: true } } },
+    });
+    const said: string[] = [];
+    s.sup.on('warn', (w: string) => said.push(`warn: ${w}`));
+    s.sup.on('worktree', (w: string) => said.push(`worktree: ${w}`));
+    writeFileSync(join(s.repo, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+    // Every worktree reads the repo's exclude file: installed packages are no changes.
+    writeFileSync(join(s.repo, '.git', 'info', 'exclude'), 'node_modules/\n');
+    s.as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
+    s.commit();
+    /** Makes the worktree and waits until the run may start; returns the fake's arguments. */
+    const made = async (): Promise<string> => {
+      await s.sup.tick();
+      await until(
+        () => s.sup.waits().every((w) => w.reason === 'starts at the next tick'),
+        'the worktree',
+      ).catch((err: Error) => {
+        throw new Error(
+          `${err.message}; waits: ${JSON.stringify(s.sup.waits())}; said:\n${said.join('\n')}`,
+        );
+      });
+      const marker = join(wt(s.repo, 'T-0001'), 'node_modules', 'installed.txt');
+      expect(existsSync(marker), said.join('\n')).toBe(true);
+      return readFileSync(marker, 'utf8').trim();
+    };
+    return { ...s, said, made };
+  }
+
+  // AO-0380: a worktree with no `node_modules` could not type-check.
+  it('installs a pnpm repo in a new worktree before its run starts', async () => {
+    const { said, made } = fakePnpmSetup(0);
+    expect(await made()).toBe('install --frozen-lockfile --offline');
+    expect(said.join('\n')).toContain('test/T-0001: running `pnpm install');
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  /** The fake's arguments in the task's worktree, or null when it did not run there. */
+  const installedIn = (repo: string): string | null => {
+    const marker = join(wt(repo, 'T-0001'), 'node_modules', 'installed.txt');
+    return existsSync(marker) ? readFileSync(marker, 'utf8').trim() : null;
+  };
+
+  it('installs a pnpm repo in the worktree of an API launch before the run starts', async () => {
+    const { repo, sup, said } = fakePnpmSetup(0);
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(installedIn(repo), said.join('\n')).toBe('install --frozen-lockfile --offline');
+    // Made off the event loop, not in place.
+    expect(said.join('\n')).toContain(`test/T-0001: making ${wt(repo, 'T-0001')}`);
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  it('installs a pnpm repo in the worktree a direct launch makes in place', async () => {
+    const { repo, sup, said } = fakePnpmSetup(0);
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(installedIn(repo), said.join('\n')).toBe('install --frozen-lockfile --offline');
+    expect(said.join('\n')).toContain('test/T-0001: running `pnpm install');
+    expect(said.filter((s) => s.startsWith('warn:'))).toEqual([]);
+  });
+
+  it('starts a direct launch in its new worktree when the install fails, with a warning', () => {
+    const { repo, sup, said } = fakePnpmSetup(1);
+    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    expect(samePath(run.cwd, wt(repo, 'T-0001'))).toBe(true);
+    expect(said.join('\n')).toMatch(
+      /warn: test\/T-0001: `pnpm install --frozen-lockfile --offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
+    );
+  });
+
+  it('starts the run in the new worktree when its install fails, with a warning', async () => {
+    const { repo, sup, said, made } = fakePnpmSetup(1);
+    await made();
+    expect(said.join('\n')).toMatch(
+      /warn: test\/T-0001: `pnpm install --frozen-lockfile --offline` failed in .*wt-T-0001 \(exit 1\).*the run starts without it/,
+    );
+    await sup.tick();
+    const live = sup.runs({ live: true });
+    expect(live.map((r) => r.task)).toEqual(['T-0001']);
+    expect(samePath(live[0]!.cwd, wt(repo, 'T-0001'))).toBe(true);
+  });
+
   it('makes the worktree for a launch, reuses one that is there and tells the run', async () => {
     const promptFile = join(temp(), 'prompt.txt');
     const { repo, sup, as, commit } = storeSetup({ env: { FAKE_PROMPT: promptFile } });
@@ -7021,6 +7156,37 @@ describe('reviews of a provider that cannot run (AO-0341)', () => {
     const reviewerOf = (id: string) => as('human:dawid').view(id).reviewer;
     expect(ids.map(reviewerOf)).toEqual(['fake:reviewer', 'fake:reviewer', 'fake:reviewer']);
     expect(sup.runs({ live: true }).some((r) => r.agent === 'fake:reviewer')).toBe(true);
+  });
+
+  it('ignores a non-waking Opus agent for a Fable provider hold (AO-0368)', async () => {
+    const { sup, as, ids, advance } = paused({
+      agents: {
+        'fake:reviewer': { wake: true, model: 'claude-fable-5-2' },
+        'fake:engineer': { wake: false, model: 'claude-opus-5-5' },
+        'other:reviewer': { wake: true },
+        'other:engineer': { wake: true },
+      },
+    });
+    sup['usage'].fake = {
+      windows: {
+        seven_day_fable: {
+          utilization: 1,
+          resets_at: Date.now() + 3 * 24 * HOUR,
+          status: 'rejected',
+        },
+      },
+      updated_at: Date.now(),
+    };
+    sup['waitsMemo'] = null;
+
+    expect(sup.providerHold('fake')?.text).toMatch(/seven_day_fable window .*fable runs only/);
+    await sup.tick();
+    advance(2 * HOUR);
+    await sup.tick();
+
+    const reviewerOf = (id: string) => as('human:dawid').view(id).reviewer;
+    expect(ids.map(reviewerOf)).toEqual(['other:reviewer', 'other:reviewer', 'other:reviewer']);
+    expect(sup.runs({ live: true }).some((r) => r.agent === 'other:reviewer')).toBe(true);
   });
 
   it('never moves a review with review_fallback_hours 0', async () => {

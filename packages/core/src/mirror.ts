@@ -671,6 +671,8 @@ class SyncAll {
     user: UserConfig,
     private readonly opts: SyncOptions,
   ) {
+    // Every root synced here is a sibling of the others, on top of any the caller names.
+    this.opts = { ...opts, siblings: [...(opts.siblings ?? []), ...roots.map((r) => r.dir)] };
     const master = masterRoot(roots, user);
     const inMaster = (r: Root): boolean =>
       master !== undefined && r.isMirror && samePath(dirname(dirname(r.dir)), master.dir);

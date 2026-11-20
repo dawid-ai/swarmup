@@ -6,6 +6,47 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.11 (2026-11-20)
+
+### Added
+
+- swarmupd keeps its own state on this PC in `state.db`, a SQLite file in its state folder for every project: each merge attempt with how it ended, and each run record. `GET /api/merges` lists the attempts and counts them by outcome. Node 22.13 or later is needed.
+
+### Changed
+
+- A merge check that times out no longer sends approved work back to its author. swarmupd runs the checks once more with twice the time and no new agent run beside them; when they time out again, the work stays approved and the root's human gets a note on raising `timeout_minutes`.
+- A paused swarmupd starts no new merge of approved work either, so you can work on the base without it moving; a merge under way finishes.
+- `swarmup review` records the commit and branch it names: from `--commit` and `--branch`, or, when the message names none, from the task branch checked out where it runs. The message gets them as its last line and the review event as fields, so swarmupd merges exactly what was reviewed instead of guessing the branch from the text.
+
+### Fixed
+
+- `swarmup sync` now pushes when two registered roots share one git repo, such as `.swarmup/` and `web/.swarmup/` in one store repo. Before, each root held back the other's commits; commits that change other files are still held back.
+
+## 0.3.0-beta.10 (2026-11-19)
+
+### Added
+
+- swarmupd merges approved tasks that wait together in one batch: it rebases them in turn onto
+  one candidate branch, runs the root's merge checks once, and moves the base once. When the
+  checks fail, it splits the batch and checks the halves, so only the task that breaks the checks
+  goes back. Each task keeps its own merge event. `swarmupd.merge.<root>.batch` sets the most
+  tasks per batch (default 8); `1` merges each task alone.
+- Preview and import historical Markdown decision tables and `kb/decisions/` notes with
+  `swarmup decision --import` and `swarmup decision --import-notes`, including safe repeat runs,
+  exclusions and explicit supersede or narrow mappings.
+
+### Changed
+
+- A merge that conflicts with the base no longer sends approved work back through the whole queue. swarmupd first tries a merge commit, which takes a branch that already merged the base to resolve a conflict. When that conflicts too, the author merges the base into the branch instead of rebasing, the fix starts ahead of other work and past the project's run limit, and the review covers only the resolution.
+
+### Fixed
+
+- A project renamed with **Edit name** now shows its new name everywhere the app names it, not only in the sidebar: project dropdowns and filters, New task, task cards, the task panel, Replay and its exported frames, Runs, Agents, Reports and Settings.
+- Model-specific provider holds now consider only agents that can wake, so a disabled agent on another model no longer prevents stalled reviews from falling back.
+- Show Replay's exports working: **Save frame**, **Record MP4** and **Save as GIF** show a busy line with a progress bar, frame count and **Cancel** beside the export buttons from the click until the file is saved. GIF and fast MP4 exports no longer freeze the page until they finish.
+- Install dependencies with `pnpm install --frozen-lockfile --offline` in each new task worktree of a pnpm repo before its run starts, so the run can type-check and test without a manual install.
+- A git command that swarmupd stopped for its timeout no longer leaves an `index.lock` in swarmupd's merge worktree that fails the next merge, or the rest of a merge batch, with `index.lock: File exists`.
+
 ## 0.3.0-beta.8 (2026-11-18)
 
 ### Changed

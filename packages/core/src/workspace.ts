@@ -34,6 +34,8 @@ import {
 import type { UserConfig } from './config.js';
 import { daemonSection, discoverRoots, readUserConfig } from './config.js';
 import { envVar } from './env.js';
+import type { NoteMapping } from './decision-import.js';
+import { readDecisionTable } from './decision-import.js';
 import type {
   ChatSourceMessage,
   Decision,
@@ -299,6 +301,56 @@ export interface RecordResult {
   /** True when the same chat message with the same text was recorded before: nothing was written. */
   existing: boolean;
   warnings: string[];
+}
+
+export interface DecisionImportItem {
+  /** A table source (`file#heading, row N`) or note slug. */
+  label: string;
+  source: string;
+  status: 'would-import' | 'imported' | 'skipped';
+  reason?: string;
+  id?: string;
+  text?: string;
+  body?: string;
+  created_at?: string;
+  scope?: string;
+  supersedes?: string[];
+  narrows?: string[];
+  /** Dry-run details, including the part of an old scope a mapped record leaves in force. */
+  notes?: string[];
+}
+
+export interface DecisionImportResult {
+  root: string;
+  dry_run: boolean;
+  items: DecisionImportItem[];
+}
+
+export interface TableDecisionImportInput {
+  file: string;
+  project: string;
+  dryRun?: boolean;
+}
+
+export interface NoteDecisionImportInput {
+  project?: string;
+  dryRun?: boolean;
+  except?: string[];
+  supersedes?: NoteMapping[];
+  narrows?: NoteMapping[];
+}
+
+interface ImportCandidate {
+  label: string;
+  source: string;
+  text: string;
+  body: string;
+  createdAt?: string;
+  task?: string;
+  duplicate: 'source' | 'source-text';
+  skip?: string;
+  supersedes?: string[];
+  narrows?: string[];
 }
 
 /** What `swarmup decisions --log` lists. */
@@ -1731,6 +1783,9 @@ export class Workspace {
       const results = syncAll(partners, this.user, {
         pull: true,
         push: true,
+        // Every registered root, so one that shares the repo with a root outside `partners`
+        // still pushes the commits of both (AO-0371).
+        siblings: this.roots.map((r) => r.dir),
         now: this.now(),
       });
       sync = {
@@ -3936,6 +3991,257 @@ export class Workspace {
    */
   recordDecision(input: RecordInput): RecordResult {
     return this.writeRecord(input);
+  }
+
+  /** Imports the historical Markdown decision tables. The preview and the write use one plan. */
+  importDecisionTable(input: TableDecisionImportInput): DecisionImportResult {
+    const project = input.project.trim();
+    if (!project) throw new OpsError('decision --import needs --project P', 2);
+    const candidates: ImportCandidate[] = readDecisionTable(input.file).map((row) => ({
+      label: row.source,
+      source: row.source,
+      text: row.text,
+      body: row.body,
+      createdAt: row.createdAt,
+      duplicate: 'source-text',
+      ...(!row.text
+        ? { skip: 'empty decision' }
+        : !row.createdAt
+          ? { skip: 'no date in the row or its headings' }
+          : [...row.text].length > DECISION_TEXT_MAX
+            ? {
+                skip: `too long (${[...row.text].length} characters; maximum ${DECISION_TEXT_MAX})`,
+              }
+            : {}),
+    }));
+    return this.importRecords(candidates, project, Boolean(input.dryRun));
+  }
+
+  /** Imports `kb/decisions/` of the selected root, after validating every mapping. */
+  importDecisionNotes(input: NoteDecisionImportInput): DecisionImportResult {
+    const root = this.defaultRoot();
+    const notes = readNotes(root, DECISIONS_TOPIC).sort((a, b) => a.slug.localeCompare(b.slug));
+    const except = new Set((input.except ?? []).map((slug) => slug.trim()).filter(Boolean));
+    const bySlug = new Map(notes.map((note) => [note.slug, note]));
+    const mapped = new Map<string, { supersedes: string[]; narrows: string[] }>();
+    const add = (mapping: NoteMapping, kind: 'supersedes' | 'narrows'): void => {
+      const note = bySlug.get(mapping.slug);
+      if (!note)
+        throw new OpsError(`--${kind}-note ${mapping.slug}: no decisions note with that slug`, 2);
+      if (except.has(mapping.slug)) {
+        throw new OpsError(`--${kind}-note ${mapping.slug}: the note is excluded by --except`, 2);
+      }
+      if ([...note.title].length > DECISION_TEXT_MAX) {
+        throw new OpsError(
+          `--${kind}-note ${mapping.slug}: the note title is too long to import`,
+          2,
+        );
+      }
+      const entry = mapped.get(mapping.slug) ?? { supersedes: [], narrows: [] };
+      entry[kind].push(...mapping.decisions);
+      mapped.set(mapping.slug, entry);
+    };
+    for (const mapping of input.supersedes ?? []) add(mapping, 'supersedes');
+    for (const mapping of input.narrows ?? []) add(mapping, 'narrows');
+    const candidates: ImportCandidate[] = notes.map((note) => {
+      const relation = mapped.get(note.slug);
+      const source = `kb/decisions/${note.slug}.md`;
+      const count = [...note.title].length;
+      const author = note.author.trim() || 'unknown';
+      return {
+        label: note.slug,
+        source,
+        text: note.title.trim(),
+        body: [`**Learn note author:** ${author}`, note.body].filter(Boolean).join('\n\n'),
+        createdAt: Number.isNaN(Date.parse(note.created_at))
+          ? undefined
+          : new Date(note.created_at).toISOString(),
+        task: note.task,
+        duplicate: 'source',
+        supersedes: relation?.supersedes,
+        narrows: relation?.narrows,
+        ...(except.has(note.slug)
+          ? { skip: 'excluded by --except' }
+          : count > DECISION_TEXT_MAX
+            ? { skip: `too long (${count} characters; maximum ${DECISION_TEXT_MAX})` }
+            : !note.created_at || Number.isNaN(Date.parse(note.created_at))
+              ? { skip: 'no valid created_at date' }
+              : {}),
+      };
+    });
+    return this.importRecords(candidates, input.project, Boolean(input.dryRun));
+  }
+
+  /** Validates a whole import before creating its first append-only record. */
+  private importRecords(
+    candidates: ImportCandidate[],
+    project: string | undefined,
+    dryRun: boolean,
+  ): DecisionImportResult {
+    const actor = this.requireActor();
+    const root = this.defaultRoot();
+    const namedProject = project?.trim() ? root.projectName(project.trim()) : undefined;
+    const { entries, tasks } = decisionLog(root, this.now());
+    const existing = entries.filter((entry) => entry.kind === 'record');
+    const planned: Array<{
+      candidate: ImportCandidate;
+      scope: ScopeOf;
+      supersedes: LogEntry[];
+      narrows: LogEntry[];
+      notes: string[];
+    }> = [];
+    const items: DecisionImportItem[] = [];
+
+    const target = (ref: string, flag: string): LogEntry => {
+      const slash = ref.indexOf('/');
+      if (slash > 0 && ref.slice(0, slash) !== root.name) {
+        throw new OpsError(
+          `${flag} ${ref}: an imported note replaces decisions of its own root (${root.name})`,
+          2,
+        );
+      }
+      const id = parseDecisionId(slash > 0 ? ref.slice(slash + 1) : ref);
+      if (!id) throw new OpsError(`bad decision id '${ref}' in ${flag}: use D-0001`, 2);
+      const entry = entries.find((value) => value.id === id);
+      if (entry) return entry;
+      throw new OpsError(
+        hasDecision(root, id)
+          ? `${flag} ${id}: it is a vote without an outcome, so it is not in the log`
+          : `${flag} ${id}: no decision ${id} in root '${root.name}'`,
+        2,
+      );
+    };
+
+    for (const candidate of candidates) {
+      if (candidate.skip) {
+        items.push({
+          label: candidate.label,
+          source: candidate.source,
+          status: 'skipped',
+          reason: candidate.skip,
+          ...(candidate.text ? { text: candidate.text.trim() } : {}),
+        });
+        continue;
+      }
+      const duplicate = existing.find(
+        (entry) =>
+          entry.source === candidate.source &&
+          (candidate.duplicate === 'source' || entry.text === candidate.text.trim()),
+      );
+      const text = decisionLine(candidate.text, 'shorten the source row or note title');
+      if (!candidate.createdAt || Number.isNaN(Date.parse(candidate.createdAt))) {
+        throw new OpsError(`${candidate.label}: the imported decision has no valid date`, 2);
+      }
+      assertNoSecret(text, candidate.body);
+      const supersedes = [...new Set(candidate.supersedes ?? [])].map((id) =>
+        target(id, `--supersedes-note ${candidate.label}`),
+      );
+      const narrows = [...new Set(candidate.narrows ?? [])].map((id) =>
+        target(id, `--narrows-note ${candidate.label}`),
+      );
+      const both = supersedes.find((old) => narrows.some((narrow) => narrow.id === old.id));
+      if (both) {
+        throw new OpsError(
+          `${candidate.label}: ${both.id} is in --supersedes-note and --narrows-note; pick one`,
+          2,
+        );
+      }
+      const scope: ScopeOf = {
+        scope: 'project',
+        project: namedProject,
+        ...(candidate.task ? { task: candidate.task } : {}),
+      };
+      const notes: string[] = [];
+      for (const old of supersedes) {
+        const relation = scopeRelation(scope, old, tasks);
+        if (relation === 'inside') {
+          throw new OpsError(
+            `--supersedes-note ${candidate.label}=${old.id}: ${scopeText(scope)} is inside ` +
+              `${scopeText(old)}; use --narrows-note ${candidate.label}=${old.id}`,
+            2,
+          );
+        }
+        if (relation === 'disjoint') {
+          throw new OpsError(
+            `--supersedes-note ${candidate.label}=${old.id}: ${scopeText(scope)} and ` +
+              `${scopeText(old)} can never share a task`,
+            2,
+          );
+        }
+        if (relation === 'overlap') {
+          notes.push(
+            `still in force outside ${scopeText(scope)}: ${old.id} remains in ` +
+              `${scopeText(old)} for tasks the imported record does not cover`,
+          );
+        }
+      }
+      for (const old of narrows) {
+        const relation = scopeRelation(scope, old, tasks);
+        if (relation !== 'inside') {
+          throw new OpsError(
+            relation === 'disjoint'
+              ? `--narrows-note ${candidate.label}=${old.id}: ${scopeText(scope)} and ${scopeText(old)} can never share a task`
+              : `--narrows-note ${candidate.label}=${old.id}: ${scopeText(scope)} is not strictly inside ${scopeText(old)}`,
+            2,
+          );
+        }
+        notes.push(
+          `still in force outside ${scopeText(scope)}: ${old.id} remains in ${scopeText(old)}`,
+        );
+      }
+      if (duplicate) {
+        items.push({
+          label: candidate.label,
+          source: candidate.source,
+          status: 'skipped',
+          reason: `already imported as ${duplicate.id}`,
+          text,
+        });
+        continue;
+      }
+      planned.push({ candidate: { ...candidate, text }, scope, supersedes, narrows, notes });
+    }
+
+    for (const plan of planned) {
+      const { candidate, scope, supersedes, narrows, notes } = plan;
+      let id: string | undefined;
+      if (!dryRun) {
+        id = createDecision(
+          root,
+          {
+            kind: 'record',
+            question: candidate.text,
+            options: [],
+            scope: scope.scope,
+            project: scope.project,
+            task: candidate.task,
+            source: candidate.source,
+            supersedes: supersedes.length ? supersedes.map((entry) => entry.id) : undefined,
+            narrows: narrows.length ? narrows.map((entry) => entry.id) : undefined,
+            imported_by: actor,
+            created_by: 'human:dawid',
+            created_at: candidate.createdAt!,
+          },
+          candidate.body,
+          this.user.id_block ?? 0,
+          mirrorCopies(root, this.roots, this.user),
+        ).id;
+      }
+      items.push({
+        label: candidate.label,
+        source: candidate.source,
+        status: dryRun ? 'would-import' : 'imported',
+        ...(id ? { id } : {}),
+        text: candidate.text,
+        body: candidate.body,
+        created_at: candidate.createdAt,
+        scope: scopeText(scope),
+        ...(supersedes.length ? { supersedes: supersedes.map((entry) => entry.id) } : {}),
+        ...(narrows.length ? { narrows: narrows.map((entry) => entry.id) } : {}),
+        ...(notes.length ? { notes } : {}),
+      });
+    }
+    return { root: root.name, dry_run: dryRun, items };
   }
 
   /**

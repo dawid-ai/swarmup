@@ -62,6 +62,7 @@ import { ProviderMark } from '../ui/identity';
 import { RoleEditor } from '../ui/roles';
 import { setVoiceView } from '../ui/voice';
 import { openAddProject } from './AddProject';
+import { useProjectLabel } from '../ui/project-label';
 
 type Patch = Record<string, unknown>;
 
@@ -1141,6 +1142,7 @@ function MasterCard({ data, onSaved }: { data: SettingsData; onSaved: () => void
   const dirty = master.trim() !== (data.master ?? '');
   const projects = data.rootList.filter((r) => !r.isMirror && !r.isMaster);
   const copies = data.rootList.filter((r) => r.isMirror);
+  const projectLabel = useProjectLabel();
   return (
     <Card
       icon={Library}
@@ -1171,7 +1173,7 @@ function MasterCard({ data, onSaved }: { data: SettingsData; onSaved: () => void
             className="flex items-center gap-3 rounded-lg bg-white/3 px-3 py-2 text-sm"
           >
             <Network size={14} className={r.mirror ? 'text-signal' : 'text-fg-4'} />
-            <span className="font-mono text-xs">{r.name}</span>
+            <span className="font-mono text-xs">{projectLabel(r.name)}</span>
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg-4">{r.dir}</span>
             <Toggle
               checked={r.mirror}
@@ -1191,8 +1193,9 @@ function MasterCard({ data, onSaved }: { data: SettingsData; onSaved: () => void
         <ErrorLine error={toggle.error} />
         {copies.length > 0 && (
           <div className="mt-2 text-xs text-fg-3">
-            In the Master Repo only (no checkout here): {copies.map((c) => c.name).join(', ')}. Runs
-            on their tasks need a folder: set the agent's cwd in the user config.
+            In the Master Repo only (no checkout here):{' '}
+            {copies.map((c) => projectLabel(c.name)).join(', ')}. Runs on their tasks need a folder:
+            set the agent's cwd in the user config.
           </div>
         )}
         {!data.master && projects.some((r) => r.mirror) && (

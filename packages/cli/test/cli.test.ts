@@ -1088,6 +1088,90 @@ describe('a role file that does not parse', () => {
   });
 });
 
+describe('the work a review request names', () => {
+  const sh = (d: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd: d, encoding: 'utf8', windowsHide: true }).trim();
+  function started() {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    swarmup(d, 'human:dawid', 'new', 'Fix login', '--to', 'claude:engineer');
+    swarmup(d, 'claude:engineer', 'start', '1', 'plan');
+    sh(d, 'add', '-A');
+    sh(d, 'commit', '-qm', 'store');
+    return d;
+  }
+  const lastReview = async (d: string) => {
+    const { Workspace } = await import('@swarmup/core');
+    const ws = new Workspace({ cwd: d, env: {}, actor: 'human:dawid', user: {} });
+    return ws
+      .showEvents('1')
+      .events.filter((e) => e.type === 'review')
+      .at(-1)!;
+  };
+
+  it('adds the task branch and its tip from the checkout when the message names none', async () => {
+    const d = started();
+    sh(d, 'checkout', '-q', '-b', 'claude/t-0001-login');
+    writeFileSync(join(d, 'login.ts'), 'export {};\n');
+    sh(d, 'add', 'login.ts');
+    sh(d, 'commit', '-qm', 'Fix login');
+    const tip = sh(d, 'rev-parse', 'HEAD');
+    expect(swarmup(d, 'claude:engineer', 'review', '1', 'fixed login').code).toBe(0);
+    const e = await lastReview(d);
+    expect(e.body).toContain(`Work: ${tip.slice(0, 10)} on branch \`claude/t-0001-login\``);
+    expect(e).toMatchObject({ commit: tip, branch: 'claude/t-0001-login' });
+  });
+
+  it('adds nothing on a base branch, or when the message names the work itself', async () => {
+    const d = started();
+    expect(swarmup(d, 'claude:engineer', 'review', '1', 'fixed on the base').code).toBe(0);
+    let e = await lastReview(d);
+    expect(e.body).not.toContain('Work:');
+    expect(e.commit).toBeUndefined();
+    swarmup(d, 'human:dawid', 'verdict', '1', 'changes', 'more');
+    swarmup(d, 'claude:engineer', 'start', '1', 'again');
+    sh(d, 'checkout', '-q', '-b', 'claude/t-0001-login');
+    const named = 'a1b2c3d on branch claude/other: fixed';
+    expect(swarmup(d, 'claude:engineer', 'review', '1', named).code).toBe(0);
+    e = await lastReview(d);
+    expect(e.body.trim()).toBe(named);
+  });
+
+  it('takes --commit and --branch together, and refuses one alone or a commit git lacks', async () => {
+    const d = started();
+    const tip = sh(d, 'rev-parse', 'HEAD');
+    const ok = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'see the branch',
+      '--commit',
+      tip.slice(0, 8),
+      '--branch',
+      'claude/t-0001-x',
+    );
+    expect(ok.code).toBe(0);
+    expect(await lastReview(d)).toMatchObject({ commit: tip, branch: 'claude/t-0001-x' });
+    swarmup(d, 'human:dawid', 'verdict', '1', 'changes', 'more');
+    swarmup(d, 'claude:engineer', 'start', '1', 'again');
+    expect(swarmup(d, 'claude:engineer', 'review', '1', 'x', '--commit', tip).code).toBe(2);
+    const missing = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'x',
+      '--commit',
+      'deadbeef1',
+      '--branch',
+      'b',
+    );
+    expect(missing.code).toBe(2);
+    expect(missing.err).toMatch(/--commit deadbeef1: no such commit/);
+  });
+});
+
 describe('a review request for code left uncommitted (AO-0136)', () => {
   function started(type?: string) {
     const d = repo();
@@ -1248,13 +1332,17 @@ describe('a review request records where its work is (AO-0384)', () => {
 
   it('takes --commit and --branch over the checkout, and refuses a commit that is no hex id', () => {
     const d = started(true);
+    const first = git(d, 'rev-parse', 'HEAD');
+    git(d, 'switch', '-q', '-c', 'claude/t-0001-login');
+    git(d, 'commit', '-q', '--allow-empty', '-m', 'later');
     const args = ['review', '1', 'fixed', '--to', 'codex:qa'];
-    const bad = swarmup(d, 'claude:engineer', ...args, '--commit', 'nothex!');
+    const bad = swarmup(d, 'claude:engineer', ...args, '--commit', 'nothex!', '--branch', 'x/y');
     expect(bad.code).toBe(2);
-    const ok = swarmup(d, 'claude:engineer', ...args, '--commit', 'ABCDEF1', '--branch', 'x/y');
+    const short = first.slice(0, 8).toUpperCase();
+    const ok = swarmup(d, 'claude:engineer', ...args, '--commit', short, '--branch', 'x/y');
     expect(ok.code).toBe(0);
     const front = lastReview(d);
-    expect(front).toContain('commit: abcdef1');
+    expect(front).toContain(`commit: ${first}`);
     expect(front).toContain('branch: x/y');
     expect(front).toContain('repo: code');
   });

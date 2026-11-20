@@ -39,8 +39,8 @@ version in the background. **Settings > Updates** chooses how a downloaded versi
 Settings and the tray show downloading, waiting for live runs, and installing progress. A
 development build run from a checkout never updates itself.
 
-An update cannot safely move an existing installation out of an older folder such as
-`C:\Program Files\Agent Ops\SwarmUp`: the updater must replace the running installation in place,
+An update cannot safely move an existing installation out of an older install folder from before
+the rename: the updater must replace the running installation in place,
 and its shortcuts, PATH entry and swarmupd launcher all point there. To move it, let every run end,
 quit SwarmUp from the tray, uninstall it, then run `SwarmUp-Setup.exe` and choose the new folder.
 The installer recreates the shortcuts and PATH entry; do not drag the installed folder elsewhere.
@@ -301,7 +301,9 @@ changes the project's folder or files. A refused change shows swarmupd's error i
 `runs:<id>` open one task or run), and quits. It needs no GPU or visible desktop. Screenshot mode
 has no system dialogs, so the view `add-project` takes its folders from
 `SWARMUP_SCREENSHOT_PICKS` (in order, separated like `PATH`), and `add-project:create` also
-creates the proposed project.
+creates the proposed project. `replay:export-mp4` and `replay:export-gif` take their folder from the
+same list, start that export, capture it once its progress bar shows 10-90%, then cancel it; the
+run fails when the bar never gets there or Cancel does not stop it.
 
 ## Smoke check
 

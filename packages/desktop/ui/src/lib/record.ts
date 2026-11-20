@@ -11,6 +11,7 @@ import { renderFrame } from '../replay/scene';
 import type { Timeline } from '../types';
 import type { Rasterizer } from './png';
 import { createRasterizer } from './png';
+import { paintBreaks } from './yield';
 
 /** Frames per second of every recording. */
 export const FPS = 60;
@@ -176,6 +177,15 @@ function dequeued(encoder: EncoderLike): Promise<void> {
   });
 }
 
+/** Resolves when `signal` aborts; never resolves without one. */
+function aborted(signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (!signal) return;
+    if (signal.aborted) resolve();
+    else signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
 /** Encodes `frames` frames into an MP4 (H.264, fast start) and returns its bytes. */
 export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
   const fps = opts.fps ?? FPS;
@@ -207,6 +217,7 @@ export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
   });
   try {
     encoder.configure(config);
+    const pause = paintBreaks();
     for (let i = 0; i < opts.frames; i++) {
       if (signal?.aborted) throw new RecordCancelled();
       if (failed) throw failed;
@@ -219,8 +230,14 @@ export async function encodeClip(opts: EncodeOptions): Promise<Uint8Array> {
       }
       while (encoder.encodeQueueSize > MAX_QUEUE && !failed) await dequeued(encoder);
       opts.onProgress?.(i + 1, opts.frames);
+      // A fast encoder never fills its queue, so nothing above returns to the event loop.
+      await pause();
     }
-    await encoder.flush();
+    // Cancel ends the wait for the flush at once; closing the encoder below drops what is left.
+    const flushed = encoder.flush();
+    flushed.catch(() => {});
+    await Promise.race([flushed, aborted(signal)]);
+    if (signal?.aborted) throw new RecordCancelled();
     if (failed) throw failed;
     muxer.finalize();
     return new Uint8Array(target.buffer);

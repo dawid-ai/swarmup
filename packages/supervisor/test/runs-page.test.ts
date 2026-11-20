@@ -185,3 +185,39 @@ describe('GET /api/runs', () => {
     expect((await get('/api/runs?limit=10&since=never')).status).toBe(400);
   });
 });
+
+describe('runs in state.db', () => {
+  it('reads its runs from state.db once it started, after a restart too, not from the run files', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'test', human: 'human:dawid' });
+    const userConfig = join(temp(), 'config.yml');
+    writeFileSync(userConfig, 'me: human:dawid\nopsd:\n  sync: false\n');
+    const state = temp();
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      SWARMUP_CONFIG: userConfig,
+      SWARMUP_STATE_DIR: state,
+    };
+    delete env.SWARMUP_AGENT;
+    delete env.SWARMUP_ROOTS;
+    delete env.SWARMUP_RUN_TOKEN;
+    delete env.SWARMUP_RUN_STATE_DIR;
+    // A run file kept before state.db: imported when swarmupd starts.
+    const old = new RunStore(state);
+    old.save(rec('01OLD'));
+    const sup = new Supervisor({ env, cwd: repo, user: { me: 'human:dawid' } });
+    closers.push(() => sup.close());
+    sup.store.save(rec('01NEW', { tokens: 7 }));
+    expect(sup.store.list().map((r) => r.id)).toEqual(['01OLD', '01NEW'].sort().reverse());
+    // The files go; swarmupd still has both runs, and a new swarmupd on the state reads them too.
+    unlinkSync(join(state, 'runs', '01OLD.json'));
+    unlinkSync(join(state, 'runs', '01NEW.json'));
+    expect(sup.store.get('01NEW')).toMatchObject({ tokens: 7 });
+    expect(sup.store.list()).toHaveLength(2);
+    await sup.close();
+    const next = new Supervisor({ env, cwd: repo, user: { me: 'human:dawid' } });
+    closers.push(() => next.close());
+    expect(next.store.list().map((r) => r.id)).toEqual(['01OLD', '01NEW'].sort().reverse());
+  });
+});

@@ -1,14 +1,54 @@
-import { execFileSync } from 'node:child_process';
+import { type ChildProcess, execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type GitFailure, gitAsync, taskkillLeft, taskkillSettled } from '../src/git.js';
+
+// The processes `spawn` started, so a test can wait for git itself to exit.
+const spawned = vi.hoisted(() => [] as ChildProcess[]);
+vi.mock('node:child_process', async (importOriginal) => {
+  const cp = await importOriginal<typeof import('node:child_process')>();
+  const spawn = ((...args: Parameters<typeof cp.spawn>) => {
+    const child = cp.spawn(...args);
+    spawned.push(child);
+    return child;
+  }) as typeof cp.spawn;
+  return { ...cp, default: { ...cp, spawn }, spawn };
+});
 
 const dirs: string[] = [];
 const pids: number[] = [];
 
+/**
+ * Holds back the next `setTimeout` of `ms` until `gate` resolves, then starts it for its full
+ * delay. A timeout test then measures from the state it is about, not from when git started:
+ * under the full suite, starting node in a hook alone took longer than the timeout (AO-0387).
+ * The call these tests make cannot end before its timeout, so nothing clears the held timer.
+ */
+function holdTimeout(ms: number, gate: Promise<unknown>): void {
+  const realSet = globalThis.setTimeout;
+  const set = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    fn: (...a: unknown[]) => void,
+    delay?: number,
+    ...args: unknown[]
+  ) => {
+    if (delay !== ms) return realSet(fn, delay, ...args);
+    set.mockRestore();
+    void gate.then(() => realSet(fn, delay, ...args));
+    // A handle that has already fired, so a `clearTimeout` on it does nothing.
+    return realSet(() => {}, 0);
+  }) as typeof setTimeout);
+}
+
+/** Resolves once `check` holds, asking every 50 ms. */
+async function until(check: () => boolean): Promise<void> {
+  while (!check()) await new Promise((r) => setTimeout(r, 50));
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
+  spawned.splice(0);
   // Only the processes these tests started, by the PID they wrote.
   for (const pid of pids.splice(0)) {
     try {
@@ -82,10 +122,18 @@ describe('gitAsync', () => {
       GIT_COMMITTER_NAME: 'opsd',
       GIT_COMMITTER_EMAIL: 'swarmupd@example.com',
     };
-    const started = Date.now();
+    const beat = join(state, 'beat.txt');
+    // The timeout starts once the hook marks, past the orphan's start: the orphan's parent has
+    // exited, so the stop of git's tree cannot reach it. Before, a slow node start under load
+    // let the timeout stop the orphan with the hook.
+    let started = 0;
+    const looping = until(() => existsSync(beat)).then(() => {
+      started = Date.now();
+    });
+    holdTimeout(1_500, looping);
     const err = await gitAsync(repo, ['commit', '-q', '--allow-empty', '-m', 'x'], {
       env,
-      timeoutMs: 2_000,
+      timeoutMs: 1_500,
       tree: true,
     }).catch((e: unknown) => e as GitFailure);
     if (existsSync(pidFile)) pids.push(Number(readFileSync(pidFile, 'utf8')));
@@ -100,7 +148,6 @@ describe('gitAsync', () => {
     expect(pids).toHaveLength(1);
     expect(alive(pids[0]!)).toBe(true);
     // The hook itself was stopped: its marks stop.
-    const beat = join(state, 'beat.txt');
     const size = statSync(beat).size;
     await new Promise((r) => setTimeout(r, 800));
     expect(statSync(beat).size).toBe(size);
@@ -138,12 +185,26 @@ describe('gitAsync', () => {
       GIT_COMMITTER_NAME: 'opsd',
       GIT_COMMITTER_EMAIL: 'swarmupd@example.com',
     };
-    const started = Date.now();
-    const result = await gitAsync(repo, ['commit', '-q', '--allow-empty', '-m', 'x'], {
+    // The timeout starts once git has exited, so it meets the holder alone, outside git's tree.
+    // Before, a commit slowed by load could still run at the timeout, which then stopped the
+    // holder with it.
+    let started = 0;
+    let exited!: () => void;
+    const gitExited = new Promise<void>((r) => {
+      exited = r;
+    }).then(() => {
+      started = Date.now();
+    });
+    holdTimeout(1_000, gitExited);
+    const call = gitAsync(repo, ['commit', '-q', '--allow-empty', '-m', 'x'], {
       env,
-      timeoutMs: 4_000,
+      timeoutMs: 1_000,
       tree: true,
-    }).catch((e: unknown) => e as GitFailure);
+    });
+    // `spawn` started git just now, so its exit is still to come.
+    expect(spawned).toHaveLength(1);
+    spawned[0]!.once('exit', () => exited());
+    const result = await call.catch((e: unknown) => e as GitFailure);
     if (existsSync(pidFile)) pids.push(Number(readFileSync(pidFile, 'utf8')));
 
     // git itself succeeded: the commit is there.

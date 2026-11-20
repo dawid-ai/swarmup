@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { UserConfig } from './config.js';
 import { isStoreDirName, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME, ROOT_DIR_NAMES } from './config.js';
 import type { GitSteps } from './git-steps.js';
@@ -21,6 +21,12 @@ export interface SyncOptions {
   sessionEnd?: boolean;
   /** Push even when unpushed commits touch files outside the root. */
   allPaths?: boolean;
+  /**
+   * The folders of the other registered roots. Those in the same repo count as inside the root
+   * when the push checks the unpushed commits: two roots that share one store repo commit each
+   * other's files, and without this each one would hold back the other's commits (AO-0371).
+   */
+  siblings?: readonly string[];
   /**
    * Skip the pull, even when one is asked for or due: for a second sync right after a pull. A push
    * the remote rejects still pulls and tries again.
@@ -571,10 +577,24 @@ function* followStoreMove(root: Root, top: string): GitSteps<number | null> {
  * folder, and for a store folder also the other store name beside it, so the commits that move a
  * store, and local commits made before a pulled move, push like any store commit (AO-0200).
  */
-function storePrefixes(root: Root, prefix: string): string[] {
-  if (!prefix || !isStoreDirName(basename(root.dir))) return [prefix];
+function storePrefixes(dir: string, prefix: string): string[] {
+  if (!prefix || !isStoreDirName(basename(dir))) return [prefix];
   const parent = prefix.slice(0, -1).split('/').slice(0, -1).join('/');
   return ROOT_DIR_NAMES.map((n) => (parent ? `${parent}/${n}/` : `${n}/`));
+}
+
+/**
+ * Path prefixes, relative to the repo top `top`, of the sibling roots in that repo. A root outside
+ * the repo adds nothing, and neither does one at the repo top: that would let any file out.
+ */
+function siblingPrefixes(top: string, siblings: readonly string[] = []): string[] {
+  const out: string[] = [];
+  for (const dir of siblings) {
+    const rel = relative(top, dir);
+    if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+    out.push(...storePrefixes(dir, `${rel.split(sep).join('/')}/`));
+  }
+  return out;
 }
 
 /**
@@ -710,7 +730,7 @@ function* syncSteps(
     push = false;
   }
   const touched = new Map<string, Touched>();
-  const inside = storePrefixes(root, prefix);
+  const inside = [...storePrefixes(root.dir, prefix), ...siblingPrefixes(top, opts.siblings)];
   // Commits to push, when the pull already counted them; null when unknown.
   let knownAhead: number | null = null;
   if (pull) {

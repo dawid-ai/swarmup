@@ -23,6 +23,7 @@ import { AttachButton, useAttach } from './attach';
 import { AgentTag, StatusIcon, Who } from './identity';
 import { useRefTasks } from './refs';
 import { MicButton } from './voice';
+import { ProjectName } from './project-label';
 
 // ---- Popover -------------------------------------------------------------------------------------
 
@@ -489,13 +490,17 @@ function RefRow({ o, active, onPick }: { o: RefOption; active: boolean; onPick: 
           <span className="shrink-0 font-mono text-xs text-fg-2">{o.text}</span>
           <span className="min-w-0 flex-1 truncate text-fg">{o.task.title}</span>
           {o.task.project && (
-            <span className="shrink-0 text-[11px] text-fg-4">{o.task.project}</span>
+            <span className="shrink-0 text-[11px] text-fg-4">
+              <ProjectName name={o.task.project} />
+            </span>
           )}
         </>
       ) : (
         <>
           <FolderKanban size={13} className="text-fg-3" />
-          <span className="min-w-0 flex-1 truncate text-fg">{o.project}</span>
+          <span className="min-w-0 flex-1 truncate text-fg">
+            <ProjectName name={o.project} />
+          </span>
           <span className="shrink-0 text-[11px] text-fg-4">{o.open} open</span>
         </>
       )}

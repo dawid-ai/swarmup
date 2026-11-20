@@ -11,6 +11,7 @@ import type {
   BlockedSet,
   ChatSourceMessage,
   Decision,
+  DecisionImportResult,
   InboxItem,
   LogEntry,
   MarkInput,
@@ -50,6 +51,7 @@ import {
   minutesText,
   mirrorPartners,
   OpsError,
+  parseNoteMappings,
   readDenyFile,
   readUserConfig,
   daemonSection,
@@ -207,8 +209,11 @@ function uncommittedReview(ctx: Ctx, ref: string, message: string): string | nul
   );
 }
 
-/** Runs git in `cwd`; its output trimmed, or null when it fails. */
-function gitOut(cwd: string, args: string[]): string | null {
+/** Branches that are a base the work merges into, never a task branch. */
+const BASE_BRANCHES = new Set(['main', 'master', 'v2', 'develop', 'trunk']);
+
+/** Git in `cwd`, its output trimmed, or null when it fails; read-only. */
+function gitRead(cwd: string, args: string[]): string | null {
   try {
     return execFileSync('git', args, {
       cwd,
@@ -236,6 +241,35 @@ interface StoreRoot {
   dir: string;
 }
 
+/** The top folder of the git checkout `dir` is in, as the file system spells it; null outside one. */
+function checkoutTop(dir: string): string | null {
+  const t = gitRead(dir, ['rev-parse', '--show-toplevel']);
+  return t === null ? null : realPath(t);
+}
+
+/** The roots whose store lives in the checkout `top`. */
+function rootsIn(top: string, roots: StoreRoot[]): StoreRoot[] {
+  const realTop = realPath(top);
+  return roots.filter((r) => checkoutTop(r.dir) === realTop);
+}
+
+/** The code checkouts (`swarmupd.code.<root>`, AO-0252) of `held` that are not the checkout `top`. */
+function codeCheckoutsElsewhere(
+  top: string,
+  held: StoreRoot[],
+  code: Record<string, unknown>,
+): string[] {
+  const realTop = realPath(top);
+  const dirs: string[] = [];
+  for (const r of held) {
+    const c = code[r.name];
+    if (typeof c !== 'string' || c.trim() === '') continue;
+    const t = checkoutTop(resolve(c));
+    if (t !== null && t !== realTop) dirs.push(t);
+  }
+  return dirs;
+}
+
 /**
  * Whether the git checkout `top` is a task store's own repo (AO-0384): a root's store is in it,
  * and either that root's code lives in another checkout (`swarmupd.code.<root>`, AO-0252), as
@@ -244,21 +278,10 @@ interface StoreRoot {
  * the code, no `swarmupd.code` entry) leaves the checkout a code checkout.
  */
 function isStoreCheckout(top: string, roots: StoreRoot[], code: Record<string, unknown>): boolean {
-  const realTop = realPath(top);
-  const topOf = (dir: string): string | null => {
-    const t = gitOut(dir, ['rev-parse', '--show-toplevel']);
-    return t === null ? null : realPath(t);
-  };
-  const held = roots.filter((r) => topOf(r.dir) === realTop);
+  const held = rootsIn(top, roots);
   if (held.length === 0) return false;
-  const codeElsewhere = held.some((r) => {
-    const c = code[r.name];
-    if (typeof c !== 'string' || c.trim() === '') return false;
-    const t = topOf(resolve(c));
-    return t !== null && t !== realTop;
-  });
-  if (codeElsewhere) return true;
-  const entries = gitOut(top, ['ls-tree', '--name-only', 'HEAD']);
+  if (codeCheckoutsElsewhere(top, held, code).length > 0) return true;
+  const entries = gitRead(top, ['ls-tree', '--name-only', 'HEAD']);
   if (entries === null) return false;
   return entries
     .split('\n')
@@ -266,17 +289,26 @@ function isStoreCheckout(top: string, roots: StoreRoot[], code: Record<string, u
     .every((n) => isStoreDirName(n) || n.startsWith('.'));
 }
 
+/** The full id of `commit` in the checkout `dir`, or null when it has no such commit. */
+function commitIn(dir: string, commit: string): string | null {
+  return gitRead(dir, ['rev-parse', '--verify', '-q', `${commit}^{commit}`]);
+}
+
 /**
- * Where the work of a review is (AO-0384), recorded on the review event so the merge needs no
- * prose: the HEAD commit, branch and repo kind of the git checkout `cwd`. `--commit` and
- * `--branch` override the checkout. When neither is given and the message names a
- * `<commit> on branch <name>` that is not the checkout's HEAD, the message wins: the agent named
- * other work than the folder it runs in, such as a review sent from the main checkout. Outside a
- * checkout, only what the options name.
+ * Where the work of a review is (AO-0384, AO-0396), recorded on the review event so the merge
+ * needs no prose: the commit, branch and repo kind of the git checkout `cwd`.
  *
- * In a task store's own checkout, the review is store work unless it names a commit (by option
- * or in the message) that the store repo does not have: that is code work named from the store
- * folder, recorded as `repo: code` so the merge still picks it up.
+ * - `--commit` and `--branch` go together and override the checkout; the commit must exist in
+ *   the checkout, or, from a task store's own checkout, in a code checkout of one of its roots
+ *   (then it is code work named from the store folder).
+ * - Without them, a `<commit> on branch <name>` in the message that is not the checkout's HEAD
+ *   wins: the agent named other work than the folder it runs in.
+ * - Else a code checkout gives its HEAD and branch, unless that is a base branch or a detached
+ *   HEAD; a task store's own checkout gives store work, which has nothing to merge, unless the
+ *   message names a commit the store repo lacks.
+ *
+ * `line` is the `Work: <commit> on branch <name>` line to add to the message when the source
+ * came from the options or the checkout rather than from the message: the review diff reads it.
  */
 function reviewSourceOf(
   cwd: string,
@@ -284,45 +316,70 @@ function reviewSourceOf(
   code: Record<string, unknown>,
   message: string,
   opts: { commit?: string; branch?: string },
-): { source: ReviewSourceFields; note?: string } {
-  const top = gitOut(cwd, ['rev-parse', '--show-toplevel']);
-  const given = {
-    ...(opts.commit ? { commit: opts.commit } : {}),
-    ...(opts.branch ? { branch: opts.branch } : {}),
-  };
-  if (top === null) return { source: given };
+): { source: ReviewSourceFields; note?: string; line?: string } {
+  if ((opts.commit === undefined) !== (opts.branch === undefined)) {
+    usageError('--commit and --branch go together');
+  }
+  const top = gitRead(cwd, ['rev-parse', '--show-toplevel']);
+  const store = top !== null && isStoreCheckout(top, roots, code);
+  const workLine = (commit: string, branch: string): string =>
+    `Work: ${commit.slice(0, 10)} on branch \`${branch}\``;
+
+  if (opts.commit && opts.branch) {
+    const branch = opts.branch;
+    const own = top === null ? null : commitIn(top, opts.commit);
+    if (own) {
+      const repo = store ? 'store' : 'code';
+      return { source: { commit: own, branch, repo }, line: workLine(own, branch) };
+    }
+    if (top !== null && store) {
+      for (const dir of codeCheckoutsElsewhere(top, rootsIn(top, roots), code)) {
+        const found = commitIn(dir, opts.commit);
+        if (!found) continue;
+        return {
+          source: { commit: found, branch, repo: 'code' },
+          line: workLine(found, branch),
+          note:
+            `${opts.commit} is not a commit of the task store repo ${top}: recorded it as code ` +
+            `work in ${dir}; send the review from the code checkout to record its HEAD`,
+        };
+      }
+    }
+    throw new OpsError(`--commit ${opts.commit}: no such commit in ${gitTop(cwd)}`, 2);
+  }
+
+  if (top === null) return { source: {} };
   const named = reviewSources(message).named;
-  if (isStoreCheckout(top, roots, code)) {
-    const pick = opts.commit || opts.branch ? given : named?.commit ? named : {};
-    const commit = pick.commit;
-    if (commit && gitOut(top, ['cat-file', '-e', `${commit}^{commit}`]) === null) {
+  if (store) {
+    const commit = named?.commit;
+    if (commit && commitIn(top, commit) === null) {
       return {
-        source: { ...pick, repo: 'code' },
+        source: { ...named, repo: 'code' },
         note:
           `${commit} is not a commit of the task store repo ${top}: recorded it as code work; ` +
           `send the review from the code checkout to record its HEAD`,
       };
     }
-    return { source: { ...given, repo: 'store' } };
+    return { source: { repo: 'store' } };
   }
   const repo = 'code';
-  const head = gitOut(top, ['rev-parse', 'HEAD']) ?? undefined;
-  const branch = gitOut(top, ['symbolic-ref', '--short', '-q', 'HEAD']) ?? undefined;
-  if (!opts.commit && !opts.branch && named?.commit && head && !head.startsWith(named.commit)) {
+  const head = gitRead(top, ['rev-parse', '--verify', '-q', 'HEAD']) ?? undefined;
+  const branch = gitRead(top, ['symbolic-ref', '--short', '-q', 'HEAD']) ?? undefined;
+  if (named?.commit && !(head && head.startsWith(named.commit.toLowerCase()))) {
     return {
       source: { commit: named.commit, branch: named.branch, repo },
       note:
-        `the message names ${named.commit} on branch ${named.branch}, not ${head.slice(0, 10)} ` +
-        `(HEAD of ${top}): recorded the message's; pass --commit and --branch to choose`,
+        `the message names ${named.commit} on branch ${named.branch}` +
+        (head ? `, not ${head.slice(0, 10)} (HEAD of ${top})` : '') +
+        ": recorded the message's; pass --commit and --branch to choose",
     };
   }
+  // A base branch or a detached HEAD is no task branch: it names no work to merge.
+  if (!head || !branch || BASE_BRANCHES.has(branch)) return { source: { repo } };
+  const fromCheckout = !NAMES_COMMIT.test(message) && !NAMES_PR.test(message);
   return {
-    source: {
-      ...(head ? { commit: head } : {}),
-      ...(branch ? { branch } : {}),
-      ...given,
-      repo,
-    },
+    source: { commit: head, branch, repo },
+    ...(fromCheckout ? { line: workLine(head, branch) } : {}),
   };
 }
 
@@ -560,6 +617,31 @@ function printLog(ctx: Ctx, entries: LogEntry[], opts: { notes: boolean; roots: 
       ctx.io.out(
         `${' '.repeat(idWidth)}  ${localTime(r.at).slice(0, 10)}  revised: was '${r.choice}' (${r.by})`,
       );
+    }
+  }
+}
+
+/** Prints a table or learn-note import plan in the form a person reviews before the real run. */
+function printDecisionImport(ctx: Ctx, result: DecisionImportResult): void {
+  if (ctx.opts.json) return void ctx.io.out(JSON.stringify(result, null, 2));
+  ctx.io.out(`${result.dry_run ? 'dry run' : 'import'}: root ${result.root}`);
+  if (result.items.length === 0) return void ctx.io.out('no decisions found');
+  for (const item of result.items) {
+    if (item.status === 'skipped') {
+      ctx.io.out(`skip ${item.label}: ${item.reason}`);
+      continue;
+    }
+    const verb = item.status === 'would-import' ? 'would import' : `imported ${item.id}`;
+    ctx.io.out(`${verb} ${item.label}: ${item.text}`);
+    ctx.io.out(`  date: ${item.created_at?.slice(0, 10)}`);
+    ctx.io.out(`  scope: ${item.scope}`);
+    ctx.io.out(`  source: ${item.source}`);
+    if (item.supersedes?.length) ctx.io.out(`  supersedes: ${item.supersedes.join(', ')}`);
+    if (item.narrows?.length) ctx.io.out(`  narrows: ${item.narrows.join(', ')}`);
+    for (const note of item.notes ?? []) ctx.io.out(`  ${note}`);
+    if (item.body) {
+      ctx.io.out('  body:');
+      for (const line of item.body.split('\n')) ctx.io.out(`    ${line}`);
     }
   }
 }
@@ -1554,9 +1636,9 @@ const COMMANDS: Record<string, Command> = {
   },
   review: {
     usage:
-      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA] [--branch NAME]',
+      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA --branch NAME]',
     summary:
-      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work; records the HEAD commit, branch and repo of the checkout it runs in for the merge (--commit, --branch override)',
+      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work; records the HEAD commit, branch and repo of the checkout it runs in for the merge (--commit with --branch overrides)',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },
@@ -1571,7 +1653,7 @@ const COMMANDS: Record<string, Command> = {
       const refused = uncommittedReview(ctx, ref, msg);
       if (refused) throw new OpsError(refused, 1);
       const ws = ctx.ws();
-      const { source, note } = reviewSourceOf(
+      const { source, note, line } = reviewSourceOf(
         ctx.io.cwd,
         ws.roots.map((r) => ({ name: r.name, dir: r.dir })),
         (daemonSection(readUserConfig(ctx.io.env))?.code ?? {}) as Record<string, unknown>,
@@ -1579,9 +1661,11 @@ const COMMANDS: Record<string, Command> = {
         { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
       );
       if (note) ctx.io.err(`note: ${note}`);
+      // The pair as the message's last line too, which the review diff reads (AO-0396).
+      const body = line ? `${msg.replace(/\s+$/, '')}\n\n${line}\n` : msg;
       return printAct(
         ctx,
-        ws.review(ref, msg, str(ctx.opts.to), str(ctx.opts.recommend), {
+        ws.review(ref, body, str(ctx.opts.to), str(ctx.opts.recommend), {
           human: ctx.opts.human === true,
           source,
         }),
@@ -2161,9 +2245,9 @@ const COMMANDS: Record<string, Command> = {
   },
   decision: {
     usage:
-      'decision TEXT [--project P] [--task ID] [--scope project|tree] [--supersedes D-ID[,D-ID]] [--narrows D-ID] [--source REF] [-m CONTEXT]',
+      'decision TEXT [...] | decision --import FILE --project P [--dry-run] | decision --import-notes [--project P] [--dry-run] [--except SLUG] [--supersedes-note SLUG=D-ID] [--narrows-note SLUG=D-ID]',
     summary:
-      'record a decision a person made, in one line (a person; the PM only with --source ID#EVENT or chat:<message id>)',
+      'record a decision a person made, or preview/import historical decision tables and decisions learn notes',
     options: {
       project: { type: 'string' },
       task: { type: 'string' },
@@ -2171,10 +2255,70 @@ const COMMANDS: Record<string, Command> = {
       supersedes: { type: 'string', multiple: true },
       narrows: { type: 'string', multiple: true },
       source: { type: 'string' },
+      import: { type: 'string' },
+      'import-notes': { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
+      except: { type: 'string', multiple: true },
+      'supersedes-note': { type: 'string', multiple: true },
+      'narrows-note': { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
       const ws = ctx.ws();
+      const file = str(ctx.opts.import);
+      const importNotes = Boolean(ctx.opts['import-notes']);
+      if (file || importNotes) {
+        if (file && importNotes) usageError('use --import FILE or --import-notes, not both');
+        if (
+          ctx.args.length > 0 ||
+          str(ctx.opts.source) ||
+          str(ctx.opts.task) ||
+          str(ctx.opts.scope)
+        ) {
+          usageError('an import takes no decision TEXT, --source, --task or --scope');
+        }
+        if (list(ctx.opts.supersedes).length || list(ctx.opts.narrows).length) {
+          usageError(
+            'an import uses --supersedes-note and --narrows-note, not --supersedes or --narrows',
+          );
+        }
+        if (file) {
+          if (!str(ctx.opts.project)) usageError('decision --import FILE needs --project P');
+          if (
+            list(ctx.opts.except).length ||
+            texts(ctx.opts['supersedes-note']).length ||
+            texts(ctx.opts['narrows-note']).length
+          ) {
+            usageError('--except, --supersedes-note and --narrows-note go with --import-notes');
+          }
+          return printDecisionImport(
+            ctx,
+            ws.importDecisionTable({
+              file,
+              project: str(ctx.opts.project)!,
+              dryRun: Boolean(ctx.opts['dry-run']),
+            }),
+          );
+        }
+        return printDecisionImport(
+          ctx,
+          ws.importDecisionNotes({
+            project: str(ctx.opts.project),
+            dryRun: Boolean(ctx.opts['dry-run']),
+            except: list(ctx.opts.except),
+            supersedes: parseNoteMappings(texts(ctx.opts['supersedes-note']), '--supersedes-note'),
+            narrows: parseNoteMappings(texts(ctx.opts['narrows-note']), '--narrows-note', true),
+          }),
+        );
+      }
+      if (
+        ctx.opts['dry-run'] ||
+        list(ctx.opts.except).length ||
+        texts(ctx.opts['supersedes-note']).length ||
+        texts(ctx.opts['narrows-note']).length
+      ) {
+        usageError('--dry-run, --except and note mappings need --import or --import-notes');
+      }
       // Who may record comes first: an agent that cannot gets that answer, whatever the source.
       ws.assertRecorder();
       const source = str(ctx.opts.source);
@@ -2593,6 +2737,8 @@ const COMMANDS: Record<string, Command> = {
           auto: Boolean(ctx.opts.auto),
           sessionEnd: Boolean(ctx.opts['session-end']),
           allPaths: Boolean(ctx.opts['all-paths']),
+          // `--root` syncs one root, but a root sharing its repo still counts as inside it.
+          siblings: ws.roots.map((r) => r.dir),
         });
       } catch (err) {
         // A run in a sandbox (Codex keeps `.git` read-only and has no network) cannot commit or

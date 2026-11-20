@@ -14,6 +14,7 @@ import {
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
 import { withoutScriptEnv } from './runenv.js';
+import { clearStaleIndexLock } from './worktree.js';
 
 export { reviewCommits, reviewSources };
 export type { MergeSource, ReviewSources } from '@swarmup/core';
@@ -653,9 +654,21 @@ export class MergeRepo {
    */
   async checkOut(commit: string): Promise<void> {
     const wt = this.worktree;
+    this.clearLock();
     await this.git(wt, ['rebase', '--abort'], { allowFail: true });
+    await this.git(wt, ['merge', '--abort'], { allowFail: true });
     await this.git(wt, ['checkout', '-q', '-f', '--detach', commit]);
     await this.git(wt, ['clean', '-q', '-f', '-d']);
+  }
+
+  /**
+   * Removes an `index.lock` from swarmupd's worktree. Only swarmupd runs git there, one merge at a
+   * time, so a lock at the start of a step is one a git it stopped left: a timed-out git killed
+   * mid-write keeps the lock, and every later git there fails with `index.lock: File exists`
+   * (AO-0381's batch went on to its next task and failed so).
+   */
+  private clearLock(): void {
+    clearStaleIndexLock(this.worktree, Date.now(), 0);
   }
 
   /**
@@ -664,7 +677,9 @@ export class MergeRepo {
    */
   async rebase(commit: string, onto: string): Promise<{ head: string } | { conflict: string }> {
     const wt = this.worktree;
+    this.clearLock();
     await this.git(wt, ['rebase', '--abort'], { allowFail: true });
+    await this.git(wt, ['merge', '--abort'], { allowFail: true });
     await this.git(wt, ['checkout', '-q', '-f', '--detach', commit]);
     // Untracked files of an earlier merge go; ignored ones (installed packages, builds) stay.
     await this.git(wt, ['clean', '-q', '-f', '-d']);
@@ -683,6 +698,40 @@ export class MergeRepo {
       return {
         conflict: files ? `conflicts in ${files.split('\n').join(', ')}\n\n${out}` : out,
       };
+    }
+    return { head: (await this.git(wt, ['rev-parse', 'HEAD'])).trim() };
+  }
+
+  /**
+   * Merges `commit` into `onto` with a merge commit, in swarmupd's worktree: for work whose rebase
+   * conflicts, such as a branch that already merged the base to resolve a conflict. A rebase
+   * replays each commit and so hits that conflict again; a merge compares only the two tips.
+   * Returns the merge commit, or the conflict git reported (the merge is undone).
+   */
+  async mergeInto(
+    commit: string,
+    onto: string,
+    message: string,
+  ): Promise<{ head: string } | { conflict: string; files: string[] }> {
+    const wt = this.worktree;
+    this.clearLock();
+    await this.git(wt, ['rebase', '--abort'], { allowFail: true });
+    await this.git(wt, ['merge', '--abort'], { allowFail: true });
+    await this.git(wt, ['checkout', '-q', '-f', '--detach', onto]);
+    await this.git(wt, ['clean', '-q', '-f', '-d']);
+    try {
+      await this.git(wt, ['merge', '-q', '--no-edit', '-m', message, commit]);
+    } catch (err) {
+      if (err instanceof GitTimeout) throw err;
+      const out = errorText(err);
+      let files: string[] = [];
+      try {
+        files = lines(await this.git(wt, ['diff', '--name-only', '--diff-filter=U']));
+      } catch {
+        // No merge in progress: the message says why.
+      }
+      await this.git(wt, ['merge', '--abort'], { allowFail: true });
+      return { conflict: out, files };
     }
     return { head: (await this.git(wt, ['rev-parse', 'HEAD'])).trim() };
   }
