@@ -5273,6 +5273,7 @@ describe('what runs leave in the checkout', () => {
   it('starts the first API run in a checkout it has not seen without git on the event loop (AO-0398)', async () => {
     const s = await setupAsync({ mode: 'edit', env: ID });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
     await git(s.repo, 'add', '-A');
     await git(s.repo, 'commit', '-qm', 'start');
