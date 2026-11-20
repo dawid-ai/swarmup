@@ -5700,7 +5700,11 @@ describe('what runs leave in the checkout', () => {
       file,
       readFileSync(file, 'utf8').replace('policy: checkpoint', 'policy: checkpoint\n  branch: v2'),
     );
-    const scheduled = sup.runScheduleNow('digest');
+    const scheduled = await sup.launchFresh({
+      agent: 'fake:writer',
+      extra: 'Write it.',
+      schedule: 'digest',
+    });
     await ended(sup, scheduled.id);
     prompt = readFileSync(promptFile, 'utf8');
     expect(prompt).toContain('Write it.');
