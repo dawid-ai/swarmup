@@ -38,7 +38,7 @@ import {
   clock,
   daemonCall,
   processStart,
-  codexGitDirs,
+  codexGitDirsOf,
   codexWritableDirs,
   invocation,
   isAlive,
@@ -4958,6 +4958,16 @@ describe('what runs leave in the checkout', () => {
     return { ...value, changes: value.changes };
   };
 
+  /** The writable Codex git dirs, with git discovery off the Vitest worker's event loop. */
+  const codexDirs = async (dir: string, env: NodeJS.ProcessEnv = process.env) => {
+    try {
+      const top = (await gitAsync(dir, ['rev-parse', '--show-toplevel'])).trim();
+      return codexGitDirsOf((await new Checkout(top, [], env).stateAsync()).gitDirs);
+    } catch {
+      return [];
+    }
+  };
+
   /** A checkout with code and the task store committed, as in a project repo. */
   async function codeSetup(mode: string, env: Record<string, string> = {}, procs?: ProcLister) {
     const s = await setupAsync({ mode, env: { ...ID, ...env }, procs });
@@ -5091,7 +5101,7 @@ describe('what runs leave in the checkout', () => {
     const t = as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
     writeFileSync(join(repo, 'notes.txt'), 'notes\n');
-    expect(() => sup.launch({ agent: 'fake:engineer', task: '1' })).toThrow(
+    await expect(sup.launchFresh({ agent: 'fake:engineer', task: '1' })).rejects.toThrow(
       /^checkout has uncommitted changes in .+: (tracked|notes)\.txt and 1 more$/,
     );
     expect(sup.waits().map((w) => [w.task?.split('/').pop(), w.reason])).toEqual([
@@ -5222,7 +5232,9 @@ describe('what runs leave in the checkout', () => {
     await git(s.repo, 'commit', '-qm', 'start');
     const start = await git(s.repo, 'rev-parse', 'HEAD');
     const sup = s.sup;
-    // The app's Waiting list plans first: opsd learns the checkout, and each tick reads it.
+    // The app's Waiting plan has already made this a checkout the tick reads. Do that discovery
+    // off-thread too; calling `waits` first would make its initial git reads synchronous.
+    await (sup as unknown as { learnCheckout(dir: string): Promise<void> }).learnCheckout(s.repo);
     expect(sup.waits().map((w) => w.reason)).toEqual(['starts at the next tick']);
     const spy = spySyncProcs();
     try {
@@ -5411,8 +5423,8 @@ describe('what runs leave in the checkout', () => {
     await git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
     await git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
-    expect(codexGitDirs(wt).length).toBe(4);
-    expect(codexGitDirs(temp())).toEqual([]);
+    expect((await codexDirs(wt)).length).toBe(4);
+    expect(await codexDirs(temp())).toEqual([]);
 
     // A `.git` file that names a folder which is no git dir: nothing there becomes writable,
     // and no `logs` folder is made in it.
@@ -5421,13 +5433,13 @@ describe('what runs leave in the checkout', () => {
     mkdirSync(join(lure, 'refs'));
     const fake = temp();
     writeFileSync(join(fake, '.git'), `gitdir: ${lure}\n`);
-    expect(codexGitDirs(fake)).toEqual([]);
+    expect(await codexDirs(fake)).toEqual([]);
     expect(existsSync(join(lure, 'logs'))).toBe(false);
 
     // A `.git` folder that is no git dir.
     const hollow = temp();
     mkdirSync(join(hollow, '.git', 'objects'), { recursive: true });
-    expect(codexGitDirs(hollow)).toEqual([]);
+    expect(await codexDirs(hollow)).toEqual([]);
     expect(existsSync(join(hollow, '.git', 'logs'))).toBe(false);
 
     // A checkout git refuses for its owner (`safe.directory`).
@@ -5439,12 +5451,12 @@ describe('what runs leave in the checkout', () => {
       GIT_CONFIG_GLOBAL: none,
       GIT_CONFIG_NOSYSTEM: '1',
     };
-    expect(codexGitDirs(wt, unsafe)).toEqual([]);
+    expect(await codexDirs(wt, unsafe)).toEqual([]);
 
     // A worktree whose `commondir` names a folder that is no repo.
     const empty = temp();
     writeFileSync(join(repo, '.git', 'worktrees', 'wt', 'commondir'), `${empty}\n`);
-    expect(codexGitDirs(wt)).toEqual([]);
+    expect(await codexDirs(wt)).toEqual([]);
     expect(existsSync(join(empty, 'logs'))).toBe(false);
   });
 
