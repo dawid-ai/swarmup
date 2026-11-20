@@ -202,6 +202,15 @@ export class RunStore {
   /** Parsed run files by file name, with the mtime and size they were read at. */
   private readonly cache = new Map<string, { mtimeMs: number; size: number; record: RunRecord }>();
 
+  /** Called with each record `save` writes: swarmupd keeps its runs in `state.db` too. */
+  mirror?: (r: RunRecord) => void;
+  /**
+   * The run records by id, when swarmupd loaded them from `state.db` (`hold`): `get` and `list`
+   * read them here instead of the run files. Only swarmupd writes runs, through `save`, which keeps
+   * both. A CLI's store has none and reads the files.
+   */
+  private held?: Map<string, RunRecord>;
+
   constructor(readonly dir: string) {
     mkdirSync(join(dir, 'runs'), { recursive: true });
     mkdirSync(join(dir, 'logs'), { recursive: true });
@@ -228,25 +237,49 @@ export class RunStore {
     replaceFile(tmp, file);
     // Two saves of the same size inside one mtime tick would look unchanged to `list`.
     this.cache.delete(`${r.id}.json`);
+    this.held?.set(r.id, { ...r });
+    this.mirror?.(r);
+  }
+
+  /** Reads `get` and `list` from `records` from now on, instead of the run files. */
+  hold(records: Iterable<RunRecord>): void {
+    const held = new Map<string, RunRecord>();
+    for (const r of records) held.set(r.id, this.withLog(r));
+    this.held = held;
   }
 
   get(id: string): RunRecord | undefined {
+    const kept = this.held?.get(id);
+    if (kept) return { ...kept };
     const file = join(this.dir, 'runs', `${id}.json`);
     if (!existsSync(file)) return undefined;
     try {
-      const record = JSON.parse(readFileSync(file, 'utf8')) as RunRecord;
-      // A record written before the state folder moved (AO-0200) names the log at its old path.
-      if (record.log && !record.log.startsWith(this.dir) && basename(record.log) === `${id}.log`) {
-        record.log = this.logPath(id);
-      }
-      return record;
+      return this.withLog(JSON.parse(readFileSync(file, 'utf8')) as RunRecord);
     } catch {
       return undefined;
     }
   }
 
+  /** A record written before the state folder moved (AO-0200) names the log at its old path. */
+  private withLog(record: RunRecord): RunRecord {
+    if (
+      record.log &&
+      !record.log.startsWith(this.dir) &&
+      basename(record.log) === `${record.id}.log`
+    ) {
+      record.log = this.logPath(record.id);
+    }
+    return record;
+  }
+
   /** Every run, newest first. */
   list(): RunRecord[] {
+    if (this.held) {
+      // Run ids are ULIDs, so their order is the order the runs started in.
+      return [...this.held.values()]
+        .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+        .map((r) => ({ ...r }));
+    }
     // A run file is parsed again only when its mtime or size changed: with 1,500 runs on disk a
     // stat of each takes ~11 ms, a read and parse of each ~55 ms (AO-0167). The records come back
     // as shallow copies, so a caller that sets a field never changes the cache.

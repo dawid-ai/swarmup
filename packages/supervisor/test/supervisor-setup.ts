@@ -8,7 +8,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach } from 'vitest';
 import { initRoot, Workspace } from '@swarmup/core';
-import { type ProcLister, type RunRecord, opsdConfig, Supervisor } from '../src/index.js';
+import {
+  type ProcLister,
+  type RunRecord,
+  opsdConfig,
+  processStart,
+  Supervisor,
+} from '../src/index.js';
 import { WAIT_MS } from './until.js';
 
 export const here = dirname(fileURLToPath(import.meta.url));
@@ -273,6 +279,21 @@ export function gitCommit(repo: string): void {
     ],
     { cwd: repo, windowsHide: true },
   );
+}
+
+/**
+ * The creation time of `pid`, once it can be read. `processStartSync` starts PowerShell on Windows
+ * and holds the event loop while it runs, up to its 15 s limit under load; these reads come from
+ * a worker thread instead, so they never add to a stall of the vitest worker (AO-0389).
+ */
+export async function startOf(pid: number, ms = WAIT_MS): Promise<string> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const start = await processStart(pid);
+    if (start !== null) return start;
+    if (Date.now() > end) throw new Error(`no creation time for pid ${pid}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 export function ended(sup: Supervisor, id: string, ms = WAIT_MS): Promise<RunRecord> {

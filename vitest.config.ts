@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
@@ -19,12 +20,17 @@ export default defineConfig({
     // old test limit instead of vitest's 10 s.
     testTimeout: 180_000,
     hookTimeout: 60_000,
-    // Every file spawns git and node processes, so one worker per core starves them: in a merge
-    // check the 1-test mirror files took 60-90 s and the old supervisor.test.ts 810 s. Half the
-    // cores keeps those processes fed. The slowest file sets the wall time, so keep each git-heavy
-    // file under about 8 minutes of tests: supervisor.test.ts and merge.test.ts each ran 25-28
-    // minutes in merge checks and were split into supervisor-*.test.ts and merge-*.test.ts (AO-0397).
-    maxWorkers: '50%',
+    // Every file spawns git and node processes, and on the Windows dev machine process creation is
+    // the bottleneck: `git --version` from 4 concurrent loops gives 2.3 spawns/s, from 12 loops
+    // 2.5/s, but each spawn then waits 4.8 s instead of 1.75 s (AO-0394). With 12 workers (half
+    // of 24 cores) a git-heavy test of ~80 spawns took 360 s and passed its 180 s limit in a merge
+    // check, for no gain in wall time. So at most 4 workers, and half the cores on smaller machines.
+    // `--maxWorkers=N` on the command line still overrides it.
+    // The slowest file sets the wall time, so keep each git-heavy file under about 8 minutes of
+    // tests: supervisor.test.ts and merge.test.ts each ran 25-28 minutes in merge checks and were
+    // split into supervisor-*.test.ts and merge-*.test.ts (AO-0397).
+    maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
+    // Builds packages/core once before the workers start, so split files don't race on `tsc -b`.
     globalSetup: ['./vitest.global-setup.ts'],
     setupFiles: ['./vitest.setup.ts'],
   },

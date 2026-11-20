@@ -55,13 +55,38 @@ const git = (cwd: string, ...args: string[]): string =>
     env: ENV,
   }).trim();
 
+/**
+ * The commit a full ref (`refs/heads/x`) names in the git folder `gitDir`, or null, read from the
+ * loose ref or `packed-refs`. A git process costs 1-5 s on a loaded Windows machine and this file
+ * reads refs dozens of times (AO-0394); a reftable repo still asks git.
+ */
+function readRef(gitDir: string, ref: string): string | null {
+  if (existsSync(join(gitDir, 'reftable'))) {
+    try {
+      return git(gitDir, 'rev-parse', '-q', '--verify', `${ref}^{commit}`);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return readFileSync(join(gitDir, ref), 'utf8').trim();
+  } catch {
+    // Not loose: look in packed-refs.
+  }
+  try {
+    for (const line of readFileSync(join(gitDir, 'packed-refs'), 'utf8').split('\n')) {
+      const [sha, name] = line.trim().split(' ');
+      if (name === ref && sha && /^[0-9a-f]{40,64}$/.test(sha)) return sha;
+    }
+  } catch {
+    // No packed-refs.
+  }
+  return null;
+}
+
 /** The commit `ref` names in the bare remote, or null. */
 function remoteRef(bare: string, ref: string): string | null {
-  try {
-    return git(bare, 'rev-parse', '-q', '--verify', `${ref}^{commit}`);
-  } catch {
-    return null;
-  }
+  return readRef(bare, ref);
 }
 
 /** A bare scratch remote and a clone of it on `main`, with one commit pushed. */
@@ -75,15 +100,20 @@ function repoSetup() {
   git(repo, 'add', '-A');
   git(repo, 'commit', '-qm', 'start');
   git(repo, 'push', '-q', '-u', 'origin', 'main');
+  const dotGit = join(repo, '.git');
   /** A commit on `branch` (made from `from`, default main) changing `file`; returns it. */
   const commit = (branch: string, file: string, content: string, from = 'main'): string => {
-    const exists = git(repo, 'branch', '--list', branch) !== '';
-    git(repo, 'checkout', '-q', exists ? branch : '-b', ...(exists ? [] : [branch, from]));
+    const onIt = readFileSync(join(dotGit, 'HEAD'), 'utf8').trim() === `ref: refs/heads/${branch}`;
+    if (!onIt) {
+      const exists = readRef(dotGit, `refs/heads/${branch}`) !== null;
+      git(repo, 'checkout', '-q', exists ? branch : '-b', ...(exists ? [] : [branch, from]));
+    }
     writeFileSync(join(repo, file), content);
     git(repo, 'add', '--', file);
     git(repo, 'commit', '-qm', `Change ${file} on ${branch}`);
-    const sha = git(repo, 'rev-parse', 'HEAD');
-    git(repo, 'checkout', '-q', 'main');
+    const sha = readRef(dotGit, `refs/heads/${branch}`);
+    if (!sha) throw new Error(`no commit on ${branch} after committing ${file}`);
+    if (branch !== 'main') git(repo, 'checkout', '-q', 'main');
     return sha;
   };
   return { bare, repo, commit };

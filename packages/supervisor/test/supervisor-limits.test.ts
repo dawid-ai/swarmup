@@ -12,7 +12,6 @@ import {
   type OpsEvent,
 } from '@swarmup/core';
 import {
-  processStartSync,
   opsdConfig,
   outsideSession,
   questionPrompt,
@@ -28,6 +27,7 @@ import {
   ended,
   gitCommit,
   setup,
+  startOf,
   sups,
   temp,
 } from './supervisor-setup.js';
@@ -1191,7 +1191,7 @@ describe('helper runs', () => {
       windowsHide: true,
     });
     try {
-      await until(() => processStartSync(child.pid!) !== null);
+      const start = await startOf(child.pid!);
       const base = {
         agent: 'fake:engineer',
         command: 'x',
@@ -1217,7 +1217,7 @@ describe('helper runs', () => {
         ...base,
         id: '01CHILD000000000000000000A',
         pid: child.pid!,
-        proc_start: processStartSync(child.pid!)!,
+        proc_start: start,
         status: 'running',
         parent: '01PARENT00000000000000000A',
       });
