@@ -384,6 +384,20 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       return;
     }
 
+    // swarmupd's merge attempts from `state.db`: `?task=<root/id>` for one task, `?since=<ISO>`
+    // for the counts per outcome, `?limit=` for the list (default 200).
+    if (area === 'merges' && method === 'GET' && !id) {
+      const since = q.get('since') || undefined;
+      if (since !== undefined && Number.isNaN(Date.parse(since))) {
+        throw new HttpError(400, 'since: use an ISO date and time');
+      }
+      const limit = wholeParam(q.get('limit'), 'limit', 1, 5000);
+      return send(res, 200, {
+        attempts: sup.mergeAttempts(q.get('task') || undefined, limit),
+        counts: sup.mergeCounts(since),
+      });
+    }
+
     if (area === 'runs') {
       if (method === 'GET' && !id) {
         // With `limit`, one page and the view's counts instead of every record (AO-0167).

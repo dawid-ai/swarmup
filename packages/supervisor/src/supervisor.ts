@@ -68,31 +68,14 @@ import {
   MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
-import { isMergeConflictBack, MERGE_CONFLICT, resolutionNote } from './merge-conflict.js';
+import { StateDb } from './state-db.js';
+import { Merger } from './merger.js';
+import type { MergeAttempt, MergeCount, RunRow } from './state-db.js';
+import { isMergeConflictBack, resolutionNote } from './merge-conflict.js';
 import type { GitDirs } from './checkout.js';
 import type { MergeConfig, OpsdConfig, ScheduleConfig } from './config.js';
-import type {
-  CommandResult,
-  CommandStep,
-  CommandWatch,
-  MergeGitTimeout,
-  MergeSource,
-  OpsdSelf,
-} from './merge.js';
-import {
-  CommandRunner,
-  GitTimeout,
-  insideDir,
-  installSteps,
-  isEngineRepo,
-  lockfileDirs,
-  MergeRepo,
-  notLiveNotice,
-  opsdCodeChanges,
-  pickMergeSource,
-  reviewCommits,
-  reviewSources,
-} from './merge.js';
+import type { CommandWatch, MergeGitTimeout, MergeSource, OpsdSelf } from './merge.js';
+import { CommandRunner, insideDir, MergeRepo } from './merge.js';
 import type { NotifyItem } from './notify.js';
 import { BranchPusher, gitError } from './push.js';
 import { ELECTRON_DIST_ENV, shareElectronDist, withElectronDist } from './electron-dist.js';
@@ -319,7 +302,7 @@ const SWEEP_DAYS = 7;
 const ADOPT_RECHECKS = 5;
 const ADOPT_RECHECK_MS = 10_000;
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** `sleep` that ends early, without leaving a timer behind, when `signal` aborts. */
 function sleepUnless(ms: number, signal: AbortSignal): Promise<void> {
@@ -345,7 +328,7 @@ export const ROUTE_ACTOR = 'opsd:router';
 export const PLAN_ACTOR = 'opsd:plan';
 /** Who files the finding on a task whose runs keep ending without finishing. */
 export const WATCH_ACTOR = 'opsd:watch';
-const DIRTY_CHANNEL = 'general';
+export const DIRTY_CHANNEL = 'general';
 /** Who tells the human that a runtime's runs keep failing at once, such as on a sign-in (AO-0150). */
 export const RUNTIME_ACTOR = 'opsd:runtime';
 /** A run that ends with an error this soon after it started counts as a failed start. */
@@ -525,20 +508,20 @@ export function signedOutText(provider: string, out: SignedOut, now = Date.now()
 }
 
 /** Rebase, check and fast-forward rounds before a merge gives up on a base that keeps moving. */
-const MERGE_ATTEMPTS = 5;
+export const MERGE_ATTEMPTS = 5;
 /** How many times in a row a merge may fail to read the task's worktrees before the human hears. */
-const MERGE_LOOKS = 3;
+export const MERGE_LOOKS = 3;
 /** Pause between those rounds. */
-const MERGE_RETRY_MS = 2_000;
+export const MERGE_RETRY_MS = 2_000;
 /** How long the task store sync may push a merged commit as approved (AO-0193). */
 const APPROVED_DAYS = 30;
 /** How often a merge that holds its checkout looks whether the writing run there has ended. */
-const MERGE_HOLD_POLL_MS = 1_000;
+export const MERGE_HOLD_POLL_MS = 1_000;
 /** How many review requests' check results swarmupd keeps in memory. */
 const REVIEW_CHECKS_KEPT = 50;
 
 /** One approved task to merge, and where. */
-interface MergeJob {
+export interface MergeJob {
   cfg: MergeConfig;
   /** The checkout the base is built in. */
   top: string;
@@ -555,7 +538,7 @@ interface MergeJob {
 }
 
 /** One task of a batch merge (AO-0381). */
-interface BatchItem {
+export interface BatchItem {
   ref: string;
   /** The job as planned, for a merge of the task alone, which reads its worktree again. */
   planned: MergeJob;
@@ -569,7 +552,7 @@ interface BatchItem {
  * A base swarmupd moved forward whose build has not run to its end, kept in `merge-builds.json` so the
  * next swarmupd runs it when this one stops during the build.
  */
-interface PendingBuild {
+export interface PendingBuild {
   ref: string;
   root: string;
   /** The checkout the base is built in. */
@@ -884,18 +867,24 @@ export class Supervisor extends EventEmitter {
   readonly store: RunStore;
   private readonly env: NodeJS.ProcessEnv;
   private readonly cwd: string;
-  private readonly build?: string;
-  private readonly version?: string;
-  private readonly self?: OpsdSelf;
-  private readonly mergeGitTimeoutMs?: MergeGitTimeout;
-  /** Tasks whose merge check timed out once; the next timeout sends the task back (AO-0172). */
-  private readonly mergeTimedOut = new Set<string>();
+  /** @internal Used by the Merger. */
+  readonly build?: string;
+  /** @internal Used by the Merger. */
+  readonly version?: string;
+  /** @internal Used by the Merger. */
+  readonly self?: OpsdSelf;
+  /** @internal Used by the Merger. */
+  readonly mergeGitTimeoutMs?: MergeGitTimeout;
+  /** swarmupd's own state on this PC, for every project: `state.db` in the state folder. */
+  readonly state: StateDb | null;
+  /** The merge pipeline: approved work into its base (see merger.ts). */
+  readonly merger: Merger;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
   private readonly electronDists = new Set<string>();
-  /** Per task, the merges in a row that could not read the task's worktrees (AO-0300). */
-  private readonly mergeLooks = new Map<string, number>();
-  private user: UserConfig;
-  private readonly now: () => number;
+  /** @internal Used by the Merger. */
+  user: UserConfig;
+  /** @internal Used by the Merger. */
+  readonly now: () => number;
   private readonly live = new Map<string, LiveRun>();
   /** Runs whose process ended and whose wrap-up (`wrapUp`) has not finished. */
   private readonly ending = new Map<string, RunRecord>();
@@ -948,7 +937,8 @@ export class Supervisor extends EventEmitter {
   private releasesAt = 0;
   private readonly readReleasesOf: (top: string) => Promise<ReleaseSnapshot>;
   /** The review checks under way; one at a time, and no merge beside them. */
-  private reviewChecking: {
+  /** @internal Used by the Merger. */
+  reviewChecking: {
     key: string;
     ref: string;
     runner: CommandRunner;
@@ -992,7 +982,8 @@ export class Supervisor extends EventEmitter {
   /** Roots by folder that API writes asked to sync, while their queued sync has not started. */
   private confirmRoots: Map<string, Root> | null = null;
   private killingAll = false;
-  private stopping = false;
+  /** @internal Used by the Merger. */
+  stopping = false;
   /** Aborted by `stop`: cancels background reads that would otherwise keep swarmupd alive. */
   private readonly stopAbort = new AbortController();
   private closed = false;
@@ -1024,34 +1015,11 @@ export class Supervisor extends EventEmitter {
   readonly runsOutlive: boolean;
   /** The desktop chat with the orchestrator; each turn is a run under the usual limits. */
   readonly chat: Chat;
-  /**
-   * The merge under way, if any. While `holds` is set, its checkout takes no new writing run:
-   * from the fast-forward of the base until the build is over. The rebase and the checks run in
-   * swarmupd's own worktree and hold nothing (AO-0160).
-   */
-  private merging: {
-    ref: string;
-    top: string;
-    base: string;
-    what: string;
-    runner: CommandRunner;
-    done: Promise<void>;
-    holds: boolean;
-    step: MergeStep;
-    startedAt: number;
-    command: { text: string; index: number; count: number; startedAt: number } | null;
-    timeoutMs: number;
-  } | null = null;
   /** The process ledger of the merge command running now, if any. */
   private mergeProc: { ledger: ProcLedger; running: () => boolean } | null = null;
   /** A look at the processes earlier merge commands left behind, before the next merge starts. */
-  private mergeClearing: Promise<void> | null = null;
-  /** The look for the next task to merge, while git answers it. */
-  private mergePlan: Promise<void> | null = null;
-  /** Per task, the last event already looked at for a merge, so unchanged tasks are not read again. */
-  private readonly mergeSeen = new Map<string, string>();
-  /** Approved tasks swarmupd found nothing to merge for, by the last event they had then. */
-  private readonly mergeNone = new Map<string, string>();
+  /** @internal Used by the Merger. */
+  mergeClearing: Promise<void> | null = null;
 
   constructor(opts: SupervisorOptions = {}) {
     super();
@@ -1061,6 +1029,8 @@ export class Supervisor extends EventEmitter {
     this.cfg = opts.config ?? opsdConfig(this.user);
     this.store = new RunStore(opts.stateDir ?? stateDir(this.env));
     this.now = opts.now ?? Date.now;
+    this.state = openState(this.store);
+    this.merger = new Merger(this);
     this.listerOpt = opts.procs;
     this.sandboxOwned = opts.sandboxOwned;
     // The API accepts launches before the first timed tick. Hold Codex from construction until
@@ -1202,6 +1172,7 @@ export class Supervisor extends EventEmitter {
       const results = await syncAllAsync([...pending.values()], this.user, {
         pull: true,
         push: true,
+        siblings: this.ws().roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
@@ -1270,6 +1241,11 @@ export class Supervisor extends EventEmitter {
     if (freeGb < this.config.min_free_gb) {
       return `${freeGb.toFixed(1)} GB of memory free; min_free_gb is ${this.config.min_free_gb}`;
     }
+    // A merge check that timed out once runs again with no new run beside it (AO-0385). A helper,
+    // a chat turn and a question run are small and someone waits for them.
+    if (this.merger.mergeQuiet && !opts.child && !opts.chat && !opts.question) {
+      return `swarmupd runs the merge checks of ${this.merger.mergeQuiet} again, with no new runs beside them, since they timed out once`;
+    }
     const provider = runtimeOf(agent);
     const rc = this.config.runtimes[provider];
     if (!rc) return noProvider(provider);
@@ -1331,7 +1307,8 @@ export class Supervisor extends EventEmitter {
         return `${other.agent} works${what} in ${top}; one writing run per checkout`;
       }
       // A merge moves the checkout's branch and builds it; a writer there waits for that part.
-      if (this.merging?.holds && samePath(this.merging.top, top)) return this.mergeHold(top);
+      if (this.merger.merging?.holds && samePath(this.merger.merging.top, top))
+        return this.merger.mergeHold(top);
       // A writing run starts on a clean checkout, so what it leaves is its own work alone.
       const gitTop = this.gitTopOf(resolve(opts.cwd));
       if (gitTop) {
@@ -1485,7 +1462,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Git work on the checkout at `top`, with every task store swarmupd knows left out. */
-  private checkout(top: string): Checkout {
+  /** @internal Used by the Merger. */
+  checkout(top: string): Checkout {
     return new Checkout(
       top,
       this.ws().roots.map((r) => r.dir),
@@ -1679,7 +1657,7 @@ export class Supervisor extends EventEmitter {
     if (!due) return;
     // Git work of a merge or a new worktree comes first: on Windows each extra git process slows
     // theirs, and a merge step has a timeout. The sweep waits for a tick with neither.
-    if (this.merging || this.mergePlan || this.makingWorktrees.size > 0) return;
+    if (this.merger.merging || this.merger.mergePlan || this.makingWorktrees.size > 0) return;
     // `housekeepingTick` already requested this sweep's repair above. Wait for that one instead
     // of asking for the repair loop's extra pass; a repair completed while git work delayed this
     // sweep also counts, while worktree reclaim and scratch cleanup still run now.
@@ -1794,7 +1772,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** True when a live or ending run works inside `path`. */
-  private runsIn(path: string): boolean {
+  /** @internal Used by the Merger. */
+  runsIn(path: string): boolean {
     return [...this.liveRecords(), ...this.ending.values()].some(
       (r) => r.cwd !== undefined && insideDir(path, resolve(r.cwd)),
     );
@@ -2134,7 +2113,8 @@ export class Supervisor extends EventEmitter {
    * after it, a note of a failed merge included; null when that verdict does not approve the
    * task.
    */
-  private afterApproval(ws: Workspace, ref: string) {
+  /** @internal Used by the Merger. */
+  afterApproval(ws: Workspace, ref: string) {
     const root = ref.slice(0, ref.lastIndexOf('/'));
     if (!this.config.merge[root]) return null;
     const { events } = ws.showEvents(ref);
@@ -2347,7 +2327,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** The checkout of a root's code (see {@link codeDirOf}), or null when it is no git checkout. */
-  private codeTopOf(root: Pick<Root, 'name' | 'dir'>): string | null {
+  /** @internal Used by the Merger. */
+  codeTopOf(root: Pick<Root, 'name' | 'dir'>): string | null {
     return this.gitTopOf(this.codeDirOf(root));
   }
 
@@ -2357,7 +2338,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Whether `top` is the git checkout a task store is in (not only a code checkout). */
-  private holdsStore(top: string): boolean {
+  /** @internal Used by the Merger. */
+  holdsStore(top: string): boolean {
     return this.ws().roots.some((r) => {
       const t = this.gitTopOf(resolve(r.dir));
       return t !== null && samePath(t, top);
@@ -4121,7 +4103,8 @@ export class Supervisor extends EventEmitter {
    * provider, since that provider may be the one that is broken: with none left, undefined, and
    * the block goes to the human. Without `agent`, a PM of any provider.
    */
-  private pmFor(ws: Workspace, agent?: string): string | undefined {
+  /** @internal Used by the Merger. */
+  pmFor(ws: Workspace, agent?: string): string | undefined {
     const mine = agent === undefined ? undefined : runtimeOf(agent);
     const order = roleLimits(this.config, 'pm').providers;
     const rank = (a: string): number => {
@@ -4302,6 +4285,7 @@ export class Supervisor extends EventEmitter {
       ];
       const results = await syncAllAsync(targets, this.user, {
         sessionEnd: true,
+        siblings: ws.roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
@@ -4372,7 +4356,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Queues sync work: store syncs and branch pushes. A failure becomes a `warn`. */
-  private syncWork(fn: () => Promise<void>): Promise<void> {
+  /** @internal Used by the Merger. */
+  syncWork(fn: () => Promise<void>): Promise<void> {
     const safe = this.syncChain.then(fn).catch((err: unknown) => {
       this.emit('warn', err instanceof Error ? err.message : String(err));
     });
@@ -4459,7 +4444,8 @@ export class Supervisor extends EventEmitter {
    * What survives every kill is kept in `merge-procs.json`, and no merge or build starts in this
    * or the next swarmupd until it is gone, so a leftover build never races a new one.
    */
-  private mergeWatch(): CommandWatch {
+  /** @internal Used by the Merger. */
+  mergeWatch(): CommandWatch {
     let m: { ledger: ProcLedger; running: () => boolean } | null = null;
     const look = async (): Promise<ProcInfo[] | null> => {
       if (!m || !this.ledgerOn()) return null;
@@ -4503,7 +4489,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Processes merge commands left behind that no kill ended, by PID and creation time. */
-  private mergeLeftovers(): ProcEntry[] {
+  /** @internal Used by the Merger. */
+  mergeLeftovers(): ProcEntry[] {
     return this.store.readJson<ProcEntry[]>('merge-procs.json', []);
   }
 
@@ -4515,7 +4502,8 @@ export class Supervisor extends EventEmitter {
    * Looks at the leftovers of earlier merge commands, kills the ones still running and keeps
    * those no kill ends; the next merge starts once none is left.
    */
-  private clearMergeLeftovers(): void {
+  /** @internal Used by the Merger. */
+  clearMergeLeftovers(): void {
     this.mergeClearing = this.procWork(async () => {
       if (this.closed) return;
       // Without exact creation times no ledger was kept, so nothing can be told apart.
@@ -4539,7 +4527,7 @@ export class Supervisor extends EventEmitter {
       }
     }).finally(() => {
       this.mergeClearing = null;
-      if (this.mergeLeftovers().length === 0) void this.mergeTick();
+      if (this.mergeLeftovers().length === 0) void this.merger.mergeTick();
     });
   }
 
@@ -4743,8 +4731,12 @@ export class Supervisor extends EventEmitter {
   stop(opts: { killRuns?: boolean } = {}): void {
     this.stopping = true;
     this.stopAbort.abort();
+    // Closed once the merge under way, if any, has recorded how it ended; at once without one, so
+    // the state folder can go right after a stop (Windows keeps an open file's folder).
+    if (this.merger.merging) void this.merger.merging.done.finally(() => this.closeState());
+    else this.closeState();
     // A merge stops before the base moves; the next swarmupd starts it again.
-    this.merging?.runner.stop();
+    this.merger.merging?.runner.stop();
     // Review checks stop too; the next swarmupd runs them again before the review starts.
     this.reviewChecking?.runner.stop();
     if (this.timer) clearInterval(this.timer);
@@ -4800,8 +4792,8 @@ export class Supervisor extends EventEmitter {
     const wrapped = Date.now() + HELPER_END_MS + 10_000;
     while (this.ending.size > 0 && Date.now() < wrapped) await sleep(50);
     // A merge plan under way starts nothing once swarmupd stops; it ends at its next git answer.
-    await this.mergePlan;
-    await this.merging?.done;
+    await this.merger.mergePlan;
+    await this.merger.merging?.done;
     await this.reviewChecking?.done;
     // A sync or push under way finishes, so no rebase or commit is cut off halfway.
     await this.syncChain;
@@ -4826,7 +4818,7 @@ export class Supervisor extends EventEmitter {
       this.safe(() => this.writePresences());
       if (this.config.sync) await this.syncRoots();
       // Before the wake plan, so a build swarmupd starts again holds its checkout from this tick.
-      await this.mergeTick();
+      await this.merger.mergeTick();
       // Before every launch-producing path. It marks a due repair even when git work delays the
       // sweep, and starts the repair hold before schedules, chat, wake or API work can race it.
       this.housekeepingTick();
@@ -5056,6 +5048,7 @@ export class Supervisor extends EventEmitter {
     void this.syncWork(async () => {
       const results = await syncAllAsync(targets, this.user, {
         auto: true,
+        siblings: ws.roots.map((root) => root.dir),
         approved: this.approved(),
         now: this.now(),
       });
@@ -5131,7 +5124,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Pushes a merged `commit` as `base` from a code checkout with no task store (AO-0252). */
-  private async pushBase(ref: string, top: string, base: string, commit: string): Promise<void> {
+  /** @internal Used by the Merger. */
+  async pushBase(ref: string, top: string, base: string, commit: string): Promise<void> {
     const why = await new BranchPusher(top, this.commandEnv()).pushBase(base, commit);
     if (why) this.emit('warn', `merge of ${ref}: ${why}`);
     else this.emit('merge', `${ref}: pushed ${base} (${short(commit)}) from ${top}`);
@@ -5173,7 +5167,8 @@ export class Supervisor extends EventEmitter {
    * {@link approved}. Keys older than {@link APPROVED_DAYS} days go: by then the sync has pushed
    * the commit, or a person has to.
    */
-  private approveCommits(top: string, base: string, keys: string[]): void {
+  /** @internal Used by the Merger. */
+  approveCommits(top: string, base: string, keys: string[]): void {
     if (keys.length === 0) return;
     const scopes = this.approvedScopes();
     let scope = scopes.find((s) => s.base === base && samePath(s.top, top));
@@ -5230,7 +5225,8 @@ export class Supervisor extends EventEmitter {
    * Remembers a branch swarmupd merged: its approved tip is not pushed again, and its remote branch
    * is deleted once the remote's base has `commit`.
    */
-  private branchMerged(
+  /** @internal Used by the Merger. */
+  branchMerged(
     ref: string,
     rootName: string,
     branch: string,
@@ -5257,167 +5253,6 @@ export class Supervisor extends EventEmitter {
     });
   }
 
-  // ---- Merging approved work ------------------------------------------------------------------
-
-  /**
-   * Starts merging one approved task of a root with `swarmupd.merge` set, when no merge runs and no
-   * writing run is live in the checkout the base is built in. A task qualifies when its last
-   * verdict approves it, came after swarmupd first saw the root's merge setting, has nothing from
-   * swarmupd after it, and the review it approved names a branch. Planning asks git which branches
-   * and commits exist, off the event loop (AO-0169); a tick that comes meanwhile shares it.
-   */
-  private mergeTick(): Promise<void> {
-    if (this.mergePlan) return this.mergePlan;
-    const plan = this.planMerge()
-      .catch((err: unknown) => {
-        this.emit('warn', `merge: ${err instanceof Error ? err.message : String(err)}`);
-      })
-      .finally(() => {
-        if (this.mergePlan === plan) this.mergePlan = null;
-      });
-    this.mergePlan = plan;
-    return plan;
-  }
-
-  /** Whether merge planning stops: swarmupd stops, or a merge or a leftover cleanup is under way. */
-  private mergeHalted(): boolean {
-    return !!(this.merging || this.stopping || this.mergeClearing);
-  }
-
-  private async planMerge(): Promise<void> {
-    if (this.mergeHalted()) return;
-    // Review checks use the machine now; a merge's checks beside them make both time out.
-    if (this.reviewChecking) return;
-    // What an earlier merge command left running goes first, so nothing races it.
-    if (this.mergeLeftovers().length > 0) {
-      this.clearMergeLeftovers();
-      return;
-    }
-    const merge = this.config.merge;
-    // A build an earlier swarmupd stopped after moving a base goes first.
-    for (const p of Object.values(this.pendingBuilds())) {
-      const cfg = merge[p.root];
-      if (!cfg || cfg.base !== p.base) {
-        this.dropPendingBuild(p.ref);
-        continue;
-      }
-      if (!this.writerIn(p.top)) {
-        this.emit(
-          'warn',
-          `merge of ${p.ref}: building ${p.base} again; the earlier build did not finish`,
-        );
-        this.startMerge(
-          { ref: p.ref, top: p.top, base: p.base, what: p.what, human: p.human, cfg, holds: true },
-          (runner) => this.buildMerged(p, cfg, runner),
-        );
-      }
-      return;
-    }
-    if (Object.keys(merge).length === 0) return;
-    const ws = this.ws();
-    const since = this.mergeSince(ws.roots.filter((r) => merge[r.name]).map((r) => r.name));
-    const views = ws.views();
-    this.freeMergeWaiters(ws, views, since);
-    const done = views
-      .filter((v) => v.status === 'done' && merge[v.root] && v.updatedAt >= since[v.root]!)
-      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-    // The first task ready to merge, and the later ones of the same root that wait with it: they
-    // merge together, with one run of the checks (AO-0381).
-    const batch: { ref: string; job: MergeJob; last: string | null }[] = [];
-    for (const v of done) {
-      const ref = `${v.root}/${v.meta.id}`;
-      if (v.lastEvent && this.mergeSeen.get(ref) === v.lastEvent) continue;
-      const first = batch[0];
-      if (first && v.root !== first.job.root) continue;
-      const job = await this.mergeJob(ws, ref, merge[v.root]!, since[v.root]!);
-      // A stop, or a merge another way started, while git answered.
-      if (this.mergeHalted()) return;
-      // A reopen or a newer verdict that came while git answered makes the job stale; the next
-      // tick reads the task again.
-      const now = this.ws().view(ref);
-      if (now.status !== 'done' || now.lastEvent !== v.lastEvent) continue;
-      if (!job) {
-        if (v.lastEvent) {
-          this.mergeSeen.set(ref, v.lastEvent);
-          this.mergeNone.set(ref, v.lastEvent);
-        }
-        continue;
-      }
-      if (first && !samePath(job.top, first.job.top)) continue;
-      // The checkout's writing run finishes first; this task waits for the next tick.
-      if (this.writerIn(job.top)) continue;
-      batch.push({ ref, job, last: v.lastEvent });
-      if (batch.length >= mergeBatchSize(job.cfg)) break;
-    }
-    // A task reopened while git answered for a later one waits for the next tick.
-    const ready = batch.filter((b) => {
-      const now = this.ws().view(b.ref);
-      return now.status === 'done' && now.lastEvent === b.last;
-    });
-    const lead = ready[0];
-    if (!lead || this.writerIn(lead.job.top)) return;
-    const { job } = lead;
-    const at = { top: job.top, base: job.cfg.base, human: job.human, cfg: job.cfg };
-    if (ready.length === 1) {
-      this.startMerge({ ...at, ref: lead.ref, what: job.what }, (runner) =>
-        this.mergeOne(lead.ref, job, runner),
-      );
-      return;
-    }
-    const ids = ready.map((b) => this.ws().resolve(b.ref).id);
-    this.startMerge(
-      { ...at, ref: lead.ref, what: `${ready.length} approved tasks (${ids.join(', ')})` },
-      (runner) => this.mergeBatch(ready, runner),
-    );
-  }
-
-  /**
-   * Notes on approved tasks that other tasks wait on, and that swarmupd merges nothing for, that
-   * no merge comes: a task blocked on approved work waits for the merge event (AO-0228), and
-   * without the note it would wait for good with nobody told. An approval from before the root's
-   * merge setting (by the time of the verdict, whatever came after it), and reviews whose only `branch <word>` is prose, have nothing to merge: the
-   * note frees the waiters. Reviews that name `<commit> on branch <name>` the repo lacks (found
-   * by an earlier tick's `mergeJob`) are work that is missing from the base: the waiters stay
-   * blocked, and the note tells the human. Once per approval: nothing follows a note, or the
-   * note of a merge that failed.
-   */
-  private freeMergeWaiters(ws: Workspace, views: TaskView[], since: Record<string, string>): void {
-    const waited = new Set(ws.mergeWaited());
-    if (waited.size === 0) return;
-    for (const v of views) {
-      const ref = `${v.root}/${v.meta.id}`;
-      if (!waited.has(ref) || v.status !== 'done' || !v.awaitsMerge) continue;
-      const from = since[v.root];
-      if (!from) continue;
-      const approval = this.afterApproval(ws, ref);
-      // swarmupd wrote about this approval already, say that its merge failed.
-      if (approval?.wrote.length !== 0) continue;
-      // The approval's own time, as `mergeJob` reads it: a later comment moves `updatedAt`
-      // past the merge setting, and the approval is still one swarmupd never merges.
-      const before = approval.at < from;
-      if (!before && !(v.lastEvent && this.mergeNone.get(ref) === v.lastEvent)) continue;
-      const id = v.meta.id;
-      const named =
-        !before &&
-        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSources(e.body).named);
-      if (named) {
-        this.mergeNote(
-          ref,
-          `swarmupd cannot merge ${id}: its review requests name a commit and a branch, and the repo has neither. The tasks blocked on ${id} stay blocked: reopen ${id} to get the work merged, or free each of them with \`swarmup unblock\`.`,
-          ws.roots.find((r) => r.name === v.root)?.config.human,
-        );
-        continue;
-      }
-      const why = before
-        ? `it was approved before swarmupd merged approved work of ${v.root}`
-        : 'no review request names a branch or commit';
-      this.mergeNothing(
-        ref,
-        `swarmupd merges nothing for ${id}: ${why}. The tasks blocked on it go on.`,
-      );
-    }
-  }
-
   // ---- Checks for reviewers that cannot run them (AO-0296) -------------------------------------
 
   /**
@@ -5442,7 +5277,8 @@ export class Supervisor extends EventEmitter {
    * their result; when swarmupd cannot run them, the run's prompt says why.
    */
   private startReviewChecks(key: string, ref: string, cfg: MergeConfig): void {
-    if (this.stopping || this.reviewChecking || this.merging || this.mergePlan) return;
+    if (this.stopping || this.reviewChecking || this.merger.merging || this.merger.mergePlan)
+      return;
     const runner = new CommandRunner(this.commandEnv(), { now: this.now });
     const startedAt = this.now();
     const line = (text: string): void => {
@@ -5507,7 +5343,7 @@ export class Supervisor extends EventEmitter {
       .events.filter((e) => e.type === 'review')
       .reverse()
       .map((e) => e.body);
-    const src = await this.pickSource(repo, texts, () => this.stopping);
+    const src = await this.merger.pickSource(repo, texts, () => this.stopping);
     if (src === 'halted') return null;
     if (!src) return none('no review request names a commit or a branch');
     const what = src.commit ? `${src.commit} on branch ${src.branch}` : `branch ${src.branch}`;
@@ -5685,135 +5521,37 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Whether a top-level writing run is live in the checkout `top`. */
-  private writerIn(top: string): boolean {
+  /** @internal Used by the Merger. */
+  writerIn(top: string): boolean {
     return this.liveRecords().some(
       (r) => this.writingRun(r) && samePath(this.checkoutTop(r.cwd), top),
     );
   }
 
   /**
-   * Runs `work` as the merge under way in the checkout `top`; `holds` says whether it holds the
-   * checkout from the start, as a build does (see `holdCheckout`).
-   */
-  private startMerge(
-    job: {
-      ref: string;
-      top: string;
-      base: string;
-      what: string;
-      human: string | undefined;
-      cfg: MergeConfig;
-      holds?: boolean;
-    },
-    work: (runner: CommandRunner) => Promise<void | 'again'>,
-  ): void {
-    const { ref, top, base, what, human } = job;
-    const holds = job.holds ?? false;
-    const runner = new CommandRunner(this.commandEnv(), {
-      watch: this.mergeWatch(),
-      now: this.now,
-    });
-    const startedAt = this.now();
-    this.merging = {
-      ref,
-      top,
-      base,
-      what,
-      runner,
-      done: Promise.resolve(),
-      holds,
-      // A build that holds from the start is all there is of it.
-      step: holds ? 'build' : 'rebase',
-      startedAt,
-      command: null,
-      timeoutMs: mergeTimeout(job.cfg),
-    };
-    const merging = this.merging;
-    this.mergeLine(
-      ref,
-      holds
-        ? `builds ${base} again in ${top}; holds it from new writing runs`
-        : `starts: ${what} into ${base}, built in ${top}`,
-    );
-    this.mergeChanged();
-    let again = false;
-    // The task the merge ends on: the one it was at when it failed. In a batch that is the task
-    // being merged then, not the first one (AO-0381); the others got nothing and go on next tick.
-    let at = ref;
-    merging.done = work(runner)
-      .then((r) => {
-        again = r === 'again';
-      })
-      .catch((err) => {
-        at = merging.ref;
-        const failed = at === ref ? what : merging.what;
-        const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-        this.emit('warn', `merge of ${at}: ${msg}`);
-        if (err instanceof GitTimeout) {
-          // The step it hung in and what it printed last, so the human sees why (AO-0172).
-          const output = redactSecrets(err.output);
-          const out = lastLines(output);
-          const log = this.mergeLog(at, output);
-          const parts = [
-            `swarmupd could not merge ${failed}: ${firstLines(msg)} (stage: ${err.stage ?? merging.step}).`,
-            out ? `Last output:\n\n\`\`\`\n${out}\n\`\`\`` : 'It printed nothing.',
-          ];
-          if (log) parts.push(`Full output: ${log}`);
-          this.mergeNote(at, parts.join('\n\n'), human);
-          return;
-        }
-        this.mergeNote(at, `swarmupd could not merge ${failed}: ${firstLines(msg)}`, human);
-      })
-      .finally(() => {
-        // The one more merge after a check timed out is for this merge only (AO-0172).
-        if (!again) this.mergeTimedOut.delete(at);
-        // A merge that wrote nothing is not tried again until the task changes; one stopped
-        // with swarmupd is, by the next swarmupd, and one the PC's sleep broke, by the next tick.
-        this.safe(() => {
-          const last = this.ws().view(at).lastEvent;
-          if (last && !this.stopping && !again) this.mergeSeen.set(at, last);
-        });
-        this.mergeLine(ref, `ends after ${elapsed(this.now() - startedAt)}`);
-        this.merging = null;
-        this.mergeChanged();
-      });
-  }
-
-  /**
    * The merge under way, if any: the task, its checkout, and whether it holds the checkout from
    * new writing runs now.
    */
-  get merge(): { ref: string; top: string; base: string; holds: boolean } | null {
-    if (!this.merging) return null;
-    const { ref, top, base, holds } = this.merging;
-    return { ref, top, base, holds };
+  mergeStatus(): MergeStatus | null {
+    return this.merger.mergeStatus();
   }
 
-  /** The merge under way, if any, with its step, its command and their times (AO-0161). */
-  mergeStatus(): MergeStatus | null {
-    const m = this.merging;
-    if (!m) return null;
-    const iso = (ms: number): string => new Date(ms).toISOString();
-    return {
-      task: m.ref,
-      what: m.what,
-      base: m.base,
-      top: m.top,
-      step: m.step,
-      holds: m.holds,
-      started_at: iso(m.startedAt),
-      ...(m.command
-        ? {
-            command: {
-              text: m.command.text,
-              index: m.command.index,
-              count: m.command.count,
-              started_at: iso(m.command.startedAt),
-            },
-          }
-        : {}),
-      timeout_minutes: Math.round(m.timeoutMs / 60_000),
-    };
+  async mergeSettled(): Promise<void> {
+    return this.merger.mergeSettled();
+  }
+
+  mergeAttempts(ref?: string, limit?: number): MergeAttempt[] {
+    return this.merger.mergeAttempts(ref, limit);
+  }
+
+  mergeCounts(since?: string): MergeCount[] {
+    return this.merger.mergeCounts(since);
+  }
+
+  get merge(): { ref: string; top: string; base: string; holds: boolean } | null {
+    if (!this.merger.merging) return null;
+    const { ref, top, base, holds } = this.merger.merging;
+    return { ref, top, base, holds };
   }
 
   /**
@@ -5830,1325 +5568,11 @@ export class Supervisor extends EventEmitter {
     return taskDiff({ top, env: this.commandEnv(), events, base: cfg?.base });
   }
 
-  /** Why a writing run in the checkout `top` waits for the merge under way. */
-  private mergeHold(top: string): string {
-    return `${this.mergeHoldStart()}${top}; it holds the checkout until its build ends`;
-  }
-
-  /** The start of `mergeHold`'s text, which `waits` looks for to mark the work it holds. */
-  private mergeHoldStart(): string {
-    const m = this.merging;
-    return m ? `swarmupd merges ${m.ref} into ${m.base} in ` : '\0';
-  }
-
-  /** Moves the merge under way to `step`, and logs it unless it stays the same. */
-  private mergeStep(step: MergeStep, line?: string): void {
-    const m = this.merging;
-    if (!m) return;
-    if (m.step !== step && line) this.mergeLine(m.ref, line);
-    m.step = step;
-    m.command = null;
-    this.mergeChanged();
-  }
-
-  /**
-   * Tells listeners (the API's event stream, so open app windows) that the merge under way
-   * started, moved on or ended: `merge-status` carries `mergeStatus()`, null once it ended.
-   */
-  private mergeChanged(): void {
-    this.emit('merge-status', this.mergeStatus());
-  }
-
-  /** A line in opsd.log on the merge of `ref` (AO-0161). */
-  private mergeLine(ref: string, text: string): void {
-    this.emit('merge', `${ref}: ${text}`);
-  }
-
-  /**
-   * Follows the check or build command of the merge under way: keeps it for `mergeStatus` and
-   * logs its start and its result.
-   */
-  private mergeCommand(kind: 'check' | 'build', s: CommandStep): void {
-    const m = this.merging;
-    if (!m) return;
-    const label = `${kind} ${s.index + 1}/${s.count} \`${s.command}\``;
-    if (!s.result) {
-      m.command = { text: s.command, index: s.index, count: s.count, startedAt: this.now() };
-      const where = kind === 'check' ? "swarmupd's worktree" : m.top;
-      const mins = Math.round(m.timeoutMs / 60_000);
-      this.mergeLine(m.ref, `${label} starts in ${where}, timeout ${mins} min`);
-      this.mergeChanged();
-      return;
-    }
-    const took = m.command ? elapsed(this.now() - m.command.startedAt) : '?';
-    const how = s.result.ok ? 'passed' : `failed (${s.result.why ?? 'exit ?'})`;
-    this.mergeLine(m.ref, `${label} ${how} after ${took}`);
-    m.command = null;
-    this.mergeChanged();
-  }
-
-  /**
-   * Holds the merge's checkout `top` from new writing runs, then waits for any writing run that
-   * started there during the checks to end, so the base never moves under it. Returns 'stopped'
-   * when swarmupd stops first, 'waited' after a wait, else 'free'.
-   */
-  private async holdCheckout(ref: string, top: string): Promise<'free' | 'waited' | 'stopped'> {
-    if (this.merging && !this.merging.holds) {
-      this.merging.holds = true;
-      this.mergeLine(ref, `holds ${top} from new writing runs until the build ends`);
-      this.mergeChanged();
-    }
-    let waited = false;
-    while (this.writerIn(top)) {
-      if (this.stopping) return 'stopped';
-      if (!waited) {
-        this.mergeStep('waiting');
-        this.emit('warn', `merge of ${ref}: waits for the writing run in ${top} to end`);
-      }
-      waited = true;
-      await sleep(MERGE_HOLD_POLL_MS);
-    }
-    if (this.stopping) return 'stopped';
-    return waited ? 'waited' : 'free';
-  }
-
-  /**
-   * Resolves once the merge under way, if any, is over; and first, a look at what earlier merge
-   * commands left running, with the merge it lets start.
-   */
-  async mergeSettled(): Promise<void> {
-    await this.mergeClearing;
-    await this.mergePlan;
-    await this.merging?.done;
-  }
-
-  /** When swarmupd first saw each root's merge setting; only verdicts after it are merged. */
-  private mergeSince(roots: string[]): Record<string, string> {
-    const since = this.store.readJson<Record<string, string>>('merge.json', {});
-    let changed = false;
-    for (const r of roots) {
-      if (since[r]) continue;
-      since[r] = new Date(this.now()).toISOString();
-      changed = true;
-    }
-    if (changed) this.store.writeJson('merge.json', since);
-    return since;
-  }
-
-  /** What merging `ref` takes, or null when the task has nothing for swarmupd to merge. */
-  private async mergeJob(
-    ws: Workspace,
-    ref: string,
-    cfg: MergeConfig,
-    since: string,
-  ): Promise<MergeJob | null> {
-    const { events } = ws.showEvents(ref);
-    let at = events.length - 1;
-    while (at >= 0 && events[at]!.type !== 'verdict') at--;
-    const verdict = events[at];
-    if (!verdict || verdict.verdict !== 'approve' || verdict.actor === MERGE_ACTOR) return null;
-    if (verdict.at < since) return null;
-    if (events.slice(at + 1).some((e) => e.actor === MERGE_ACTOR)) return null;
-    const reviews = events
-      .slice(0, at)
-      .reverse()
-      .filter((e) => e.type === 'review');
-    const review = reviews[0];
-    if (!review) return null;
-    const root = ws.resolve(ref).root;
-    const top = cfg.checkout ? resolve(cfg.checkout) : this.codeTopOf(root);
-    if (!top) return null;
-    const repo = new MergeRepo(top, '', [], this.commandEnv());
-    // A run may ask for review before it ends, then leave files that its sandbox could not
-    // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
-    // the review. The approval covers the review plus that note, so it is the source to merge;
-    // the branch named by the earlier review lacks the files (AO-0356).
-    const committed = committedRunSource(events);
-    const src =
-      committed ??
-      (await this.pickSource(
-        repo,
-        reviews.map((e) => e.body),
-        () => this.mergeHalted(),
-      ));
-    if (!src || src === 'halted') return null;
-    const what = src.commit
-      ? `${src.commit} on branch ${src.branch}`
-      : `branch ${src.branch ?? '?'}`;
-    const v = ws.view(ref);
-    const author = v.owner && !v.owner.includes('*') ? v.owner : review.actor;
-    return {
-      cfg,
-      top,
-      src,
-      what,
-      author,
-      human: root.config.human,
-      root: root.name,
-      review: review.body,
-    };
-  }
-
-  /**
-   * Picks what a task's review requests name (`pickMergeSource`), newest first in `texts`. A
-   * first pass that finds nothing lists every commit the pick may ask about; git answers them off
-   * the event loop, and the second pass picks from the answers. Each git answer may come after a
-   * stop: `halted` ends the pick there, not after every probe.
-   */
-  private async pickSource(
-    repo: MergeRepo,
-    texts: string[],
-    halted: () => boolean,
-  ): Promise<MergeSource | null | 'halted'> {
-    const commits = new Set<string>();
-    pickMergeSource(texts, {
-      branch: () => false,
-      commit: (sha) => {
-        commits.add(sha);
-        return false;
-      },
-    });
-    const branches = await repo.branches();
-    if (halted()) return 'halted';
-    const found = new Set<string>();
-    for (const sha of commits) {
-      if (await repo.hasCommit(sha)) found.add(sha);
-      if (halted()) return 'halted';
-    }
-    return pickMergeSource(texts, {
-      branch: (name) => branches.has(name),
-      commit: (sha) => found.has(sha),
-    });
-  }
-
-  /**
-   * Looks, before a merge, at the worktrees that hold the task's work: the one with the review's
-   * branch checked out (the repo's own checkout too, when a run worked there) and the task's own
-   * (`out/wt-<id>`). An approval covers what the review
-   * describes, and a run that could not commit leaves part of that as files there (AO-0300).
-   *
-   * - Clean, or no such worktree: null, and the merge takes the commit the review names.
-   * - Changes there, the run that asked for the approved review ended with swarmupd unable to commit
-   *   what it left ({@link uncommittedRun}), and the worktree is on the commit to merge: swarmupd
-   *   commits them on a branch of their own on top of it, and the merge takes that commit.
-   *   When a file changed again during that commit (`kept`), the commit is not all of what the
-   *   run left: `held` too, and nothing is merged. The worktree is read again after the commit,
-   *   and after a commit that found nothing to commit: changes still there mean `held` as well.
-   * - Any other changes: the task goes back to its author, who finds out whose they are (`held`).
-   * - A run still works there: `again`, so the next tick looks once more.
-   * - Git cannot list the worktrees, read one, or read the branch of an earlier attempt, or the
-   *   folder of a listed worktree cannot be looked at (only one that is gone is skipped): it
-   *   throws. An unread worktree is never taken for a clean one; {@link mergeOne} looks again.
-   *
-   * The commit leaves the worktree clean, and a merge can start again after it (the PC slept, a
-   * check timed out, swarmupd restarted). So with nothing to commit, the branch of an earlier
-   * attempt is looked up by its name and taken when it sits on the commit to merge.
-   */
-  private async worktreeLeftovers(
-    ref: string,
-    job: MergeJob,
-    source: string,
-    repo: MergeRepo,
-  ): Promise<{ commit: string; branch: string; what: string } | 'held' | 'again' | null> {
-    const ws = this.ws();
-    const id = ws.resolve(ref).id;
-    let list: WorktreeEntry[];
+  private closeState(): void {
     try {
-      list = parseWorktreeList(await repo.worktreeList());
-    } catch (err) {
-      if (err instanceof GitTimeout) throw err;
-      throw new Error(`cannot list the worktrees of ${job.top}: ${gitError(err)}`);
-    }
-    const mine: WorktreeEntry[] = [];
-    for (const w of list) {
-      // The repo's own checkout counts too when it has the review's branch checked out: a run
-      // without a task worktree (`task_worktrees: false`, an agent's own `cwd`) works there.
-      // Only the base of this merge is left out: the base of another root is a branch like any
-      // other here, and a review may name it.
-      if (
-        !(w.branch !== null && w.branch === job.src.branch && w.branch !== job.cfg.base) &&
-        taskIdOfWorktree(job.top, w.path)?.toLowerCase() !== id.toLowerCase()
-      ) {
-        continue;
-      }
-      // Git also lists a worktree whose folder was deleted, and that one holds no files. A
-      // folder swarmupd cannot look at (no access, a busy drive) is not a deleted one.
-      let gone: boolean;
-      try {
-        gone = repo.worktreeGone(w.path);
-      } catch (err) {
-        throw new Error(`cannot read the worktree ${resolve(w.path)}: ${gitError(err)}`);
-      }
-      if (!gone) mine.push(w);
-    }
-    let taken: { commit: string; branch: string; what: string } | null = null;
-    for (const w of mine) {
-      const path = resolve(w.path);
-      if (this.runsIn(path)) {
-        this.emit('warn', `merge of ${ref}: waits for the run in ${path} to end`);
-        return 'again';
-      }
-      const { changes } = await this.checkout(path).stateAsync();
-      // An unread worktree may hold part of the approved work: it never counts as a clean one.
-      if (changes instanceof Error) {
-        throw new Error(`cannot read the worktree ${path}: ${changes.message}`);
-      }
-      if (changes.length === 0) continue;
-      const run = uncommittedRun(ws.showEvents(ref).events);
-      let why =
-        'no run-end of the run that asked for this review says that swarmupd could not commit them';
-      let left = changes;
-      if (run && taken) {
-        why = 'swarmupd committed the changes of another worktree of the task already';
-      } else if (run && w.head !== source) {
-        why = `the worktree is on ${short(w.head)}, not on the commit to merge (${short(source)})`;
-      } else if (run) {
-        let c: Awaited<ReturnType<Checkout['commitLeftovers']>> | undefined;
-        try {
-          c = await this.checkout(path).commitLeftovers(
-            leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id),
-            `${ws.view(ref).meta.title}\n\nChanges run ${run.id} (${run.agent}) left uncommitted in ${path}; committed before the merge.\n`,
-            source,
-          );
-        } catch (err) {
-          why = `swarmupd could not commit them: ${firstLines(err instanceof Error ? err.message : String(err))}`;
-        }
-        if (c !== undefined) {
-          // Neither answer of the commit says that the worktree is clean now: null also comes
-          // when its tree equals the commit to merge while git still reports changes (a staged
-          // version of a file that was changed back, a change inside a submodule). So the
-          // worktree is read again, and only a clean one lets the merge go on.
-          const after = (await this.checkout(path).stateAsync()).changes;
-          if (after instanceof Error) {
-            throw new Error(`cannot read the worktree ${path}: ${after.message}`);
-          }
-          // A kept file changed after the commit's snapshot, or has a staged version the commit
-          // lacks: the commit is not all of what the run left, so it is never merged.
-          if (c && (c.kept.length > 0 || after.length > 0)) {
-            const { commit, branch } = c;
-            const still = [...new Set([...c.kept, ...after])];
-            const names = still.slice(0, 5).map((f) => `\`${f}\``);
-            const rest = still.length > 5 ? ` and ${still.length - 5} more` : '';
-            const how =
-              c.kept.length > 0
-                ? 'changed again or have a staged version the commit lacks'
-                : 'still show as changed after the commit';
-            this.safe(() =>
-              this.ws(MERGE_ACTOR).sendBack(
-                ref,
-                `swarmupd did not merge ${job.what}: while it committed what run ${run.id} left uncommitted in ${path}, ${still.length} file(s) there ${how} (${names.join(', ')}${rest}). ` +
-                  `They stay in the worktree as they are; the other files the run left are in ${short(commit)} on branch \`${branch}\`, on top of ${short(source)}. ` +
-                  'Put that commit and what belongs to the task of the files in the worktree on the task branch, then ask for review again. Delete nothing you did not make: ' +
-                  "for changes that are not the task's, ask who made them (`swarmup ask`).",
-                job.author,
-              ),
-            );
-            return 'held';
-          }
-          if (c) {
-            taken = {
-              commit: c.commit,
-              branch: c.branch,
-              what: `${short(c.commit)} on branch ${c.branch} (${job.what}, and the ${c.files.length} file(s) run ${run.id} left uncommitted in ${path})`,
-            };
-            this.mergeLine(
-              ref,
-              `committed ${c.files.length} file(s) run ${run.id} left in ${path} as ${short(c.commit)} on branch ${c.branch}`,
-            );
-            continue;
-          }
-          // Nothing to commit and nothing left: the changes went away in between.
-          if (after.length === 0) continue;
-          left = after;
-          why =
-            'swarmupd found nothing in them to commit: the files there equal the commit to merge ' +
-            '(a staged version of a file that was changed back, or a change inside a submodule)';
-        }
-      }
-      const shown = left.slice(0, 5).map((f) => `\`${f}\``);
-      const more = left.length > 5 ? ` and ${left.length - 5} more` : '';
-      this.safe(() =>
-        this.ws(MERGE_ACTOR).sendBack(
-          ref,
-          `swarmupd did not merge ${job.what}: the worktree ${path} has ${left.length} uncommitted change(s) (${shown.join(', ')}${more}) that the commit lacks, and ${why}. ` +
-            'Commit what belongs to the task on the branch and ask for review again. Delete nothing you did not make: ' +
-            "for changes that are not the task's, ask who made them (`swarmup ask`).",
-          job.author,
-        ),
-      );
-      return 'held';
-    }
-    if (taken) return taken;
-    const run = uncommittedRun(ws.showEvents(ref).events);
-    if (!run) return null;
-    const branch = leftoverBranch(runtimeOf(run.agent), `${run.id}-merge`, id);
-    const commit = await repo.branchOn(branch, source);
-    if (!commit) return null;
-    return {
-      commit,
-      branch,
-      what: `${short(commit)} on branch ${branch} (${job.what}, and what run ${run.id} left uncommitted, committed by an earlier start of this merge)`,
-    };
-  }
-
-  /**
-   * Reads the task worktrees without ever turning an unread one into an empty one. A transient
-   * failure makes this merge start again; after repeated failures {@link startMerge} tells the
-   * human and leaves the approval waiting, as before AO-0330's second look at the no-merge path.
-   */
-  private async checkedWorktreeLeftovers(
-    ref: string,
-    job: MergeJob,
-    source: string,
-    repo: MergeRepo,
-  ): Promise<
-    { commit: string; branch: string; what: string } | 'held' | 'again' | 'look-again' | null
-  > {
-    try {
-      return await this.worktreeLeftovers(ref, job, source, repo);
-    } catch (err) {
-      const looks = (this.mergeLooks.get(ref) ?? 0) + 1;
-      if (looks >= MERGE_LOOKS) {
-        this.mergeLooks.delete(ref);
-        if (err instanceof GitTimeout) throw err;
-        const m = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `${firstLines(m)} (${MERGE_LOOKS} times in a row). Nothing is merged: swarmupd cannot tell whether the task's worktree holds changes the commit lacks. Check that git works there`,
-        );
-      }
-      this.mergeLooks.set(ref, looks);
-      const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-      this.emit('warn', `merge of ${ref}: ${firstLines(msg)}; nothing merged, looks again`);
-      return 'look-again';
-    }
-  }
-
-  /**
-   * Rebases the approved commit onto the base in swarmupd's worktree, runs the checks there, moves
-   * the base forward, and builds it in its checkout. A conflict or a failed check sends the
-   * task back to its author; nothing is ever forced. When the base moved in the meantime (a
-   * task store sync, say), the rebase runs again, and the checks too unless only task store
-   * files changed.
-   */
-  private async mergeOne(
-    ref: string,
-    planned: MergeJob,
-    runner: CommandRunner,
-  ): Promise<void | 'again'> {
-    let job = planned;
-    const { cfg, top } = job;
-    let src = job.src;
-    const repo = this.mergeRepoOf(job);
-    let source = src.commit
-      ? await repo.commit(src.commit)
-      : src.branch
-        ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
-        : null;
-    if (!source) {
-      const missing = src.commit ? `commit ${src.commit}` : `branch ${src.branch}`;
-      this.mergeNote(
-        ref,
-        `swarmupd cannot merge ${job.what}: ${missing} is not in ${top}`,
-        job.human,
-      );
-      return;
-    }
-    if (!(await repo.commit(`refs/heads/${cfg.base}`))) {
-      this.mergeNote(
-        ref,
-        `swarmupd cannot merge ${job.what}: no branch ${cfg.base} in ${top}`,
-        job.human,
-      );
-      return;
-    }
-    // What a run left uncommitted in the task's worktree is part of the approved work (AO-0300).
-    // A look that fails says nothing about what is there, so the merge waits and looks again;
-    // after MERGE_LOOKS failed looks in a row the human hears of it and nothing is merged.
-    const left = await this.checkedWorktreeLeftovers(ref, job, source, repo);
-    if (left === 'look-again') return 'again';
-    if (left === 'held') {
-      this.mergeLooks.delete(ref);
-      return;
-    }
-    if (left === 'again') {
-      this.mergeLooks.delete(ref);
-      return 'again';
-    }
-    if (left) {
-      source = left.commit;
-      src = { commit: left.commit, branch: left.branch };
-      job = { ...job, src, what: left.what };
-      if (this.merging) this.merging.what = left.what;
-    }
-    const approved = source;
-    const timeout = mergeTimeout(cfg);
-    let checked: string | null = null;
-    let checks: CommandResult[] = [];
-    let merged: { head: string; onto: string } | null = null;
-    let refused = '';
-    let waited = false;
-    for (let attempt = 0; attempt < MERGE_ATTEMPTS && !merged; attempt++) {
-      if (attempt > 0) await sleep(MERGE_RETRY_MS);
-      if (this.stopping) return;
-      const onto = (await repo.commit(`refs/heads/${cfg.base}`))!;
-      this.mergeStep('rebase', `rebases onto ${cfg.base} (${short(onto)}) again`);
-      await repo.ensureWorktree(onto);
-      let r: { head: string } | { conflict: string } = await repo.rebase(approved, onto);
-      if ('conflict' in r) {
-        // A rebase replays every commit, so a branch that merged the base to resolve a conflict
-        // hits it again; a merge commit compares only the two tips. History stays linear when
-        // the rebase works.
-        const m = await repo.mergeInto(approved, onto, `Merge ${job.what} into ${cfg.base}`);
-        if ('conflict' in m) {
-          this.mergeLooks.delete(ref);
-          this.mergeConflictBack(ref, job.what, job.author, cfg.base, onto, m.files, m.conflict);
-          return;
-        }
-        this.mergeStep('rebase', `merges into ${cfg.base} (${short(onto)}) with a merge commit`);
-        r = m;
-      }
-      if (r.head === onto) {
-        // The task worktree may have changed after the look at the start of this merge (a run's
-        // wrap-up can finish while git prepares swarmupd's worktree). Look at it at the exact
-        // point that would otherwise record "already in main": staged or unstaged files must be
-        // committed under AO-0300's rules or send the task back, never be hidden by no_merge.
-        const late = await this.checkedWorktreeLeftovers(ref, job, approved, repo);
-        if (late === 'look-again') return 'again';
-        if (late === 'held') {
-          this.mergeLooks.delete(ref);
-          return;
-        }
-        if (late === 'again') return 'again';
-        this.mergeLooks.delete(ref);
-        if (late) return 'again';
-        const lacks = await this.unmergedNamed(repo, job, approved, onto);
-        if (lacks.length > 0) {
-          this.mergeLacks(ref, job, lacks, onto);
-          return;
-        }
-        this.mergeRecord(
-          { ref, base: cfg.base, branch: src.branch, commit: onto },
-          `${job.what} is already in ${cfg.base}; nothing to merge.`,
-        );
-        if (src.branch) {
-          const { branch } = src;
-          this.safe(() => this.branchMerged(ref, job.root, branch, approved, cfg.base, onto));
-        }
-        return;
-      }
-      this.mergeLooks.delete(ref);
-      // Task store files on a branch would overwrite the live store in the checkout.
-      const store = await repo.storeFiles(onto, r.head);
-      if (store.length > 0) {
-        const more = store.length > 3 ? ` and ${store.length - 3} more` : '';
-        this.mergeBack(
-          ref,
-          job.what,
-          job.author,
-          `it changes task store files (${store.slice(0, 3).join(', ')}${more}); take them out of the branch`,
-          '',
-        );
-        return;
-      }
-      if (!checked || !(await repo.sameCode(checked, r.head))) {
-        // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
-        if (this.merging) this.merging.holds = false;
-        this.mergeStep('checks');
-        checks = await runner.runAll(
-          cfg.checks ?? [],
-          repo.worktree,
-          timeout,
-          (s) => this.mergeCommand('check', s),
-          this.electronEnv(this.commandEnv(), repo.worktree, top),
-        );
-        this.shareElectron(repo.worktree);
-        const failed = checks.find((c) => !c.ok);
-        // Stopped with swarmupd: the next swarmupd merges it from the start.
-        if (failed?.why === 'stopped') return;
-        // The PC slept during the checks: the next tick merges it from the start (AO-0151).
-        if (failed?.interrupted) {
-          this.emit(
-            'warn',
-            `merge of ${ref}: \`${failed.command}\` failed (${failed.why}) after the PC slept or swarmupd stopped responding; merging again`,
-          );
-          return 'again';
-        }
-        // A check that hangs may be the machine, not the code: merged again once (AO-0172).
-        if (failed?.timedOut && !this.mergeTimedOut.has(ref)) {
-          this.mergeTimedOut.add(ref);
-          this.emit(
-            'warn',
-            `merge of ${ref}: \`${failed.command}\` ${failed.why}; swarmupd stopped it and merges once more`,
-          );
-          return 'again';
-        }
-        if (failed) {
-          this.mergeBack(
-            ref,
-            job.what,
-            job.author,
-            `\`${failed.command}\` failed (${failed.why}) on it rebased onto ${cfg.base} (${short(onto)})`,
-            failed.output,
-          );
-          return;
-        }
-        checked = r.head;
-      }
-      // Moving the base changes the checkout: from here until the build is over, it is held.
-      const hold = await this.holdCheckout(ref, top);
-      if (hold === 'stopped') return;
-      if (hold === 'waited' && !waited) {
-        // The base likely moved during the wait (task store syncs): rebase onto it again, without
-        // counting the wait as a failed attempt. New writing runs wait now, so this happens once.
-        waited = true;
-        if ((await repo.commit(`refs/heads/${cfg.base}`)) !== onto) {
-          attempt--;
-          continue;
-        }
-      }
-      // Recorded before the base moves, so no task store sync sees the merged commits unapproved.
-      this.approveCommits(top, cfg.base, await repo.patchKeys(onto, r.head));
-      try {
-        if ((await repo.fastForward(cfg.base, onto, r.head)) === 'done')
-          merged = { head: r.head, onto };
-        else refused = `${cfg.base} kept moving`;
-      } catch (err) {
-        // A hung git is not tried again while the checkout stays held (AO-0172).
-        if (err instanceof GitTimeout) {
-          err.stage = 'fast-forward';
-          throw err;
-        }
-        // Local changes in the way, or a lock another git command holds: tried again shortly.
-        refused = firstLines(err instanceof Error ? err.message : String(err));
-      }
-    }
-    if (!merged) {
-      const why = `${cfg.base} did not move: ${refused}`;
-      this.mergeNote(ref, `swarmupd could not merge ${job.what}; ${why}`, job.human);
-      return;
-    }
-    if (src.branch) {
-      const { branch } = src;
-      const { head } = merged;
-      this.safe(() => this.branchMerged(ref, job.root, branch, approved, cfg.base, head));
-    }
-    // A code checkout with no task store (`swarmupd.code`) has no store sync to push its base, so the
-    // merged commit is pushed here (AO-0252). A `merge.checkout` without `swarmupd.code` is left as
-    // it was: nothing pushed its base before.
-    if (
-      this.config.code[job.root] &&
-      !this.holdsStore(top) &&
-      this.config.push_branches[job.root] !== false
-    ) {
-      const head = merged.head;
-      void this.syncWork(() => this.pushBase(ref, top, cfg.base, head));
-    }
-    const changed = await repo.changedFiles(merged.onto, merged.head);
-    const files = changed.length;
-    const installDirs = lockfileDirs(changed);
-    const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
-    const passed =
-      checks.length > 0
-        ? ` Checks passed: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
-    // Saved before the build, so a swarmupd that stops during it leaves the build to the next one.
-    const pending: PendingBuild = {
-      ref,
-      root: job.root,
-      top,
-      base: cfg.base,
-      branch: src.branch,
-      commit: merged.head,
-      what: job.what,
-      author: job.author,
-      human: job.human,
-      ...(opsdCode.length > 0 ? { opsdCode } : {}),
-      ...(installDirs.length > 0 ? { install: installDirs } : {}),
-      text: `Merged ${job.what} into ${cfg.base} as ${short(merged.head)}, rebased onto ${short(merged.onto)} (${files} file(s)).${passed}`,
-    };
-    this.savePendingBuild(pending);
-    await this.buildMerged(pending, cfg, runner);
-  }
-
-  /**
-   * Merges approved tasks of one root together (AO-0381). Each task's commit and what a run left
-   * in its worktree are read as {@link mergeOne} reads them. A task that cannot go on now (a run
-   * still works in its worktree, git cannot read it) stays for a later tick; one whose commit is
-   * missing merges alone, which tells the human. The rest go to {@link mergeGroup}.
-   *
-   * Each task keeps its own retry state: one that got no terminal result is read again by the next
-   * tick, while one that got a merge event, send-back or final note is marked seen now.
-   */
-  private async mergeBatch(
-    items: { ref: string; job: MergeJob }[],
-    runner: CommandRunner,
-  ): Promise<void | 'again'> {
-    const lead = items[0]!.job;
-    const repo = this.mergeRepoOf(lead);
-    const ready: BatchItem[] = [];
-    const alone: BatchItem[] = [];
-    const retry = new Set(items.map((item) => item.ref));
-    const terminal = (ref: string): void => {
-      retry.delete(ref);
-      this.safe(() => {
-        const last = this.ws().view(ref).lastEvent;
-        if (last && !this.stopping) this.mergeSeen.set(ref, last);
-      });
-    };
-    for (const { ref, job } of items) {
-      if (this.stopping) return 'again';
-      const { src } = job;
-      // A git that hangs on one task's commit or worktree is that task's: it leaves the batch
-      // and merges alone, where a timeout ends the merge and tells the human about it.
-      const timedOut = (err: unknown): boolean => {
-        if (!(err instanceof GitTimeout)) return false;
-        this.mergeLine(ref, `git timed out reading it; merges alone after the batch`);
-        alone.push({ ref, planned: job, job, approved: '' });
-        return true;
-      };
-      let source: string | null;
-      try {
-        source = src.commit
-          ? await repo.commit(src.commit)
-          : src.branch
-            ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
-            : null;
-      } catch (err) {
-        if (timedOut(err)) continue;
-        throw err;
-      }
-      if (!source) {
-        alone.push({ ref, planned: job, job, approved: '' });
-        continue;
-      }
-      let left: Awaited<ReturnType<Supervisor['checkedWorktreeLeftovers']>>;
-      try {
-        left = await this.checkedWorktreeLeftovers(ref, job, source, repo);
-      } catch (err) {
-        if (timedOut(err)) continue;
-        // What `startMerge` tells for a merge of this task alone; the others go on.
-        const msg = redactSecrets(err instanceof Error ? err.message : String(err));
-        this.emit('warn', `merge of ${ref}: ${msg}`);
-        this.mergeNote(ref, `swarmupd could not merge ${job.what}: ${firstLines(msg)}`, job.human);
-        terminal(ref);
-        continue;
-      }
-      if (left === 'again' || left === 'look-again') continue;
-      this.mergeLooks.delete(ref);
-      if (left === 'held') {
-        terminal(ref);
-        continue;
-      }
-      if (!left) {
-        ready.push({ ref, planned: job, job, approved: source });
-        continue;
-      }
-      const taken = { ...job, src: { commit: left.commit, branch: left.branch }, what: left.what };
-      ready.push({ ref, planned: job, job: taken, approved: left.commit });
-    }
-    if (!(await repo.commit(`refs/heads/${lead.cfg.base}`))) {
-      // Each merge alone tells the human that the base is missing.
-      alone.unshift(...ready.splice(0));
-    }
-    await this.mergeGroup(ready, repo, runner, terminal);
-    for (const item of alone) await this.mergeAlone(item, runner, terminal);
-    return retry.size > 0 ? 'again' : undefined;
-  }
-
-  /**
-   * Merges `items` with one run of the checks on all of them rebased in turn (see
-   * {@link mergeCandidate}). When the checks fail, the group splits in two halves, each merged
-   * the same way, so only the task that breaks the checks goes back, merged alone as
-   * {@link mergeOne} merges it. A task that does not rebase onto the ones before it, adds nothing
-   * to them or changes task store files leaves the group and merges alone after it.
-   */
-  private async mergeGroup(
-    items: BatchItem[],
-    repo: MergeRepo,
-    runner: CommandRunner,
-    terminal: (ref: string) => void,
-  ): Promise<void> {
-    if (this.stopping || items.length === 0) return;
-    if (items.length === 1) {
-      await this.mergeAlone(items[0]!, runner, terminal);
-      return;
-    }
-    const r = await this.mergeCandidate(items, repo, runner, terminal);
-    if (r === 'done' || r === 'again') return;
-    if (r === 'failed') {
-      const half = Math.ceil(items.length / 2);
-      const ids = (list: BatchItem[]): string => this.batchIds(list).join(', ');
-      this.mergeLine(
-        items[0]!.ref,
-        `splits the batch: checks ${ids(items.slice(0, half))}, then ${ids(items.slice(half))}`,
-      );
-      await this.mergeGroup(items.slice(0, half), repo, runner, terminal);
-      await this.mergeGroup(items.slice(half), repo, runner, terminal);
-      return;
-    }
-    await this.mergeGroup(
-      items.filter((i) => !r.includes(i)),
-      repo,
-      runner,
-      terminal,
-    );
-    for (const item of r) await this.mergeAlone(item, runner, terminal);
-  }
-
-  /** Merges one task of a batch as a merge of it alone does (`mergeOne`). */
-  private async mergeAlone(
-    item: BatchItem,
-    runner: CommandRunner,
-    terminal: (ref: string) => void,
-  ): Promise<void> {
-    if (this.stopping) return;
-    if (this.merging) {
-      this.merging.ref = item.ref;
-      this.merging.what = item.planned.what;
-      this.mergeChanged();
-    }
-    const r = await this.mergeOne(item.ref, item.planned, runner);
-    // The one more merge after a check timed out is for this merge only (AO-0172).
-    if (r !== 'again') {
-      this.mergeTimedOut.delete(item.ref);
-      if (!this.stopping) terminal(item.ref);
-    }
-  }
-
-  /**
-   * Rebases `items` in turn onto the base in swarmupd's worktree, runs the checks once on the
-   * last commit, moves the base there and builds it. Each task gets its own merge event with the
-   * commit that holds it; the last one carries the build's result. Returns the tasks that left
-   * the group (see {@link mergeGroup}), `failed` when the checks failed on the group, else
-   * `again` when stopping or the PC's sleep left every task retryable, or `done` after a merge or
-   * a final note for every task.
-   */
-  private async mergeCandidate(
-    items: BatchItem[],
-    repo: MergeRepo,
-    runner: CommandRunner,
-    terminal: (ref: string) => void,
-  ): Promise<BatchItem[] | 'failed' | 'again' | 'done'> {
-    const { cfg, top, root, human } = items[0]!.job;
-    const lead = items[0]!.ref;
-    const ids = this.batchIds(items);
-    const named = ids.join(', ');
-    if (this.merging) {
-      this.merging.ref = lead;
-      this.merging.what = `${items.length} approved tasks (${named})`;
-      this.mergeChanged();
-    }
-    const timeout = mergeTimeout(cfg);
-    let checked: string | null = null;
-    let checks: CommandResult[] = [];
-    let refused = '';
-    let waited = false;
-    let merged: { onto: string; head: string; heads: string[] } | null = null;
-    for (let attempt = 0; attempt < MERGE_ATTEMPTS && !merged; attempt++) {
-      if (attempt > 0) await sleep(MERGE_RETRY_MS);
-      if (this.stopping) return 'again';
-      const onto = await repo.commit(`refs/heads/${cfg.base}`);
-      // Each merge alone tells the human that the base is gone.
-      if (!onto) return items;
-      this.mergeStep('rebase');
-      this.mergeLine(lead, `rebases ${named} in turn onto ${cfg.base} (${short(onto)})`);
-      await repo.ensureWorktree(onto);
-      let head = onto;
-      const heads: string[] = [];
-      const out: BatchItem[] = [];
-      for (const item of items) {
-        let r: Awaited<ReturnType<MergeRepo['rebase']>>;
-        let stored: string[] = [];
-        try {
-          r = await repo.rebase(item.approved, head);
-          if (!('conflict' in r) && r.head !== head) stored = await repo.storeFiles(head, r.head);
-        } catch (err) {
-          if (!(err instanceof GitTimeout)) throw err;
-          // A git that hangs on one task is that task's: it merges alone, where a timeout ends
-          // the merge and tells the human. The rest rebase again from a clean worktree.
-          out.push(item);
-          this.mergeLine(item.ref, `git timed out rebasing it; merges alone after the batch`);
-          break;
-        }
-        let why = '';
-        if ('conflict' in r) why = 'does not rebase onto the tasks before it in the batch';
-        else if (r.head === head) why = 'adds nothing to the base and the tasks before it';
-        else if (stored.length > 0) why = 'changes task store files';
-        if (why || 'conflict' in r) {
-          out.push(item);
-          this.mergeLine(item.ref, `${why}; merges alone after the batch`);
-          continue;
-        }
-        head = r.head;
-        heads.push(head);
-      }
-      if (out.length > 0) return out;
-      if (!checked || !(await repo.sameCode(checked, head))) {
-        // The checks run in swarmupd's worktree: writing runs in the checkout go on meanwhile.
-        if (this.merging) this.merging.holds = false;
-        this.mergeStep('checks');
-        this.mergeLine(
-          lead,
-          `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
-        );
-        checks = await runner.runAll(
-          cfg.checks ?? [],
-          repo.worktree,
-          timeout,
-          (s) => this.mergeCommand('check', s),
-          this.electronEnv(this.commandEnv(), repo.worktree, top),
-        );
-        this.shareElectron(repo.worktree);
-        const failed = checks.find((c) => !c.ok);
-        if (failed?.why === 'stopped') return 'again';
-        if (failed?.interrupted) {
-          this.emit(
-            'warn',
-            `merge of ${named}: \`${failed.command}\` failed (${failed.why}) after the PC slept or swarmupd stopped responding; merging again`,
-          );
-          return 'again';
-        }
-        if (failed) {
-          // A timeout too: the halves run again, and a task alone keeps its one retry (AO-0172).
-          this.mergeLine(
-            lead,
-            `\`${failed.command}\` failed (${failed.why}) on the batch (${named})`,
-          );
-          return 'failed';
-        }
-        checked = head;
-      }
-      const hold = await this.holdCheckout(lead, top);
-      if (hold === 'stopped') return 'again';
-      if (hold === 'waited' && !waited) {
-        waited = true;
-        if ((await repo.commit(`refs/heads/${cfg.base}`)) !== onto) {
-          attempt--;
-          continue;
-        }
-      }
-      // Recorded before the base moves, so no task store sync sees the merged commits unapproved.
-      this.approveCommits(top, cfg.base, await repo.patchKeys(onto, head));
-      try {
-        if ((await repo.fastForward(cfg.base, onto, head)) === 'done') {
-          merged = { onto, head, heads };
-        } else refused = `${cfg.base} kept moving`;
-      } catch (err) {
-        if (err instanceof GitTimeout) {
-          err.stage = 'fast-forward';
-          throw err;
-        }
-        refused = firstLines(err instanceof Error ? err.message : String(err));
-      }
-    }
-    if (!merged) {
-      for (const item of items) {
-        this.mergeNote(
-          item.ref,
-          `swarmupd could not merge ${item.job.what} in a batch with ${ids.length - 1} other task(s); ${cfg.base} did not move: ${refused}`,
-          human,
-        );
-        terminal(item.ref);
-      }
-      return 'done';
-    }
-    const { onto, head, heads } = merged;
-    this.mergeLine(
-      lead,
-      `moved ${cfg.base} to ${short(head)} with ${named} after one run of the checks`,
-    );
-    for (const [n, item] of items.entries()) {
-      this.mergeLooks.delete(item.ref);
-      this.mergeTimedOut.delete(item.ref);
-      const { branch } = item.job.src;
-      if (branch) {
-        const at = heads[n]!;
-        this.safe(() => this.branchMerged(item.ref, root, branch, item.approved, cfg.base, at));
-      }
-    }
-    const last = items.at(-1)!;
-    // As in `mergeOne`: a code checkout with no task store pushes its base here (AO-0252).
-    if (
-      this.config.code[root] &&
-      !this.holdsStore(top) &&
-      this.config.push_branches[root] !== false
-    ) {
-      void this.syncWork(() => this.pushBase(last.ref, top, cfg.base, head));
-    }
-    const changed = await repo.changedFiles(onto, head);
-    const installDirs = lockfileDirs(changed);
-    const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
-    const passed =
-      checks.length > 0
-        ? ` Checks passed once for the batch: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
-    const lastId = ids.at(-1)!;
-    const others = (n: number): string => ids.filter((_, i) => i !== n).join(', ');
-    const batch = `${cfg.base} moved from ${short(onto)} to ${short(head)} (${changed.length} file(s))`;
-    for (const [n, item] of items.slice(0, -1).entries()) {
-      this.mergeRecord(
-        { ref: item.ref, base: cfg.base, branch: item.job.src.branch, commit: heads[n]! },
-        `Merged ${item.job.what} into ${cfg.base} as ${short(heads[n]!)}, in one batch with ${others(n)}: ${batch}.${passed} The build's result is on the merge event of ${lastId}.`,
-      );
-      terminal(item.ref);
-    }
-    const pending: PendingBuild = {
-      ref: last.ref,
-      root,
-      top,
-      base: cfg.base,
-      branch: last.job.src.branch,
-      commit: head,
-      what: last.job.what,
-      author: last.job.author,
-      human: last.job.human,
-      ...(opsdCode.length > 0 ? { opsdCode } : {}),
-      ...(installDirs.length > 0 ? { install: installDirs } : {}),
-      text: `Merged ${last.job.what} into ${cfg.base} as ${short(head)}, in one batch with ${others(items.length - 1)}: ${batch}.${passed}`,
-    };
-    this.savePendingBuild(pending);
-    await this.buildMerged(pending, cfg, runner);
-    if (!this.stopping) terminal(last.ref);
-    return 'done';
-  }
-
-  /** The task ids of `items`, for lines and events. */
-  private batchIds(items: BatchItem[]): string[] {
-    const ws = this.ws();
-    return items.map((i) => ws.resolve(i.ref).id);
-  }
-
-  /** The repo of a merge, with swarmupd's worktree for its rebases and checks. */
-  private mergeRepoOf(job: MergeJob): MergeRepo {
-    return new MergeRepo(
-      job.top,
-      join(this.store.dir, 'merge', job.root.replace(/[^A-Za-z0-9._-]/g, '-')),
-      this.ws().roots.map((r) => r.dir),
-      this.commandEnv(),
-      this.mergeGitTimeoutMs,
-    );
-  }
-
-  /**
-   * Runs the build of a base swarmupd moved forward, in its checkout, and records the merge with the
-   * build's result. A failed build sends the task back. A build stopped with swarmupd stays pending:
-   * the merge is recorded now, and the next swarmupd runs the build again and comments on the result.
-   */
-  private async buildMerged(
-    p: PendingBuild,
-    cfg: MergeConfig,
-    runner: CommandRunner,
-  ): Promise<void> {
-    const timeout = mergeTimeout(cfg);
-    this.mergeStep('build', `moved ${p.base} to ${short(p.commit)}; builds it in ${p.top}`);
-    // The checks installed new dependencies in swarmupd's worktree only; the checkout gets them here.
-    const steps = cfg.build ?? [];
-    const dirs = p.install === true ? ['.'] : (p.install ?? []);
-    const install = steps.length > 0 ? installSteps(cfg.install, p.top, dirs) : [];
-    let build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
-      this.mergeCommand('build', s),
-    );
-    let installs = install.length;
-    // An install step with nothing to do leaves no result (AO-0229), so a result's place in the
-    // list it came from, not in `build`, tells an install from a build step.
-    const isInstall = (c: CommandResult): boolean => (c.entry ?? build.indexOf(c)) < installs;
-    let broke = build.find((c) => !c.ok);
-    // A build step that fails in a checkout swarmupd did not install in may only miss its
-    // dependencies: `node_modules` gone, behind a lockfile another commit changed, or in the
-    // middle of someone's install. The checks passed on this code, so the checkout gets one
-    // install and the build one more try before anyone hears of it (AO-0232).
-    let first: CommandResult | null = null;
-    const again = dirs.includes('.') ? [] : installSteps(cfg.install, p.top, ['.']);
-    if (
-      broke &&
-      !isInstall(broke) &&
-      broke.why !== 'stopped' &&
-      !broke.interrupted &&
-      again.length > 0
-    ) {
-      first = broke;
-      this.emit(
-        'warn',
-        `merge of ${p.ref}: build \`${broke.command}\` failed (${broke.why}) in ${p.top}; swarmupd installs the dependencies there and builds once more`,
-      );
-      build = await runner.runAll([...again, ...steps], p.top, timeout, (s) =>
-        this.mergeCommand('build', s),
-      );
-      installs = again.length;
-      broke = build.find((c) => !c.ok);
-    }
-    // Stopped with swarmupd, or broken by the PC's sleep: the build stays pending, and the next swarmupd,
-    // or for a sleep the next tick, runs it again.
-    if (broke?.why === 'stopped' || broke?.interrupted) {
-      const why =
-        broke.why === 'stopped'
-          ? 'was stopped with swarmupd; the next swarmupd runs the build again'
-          : `failed (${broke.why}) after the PC slept or swarmupd stopped responding; swarmupd runs the build again`;
-      if (p.text !== null) {
-        this.mergeRecord(p, `${p.text} Build: \`${broke.command}\` ${why}.`);
-        this.savePendingBuild({ ...p, text: null });
-      } else if (broke.interrupted) {
-        this.emit('warn', `merge of ${p.ref}: build \`${broke.command}\` ${why}`);
-      }
-      return;
-    }
-    const commands = build.map((c) => `\`${c.command}\``).join(', ');
-    if (p.text !== null) {
-      const built =
-        build.length === 0
-          ? ''
-          : broke
-            ? ` Build: \`${broke.command}\` failed (${broke.why}).`
-            : first
-              ? ` Built with ${commands}, after \`${first.command}\` failed (${first.why}) before the install.`
-              : ` Built with ${commands}.`;
-      this.mergeRecord(p, `${p.text}${built}`);
-    } else if (!broke && build.length > 0) {
-      this.mergeNote(
-        p.ref,
-        `Built ${p.base} with ${commands} after the earlier build did not finish (${short(p.commit)}).`,
-      );
-    }
-    this.dropPendingBuild(p.ref);
-    // Once per merge: a build stopped with swarmupd returned above, and the next swarmupd tells.
-    this.tellNotLive(p, build.length > 0 && !broke);
-    if (!broke) return;
-    // A failed install says nothing about the merged code: the human hears of it, and the task
-    // stays closed (AO-0232).
-    if (isInstall(broke)) {
-      this.mergeEnvFailure(p, broke);
-      return;
-    }
-    const retried = first ? ', also after swarmupd installed the dependencies there' : '';
-    this.mergeBack(
-      p.ref,
-      p.what,
-      p.author,
-      `${p.base} has it as ${short(p.commit)}, but \`${broke.command}\` failed (${broke.why}) in ${p.top}${retried}; fix it in a new commit`,
-      broke.output,
-    );
-  }
-
-  /**
-   * Tells the human that the checkout of a merged base could not get its dependencies, so its
-   * build did not run. The merge stands and the task keeps its state: the author has nothing to
-   * fix. The output goes to a log file, without lines that look like secrets.
-   */
-  private mergeEnvFailure(p: PendingBuild, broke: CommandResult): void {
-    this.safe(() => {
-      const ws = this.ws(MERGE_ACTOR);
-      const human = this.user.me ?? p.human ?? ws.roots[0]?.config.human;
-      const safe = redactSecrets(broke.output);
-      const log = this.mergeLog(p.ref, safe);
-      const out = lastLines(safe);
-      const head =
-        `${ws.resolve(p.ref).id}: swarmupd merged ${p.what} into \`${p.base}\` as ${short(p.commit)}, ` +
-        `but could not install the dependencies in \`${p.top}\`: \`${broke.command}\` failed ` +
-        `(${broke.why}), so the build there did not run. This is the checkout, not the merged ` +
-        'code: the task stays as it is.';
-      const tail =
-        `Action: once no other install runs in \`${p.top}\`, install the dependencies and run ` +
-        `the build there.${log ? ` Full output: ${log}` : ''}`;
-      const fence = '```';
-      ws.comment(
-        p.ref,
-        out ? `${head}\n\n${fence}\n${out}\n${fence}\n\n${tail}` : `${head} ${tail}`,
-        human,
-      );
-    });
-  }
-
-  /** Builds an earlier swarmupd left pending, by task. */
-  private pendingBuilds(): Record<string, PendingBuild> {
-    return this.store.readJson<Record<string, PendingBuild>>('merge-builds.json', {});
-  }
-
-  private savePendingBuild(p: PendingBuild): void {
-    this.store.writeJson('merge-builds.json', { ...this.pendingBuilds(), [p.ref]: p });
-  }
-
-  private dropPendingBuild(ref: string): void {
-    const all = this.pendingBuilds();
-    if (!(ref in all)) return;
-    delete all[ref];
-    this.store.writeJson('merge-builds.json', all);
-  }
-
-  /**
-   * The commits the approved review request mentions that the base lacks, when the merge took
-   * something else than that request's own `<commit> on branch <name>`: a branch the request
-   * names loosely, or what an earlier request names. Such a source can be an empty branch while
-   * the approved commit never reached the repo (AO-0325, after AO-0290: its commit sat in a
-   * bundle, and the earlier request's branch pointed at the base). A commit counts as in the
-   * base when it is an ancestor of it, or of the source, whose changes the rebase found there.
-   */
-  private async unmergedNamed(
-    repo: MergeRepo,
-    job: MergeJob,
-    source: string,
-    onto: string,
-  ): Promise<string[]> {
-    if (reviewSources(job.review).named) return [];
-    const lacks: string[] = [];
-    for (const sha of reviewCommits(job.review)) {
-      const commit = await repo.commit(sha);
-      const there =
-        !!commit &&
-        ((await repo.isAncestor(commit, onto)) || (await repo.isAncestor(commit, source)));
-      if (!there) lacks.push(sha);
-    }
-    return lacks;
-  }
-
-  /**
-   * Files a finding, linked from the task, that its approved work is not in the base. No merge
-   * event: the task keeps waiting for its merge, and so do the tasks blocked on it (AO-0325).
-   */
-  private mergeLacks(ref: string, job: MergeJob, lacks: string[], onto: string): void {
-    const { base } = job.cfg;
-    const ws = this.ws(MERGE_ACTOR);
-    const id = ws.resolve(ref).id;
-    const names = lacks.map((c) => `\`${c}\``).join(', ');
-    const title = `${id} is approved, but its work is not in ${base}: swarmupd found nothing to merge`;
-    const body = [
-      `swarmupd merged nothing for ${id}. Its approved review request names ${names}, and ` +
-        `${base} (${short(onto)}) does not have ${lacks.length === 1 ? 'it' : 'them'}. That ` +
-        `request has no \`<commit> on branch <name>\`, so swarmupd took ${job.what} from a looser ` +
-        `or earlier mention, and that is already in ${base}.`,
-      `${id} stays approved and waits for its merge; the tasks blocked on it stay blocked.`,
-      `Triage: get the named commit into \`${job.top}\` (fetch its branch or bundle), then reopen ` +
-        `${id} with a review request that says \`<commit> on branch <name>\`. If the work is in ` +
-        `${base} after all, free each blocked task with \`swarmup unblock\`.`,
-    ].join('\n\n');
-    try {
-      ws.finding({ title, body, owner: this.pmFor(ws), priority: 'p1', task: ref });
-    } catch (err) {
-      // The note alone keeps the merge from being taken for done.
-      this.emit('warn', `merge of ${ref}: cannot file a finding: ${String(err)}`);
-      this.mergeNote(ref, `${title}.\n\n${body}`, job.human);
-    }
-  }
-
-  /** The merge event, with the commit the base moved to. */
-  private mergeRecord(
-    p: { ref: string; base: string; branch?: string; commit: string },
-    text: string,
-  ): void {
-    this.ws(MERGE_ACTOR).recordMerge(
-      p.ref,
-      { commit: p.commit, into: p.base, branch: p.branch },
-      text,
-    );
-  }
-
-  /**
-   * Sends the task back to its author with what failed and the end of its output. Lines that look
-   * like secrets are taken out of the output before it is kept anywhere, log file included.
-   */
-  /**
-   * Sends approved work back whose merge conflicts with the base. The author merges the base into
-   * the branch instead of rebasing, so the approved commits stay as they are; wake starts that run
-   * ahead of other work and past the project's run limit, and the review that follows covers only
-   * the merge commit's resolution (see {@link MERGE_CONFLICT}).
-   */
-  private mergeConflictBack(
-    ref: string,
-    what: string,
-    author: string,
-    base: string,
-    onto: string,
-    files: string[],
-    output: string,
-  ): void {
-    const safe = redactSecrets(output);
-    const log = this.mergeLog(ref, safe);
-    const where = files.length > 0 ? ` in ${files.map((f) => `\`${f}\``).join(', ')}` : '';
-    const text = [
-      `swarmupd did not merge ${what}: ${MERGE_CONFLICT} ${base} (${short(onto)})${where}.`,
-      '',
-      `- Merge \`${base}\` into the branch in the task's worktree: \`git merge ${base}\`. Don't rebase: the approved commits stay as they are.`,
-      '- Resolve each conflict so both changes still work, run the tests of the files you touched, and commit the merge.',
-      '- Ask for review again with `swarmup review`, naming the merge commit and the branch. The review covers only how you resolved the conflicts.',
-      ...(log ? ['', `Full output: ${log}`] : []),
-    ].join('\n');
-    this.ws(MERGE_ACTOR).sendBack(ref, text, author);
-  }
-
-  private mergeBack(ref: string, what: string, author: string, why: string, output: string): void {
-    const safe = redactSecrets(output);
-    const log = this.mergeLog(ref, safe);
-    const head = `swarmupd did not merge ${what}: ${why}.`;
-    const tail = `Fix it on the branch and ask for review again.${log ? ` Full output: ${log}` : ''}`;
-    const out = lastLines(safe);
-    this.ws(MERGE_ACTOR).sendBack(
-      ref,
-      out ? `${head}\n\n\`\`\`\n${out}\n\`\`\`\n\n${tail}` : `${head} ${tail}`,
-      author,
-    );
-  }
-
-  /**
-   * Tells the human once, after a merge into the engine repo changed swarmupd's own code, that this
-   * swarmupd does not run it yet and what makes it live: a restart when swarmupd runs from the checkout
-   * that was just built, a build first when it was not, or a new build of the app when swarmupd runs
-   * the installed app (AO-0156).
-   */
-  private tellNotLive(p: PendingBuild, built: boolean): void {
-    if (!p.opsdCode?.length) return;
-    this.safe(() => {
-      const ws = this.ws(MERGE_ACTOR);
-      const human = this.user.me ?? p.human ?? ws.roots[0]?.config.human;
-      if (!human) return;
-      const self = this.self;
-      const runs = !self ? 'unknown' : insideDir(p.top, self.dir) ? 'checkout' : 'installed';
-      let fresh = false;
-      if (runs === 'checkout' && built) {
-        try {
-          fresh = self!.stamp() !== this.build;
-        } catch {
-          // Unreadable: the notice says to build first, which is never wrong.
-        }
-      }
-      const text = notLiveNotice({
-        task: ws.resolve(p.ref).id,
-        what: p.what,
-        base: p.base,
-        commit: p.commit,
-        files: p.opsdCode!,
-        top: p.top,
-        runs,
-        built: fresh,
-        pid: process.pid,
-        version: this.version,
-      });
-      ws.post(DIRTY_CHANNEL, text, { to: [human], task: p.ref });
-    });
-  }
-
-  /**
-   * A comment from swarmupd on a merge it did not do, for a person. The work is still not in the
-   * base, so the tasks blocked on `ref` keep waiting (AO-0228).
-   */
-  private mergeNote(ref: string, text: string, to?: string): void {
-    this.safe(() => this.ws(MERGE_ACTOR).comment(ref, text, to));
-  }
-
-  /** A comment from swarmupd that it has nothing to merge for `ref`; tasks blocked on it go on. */
-  private mergeNothing(ref: string, text: string): void {
-    this.safe(() => this.ws(MERGE_ACTOR).noMerge(ref, text));
-  }
-
-  /** Keeps a merge's whole output, already without secrets, in swarmupd's state folder; returns the file, or null. */
-  private mergeLog(ref: string, output: string): string | null {
-    if (!output) return null;
-    try {
-      const dir = join(this.store.dir, 'merge', 'logs');
-      mkdirSync(dir, { recursive: true });
-      const file = join(dir, `${ref.replace(/[^A-Za-z0-9._-]/g, '-')}-${ulid(this.now())}.log`);
-      writeFileSync(file, output);
-      return file;
+      this.state?.close();
     } catch {
-      return null;
+      // Already closed.
     }
   }
 
@@ -7158,7 +5582,8 @@ export class Supervisor extends EventEmitter {
    * download none into its `node_modules` (AO-0306). `from` is another checkout of the repo that
    * may hold that version already. Never throws; `env` as given when there is nothing to name.
    */
-  private electronEnv(env: NodeJS.ProcessEnv, dir: string, from?: string): NodeJS.ProcessEnv {
+  /** @internal Used by the Merger. */
+  electronEnv(env: NodeJS.ProcessEnv, dir: string, from?: string): NodeJS.ProcessEnv {
     try {
       const out = withElectronDist(env, this.store.dir, dir, from ? [from] : []);
       const dist = out[ELECTRON_DIST_ENV];
@@ -7174,7 +5599,8 @@ export class Supervisor extends EventEmitter {
   }
 
   /** Moves an Electron unpacked in swarmupd's worktree `dir` to the shared folder, if that has none. */
-  private shareElectron(dir: string): void {
+  /** @internal Used by the Merger. */
+  shareElectron(dir: string): void {
     try {
       const dist = shareElectronDist(this.store.dir, dir);
       if (dist) this.emit('electron', `moved the Electron unpacked in ${dir} to ${dist}`);
@@ -7189,7 +5615,8 @@ export class Supervisor extends EventEmitter {
    * check that starts swarmupd (this repo's own tests) must start its checkout's build, not the
    * installed app's (AO-0235).
    */
-  private commandEnv(): NodeJS.ProcessEnv {
+  /** @internal Used by the Merger. */
+  commandEnv(): NodeJS.ProcessEnv {
     const env = runEnv(this.env, {});
     deleteEnvVars(env, ['AGENT', 'RUN', 'PARENT_RUN', 'ROOTS']);
     return env;
@@ -7703,7 +6130,7 @@ export class Supervisor extends EventEmitter {
         return [];
       }
     };
-    const m = this.merging;
+    const m = this.merger.merging;
     const parts: string[] = [
       String(this.ticks),
       JSON.stringify(this.config),
@@ -7762,7 +6189,7 @@ export class Supervisor extends EventEmitter {
         : r.blocker
           ? `; swarmupd cannot route it: ${r.blocker}`
           : `; swarmupd routes it to ${r.to} at the next tick`;
-    const held = this.mergeHoldStart();
+    const held = this.merger.mergeHoldStart();
     // The plan only reports: the checkout states a tick read before do, so it runs no git.
     this.staleStatesOk = true;
     let steps: PlanStep[];
@@ -7927,7 +6354,9 @@ export class Supervisor extends EventEmitter {
     if (stateChanged) this.store.writeJson('wake.json', state);
   }
 
-  private safe(fn: () => unknown): void {
+  /** @internal Used by the Merger. */
+
+  safe(fn: () => unknown): void {
     try {
       fn();
     } catch (err) {
@@ -8099,7 +6528,7 @@ function approvedReviewRunEnd(events: OpsEvent[]): { review: OpsEvent; end: OpsE
  * What swarmupd committed during wrap-up of the run that made the approved review. This source is
  * newer than the review's branch: sandboxed runs cannot put these files on that branch themselves.
  */
-function committedRunSource(events: OpsEvent[]): MergeSource | null {
+export function committedRunSource(events: OpsEvent[]): MergeSource | null {
   const pair = approvedReviewRunEnd(events);
   const match = pair ? COMMITTED_LEFTOVERS.exec(pair.end.body ?? '') : null;
   return match ? { commit: match[1]!, branch: match[2]! } : null;
@@ -8147,39 +6576,39 @@ function leftoverReview(r: RunRecord, l: Leftovers, asked: boolean): string {
 }
 
 /** A commit id in short form. */
-function short(commit: string): string {
+export function short(commit: string): string {
   return commit.slice(0, 7);
 }
 
 /** How long each check or build command of a merge may run. */
-function mergeTimeout(cfg: MergeConfig): number {
+export function mergeTimeout(cfg: MergeConfig): number {
   return (cfg.timeout_minutes ?? 30) * 60_000;
 }
 
 /** How many approved tasks one merge of `cfg`'s root takes together (AO-0381). */
-function mergeBatchSize(cfg: MergeConfig): number {
+export function mergeBatchSize(cfg: MergeConfig): number {
   return cfg.batch ?? DEFAULT_MERGE_BATCH;
 }
 
 /** A time span for opsd.log: `45s` under a minute, else `1h30m`. */
-function elapsed(ms: number): string {
+export function elapsed(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : formatMinutes(Math.round(s / 60));
 }
 
 /** The first lines of an error message, for a task event. */
-function firstLines(text: string, n = 3): string {
+export function firstLines(text: string, n = 3): string {
   return text.trim().split('\n').slice(0, n).join(' ').slice(0, 500);
 }
 
 /** The end of a command's output, for a task event; the whole of it goes to a log file. */
-function lastLines(text: string, n = 40, max = 3_000): string {
+export function lastLines(text: string, n = 40, max = 3_000): string {
   const tail = text.replace(/\r\n/g, '\n').trimEnd().split('\n').slice(-n).join('\n');
   return tail.length > max ? tail.slice(-max) : tail;
 }
 
 /** One folder, compared as the file system does: case-insensitively on Windows. */
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
   const x = resolve(a);
   const y = resolve(b);
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
@@ -8188,4 +6617,48 @@ function samePath(a: string, b: string): boolean {
 function inside(child: string, parent: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
   return rel === '' || (!rel.startsWith('..') && !rel.includes(':'));
+}
+
+/**
+ * Opens `state.db` in the state folder of `store`, mirrors each run record `store` saves into it,
+ * and imports the run files kept before it. Null when it cannot be opened: swarmupd then works
+ * from its JSON files alone, as before `state.db`.
+ */
+function openState(store: RunStore): StateDb | null {
+  let db: StateDb;
+  try {
+    db = new StateDb(store.dir);
+  } catch {
+    return null;
+  }
+  const row = (r: unknown): RunRow | null => {
+    const x = r as Partial<RunRecord>;
+    if (typeof x.id !== 'string' || typeof x.agent !== 'string') return null;
+    return {
+      id: x.id,
+      agent: x.agent,
+      task: x.task,
+      root: x.root,
+      status: x.status ?? 'ended',
+      started_at: x.started_at ?? '',
+      ended_at: x.ended_at,
+    };
+  };
+  try {
+    db.importRunFiles(row);
+    // swarmupd reads its runs from here from now on, held in memory: no run file is read again.
+    store.hold(db.runs().filter((r): r is RunRecord => row(r) !== null));
+  } catch {
+    // The runs come in as they are saved from now on; reads stay on the run files.
+  }
+  store.mirror = (r) => {
+    const rr = row(r);
+    if (!rr) return;
+    try {
+      db.saveRun(rr, r);
+    } catch {
+      // The run file holds it.
+    }
+  };
+  return db;
 }
