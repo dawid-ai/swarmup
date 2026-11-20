@@ -1052,6 +1052,22 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Where the work is (AO-0384).** `swarmup review` records the HEAD commit, the branch and the
+  repo kind (`code` or `store`) of the git checkout it runs in as the fields `commit`, `branch` and
+  `repo` of the review event (no commit or branch on a base branch or a detached HEAD);
+  `--commit` with `--branch` overrides the checkout, and a `<commit> on branch <name>` in the
+  message that is not the checkout's HEAD wins over it, with a note. The merge reads these fields
+  before the review's text, so the wording no longer decides what is merged. A checkout counts as
+  the store's repo when a root's task store is in it and either that root's code is a checkout of
+  its own (`swarmupd.code.<root>`, as for a store repo that holds several roots beside notes and
+  docs) or its HEAD holds nothing at the top but store folders and dotfiles. From the store's repo,
+  a commit named in the message that the store repo does not have, or one named by `--commit` that
+  only a root's code checkout has, is recorded as `repo: code`, with a note, so code work named
+  from the store folder is still merged; a `--commit` neither has is refused. An approved review with `repo: store`
+  is store work that `swarmup sync` already pushed: swarmupd records "nothing to merge: store work,
+  synced" (a `no_merge` comment), files no finding, and the tasks blocked on it go on; the
+  approval itself does not hold them for a merge. Reviews without the fields (older ones, or sent
+  from outside a checkout, or from a detached HEAD) are read from their text, as below.
 - **What it merges.** A task whose last verdict approves it, when the review that verdict answers
   names `<commit> on branch <name>` (the form `swarmup review` asks for, and the one swarmupd's own
   leftover reviews use) or `branch <name>`, which merges the branch tip. The commit wins over the

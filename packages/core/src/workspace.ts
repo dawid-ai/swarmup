@@ -146,7 +146,7 @@ import {
   refuseInPlaceEdits,
   validatePlan,
 } from './plan.js';
-import { reviewSources } from './review-source.js';
+import { type ReviewRepo, reviewSourcesOf } from './review-source.js';
 import type {
   Condition,
   FiredRepeat,
@@ -742,6 +742,37 @@ function freedFields(
 ): Pick<PlannedEvent, 'freed' | 'freed_indirect'> {
   const freed = self === undefined ? set.direct : [self, ...set.direct];
   return { freed, ...(set.indirect.length > 0 ? { freed_indirect: set.indirect } : {}) };
+}
+
+/**
+ * Where a review's work is (AO-0384): the checkout `swarmup review` ran in, or what `--commit`
+ * and `--branch` name. The merge reads these fields before the review's prose.
+ */
+export interface ReviewSourceFields {
+  commit?: string;
+  branch?: string;
+  repo?: ReviewRepo;
+}
+
+/** `ReviewSourceFields` checked: a commit is 7 to 40 hex digits, a branch one line. */
+function reviewSourceFields(src: ReviewSourceFields | undefined): ReviewSourceFields {
+  if (!src) return {};
+  const commit = src.commit?.trim();
+  const branch = src.branch?.trim();
+  if (commit && !/^[0-9a-f]{7,40}$/i.test(commit)) {
+    throw new OpsError(`--commit: '${commit}' is no commit id (7 to 40 hex digits)`, 2);
+  }
+  if (branch && !/^[^\s~^:?*[\\]+$/.test(branch)) {
+    throw new OpsError(`--branch: '${branch}' is no branch name`, 2);
+  }
+  if (src.repo && src.repo !== 'code' && src.repo !== 'store') {
+    throw new OpsError(`repo must be 'code' or 'store', not '${String(src.repo)}'`, 2);
+  }
+  return {
+    ...(commit ? { commit: commit.toLowerCase() } : {}),
+    ...(branch ? { branch } : {}),
+    ...(src.repo ? { repo: src.repo } : {}),
+  };
 }
 
 /** A recommendation (AO-0065) trimmed to one line of at most 500 characters; undefined if empty. */
@@ -2057,9 +2088,10 @@ export class Workspace {
     message: string,
     to?: string,
     recommend?: string,
-    opts: { human?: boolean; commit?: string; branch?: string } = {},
+    opts: { human?: boolean; source?: ReviewSourceFields } = {},
   ): ActResult {
     const rec = recommendText(recommend);
+    const source = reviewSourceFields(opts.source);
     const { root, id } = this.resolve(ref);
     let sentTo: string | null | undefined;
     let routed: string | undefined;
@@ -2128,19 +2160,14 @@ export class Workspace {
       sentTo = reviewer;
       // The run that asks: swarmupd ties what that run left uncommitted to this review (AO-0300).
       const run = this.run ? { run: this.run } : {};
-      // The work the request names, as fields, when `swarmup review` read it from the checkout.
-      const work = {
-        ...(opts.commit ? { commit: opts.commit } : {}),
-        ...(opts.branch ? { branch: opts.branch } : {}),
-      };
       return [
         {
           type: 'review',
           to: reviewer,
           body,
           ...run,
-          ...work,
           ...(rec ? { recommend: rec } : {}),
+          ...source,
         },
       ];
     });
@@ -2398,7 +2425,7 @@ export class Workspace {
     if (this.actor === MERGE_ACTOR || !this.mergeRoots().has(root.name)) return false;
     return root.readEvents(id).some((e) => {
       if (e.type !== 'review') return false;
-      const src = reviewSources(e.body);
+      const src = reviewSourcesOf(e);
       return !!src.named || src.loose.length > 0;
     });
   }
@@ -5164,6 +5191,8 @@ export class Workspace {
                 summary: summaryLine(req.body) || 'waits for your review',
                 ...(detailText(req.body) !== undefined ? { detail: detailText(req.body) } : {}),
                 ...reviewRefs(req.body),
+                ...(req.commit ? { commit: req.commit.slice(0, 12) } : {}),
+                ...(req.branch ? { branch: req.branch } : {}),
                 ...(req.recommend ? { recommend: req.recommend } : {}),
               }
             : { summary: 'waits for your review' }),

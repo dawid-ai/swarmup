@@ -536,6 +536,11 @@ export interface MergeJob {
   root: string;
   /** The text of the review request the approval answers. */
   review: string;
+  /**
+   * Whether that request names `<commit> on branch <name>`, in its source fields (AO-0384) or its
+   * text: then the merge takes what it names, and no other commit of its text is looked for.
+   */
+  named: boolean;
 }
 
 /** One task of a batch merge (AO-0381). */
