@@ -1,0 +1,1 @@
+- `swarmup sync` now pushes when two registered roots share one git repo, such as `.swarmup/` and `web/.swarmup/` in one store repo. Before, each root held back the other's commits; commits that change other files are still held back.
