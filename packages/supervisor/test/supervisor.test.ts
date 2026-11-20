@@ -241,6 +241,8 @@ function setup(
     runsOutlive?: boolean;
     /** The task repo's folder, under a `temp()` folder; a new temp folder by default. */
     repo?: string;
+    /** The caller already initialized `repo` as git; used by off-thread test setup. */
+    initialized?: boolean;
     /**
      * A file holding `in` or `out`: the fake runtime gets a sign-in check that reads it
      * (AO-0154). Without it, the fake runtime has no sign-in check.
@@ -250,7 +252,7 @@ function setup(
 ) {
   const repo = opts.repo ?? temp();
   mkdirSync(repo, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+  if (!opts.initialized) execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
   initRoot(repo, { name: 'test', human: 'human:dawid' });
   const agentFile = join(temp(), 'fake-agent.mjs');
   writeFileSync(agentFile, FAKE_AGENT);
@@ -304,6 +306,14 @@ function setup(
   const sup = opsd();
   const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user: {}, now: opts.now });
   return { repo, sup, as, state, opsd };
+}
+
+/** {@link setup} with repository initialization off the Vitest worker's event loop. */
+async function setupAsync(opts: Parameters<typeof setup>[0] = {}) {
+  const repo = opts.repo ?? temp();
+  mkdirSync(repo, { recursive: true });
+  await gitAsync(repo, ['init', '-q']);
+  return setup({ ...opts, repo, initialized: true });
 }
 
 /** A runtime whose runs hang until stopped. */
@@ -4950,7 +4960,7 @@ describe('what runs leave in the checkout', () => {
 
   /** A checkout with code and the task store committed, as in a project repo. */
   async function codeSetup(mode: string, env: Record<string, string> = {}, procs?: ProcLister) {
-    const s = setup({ mode, env: { ...ID, ...env }, procs });
+    const s = await setupAsync({ mode, env: { ...ID, ...env }, procs });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     writeFileSync(join(s.repo, '.gitignore'), 'dist/\n');
@@ -5069,7 +5079,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('starts no writing run in a checkout with uncommitted changes, and says why it waits', async () => {
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       mode: 'hang',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
@@ -5100,7 +5110,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('tells the human once per checkout that its changes hold a writing run (AO-0137)', async () => {
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       mode: 'hang',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
@@ -5167,7 +5177,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('wraps up a run without blocking the event loop on git: commit, sync, branch push (AO-0205)', async () => {
-    const s = setup({ mode: 'edit', env: ID, opsd: { sync: true } });
+    const s = await setupAsync({ mode: 'edit', env: ID, opsd: { sync: true } });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
@@ -5200,7 +5210,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('starts a writing run from a tick or the API without running git on the event loop (AO-0215)', async () => {
-    const s = setup({
+    const s = await setupAsync({
       mode: 'edit',
       env: ID,
       opsd: { agents: { 'fake:engineer': { wake: true } } },
@@ -5249,7 +5259,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('starts the first API run in a checkout it has not seen without git on the event loop (AO-0398)', async () => {
-    const s = setup({ mode: 'edit', env: ID });
+    const s = await setupAsync({ mode: 'edit', env: ID });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
     await git(s.repo, 'add', '-A');
@@ -5298,7 +5308,7 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2), prompt }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
@@ -5339,7 +5349,7 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2) }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
@@ -5368,7 +5378,7 @@ describe('what runs leave in the checkout', () => {
         'writeFileSync(process.env.CODEX_CALL, JSON.stringify({ args: process.argv.slice(2) }));',
       ].join('\n'),
     );
-    const { repo, sup } = setup({
+    const { repo, sup } = await setupAsync({
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
@@ -5439,7 +5449,7 @@ describe('what runs leave in the checkout', () => {
   });
 
   it('lets a chat turn neither hold a checkout nor wait on one (AO-0136)', async () => {
-    const { repo, sup, as } = setup({ mode: 'hang', env: ID });
+    const { repo, sup, as } = await setupAsync({ mode: 'hang', env: ID });
     writeFileSync(join(repo, 'tracked.txt'), 'original\n');
     await git(repo, 'add', '-A');
     await git(repo, 'commit', '-qm', 'start');
@@ -5652,7 +5662,7 @@ describe('what runs leave in the checkout', () => {
 
   it("tells runs in a data root's checkout to branch in worktrees, and no run in a worktree (AO-0135)", async () => {
     const promptFile = join(temp(), 'prompt.txt');
-    const { repo, sup, as } = setup({
+    const { repo, sup, as } = await setupAsync({
       env: { ...ID, FAKE_PROMPT: promptFile },
       opsd: {
         schedules: [{ name: 'digest', every: '24h', agent: 'fake:writer', prompt: 'Write it.' }],
@@ -6013,7 +6023,7 @@ describe('what runs leave in the checkout', () => {
   it('resumes a wrap-up after a restart without running git on the event loop (AO-0205)', async () => {
     // A new swarmupd knows no git top yet: the resumed or adopted run's wrap-up, the store sync
     // and the branch push must find them off the event loop too.
-    const base = setup({ mode: 'edit', env: ID, opsd: { sync: true } });
+    const base = await setupAsync({ mode: 'edit', env: ID, opsd: { sync: true } });
     writeFileSync(join(base.repo, 'tracked.txt'), 'original\n');
     writeFileSync(join(base.repo, 'gone.txt'), 'deleted by the run\n');
     base.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
