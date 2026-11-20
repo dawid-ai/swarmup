@@ -36,7 +36,7 @@ import { isAlive, PROC_START_TIMEOUT_MS, processStartSync } from './proc.js';
 import { listSandboxOwned } from './store-repair.js';
 import { Supervisor } from './supervisor.js';
 
-export const OPSD_VERSION = '0.3.0-beta.9';
+export const OPSD_VERSION = '0.3.0-beta.11';
 
 /**
  * When the code swarmupd runs was built: the newest `.js` file of the supervisor and core packages.
@@ -100,12 +100,19 @@ function parseLock(raw: string): LockContent | null {
 /**
  * Whether a lock's holder still runs. `stale` only when that is certain: the PID is gone, or it now
  * has another creation time. When the creation time cannot be read, the holder counts as alive.
+ *
+ * `starts` keeps the creation times read during one `acquireLock`. Each read starts PowerShell on
+ * Windows, synchronously, and the lock loop asks about the same takeover holder up to 20 times:
+ * that held the event loop for about 10 s, and past 60 s on a loaded machine (AO-0389). A PID that
+ * is still alive keeps its creation time, so a time read once stays true; `isAlive` still runs on
+ * every call, so a holder that exits counts as stale at once. Failed reads are not kept.
  */
-function holderState(c: LockContent): 'live' | 'stale' | 'unknown' {
+function holderState(c: LockContent, starts?: Map<number, string>): 'live' | 'stale' | 'unknown' {
   if (!isAlive(c.pid)) return 'stale';
   if (!c.start) return 'unknown';
-  const now = processStartSync(c.pid);
+  const now = starts?.get(c.pid) ?? processStartSync(c.pid);
   if (now === null) return isAlive(c.pid) ? 'unknown' : 'stale';
+  starts?.set(c.pid, now);
   return now === c.start ? 'live' : 'stale';
 }
 
@@ -118,7 +125,7 @@ function holderState(c: LockContent): 'live' | 'stale' | 'unknown' {
  * when its holder is certainly gone (it crashed mid-takeover), swarmupd refuses and names the file.
  * Returns false when another starter is taking over or won the slot; the caller looks again.
  */
-function takeOver(file: string, raw: string, mine: string): boolean {
+function takeOver(file: string, raw: string, mine: string, starts: Map<number, string>): boolean {
   const guard = `${file}.takeover`;
   if (!createExclusive(guard, mine)) {
     let held: LockContent | null = null;
@@ -127,7 +134,7 @@ function takeOver(file: string, raw: string, mine: string): boolean {
     } catch {
       return false; // Gone: the other takeover finished.
     }
-    if (held && holderState(held) === 'stale') {
+    if (held && holderState(held, starts) === 'stale') {
       throw new OpsError(
         `a swarmupd start crashed while taking over the lock; if no swarmupd runs, delete ${guard}`,
       );
@@ -185,6 +192,7 @@ function acquireLock(env: NodeJS.ProcessEnv): string | null {
   const file = lockFile(env);
   const start = processStartSync(process.pid);
   const mine = JSON.stringify({ pid: process.pid, start });
+  const starts = new Map<number, string>();
   for (let attempt = 0; attempt < 20; attempt++) {
     if (createExclusive(file, mine)) return start;
     let raw: string;
@@ -203,7 +211,7 @@ function acquireLock(env: NodeJS.ProcessEnv): string | null {
           ? 'live'
           : 'stale'
         : c
-          ? holderState(c)
+          ? holderState(c, starts)
           : 'unknown';
     if (state === 'live' && c!.pid === process.pid) return start;
     if (state === 'live') throw new OpsError(`swarmupd already runs (pid ${c!.pid})`);
@@ -213,7 +221,7 @@ function acquireLock(env: NodeJS.ProcessEnv): string | null {
           'if no swarmupd runs, delete that file',
       );
     }
-    if (takeOver(file, raw, mine)) return start;
+    if (takeOver(file, raw, mine, starts)) return start;
     // Someone else is taking over: give them a moment, then look again.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }

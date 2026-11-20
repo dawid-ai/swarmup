@@ -2605,21 +2605,142 @@ describe('merging approved work', () => {
     expect(t.events('2').at(-1)).toEqual(note);
   };
 
-  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
-    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
-    const h = hangOn((args, commit) => {
-      const rev = (args[3] ?? '').replace('^{commit}', '');
-      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+  it('records each merge attempt and how it ended in state.db', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    s.onMain('code.txt', 'three\n');
+    s.approve(commit);
+    await s.merged();
+    expect(s.last().body).toContain('it conflicts with main');
+    let attempts = s.sup.mergeAttempts('test/T-0001');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      outcome: 'conflict',
+      reason: 'code.txt',
+      branch: 'feature',
+      root: 'test',
     });
-    const s = mergeSetup({ gitTimeoutMs: h.timeout });
-    await secondTimesOut(s, h.on, /rev-parse/);
+    expect(attempts[0]!.commit).toBe(commit.slice(0, 7));
+    expect(attempts[0]!.ended_at).not.toBeNull();
+
+    // The other task merges; both attempts are in state.db, the newest first.
+    s.onMain('code.txt', 'one\n');
+    s.approve(commit);
+    await s.merged();
+    attempts = s.sup.mergeAttempts('test/T-0001');
+    expect(attempts.map((a) => a.outcome)).toEqual(['merged', 'conflict']);
+    expect(s.sup.mergeCounts()).toEqual(
+      expect.arrayContaining([
+        { outcome: 'merged', count: 1 },
+        { outcome: 'conflict', count: 1 },
+      ]),
+    );
+    // Runs are mirrored too: a run's record is in state.db once saved.
+    const run = s.sup.launch({ agent: 'fake:engineer', task: '2' });
+    expect(s.sup.state!.run(run.id)).toMatchObject({ id: run.id, agent: 'fake:engineer' });
+    const end = ended(s.sup, run.id);
+    writeFileSync(join(s.state, 'run-go.txt'), 'go\n');
+    await end;
   });
 
-  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
-    const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
-    const s = mergeSetup({ gitTimeoutMs: h.timeout });
-    await secondTimesOut(s, h.on, /checkout/);
+  it('keeps the one retry of a timed-out check across a restart, from state.db (AO-0385)', async () => {
+    // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
+    const s = mergeSetup({ timeoutMinutes: 0.05 });
+    const warns: string[] = [];
+    s.sup.on('warn', (m: string) => warns.push(m));
+    s.approve(s.branch('slow\n'));
+    await s.merged();
+    expect(warns.filter((w) => w.includes('merges once more'))).toHaveLength(1);
+
+    // A new swarmupd on the same state takes the retry as the second try: with the machine to
+    // itself, and a second timeout goes to the human.
+    s.sup.stop();
+    const next = s.opsd();
+    const later: string[] = [];
+    next.on('warn', (m: string) => later.push(m));
+    await next.tick();
+    await next.mergeSettled();
+    expect(later.filter((w) => w.includes('merges once more'))).toHaveLength(0);
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('timed out twice');
   });
+
+  it('starts no merge while swarmupd is paused, and merges once it resumes', async () => {
+    const s = mergeSetup();
+    const before = git(s.repo, 'rev-parse', 'main');
+    s.sup.config.paused = true;
+    s.approve(s.branch('two\n'));
+    await s.merged();
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });
+    s.sup.config.paused = false;
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+  });
+
+  it('merges past an index.lock that a stopped git left in its worktree', async () => {
+    const s = mergeSetup();
+    s.approve(s.branch('two\n'));
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge' });
+    // A git that swarmupd stopped for its timeout mid-write keeps the lock in swarmupd's worktree.
+    const own = git(s.repo, 'worktree', 'list', '--porcelain')
+      .split('\n\n')
+      .map((b) => b.split('\n')[0]!.slice('worktree '.length))
+      .find((p) => !samePath(p, s.repo) && !p.includes('wt'))!;
+    const lock = join(git(own, 'rev-parse', '--absolute-git-dir'), 'index.lock');
+    writeFileSync(lock, '');
+    s.onMain('code.txt', 'three\n');
+    const wt = join(temp(), 'wt-next');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature3', wt, 'main');
+    writeFileSync(join(wt, 'next.txt'), 'next\n');
+    git(wt, 'add', '-A');
+    git(wt, 'commit', '-qm', 'Next work');
+    const next = git(wt, 'rev-parse', 'HEAD');
+    s.as('fake:engineer').start('2', 'plan');
+    s.as('fake:engineer').review(
+      '2',
+      `${next.slice(0, 7)} on branch feature3: next`,
+      'human:dawid',
+    );
+    s.as('human:dawid').verdict('2', 'approve', 'looks right');
+    await s.merged();
+    expect(s.as('human:dawid').showEvents('2').events.at(-1)).toMatchObject({
+      type: 'merge',
+      branch: 'feature3',
+    });
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
+  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
+  it(
+    'blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)',
+    { retry: 3 },
+    async () => {
+      // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+      const h = hangOn((args, commit) => {
+        const rev = (args[3] ?? '').replace('^{commit}', '');
+        return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+      });
+      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      await secondTimesOut(s, h.on, /rev-parse/);
+    },
+  );
+
+  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
+  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
+  it(
+    'blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)',
+    { retry: 3 },
+    async () => {
+      const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
+      const s = mergeSetup({ gitTimeoutMs: h.timeout });
+      await secondTimesOut(s, h.on, /checkout/);
+    },
+  );
 
   it('merges each task alone with batch 1 (AO-0381)', async () => {
     const s = mergeSetup({ batch: 1 });
@@ -2717,7 +2838,7 @@ describe('merging approved work', () => {
     expect(text(join(s.repo, 'dist', 'built.txt'))).toBe('slow\n');
   });
 
-  it('stops a check past its timeout, merges once more, then sends the task back and frees the checkout (AO-0172)', async () => {
+  it('stops a check past its timeout, merges once more with the machine to itself, then tells the human and frees the checkout (AO-0172, AO-0385)', async () => {
     // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
     const s = mergeSetup({ timeoutMinutes: 0.05 });
     const warns: string[] = [];
@@ -2731,8 +2852,15 @@ describe('merging approved work', () => {
       /merge of test\/T-0001: `node check\.mjs` timed out after \d+ min; swarmupd stopped it and merges once more/,
     );
 
-    await s.merged();
+    // The retry runs with no new run beside it, and twice the time.
+    const retry = s.merged();
+    await until(() => s.sup.mergeStatus()?.step === 'checks', STAGE_MS);
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toMatch(
+      /runs the merge checks of test\/T-0001 again, with no new runs beside them/,
+    );
+    await retry;
     expect(s.sup.merge).toBeNull();
+    expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toBeNull();
     // One retry and no more. checks.txt counts only the checks that got as far as writing it
     // before their stop, and under the full suite Node can take longer than the 3 s to start:
     // an exact count of 2 failed the AO-0247 merge. So bound it instead.
@@ -2740,10 +2868,19 @@ describe('merging approved work', () => {
     const checks = join(s.state, 'checks.txt');
     expect(existsSync(checks) ? text(checks) : '').toMatch(/^x{0,2}$/);
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    // Not sent back to the author: the human hears of it, and the work stays approved.
     const e = s.last();
-    expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
-    expect(e.body).toContain('`node check.mjs` failed (timed out after');
-    expect(s.as('human:dawid').view('1').status).toBe('todo');
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('`node check.mjs` timed out twice');
+    expect(e.body).toContain('was not sent back');
+    expect(e.body).toContain('swarmupd.merge.test.timeout_minutes');
+    expect(s.as('human:dawid').view('1').status).not.toBe('todo');
+    expect(
+      s
+        .as('human:dawid')
+        .showEvents('1')
+        .events.some((x) => x.type === 'verdict' && x.verdict === 'changes'),
+    ).toBe(false);
 
     // Nothing holds the checkout: a writing run starts there.
     const run = s.sup.launch({ agent: 'fake:engineer', task: '2' });

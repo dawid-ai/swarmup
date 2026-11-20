@@ -13,6 +13,7 @@ import {
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
 import { installEnv, withoutScriptEnv } from './runenv.js';
+import { clearStaleIndexLock } from './worktree.js';
 
 export { reviewCommits, reviewSources };
 export type { MergeSource, ReviewSources } from '@swarmup/core';
@@ -651,10 +652,21 @@ export class MergeRepo {
    */
   async checkOut(commit: string): Promise<void> {
     const wt = this.worktree;
+    this.clearLock();
     await this.git(wt, ['rebase', '--abort'], { allowFail: true });
     await this.git(wt, ['merge', '--abort'], { allowFail: true });
     await this.git(wt, ['checkout', '-q', '-f', '--detach', commit]);
     await this.git(wt, ['clean', '-q', '-f', '-d']);
+  }
+
+  /**
+   * Removes an `index.lock` from swarmupd's worktree. Only swarmupd runs git there, one merge at a
+   * time, so a lock at the start of a step is one a git it stopped left: a timed-out git killed
+   * mid-write keeps the lock, and every later git there fails with `index.lock: File exists`
+   * (AO-0381's batch went on to its next task and failed so).
+   */
+  private clearLock(): void {
+    clearStaleIndexLock(this.worktree, Date.now(), 0);
   }
 
   /**
@@ -663,6 +675,7 @@ export class MergeRepo {
    */
   async rebase(commit: string, onto: string): Promise<{ head: string } | { conflict: string }> {
     const wt = this.worktree;
+    this.clearLock();
     await this.git(wt, ['rebase', '--abort'], { allowFail: true });
     await this.git(wt, ['merge', '--abort'], { allowFail: true });
     await this.git(wt, ['checkout', '-q', '-f', '--detach', commit]);
@@ -699,6 +712,7 @@ export class MergeRepo {
     message: string,
   ): Promise<{ head: string } | { conflict: string; files: string[] }> {
     const wt = this.worktree;
+    this.clearLock();
     await this.git(wt, ['rebase', '--abort'], { allowFail: true });
     await this.git(wt, ['merge', '--abort'], { allowFail: true });
     await this.git(wt, ['checkout', '-q', '-f', '--detach', onto]);

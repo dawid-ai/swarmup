@@ -12,7 +12,7 @@ swarmup daemon status           # pid, port, version; exit 3 when not running
 swarmup daemon stop             # runs keep going; the next swarmupd adopts them
 swarmup daemon stop --kill-runs # also stop every run
 swarmup daemon restart          # stop and start; live runs keep going and are adopted
-swarmup daemon pause            # no new runs or schedules until resumed; live runs finish
+swarmup daemon pause            # no new runs, schedules or merges until resumed; live runs and a merge under way finish
 swarmup daemon resume
 swarmup daemon run              # in this terminal, until Ctrl+C
 ```
@@ -71,7 +71,8 @@ run, or install a new build of the app when it runs the installed app.
 A pause is `swarmupd.paused: true` in the user config, so it holds across restarts, and a stopped
 `swarmupd` starts paused. While paused, `swarmupd` refuses every new run (wakes, schedules,
 `swarmup launch`, **Run now**) with the reason in `swarmup waits`; helper runs of live runs still start.
-Sync, notifications, presence and the API keep working.
+No new merge of approved work starts either, so a person can work on the base without swarmupd
+moving it; a merge under way finishes. Sync, notifications, presence and the API keep working.
 
 The `swarmupd` command (`packages/supervisor/dist/main.js`) takes the same verbs. Start swarmupd from a
 folder inside a data root, or list roots in the user config, so it finds the tasks.
@@ -88,6 +89,27 @@ State lives in `~/.swarmup/swarmupd/` (or `SWARMUP_STATE_DIR`) and is never comm
 | `logs/<id>.log`      | the run's output (Claude `stream-json`, Codex `--json`)                                                                                                                                                                                          |
 | `schedules.json`     | when each schedule last ran                                                                                                                                                                                                                      |
 | `wake.json`          | which inbox items each waking agent was last started for                                                                                                                                                                                         |
+
+## State on this PC
+
+swarmupd keeps what only this PC's swarmupd needs in `state.db`, a SQLite file in its state folder
+(`~/.swarmup/swarmupd`, or `SWARMUP_STATE_DIR`), for every project it runs. It is part of the
+install and never in a project repo; tasks, events, decisions and the KB stay files in git.
+
+- **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`. swarmupd
+  imports the run files it lacks when it starts, then reads its runs from `state.db`, held in
+  memory, and reads no run file again. `swarmup runs` and other CLI commands still read the files.
+- **Merge state.** A task whose merge check timed out once, and the merges in a row that could not
+  read a task's worktrees, are kept in `merge_state`, so a restart or an update between two tries
+  keeps the count. Which tasks swarmupd already looked at stays in memory: a restart looks at every
+  approved task again, which retries one whose merge failed for a cause an update may have fixed.
+- **Merge attempts.** Each merge of a task, alone or in a batch, is a row of `merge_attempts`: the
+  work it named (commit, branch), when it started and ended, and how it ended (`merged`, `nothing`,
+  `conflict`, `check-failed`, `timeout`, `sent-back`, `note`, `again` for one that goes round at a
+  later tick, `stopped`). `GET /api/merges` lists them (`?task=<root/id>`, `?limit=`) with the
+  count per outcome (`?since=<ISO time>`).
+- It needs Node 22.13 or later (`node:sqlite`); the app's Electron has it. When the file cannot be
+  opened, swarmupd works from its JSON files alone.
 
 ## Runs
 
@@ -1156,7 +1178,7 @@ swarmupd:
   start, the timeout per command, and whether it holds `checkout`. Work it holds is marked
   `merge: true` in the waits. `opsd.log` has a `merge` line for its start, each check and build
   command as it starts and ends, the hold of `checkout`, and its end.
-- **When it fails.** A conflict, a failed check, a check that timed out twice in a row, or a
+- **When it fails.** A conflict, a failed check, or a
   branch that changes task store files sends the task back to its owner: a `changes` verdict from `opsd:merge` with the end of
   the output, and the whole output in `<state>/merge/logs/`. Lines of the output that look like a
   secret (the patterns `swarmup` refuses in events), and private key blocks whole, are taken out
@@ -1166,10 +1188,14 @@ swarmupd:
   cannot do (the branch or commit is missing, the base kept moving, local changes in the way) gets
   a comment to the root's human, and swarmupd does not try that task again until it changes.
 - **When a step hangs.** A check or build command stops at `timeout_minutes`, with everything it
-  started. A check that timed out is not sent back the first time: swarmupd logs a warning and merges
-  the task once more from the start, since a machine under load can stall a test run; the second
-  timeout sends it back. The one more merge belongs to that merge: a later review of the task gets
-  its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
+  started. A check that timed out is not sent back: swarmupd logs a warning and merges the task
+  once more from the start, since a machine busy with agents' own test runs can stall a test run.
+  That second time the checks get twice `timeout_minutes`, and no new agent run starts until they
+  end (`swarmup waits` says so; runs already going finish, and helpers, chat turns and questions
+  still start). When they time out again, the work stays approved and swarmupd comments to the
+  root's human instead of sending it back, since the author cannot make the machine faster: raise
+  `timeout_minutes` or make the checks faster, then comment on the task, and swarmupd merges it
+  again. The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a
   process it started outlives the stop and keeps git's output open, swarmupd stops reading after 5

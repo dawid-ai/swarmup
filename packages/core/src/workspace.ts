@@ -1752,6 +1752,9 @@ export class Workspace {
       const results = syncAll(partners, this.user, {
         pull: true,
         push: true,
+        // Every registered root, so one that shares the repo with a root outside `partners`
+        // still pushes the commits of both (AO-0371).
+        siblings: this.roots.map((r) => r.dir),
         now: this.now(),
       });
       sync = {
@@ -2054,7 +2057,7 @@ export class Workspace {
     message: string,
     to?: string,
     recommend?: string,
-    opts: { human?: boolean } = {},
+    opts: { human?: boolean; commit?: string; branch?: string } = {},
   ): ActResult {
     const rec = recommendText(recommend);
     const { root, id } = this.resolve(ref);
@@ -2125,7 +2128,21 @@ export class Workspace {
       sentTo = reviewer;
       // The run that asks: swarmupd ties what that run left uncommitted to this review (AO-0300).
       const run = this.run ? { run: this.run } : {};
-      return [{ type: 'review', to: reviewer, body, ...run, ...(rec ? { recommend: rec } : {}) }];
+      // The work the request names, as fields, when `swarmup review` read it from the checkout.
+      const work = {
+        ...(opts.commit ? { commit: opts.commit } : {}),
+        ...(opts.branch ? { branch: opts.branch } : {}),
+      };
+      return [
+        {
+          type: 'review',
+          to: reviewer,
+          body,
+          ...run,
+          ...work,
+          ...(rec ? { recommend: rec } : {}),
+        },
+      ];
     });
     const notes = [...(routed ? [routed] : []), ...evidence];
     return this.noteInactive(withNotes(res, notes), sentTo);
