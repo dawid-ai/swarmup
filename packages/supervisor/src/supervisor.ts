@@ -68,7 +68,7 @@ import {
   MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
-import { StateDb } from './state-db.js';
+import { StateDb, StoredMap, StoredSet } from './state-db.js';
 import type { MergeAttempt, MergeCount, MergeOutcome, RunRow } from './state-db.js';
 import { isMergeConflictBack, MERGE_CONFLICT, resolutionNote } from './merge-conflict.js';
 import type { GitDirs } from './checkout.js';
@@ -890,8 +890,11 @@ export class Supervisor extends EventEmitter {
   private readonly version?: string;
   private readonly self?: OpsdSelf;
   private readonly mergeGitTimeoutMs?: MergeGitTimeout;
-  /** Tasks whose merge check timed out once; the next timeout sends the task back (AO-0172). */
-  private readonly mergeTimedOut = new Set<string>();
+  /**
+   * Tasks whose merge check timed out once: the next try runs with the machine to itself (AO-0172,
+   * AO-0385). Kept in `state.db`, so a restart between the two keeps the retry.
+   */
+  private readonly mergeTimedOut: StoredSet;
   /** swarmupd's own state on this PC, for every project: `state.db` in the state folder. */
   readonly state: StateDb | null;
   /** The open merge attempt of each task, by `state.db` id. */
@@ -903,8 +906,8 @@ export class Supervisor extends EventEmitter {
   private mergeQuiet: string | null = null;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
   private readonly electronDists = new Set<string>();
-  /** Per task, the merges in a row that could not read the task's worktrees (AO-0300). */
-  private readonly mergeLooks = new Map<string, number>();
+  /** Per task, the merges in a row that could not read the task's worktrees (AO-0300); in `state.db`. */
+  private readonly mergeLooks: StoredMap<number>;
   private user: UserConfig;
   private readonly now: () => number;
   private readonly live = new Map<string, LiveRun>();
@@ -1059,7 +1062,11 @@ export class Supervisor extends EventEmitter {
   private mergeClearing: Promise<void> | null = null;
   /** The look for the next task to merge, while git answers it. */
   private mergePlan: Promise<void> | null = null;
-  /** Per task, the last event already looked at for a merge, so unchanged tasks are not read again. */
+  /**
+   * Per task, the last event already looked at for a merge, so unchanged tasks are not read again.
+   * Kept in memory only: a restart or an update looks at every approved task again, which retries
+   * one whose merge failed for a cause the update may have fixed.
+   */
   private readonly mergeSeen = new Map<string, string>();
   /** Approved tasks swarmupd found nothing to merge for, by the last event they had then. */
   private readonly mergeNone = new Map<string, string>();
@@ -1073,6 +1080,8 @@ export class Supervisor extends EventEmitter {
     this.store = new RunStore(opts.stateDir ?? stateDir(this.env));
     this.now = opts.now ?? Date.now;
     this.state = openState(this.store);
+    this.mergeTimedOut = new StoredSet(this.state, 'timed-out');
+    this.mergeLooks = new StoredMap(this.state, 'looks', { encode: String, decode: Number });
     this.listerOpt = opts.procs;
     this.sandboxOwned = opts.sandboxOwned;
     // The API accepts launches before the first timed tick. Hold Codex from construction until
@@ -8345,8 +8354,10 @@ function openState(store: RunStore): StateDb | null {
   };
   try {
     db.importRunFiles(row);
+    // swarmupd reads its runs from here from now on, held in memory: no run file is read again.
+    store.hold(db.runs().filter((r): r is RunRecord => row(r) !== null));
   } catch {
-    // The runs come in as they are saved from now on.
+    // The runs come in as they are saved from now on; reads stay on the run files.
   }
   store.mirror = (r) => {
     const rr = row(r);

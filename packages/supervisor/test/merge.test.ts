@@ -2623,6 +2623,29 @@ describe('merging approved work', () => {
     await end;
   });
 
+  it('keeps the one retry of a timed-out check across a restart, from state.db (AO-0385)', async () => {
+    // 0.05 min is 3 s; the `slow` check waits for go.txt, which never comes.
+    const s = mergeSetup({ timeoutMinutes: 0.05 });
+    const warns: string[] = [];
+    s.sup.on('warn', (m: string) => warns.push(m));
+    s.approve(s.branch('slow\n'));
+    await s.merged();
+    expect(warns.filter((w) => w.includes('merges once more'))).toHaveLength(1);
+
+    // A new swarmupd on the same state takes the retry as the second try: with the machine to
+    // itself, and a second timeout goes to the human.
+    s.sup.stop();
+    const next = s.opsd();
+    const later: string[] = [];
+    next.on('warn', (m: string) => later.push(m));
+    await next.tick();
+    await next.mergeSettled();
+    expect(later.filter((w) => w.includes('merges once more'))).toHaveLength(0);
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
+    expect(e.body).toContain('timed out twice');
+  });
+
   it('starts no merge while swarmupd is paused, and merges once it resumes', async () => {
     const s = mergeSetup();
     const before = git(s.repo, 'rev-parse', 'main');

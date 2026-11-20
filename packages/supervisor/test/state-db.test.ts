@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { StateDb } from '../src/index.js';
+import { StateDb, StoredMap, StoredSet } from '../src/index.js';
 
 const dirs: string[] = [];
 const dbs: StateDb[] = [];
@@ -25,13 +25,13 @@ describe('state.db', () => {
     const d = mkdtempSync(join(tmpdir(), 'swarmup-state-'));
     dirs.push(d);
     const first = open(d);
-    expect(first.version).toBe(1);
+    expect(first.version).toBe(2);
     first.saveRun(
       { id: 'R1', agent: 'claude:engineer', status: 'ended', started_at: '2026-11-19T00:00:00Z' },
       { id: 'R1', agent: 'claude:engineer' },
     );
     const second = open(d);
-    expect(second.version).toBe(1);
+    expect(second.version).toBe(2);
     expect(second.runCount()).toBe(1);
   });
 
@@ -58,6 +58,28 @@ describe('state.db', () => {
     expect(db.runCount()).toBe(2);
     expect(db.run('R2')).toMatchObject({ status: 'ended', exit: 0 });
     expect(db.run('R9')).toBeUndefined();
+  });
+
+  it('keeps merge state across a reopen, and works as a plain map without a state.db', () => {
+    const d = mkdtempSync(join(tmpdir(), 'swarmup-state-'));
+    dirs.push(d);
+    const num = { encode: String, decode: Number };
+    const looks = new StoredMap(open(d), 'looks', num);
+    looks.set('demo/T-0001', 2).set('demo/T-0002', 1);
+    looks.delete('demo/T-0002');
+    const timedOut = new StoredSet(open(d), 'timed-out');
+    timedOut.add('demo/T-0003');
+
+    const again = new StoredMap(open(d), 'looks', num);
+    expect(again.get('demo/T-0001')).toBe(2);
+    expect(again.has('demo/T-0002')).toBe(false);
+    expect(new StoredSet(open(d), 'timed-out').has('demo/T-0003')).toBe(true);
+    // Kinds do not mix.
+    expect(new StoredSet(open(d), 'looks').has('demo/T-0003')).toBe(false);
+
+    const plain = new StoredMap<number>(null, 'looks', num);
+    plain.set('x', 1);
+    expect(plain.get('x')).toBe(1);
   });
 
   it('records merge attempts, ends each once, and counts them by outcome', () => {

@@ -87,6 +87,12 @@ const MIGRATIONS: string[] = [
      head TEXT
    );
    CREATE INDEX merge_attempts_ref ON merge_attempts (ref);`,
+  `CREATE TABLE merge_state (
+     kind TEXT NOT NULL,
+     ref TEXT NOT NULL,
+     value TEXT NOT NULL,
+     PRIMARY KEY (kind, ref)
+   );`,
 ];
 
 /**
@@ -149,6 +155,22 @@ export class StateDb {
     return row ? JSON.parse(row.record) : undefined;
   }
 
+  /** Every run record it holds. */
+  runs(): unknown[] {
+    const rows = this.use(
+      (db) => db.prepare('SELECT record FROM runs').all() as { record: string }[],
+    );
+    const out: unknown[] = [];
+    for (const r of rows) {
+      try {
+        out.push(JSON.parse(r.record));
+      } catch {
+        // A record that does not parse is left out, as a run file that does not parse is.
+      }
+    }
+    return out;
+  }
+
   /** How many runs it holds. */
   runCount(): number {
     return this.use(
@@ -189,6 +211,34 @@ export class StateDb {
         throw err;
       }
       return n;
+    });
+  }
+
+  // ---- Merge state ------------------------------------------------------------------------------
+
+  /** Every entry of one kind of merge state, by task. */
+  mergeState(kind: string): Map<string, string> {
+    const rows = this.use(
+      (db) =>
+        db.prepare('SELECT ref, value FROM merge_state WHERE kind = ?').all(kind) as {
+          ref: string;
+          value: string;
+        }[],
+    );
+    return new Map(rows.map((r) => [r.ref, r.value]));
+  }
+
+  /** Sets one entry of merge state, or removes it with `value` undefined. */
+  setMergeState(kind: string, ref: string, value: string | undefined): void {
+    this.use((db) => {
+      if (value === undefined) {
+        db.prepare('DELETE FROM merge_state WHERE kind = ? AND ref = ?').run(kind, ref);
+      } else {
+        db.prepare(
+          `INSERT INTO merge_state (kind, ref, value) VALUES (?, ?, ?)
+           ON CONFLICT (kind, ref) DO UPDATE SET value = excluded.value`,
+        ).run(kind, ref, value);
+      }
     });
   }
 
@@ -295,4 +345,76 @@ function saveRunIn(db: DatabaseSync, row: RunRow, record: unknown): void {
     row.ended_at ?? null,
     JSON.stringify(record),
   );
+}
+
+/**
+ * A map of merge state by task that `state.db` keeps across restarts: reads come from memory,
+ * each change is written through. Without a `state.db` it is a plain map, as before.
+ */
+export class StoredMap<V> {
+  private readonly mem: Map<string, V>;
+
+  constructor(
+    private readonly db: StateDb | null,
+    private readonly kind: string,
+    private readonly codec: { encode: (v: V) => string; decode: (s: string) => V },
+  ) {
+    this.mem = new Map();
+    if (!db) return;
+    try {
+      for (const [ref, raw] of db.mergeState(kind)) this.mem.set(ref, codec.decode(raw));
+    } catch {
+      // A state.db that cannot be read starts empty, as a fresh swarmupd does.
+    }
+  }
+
+  get(ref: string): V | undefined {
+    return this.mem.get(ref);
+  }
+
+  has(ref: string): boolean {
+    return this.mem.has(ref);
+  }
+
+  set(ref: string, value: V): this {
+    this.mem.set(ref, value);
+    this.write(ref, this.codec.encode(value));
+    return this;
+  }
+
+  delete(ref: string): boolean {
+    const had = this.mem.delete(ref);
+    if (had) this.write(ref, undefined);
+    return had;
+  }
+
+  private write(ref: string, value: string | undefined): void {
+    try {
+      this.db?.setMergeState(this.kind, ref, value);
+    } catch {
+      // Memory holds it until the next restart.
+    }
+  }
+}
+
+/** A set of tasks that `state.db` keeps across restarts; see {@link StoredMap}. */
+export class StoredSet {
+  private readonly map: StoredMap<true>;
+
+  constructor(db: StateDb | null, kind: string) {
+    this.map = new StoredMap(db, kind, { encode: () => '1', decode: () => true });
+  }
+
+  has(ref: string): boolean {
+    return this.map.has(ref);
+  }
+
+  add(ref: string): this {
+    this.map.set(ref, true);
+    return this;
+  }
+
+  delete(ref: string): boolean {
+    return this.map.delete(ref);
+  }
 }

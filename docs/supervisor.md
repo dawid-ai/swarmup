@@ -96,8 +96,13 @@ swarmupd keeps what only this PC's swarmupd needs in `state.db`, a SQLite file i
 (`~/.swarmup/swarmupd`, or `SWARMUP_STATE_DIR`), for every project it runs. It is part of the
 install and never in a project repo; tasks, events, decisions and the KB stay files in git.
 
-- **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`, and swarmupd
-  imports the run files it lacks when it starts. Readers still use the files for now.
+- **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`. swarmupd
+  imports the run files it lacks when it starts, then reads its runs from `state.db`, held in
+  memory, and reads no run file again. `swarmup runs` and other CLI commands still read the files.
+- **Merge state.** A task whose merge check timed out once, and the merges in a row that could not
+  read a task's worktrees, are kept in `merge_state`, so a restart or an update between two tries
+  keeps the count. Which tasks swarmupd already looked at stays in memory: a restart looks at every
+  approved task again, which retries one whose merge failed for a cause an update may have fixed.
 - **Merge attempts.** Each merge of a task, alone or in a batch, is a row of `merge_attempts`: the
   work it named (commit, branch), when it started and ended, and how it ended (`merged`, `nothing`,
   `conflict`, `check-failed`, `timeout`, `sent-back`, `note`, `again` for one that goes round at a
