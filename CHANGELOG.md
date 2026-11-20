@@ -6,6 +6,18 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.11 (2026-11-20)
+
+### Added
+
+- swarmupd keeps its own state on this PC in `state.db`, a SQLite file in its state folder for every project: each merge attempt with how it ended, and each run record. `GET /api/merges` lists the attempts and counts them by outcome. Node 22.13 or later is needed.
+
+### Changed
+
+- A merge check that times out no longer sends approved work back to its author. swarmupd runs the checks once more with twice the time and no new agent run beside them; when they time out again, the work stays approved and the root's human gets a note on raising `timeout_minutes`.
+- A paused swarmupd starts no new merge of approved work either, so you can work on the base without it moving; a merge under way finishes.
+- `swarmup review` records the commit and branch it names: from `--commit` and `--branch`, or, when the message names none, from the task branch checked out where it runs. The message gets them as its last line and the review event as fields, so swarmupd merges exactly what was reviewed instead of guessing the branch from the text.
+
 ## 0.3.0-beta.10 (2026-11-19)
 
 ### Added

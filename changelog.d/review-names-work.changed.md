@@ -1,1 +1,0 @@
-- `swarmup review` records the commit and branch it names: from `--commit` and `--branch`, or, when the message names none, from the task branch checked out where it runs. The message gets them as its last line and the review event as fields, so swarmupd merges exactly what was reviewed instead of guessing the branch from the text.

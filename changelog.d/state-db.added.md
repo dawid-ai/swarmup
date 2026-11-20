@@ -1,1 +1,0 @@
-- swarmupd keeps its own state on this PC in `state.db`, a SQLite file in its state folder for every project: each merge attempt with how it ended, and each run record. `GET /api/merges` lists the attempts and counts them by outcome. Node 22.13 or later is needed.

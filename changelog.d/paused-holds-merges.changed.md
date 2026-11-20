@@ -1,1 +1,0 @@
-- A paused swarmupd starts no new merge of approved work either, so you can work on the base without it moving; a merge under way finishes.
