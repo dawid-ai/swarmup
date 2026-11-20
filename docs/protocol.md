@@ -734,6 +734,12 @@ question blocks nothing; it is its own task.
   that started on a clean checkout is let through: swarmupd commits what it leaves on a task branch
   and tells the reviewer (see [the supervisor](supervisor.md)).
 - `--force` lets anyone through and records `forced: true` in the event.
+- `swarmup review` records the work it names. With `--commit SHA --branch NAME`, or when the
+  message names no `<commit> on branch <name>` or PR and the caller's checkout has a branch other
+  than a base (`main`, `master`, `v2`, `develop`, `trunk`) checked out, it adds
+  ``Work: <commit> on branch `<name>` `` as the message's last line and stores `commit` and
+  `branch` on the `review` event. The merge and the review diff read that line, so swarmupd merges
+  exactly the commit that was reviewed, not a branch or commit guessed from the text.
 
 ## Events
 
