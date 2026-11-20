@@ -4958,6 +4958,20 @@ describe('what runs leave in the checkout', () => {
     return { ...value, changes: value.changes };
   };
 
+  /** Run blocker assertions against the fresh checkout snapshot a tick normally provides. */
+  const withFreshCheckoutStates = async <T>(sup: Supervisor, check: () => T): Promise<T> => {
+    const internals = sup as unknown as {
+      readCheckouts(): Promise<Map<string, unknown>>;
+      tickStates: Map<string, unknown> | null;
+    };
+    internals.tickStates = await internals.readCheckouts();
+    try {
+      return check();
+    } finally {
+      internals.tickStates = null;
+    }
+  };
+
   /** The writable Codex git dirs, with git discovery off the Vitest worker's event loop. */
   const codexDirs = async (dir: string, env: NodeJS.ProcessEnv = process.env) => {
     try {
@@ -5483,12 +5497,14 @@ describe('what runs leave in the checkout', () => {
     expect(turn.base).toBeUndefined();
     // A live chat turn holds no writing run in its checkout.
     await git(repo, 'checkout', '--', 'tracked.txt');
-    expect(sup.blocker('fake:engineer', 'test', { cwd: repo, live: [turn] })).toBeNull();
-    const engineer = sup.runs({ live: true }).find((r) => r.agent === 'fake:engineer')!;
-    expect(sup.blocker('fake:qa', 'test', { cwd: repo, live: [turn, engineer] })).toBeNull();
-    expect(sup.blocker('fake:writer', 'test', { cwd: repo, live: [turn, engineer] })).toMatch(
-      /fake:engineer works .*one writing run per checkout/,
-    );
+    await withFreshCheckoutStates(sup, () => {
+      expect(sup.blocker('fake:engineer', 'test', { cwd: repo, live: [turn] })).toBeNull();
+      const engineer = sup.runs({ live: true }).find((r) => r.agent === 'fake:engineer')!;
+      expect(sup.blocker('fake:qa', 'test', { cwd: repo, live: [turn, engineer] })).toBeNull();
+      expect(sup.blocker('fake:writer', 'test', { cwd: repo, live: [turn, engineer] })).toMatch(
+        /fake:engineer works .*one writing run per checkout/,
+      );
+    });
   });
 
   it('keeps a file whose staged version is in neither HEAD nor the commit', async () => {
