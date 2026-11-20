@@ -5868,7 +5868,7 @@ describe('what runs leave in the checkout', () => {
     const late = { pid: 0x7ffffff1, start: 0, alive: false, ppid: 0 };
     let repoDir = '';
     let parentId = '';
-    let supervisor: Supervisor | undefined;
+    const context: { supervisor?: Supervisor } = {};
     const lister: ProcLister = {
       precise: true,
       clockSlack: real.clockSlack,
@@ -5876,7 +5876,7 @@ describe('what runs leave in the checkout', () => {
         // This test controls the run roots and the synthetic child. A real CIM snapshot can
         // contain megabytes of unrelated command lines and makes this unit test's event-loop
         // timing depend on every process on the machine.
-        const procs = (supervisor?.runs({ live: true }) ?? []).flatMap((run) => {
+        const procs = (context.supervisor?.runs({ live: true }) ?? []).flatMap((run) => {
           const start = startMs(run.proc_start);
           return start === null
             ? []
@@ -5911,7 +5911,7 @@ describe('what runs leave in the checkout', () => {
     };
     const s = await codeSetup('edit-wait', { FAKE_GO: go, FAKE_HELPER_GO: 'helper.txt' }, lister);
     const { repo, sup, as } = s;
-    supervisor = sup;
+    context.supervisor = sup;
     repoDir = repo;
     const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     parentId = run.id;
