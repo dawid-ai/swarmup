@@ -1,6 +1,6 @@
 import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { dropEnv, runEnv, withoutScriptEnv } from '../src/index.js';
+import { dropEnv, installEnv, runEnv, withoutScriptEnv } from '../src/index.js';
 
 describe('run environment', () => {
   it('drops what only swarmupd inside the desktop app needs', () => {
@@ -33,6 +33,27 @@ describe('run environment', () => {
   it('leaves PATH alone without a bin folder', () => {
     expect(runEnv({ PATH: 'a' }, {}).PATH).toBe('a');
     expect(runEnv({}, {}).PATH).toBeUndefined();
+  });
+});
+
+describe('installEnv (AO-0391)', () => {
+  it('drops NODE_ENV and the npm settings that choose dependency types, in any case', () => {
+    const env = {
+      NODE_ENV: 'production',
+      npm_config_production: 'true',
+      NPM_CONFIG_DEV: 'false',
+      npm_config_only: 'prod',
+      npm_config_optional: 'false',
+      npm_config_omit: 'dev',
+      npm_config_include: 'dev',
+      npm_config_also: 'dev',
+      npm_config_development: 'true',
+      npm_config_registry: 'keep',
+      PATH: 'a',
+    };
+    expect(installEnv(env)).toEqual({ npm_config_registry: 'keep', PATH: 'a' });
+    // A copy: the environment given stays as it was.
+    expect(env.NODE_ENV).toBe('production');
   });
 });
 

@@ -12,7 +12,7 @@ import {
 } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
-import { withoutScriptEnv } from './runenv.js';
+import { installEnv, withoutScriptEnv } from './runenv.js';
 import { clearStaleIndexLock } from './worktree.js';
 
 export { reviewCommits, reviewSources };
@@ -1084,7 +1084,9 @@ export class CommandRunner {
    * Runs `commands` in order, in `cwd` unless an entry names its own, and stops at the first that
    * fails. `onStep` hears of each command as it starts, and again with its result once it ends.
    * `env` replaces the runner's environment for these commands: what depends on the folder they
-   * run in, such as its shared Electron (AO-0306).
+   * run in, such as its shared Electron (AO-0306). The first `installs` entries install
+   * dependencies, and run without what would change the dependency types they install
+   * (`installEnv`, AO-0391).
    */
   async runAll(
     commands: CommandEntry[],
@@ -1092,6 +1094,7 @@ export class CommandRunner {
     timeoutMs: number,
     onStep?: (step: CommandStep) => void,
     env: NodeJS.ProcessEnv = this.env,
+    installs = 0,
   ): Promise<CommandResult[]> {
     const out: CommandResult[] = [];
     let count = commands.length;
@@ -1104,7 +1107,12 @@ export class CommandRunner {
       const e = typeof entry === 'string' ? { command: entry, cwd, label: entry } : entry;
       const step = { command: e.label, index: out.length, count };
       onStep?.(step);
-      const ran = await this.run(e.command, e.cwd, timeoutMs, env);
+      const ran = await this.run(
+        e.command,
+        e.cwd,
+        timeoutMs,
+        at < installs ? installEnv(env) : env,
+      );
       const r = { ...ran, command: e.label, entry: at };
       onStep?.({ ...step, result: r });
       out.push(r);

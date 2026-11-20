@@ -2346,6 +2346,26 @@ describe('merging approved work', () => {
     );
   }, 60_000);
 
+  it('runs the install entries without NODE_ENV, and the rest with it (AO-0391)', async () => {
+    const dir = temp();
+    writeFileSync(
+      join(dir, 'env.mjs'),
+      "import { appendFileSync } from 'node:fs';\nappendFileSync('env.txt', process.argv[2] + '=' + (process.env.NODE_ENV ?? 'none') + '\\n');\n",
+    );
+    const base = { ...process.env, NODE_ENV: 'production' };
+    const runner = new CommandRunner(base, { killTree: () => {}, job: false });
+    const results = await runner.runAll(
+      ['node env.mjs install', () => 'node env.mjs repair', 'node env.mjs build'],
+      dir,
+      60_000,
+      undefined,
+      undefined,
+      2,
+    );
+    expect(results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(text(join(dir, 'env.txt'))).toBe('install=none\nrepair=none\nbuild=production\n');
+  }, 60_000);
+
   it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {
     const dir = temp();
     writeFileSync(
