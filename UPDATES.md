@@ -16,6 +16,8 @@ ones, is in [CHANGELOG.md](CHANGELOG.md).
 - **Merge history.** swarmupd keeps its merge attempts and runs in `state.db`, a local SQLite file
   in its own folder, for every project. Each attempt records how it ended; `GET /api/merges` lists
   them. SwarmUp now needs Node 22.13 or later when you run it from source.
+- **Sync with shared store repos.** `swarmup sync` pushes again when two projects keep their tasks
+  in one repo, such as `.swarmup/` and `web/.swarmup/`.
 
 ## v0.3.0-beta.10 (2026-11-19)
 
