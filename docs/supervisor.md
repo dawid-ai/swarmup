@@ -1213,7 +1213,9 @@ swarmupd:
   still start). When they time out again, the work stays approved and swarmupd comments to the
   root's human instead of sending it back, since the author cannot make the machine faster: raise
   `timeout_minutes` or make the checks faster, then comment on the task, and swarmupd merges it
-  again. The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
+  again. A check that timed out after it printed a failed test (vitest's `FAIL` or `×` lines,
+  node:test's `not ok`) is the code, not the machine: it sends the task back at once, on either try.
+  The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a
   process it started outlives the stop and keeps git's output open, swarmupd stops reading after 5

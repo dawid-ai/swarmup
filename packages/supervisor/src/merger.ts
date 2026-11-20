@@ -963,8 +963,9 @@ export class Merger {
           );
           return 'again';
         }
-        // A check that hangs may be the machine, not the code: merged again once (AO-0172).
-        if (failed?.timedOut && !this.mergeTimedOut.has(ref)) {
+        // A check that hangs may be the machine, not the code: merged again once (AO-0172). One
+        // that printed a failed test before the timeout is the code, so it goes back (AO-0385).
+        if (failed?.timedOut && !failed.failedTest && !this.mergeTimedOut.has(ref)) {
           this.mergeTimedOut.add(ref);
           this.sup.emit(
             'warn',
@@ -974,7 +975,7 @@ export class Merger {
         }
         // Timed out again, with the machine to itself: a slow suite or a busy PC, which the author
         // cannot change, so the work stays approved and the human hears of it (AO-0385).
-        if (failed?.timedOut) {
+        if (failed?.timedOut && !failed.failedTest) {
           this.mergeTimeoutNote(ref, job, failed.command, failed.output, timeout * 2);
           return;
         }
@@ -983,7 +984,7 @@ export class Merger {
             ref,
             job.what,
             job.author,
-            `\`${failed.command}\` failed (${failed.why}) on it rebased onto ${cfg.base} (${short(onto)})`,
+            `\`${failed.command}\` failed (${failed.why}${failed.failedTest ? ', after a failed test' : ''}) on it rebased onto ${cfg.base} (${short(onto)})`,
             failed.output,
           );
           return;
