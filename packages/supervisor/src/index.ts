@@ -27,3 +27,6 @@ export * from './electron-dist.js';
 export * from './runenv.js';
 export * from './seed.js';
 export * from './signin.js';
+export * from './scores.js';
+export * from './orientation.js';
+export * from './score-keeper.js';

@@ -35,6 +35,7 @@ import {
 import { NoDiff } from './diff.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
+import { scorerSettings, summarizeScores } from './scores.js';
 import { buildWrapped } from './wrapped.js';
 import type { SettingsPatch } from './admin.js';
 import { pageRuns, RUN_FILTERS } from './runs.js';
@@ -727,6 +728,38 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         events: reportEvents,
       });
       return send(res, 200, report);
+    }
+    if (area === 'scores') {
+      // The scores swarmupd keeps in state.db (scores.ts): per agent, each scorer's mean, pass
+      // rate and worst subjects; `agent=ID` for one agent, `task=root/ID` adds that task's
+      // scores with evidence. Task and run scores count from `since` (ISO), agent scores over all
+      // time. The report carries the scores of its own window. `POST /api/scores/refresh`
+      // computes them all again.
+      if (method === 'POST' && id === 'refresh') {
+        return send(res, 200, { scores: await sup.refreshScores(true) });
+      }
+      if (method === 'GET' && !id) {
+        const since = q.get('since') || '';
+        if (since && Number.isNaN(Date.parse(since))) {
+          throw new HttpError(400, 'since: use an ISO date and time');
+        }
+        const sinceIso = since ? new Date(Date.parse(since)).toISOString() : '';
+        const results = (await sup.refreshScores()).filter(
+          (r) => r.level === 'agent' || r.at >= sinceIso,
+        );
+        let settings = {};
+        try {
+          settings = scorerSettings(sup.user);
+        } catch {
+          // The tick warns about it.
+        }
+        const agent = q.get('agent') || undefined;
+        const task = q.get('task') || undefined;
+        return send(res, 200, {
+          agents: summarizeScores(results, { settings }).filter((a) => !agent || a.agent === agent),
+          ...(task ? { results: results.filter((r) => r.subject === task) } : {}),
+        });
+      }
     }
     if (method === 'GET' && area === 'timeline') {
       // The replay timeline of `project` (or of every project) in `root` (or every root), for

@@ -76,6 +76,15 @@ import type {
 } from '@swarmup/supervisor';
 import {
   buildReport,
+  computeScores,
+  logOrientation,
+  ScoreKeeper,
+  scoreTasks,
+  scorerSettings,
+  scoresText,
+  StateDb,
+  subjectScoresText,
+  summarizeScores,
   chatMessage,
   daemonCall,
   doctor,
@@ -2838,6 +2847,70 @@ const COMMANDS: Record<string, Command> = {
         return;
       }
       ctx.io.out(ctx.opts.json ? JSON.stringify(report) : text);
+    },
+  },
+  scores: {
+    usage: 'scores [--agent ID] [--task ID] [--since DATE] [--refresh] [--json]',
+    summary:
+      "scores per agent (criteria passed, review rounds, merge failures, cost per merged task, human touches, escalations, recommendations taken, stuck runs, orientation) with each scorer's mean, pass rate and worst tasks; --task lists one task's scores with evidence; --refresh computes them again and keeps them in state.db",
+    options: {
+      agent: { type: 'string' },
+      task: { type: 'string' },
+      since: { type: 'string' },
+      refresh: { type: 'boolean' },
+    },
+    run: async (ctx) => {
+      const sinceText = str(ctx.opts.since);
+      const since = sinceText === undefined ? undefined : Date.parse(sinceText);
+      if (since !== undefined && Number.isNaN(since)) {
+        usageError('since: use a date such as 2026-11-01 or an ISO time');
+      }
+      const ws = ctx.ws();
+      const settings = scorerSettings(ws.user);
+      const store = new RunStore(stateDir(ctx.io.env));
+      const runs = store.list();
+      if (ctx.opts.refresh) {
+        // swarmupd owns state.db while it runs; without it the CLI writes the scores itself.
+        const info = readDaemon(ctx.io.env);
+        const kept = info
+          ? (await daemonCall<{ scores: unknown[] }>(info, 'POST', '/api/scores/refresh', {}))
+              .scores.length
+          : (
+              await new ScoreKeeper(new StateDb(store.dir), {
+                orientation: (r) => logOrientation(r.log),
+                logsPerRefresh: Number.MAX_SAFE_INTEGER,
+              }).refresh(ws, runs, settings, true)
+            ).length;
+        ctx.io.err(`kept ${kept} scores in state.db${info ? ' (swarmupd)' : ''}`);
+      }
+      const sinceIso = since === undefined ? undefined : new Date(since).toISOString();
+      const tasks = scoreTasks(ws, { root: ws.scope, since: sinceIso });
+      const results = computeScores(
+        { tasks, runs, orientation: (r) => logOrientation(r.log) },
+        { settings, ...(since !== undefined ? { from: since } : {}) },
+      );
+      const task = str(ctx.opts.task);
+      if (task) {
+        const { root, id } = ws.resolve(task);
+        const subject = `${root.name}/${id}`;
+        const runIds = new Set(
+          runs.filter((r) => r.task === id && (!r.root || r.root === root.name)).map((r) => r.id),
+        );
+        const mine = results.filter(
+          (r) => r.subject === subject || (r.level === 'run' && runIds.has(r.subject)),
+        );
+        if (ctx.opts.json) return void ctx.io.out(JSON.stringify({ subject, scores: mine }));
+        return void ctx.io.out(subjectScoresText(subject, mine));
+      }
+      const agent = str(ctx.opts.agent);
+      const summary = summarizeScores(results, { settings, worst: agent ? 10 : 3 }).filter(
+        (a) => !agent || a.agent === agent,
+      );
+      if (ctx.opts.json) {
+        return void ctx.io.out(JSON.stringify({ since: sinceIso ?? null, agents: summary }));
+      }
+      if (agent && summary.length === 0) return void ctx.io.out(`${agent}: no scores`);
+      ctx.io.out(scoresText(summary));
     },
   },
   wrapped: {

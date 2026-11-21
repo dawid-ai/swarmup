@@ -25,13 +25,13 @@ describe('state.db', () => {
     const d = mkdtempSync(join(tmpdir(), 'swarmup-state-'));
     dirs.push(d);
     const first = open(d);
-    expect(first.version).toBe(2);
+    expect(first.version).toBe(3);
     first.saveRun(
       { id: 'R1', agent: 'claude:engineer', status: 'ended', started_at: '2026-11-19T00:00:00Z' },
       { id: 'R1', agent: 'claude:engineer' },
     );
     const second = open(d);
-    expect(second.version).toBe(2);
+    expect(second.version).toBe(3);
     expect(second.runCount()).toBe(1);
   });
 

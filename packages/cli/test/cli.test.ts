@@ -71,6 +71,19 @@ function swarmup(cwd: string, actor: string, ...argv: string[]) {
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 
+/** {@link swarmup} for a command that answers asynchronously. */
+async function swarmupAsync(cwd: string, actor: string, ...argv: string[]) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const env = {
+    SWARMUP_CONFIG: join(cwd, 'none.yml'),
+    SWARMUP_AGENT: actor,
+    SWARMUP_STATE_DIR: stateFor(cwd),
+  } as NodeJS.ProcessEnv;
+  const code = await run(argv, { out: (l) => out.push(l), err: (l) => err.push(l), env, cwd });
+  return { code, out: out.join('\n'), err: err.join('\n') };
+}
+
 /**
  * Waits for the clock to pass the current millisecond. A report window ends before "now", and the
  * in-process CLI is fast enough on Linux to write an event and read the window in one millisecond.
@@ -1705,6 +1718,35 @@ describe('inbox recommendations and blocked tasks (AO-0065, AO-0066, AO-0068)', 
       swarmup(d, 'human:dawid', 'report', '--days', '1', '--project', 'other', '--json').out,
     );
     expect(other).toMatchObject({ project: 'other', projects: [], totals: { closed: 0 } });
+  });
+
+  it('prints scores per agent and per task, and keeps them in state.db (W4)', async () => {
+    const d = demo();
+    swarmup(d, 'claude:engineer', 'start', '1');
+    swarmup(d, 'claude:engineer', 'review', '1', 'ready', '--to', 'codex:reviewer');
+    swarmup(d, 'codex:reviewer', 'verdict', '1', 'changes', 'add a test');
+    swarmup(d, 'claude:engineer', 'start', '1');
+    swarmup(d, 'claude:engineer', 'review', '1', 'ready again', '--to', 'codex:reviewer');
+    expect(swarmup(d, 'codex:reviewer', 'verdict', '1', 'approve', 'good').code).toBe(0);
+    const all = await swarmupAsync(d, 'human:dawid', 'scores');
+    expect(all.code).toBe(0);
+    expect(all.out).toMatch(/^claude:engineer$/m);
+    expect(all.out).toMatch(
+      /^ {2}review-rounds: mean 1 rounds over 1 tasks, 100% pass \(<= 1 rounds\)$/m,
+    );
+    const one = await swarmupAsync(d, 'human:dawid', 'scores', '--task', '1');
+    expect(one.out).toMatch(/^demo\/T-0001\n {2}review-rounds: 1 rounds pass \[claude:engineer\]/);
+    const json = JSON.parse((await swarmupAsync(d, 'human:dawid', 'scores', '--json')).out);
+    expect(json.agents.map((a: { agent: string }) => a.agent)).toEqual(['claude:engineer']);
+    expect((await swarmupAsync(d, 'human:dawid', 'scores', '--agent', 'codex:qa')).out).toBe(
+      'codex:qa: no scores',
+    );
+    const later = await swarmupAsync(d, 'human:dawid', 'scores', '--since', '2999-01-01');
+    expect(later.out).toMatch(/^no scores/);
+    expect((await swarmupAsync(d, 'human:dawid', 'scores', '--since', 'soon')).code).toBe(2);
+    const kept = await swarmupAsync(d, 'human:dawid', 'scores', '--refresh');
+    expect(kept.err).toMatch(/kept 2 scores in state\.db/);
+    expect(existsSync(join(stateFor(d), 'state.db'))).toBe(true);
   });
 
   it('cuts a long blocked list to five ids', () => {
