@@ -240,7 +240,8 @@ describe('timeline path and allow list', () => {
     );
     expect(timelinePath({ ...base, custom: true })).toBeNull();
     expect(timelinePath({ ...base, custom: true, from: '2026-11-01', to: '2026-11-03' })).toBe(
-      '/api/timeline?from=2026-11-01&to=2026-11-03&clip=30',
+      // The to date counts in full: swarmupd gets the day after it.
+      '/api/timeline?from=2026-11-01&to=2026-11-04&clip=30',
     );
   });
 

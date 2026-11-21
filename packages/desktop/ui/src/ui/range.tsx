@@ -20,12 +20,25 @@ export const RANGES: Array<[number, string]> = [
 ];
 
 /**
+ * The day after `date` (`2026-11-20` gives `2026-11-21`). swarmupd reads a date as its midnight,
+ * so a custom range sends the day after its **to** date: the events of that day count too.
+ * Anything that is not a plain date goes as it is.
+ */
+export function dayAfter(date: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return date;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
  * The query parameters swarmupd reads a window from, as `/api/report` and `/api/timeline` take
  * them: `days=7`, or `from=…&to=…`. '' for all time; null while a custom window has no start.
  */
 export function rangeParams(r: TimeRange): string | null {
   if (r.custom) {
-    return r.from ? `from=${q(r.from)}${r.to ? `&to=${q(r.to)}` : ''}` : null;
+    return r.from ? `from=${q(r.from)}${r.to ? `&to=${q(dayAfter(r.to))}` : ''}` : null;
   }
   return r.days > 0 ? `days=${r.days}` : '';
 }

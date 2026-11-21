@@ -143,7 +143,8 @@ it('filters by a custom from and to', async () => {
   setDate('From', day(25));
   setDate('To', day(10));
   await settle();
-  expect(asked.at(-1)).toContain(`from=${day(25)}&to=${day(10)}`);
+  // The to date counts in full: swarmupd gets the day after it.
+  expect(asked.at(-1)).toContain(`from=${day(25)}&to=${day(9)}`);
   expect(shown()).toEqual(['AO-0003']);
 });
 
