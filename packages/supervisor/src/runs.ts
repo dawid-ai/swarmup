@@ -110,6 +110,15 @@ export interface RunRecord {
    * names there at its end are named in its `run-end` event (AO-0230).
    */
   around?: Record<string, string[]>;
+  /**
+   * The runtime's session id, from its output: Claude's `session_id`, Codex's thread id. A later
+   * work run on the task may resume it (`swarmupd.resume_on_changes`).
+   */
+  session?: string;
+  /** The session this run resumed instead of starting fresh, after a `changes` verdict. */
+  resumed?: string;
+  /** The run whose session this run resumed. */
+  resumed_from?: string;
 }
 
 /** A commit of what a run left, in the checkout `top`; `into` is the branch to merge it into. */

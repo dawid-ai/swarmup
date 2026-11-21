@@ -19,7 +19,9 @@ the SwarmUp checkout.
 3. `swarmup show ID`: the task, its state, and every event so far. Read the latest checkpoint and
    comments; don't redo what they say is done or decided. If it ends with an `attachments:` list,
    open those image files: they are screenshots or designs the task refers to. A `done when:`
-   list holds the task's checks: the task is done when every line holds.
+   list holds the task's checks: the task is done when every line holds. When swarmupd started
+   you on the task, your prompt already quotes its text, its recent thread and its parents with
+   their briefs; don't fetch those again, and use `swarmup show` only for the rest.
 4. `swarmup start ID "one-line plan"`: claims and starts. Exit code 1 means someone else holds it; run
    `swarmup next` again.
 5. Check your plan against the **decisions in force**: the lines `- D-0042 (2026-11-03): ...` that
@@ -133,6 +135,12 @@ swarmup plan apply ID                         # finish an application interrupte
   contradiction changes approved scope, order or owners. It waits for human approval.
 - `apply` is safe for anyone and writes nothing when the recorded approval is already applied.
   swarmupd also runs it when it finds an incomplete application.
+
+A milestone or any parent task can carry a **brief**: a short Markdown text with the outcome, what
+is done, what comes next, the open questions and the decisions in force. `swarmup brief ID` prints
+it; `swarmup brief ID --body-file -` writes a new one, and the newest wins. Work runs on its
+children read it in their prompt. As the PM, refresh a brief when your prompt lists it under
+"Briefs to refresh".
 
 An approved plan governs its tasks. Handoffs, assignments and delegations stay within the planned
 owner or role, preserve planned and extra waits, and cannot move a task with an open question.

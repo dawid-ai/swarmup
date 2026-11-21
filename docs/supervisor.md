@@ -274,6 +274,78 @@ finish with `swarmup ask AO-0110 "contradiction with D-0042: ..."`.
   that names the note as its source covers the task; see
   [Where an agent sees the decisions](protocol.md#where-an-agent-sees-the-decisions).
 
+### Run context in the prompt
+
+The standard prompt of a work run and of a review run carries what the run would otherwise fetch
+before its first edit, so it does not spend tool calls on `swarmup show` for the task, its parent
+and its milestone (`packages/supervisor/src/run-context.ts`):
+
+- **Task text:** the task's body, cut at 3,000 characters.
+- **Thread:** the newest comments, verdicts, review requests, asks, answers, checkpoints and
+  other notes, newest last, each with its author, UTC time and `ID#<event id>`. Each event is cut
+  at 600 characters, the newest review request and verdict at 1,500, and the thread stops at
+  4,000 characters with a count of the earlier events. Claims, renewals, run starts and ends,
+  merges and plan events are left out.
+- **Parents:** the chain from the task's parent up, at most 4, each with its id, type, status,
+  title and its brief (see [Goal briefs](protocol.md#goal-briefs)): 1,500 characters of the
+  nearest parent's brief, 600 of the others'. A parent without a brief shows the first paragraph
+  of its text, at most 3 lines. A run on a parent shows its own brief too.
+
+The block ends with a pointer to `swarmup show <id>` for the rest: every event, the `done when:`
+list and attachments. A question run, a milestone check, a run with a custom prompt or a
+schedule's prompt gets none; nor does a resumed run (see
+[Resume after changes](#resume-after-changes)). If swarmupd cannot read the task, the run starts
+without the block.
+
+A PM's inbox run also lists **briefs to refresh**: each open milestone, and each open parent that
+has a brief, with a child that closed (`done`) after the brief was written (for a milestone with
+no brief, any closed child), oldest close first, 8 at most. The run reads each with `swarmup show`
+and writes a new brief with `swarmup brief ID --body-file -`. The list rides on inbox runs the PM
+gets anyway: a closed child wakes no run of its own, so briefs cost no extra runs. A child's close
+time is its last event, so an event after the close, such as its merge, lists the parent again.
+
+`node scripts/orientation.mjs` measures what the context saves: per work run, the tool calls
+before the first edit (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `apply_patch`, a Codex
+`file_change`), the tool calls in all, the `swarmup` calls before the first edit and the share of
+tool-result bytes before it, with the median and spread. It reads `runs/` and `logs/` in the
+state folder, read-only (`--dir`, `--last N`, `--since`, `--agent`, `--runs`, `--json`). Logs
+go after `log_days`, so it covers the last 14 days by default.
+
+### Resume after changes
+
+When a task comes back with a `changes` verdict, from its reviewer or from swarmupd's merge
+(`opsd:merge`), the next work run of the agent that did the work resumes that run's session
+instead of starting a blank one: the session still holds what the run read and why it chose what
+it did. swarmupd records each run's session id on its run record and its `run-end` event
+(`session`): Claude's `session_id` from its `system` `init` message, Codex's thread id from
+`thread.started`.
+
+The run resumes only when every condition holds (`resumeDecision` in
+`packages/supervisor/src/resume.ts`); otherwise it starts fresh with the standard prompt:
+
+1. `resume_on_changes` is on (the default), and the runtime is Claude or Codex.
+2. The newest work run on the task is this agent's (so the same runtime), it ended on its own
+   with exit code 0, and its session id is known.
+3. The newest verdict asks for `changes`, came after that run ended, and answers a review this
+   agent asked for; no run started and no review was asked on the task since.
+4. The new run starts in the same folder, such as the task's worktree, and it still exists.
+5. The run ended less than `resume_max_hours` (24) ago.
+6. With a token budget, the earlier run used less than half of it: the resumed session carries
+   its whole context.
+
+A resumed Claude run gets `--resume <session>` after `-p`. A resumed Codex run uses
+`codex exec resume <thread id>`, which takes no `--sandbox`, `-C` or `--add-dir` (Codex 0.167):
+only a writing run in its task worktree, which starts with `--sandbox danger-full-access`,
+resumes, with `--dangerously-bypass-approvals-and-sandbox`, the same access; sandboxed Codex runs
+start fresh.
+
+The resumed prompt is a short delta: the verdict, the comments and answers since the run, and an
+instruction to start the task again, fix what the verdict asks, read a file again before editing
+it and finish as before. The run record names the session (`resumed`) and the run it came from
+(`resumed_from`), and the `run-start` event carries `session` and says
+`resumed session <id> of run <id>`. Set `swarmupd.resume_on_changes: false` to start every run
+fresh.
+
 ### Runtimes
 
 | Runtime  | Command line                                                                                                                                                    |
@@ -887,6 +959,8 @@ swarmupd:
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
   review_checks: false # true: run the merge checks for a Codex reviewer, whose sandbox cannot
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
+  resume_on_changes: true # a task back with changes resumes its last run's session
+  resume_max_hours: 24 # how long after its run ended a session may be resumed
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
     claude: { command: claude, model: opus, effort: medium } # effort: --effort for Claude

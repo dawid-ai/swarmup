@@ -133,7 +133,7 @@ if (mode === 'auth') {
   console.log(JSON.stringify({ type: 'result', is_error: true, result: text }));
   process.exit(1);
 }
-const task = /Work on (\\S+):/.exec(prompt)?.[1];
+const task = /Work on (\\S+):/.exec(prompt)?.[1] ?? /earlier session of (\\S+) /.exec(prompt)?.[1];
 const ws = new Workspace({ cwd: process.cwd(), env: process.env });
 console.log(JSON.stringify({ type: 'assistant', message: { id: 'm1', usage: { input_tokens: 100, output_tokens: 50 } } }));
 // 'idle' hangs without touching the task, so it cannot see a claim swarmupd has yet to report lost.
@@ -226,6 +226,11 @@ else if (mode === 'stray') {
     fs.writeFileSync(path.join('node_modules', 'electron', 'path.txt'), exe);
   }
   if (task) ws.done(task, 'left a stray file');
+}
+else if (mode === 'session-review') {
+  // A Claude run: names its session, then asks for review.
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1' }));
+  if (task) ws.review(task, 'ready for review');
 }
 else if (mode === 'tail') process.stdout.write(JSON.stringify({ type: 'result', usage: { input_tokens: 1000, output_tokens: 1 } }));
 `;
@@ -7438,5 +7443,67 @@ describe('reviews of a provider that cannot run (AO-0341)', () => {
     expect(stalls[0]).toMatchObject({ provider: 'fake', reviews: ids, tasks: [] });
     expect(stalls[0]!.text).toMatch(/^fake usage at 92% .*: 3 reviews \(/);
     expect(sup.waits().filter((w) => w.stall === 'fake')).toHaveLength(3);
+  });
+});
+
+describe('session resume after changes', () => {
+  it('records the session id and resumes it when the work comes back with changes', async () => {
+    const promptFile = join(temp(), 'prompt.txt');
+    const agentFile = join(temp(), 'fake-claude.mjs');
+    writeFileSync(agentFile, FAKE_AGENT);
+    const { sup, as } = setup({
+      mode: 'session-review',
+      env: { FAKE_PROMPT: promptFile },
+      opsd: { runtimes: { claude: { command: process.execPath, args: [agentFile] } } },
+    });
+    const human = as('human:dawid');
+    human.newTask({
+      title: 'Parse events',
+      body: 'Read the event files.',
+      owner: 'claude:engineer',
+    });
+    const first = await ended(sup, sup.launch({ agent: 'claude:engineer', task: '1' }).id);
+    expect(first.session).toBe('sess-1');
+    expect(first.resumed).toBeUndefined();
+    // The work prompt carries the task text, so the run need not fetch it.
+    expect(readFileSync(promptFile, 'utf8')).toContain('Context of T-0001');
+    expect(readFileSync(promptFile, 'utf8')).toContain('> Read the event files.');
+    const end = human.showEvents('1').events.find((e) => e.type === 'run-end');
+    expect(end?.session).toBe('sess-1');
+
+    human.verdict('1', 'changes', 'Handle CRLF in src/parse.ts');
+    const second = await ended(sup, sup.launch({ agent: 'claude:engineer', task: '1' }).id);
+    expect(second.resumed).toBe('sess-1');
+    expect(second.resumed_from).toBe(first.id);
+    expect(second.command).toContain('-p --resume sess-1 ');
+    const prompt = readFileSync(promptFile, 'utf8');
+    expect(prompt).toContain(`swarmupd resumed your earlier session of T-0001 (run ${first.id})`);
+    expect(prompt).toContain('> Handle CRLF in src/parse.ts');
+    expect(prompt).not.toContain('Rules for supervised runs');
+    const start = human
+      .showEvents('1')
+      .events.filter((e) => e.type === 'run-start')
+      .pop();
+    expect(start?.session).toBe('sess-1');
+    expect(start?.body).toContain(`resumed session sess-1 of run ${first.id}`);
+  });
+
+  it('starts fresh when resume_on_changes is off', async () => {
+    const agentFile = join(temp(), 'fake-claude.mjs');
+    writeFileSync(agentFile, FAKE_AGENT);
+    const { sup, as } = setup({
+      mode: 'session-review',
+      opsd: {
+        resume_on_changes: false,
+        runtimes: { claude: { command: process.execPath, args: [agentFile] } },
+      },
+    });
+    const human = as('human:dawid');
+    human.newTask({ title: 'Parse events', owner: 'claude:engineer' });
+    await ended(sup, sup.launch({ agent: 'claude:engineer', task: '1' }).id);
+    human.verdict('1', 'changes', 'Handle CRLF');
+    const second = await ended(sup, sup.launch({ agent: 'claude:engineer', task: '1' }).id);
+    expect(second.resumed).toBeUndefined();
+    expect(second.command).not.toContain('--resume');
   });
 });

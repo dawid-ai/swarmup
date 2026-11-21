@@ -139,6 +139,10 @@ import {
   withStoreCheckoutRule,
 } from './runtimes.js';
 import type { ReviewChecks } from './review-checks.js';
+import type { BriefRefresh, RunContext } from './run-context.js';
+import { briefsToRefresh, runContext } from './run-context.js';
+import type { Invocation } from './runtimes.js';
+import { resumeDecision, resumeInvocation, resumePrompt } from './resume.js';
 import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
 import type { InstallResult, TaskWorktree, WorktreeEntry } from './worktree.js';
@@ -1471,6 +1475,73 @@ export class Supervisor extends EventEmitter {
       return ws.decisionLog({ task: ref }).map(({ id, at, text }) => ({ id, at, text }));
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The task text, thread and parents for a run's prompt. A task that cannot be read never
+   * stops the run: the prompt then has no context, and the run reads it with `swarmup show`.
+   */
+  private runContextOf(ws: Workspace, ref: string): RunContext | undefined {
+    try {
+      return runContext(ws, ref);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Parents whose brief is behind their closed children, for a PM's inbox run. */
+  private briefsOf(ws: Workspace): BriefRefresh[] {
+    try {
+      return briefsToRefresh(ws, ws.views());
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The invocation and prompt that resume the session of the agent's last work run on a task
+   * that came back with `changes` (see `resumeDecision`), or null when the run starts fresh.
+   */
+  private resumeOf(
+    ws: Workspace,
+    agent: string,
+    root: string,
+    task: string,
+    cwd: string,
+    tokenBudget: number | undefined,
+    baseLen: number,
+    inv: Invocation,
+  ): { inv: Invocation; prompt: string; session: string; from: string } | null {
+    if (!this.config.resume_on_changes) return null;
+    try {
+      const d = resumeDecision({
+        enabled: true,
+        maxHours: this.config.resume_max_hours,
+        agent,
+        root,
+        task,
+        cwd,
+        events: ws.showEvents(`${root}/${task}`).events,
+        runs: this.store.list(),
+        now: this.now(),
+        tokenBudget,
+        exists: (dir) => existsSync(dir),
+        samePath,
+      });
+      if (!d.resume) return null;
+      const next = resumeInvocation(inv, runtimeOf(agent), d.session, baseLen);
+      if (!next) return null;
+      const prompt = resumePrompt({
+        agent,
+        task,
+        run: d.run.id,
+        verdict: d.verdict,
+        since: d.since,
+      });
+      return { inv: next, prompt, session: d.session, from: d.run.id };
+    } catch {
+      return null;
     }
   }
 
@@ -3493,7 +3564,7 @@ export class Supervisor extends EventEmitter {
       runtimeOf(agent) === 'codex' && !readOnly && !codexFullAccess
         ? codexGitDirsOf(this.gitDirsOf(cwd))
         : [];
-    const inv = invocation(
+    let inv = invocation(
       rc,
       agent,
       runDef,
@@ -3508,6 +3579,14 @@ export class Supervisor extends EventEmitter {
       scratch,
       codexFullAccess,
     );
+    // A task back with `changes` resumes the session of the run that did the work.
+    const workRun =
+      !parent && !req.review && !req.chat && !question && !check && req.extra === undefined;
+    const resumed =
+      workRun && req.prompt === undefined && task && rootName
+        ? this.resumeOf(ws, agent, rootName, task, cwd, tokenBudget, rc.args?.length ?? 0, inv)
+        : null;
+    if (resumed) inv = resumed.inv;
     // A reviewer that cannot run the checks reads what swarmupd ran for it (AO-0296); the whole
     // output goes to a file in the run's scratch folder.
     let checksNote = '';
@@ -3531,6 +3610,12 @@ export class Supervisor extends EventEmitter {
     // task have no one root to take decisions from, and get them from `swarmup start`.
     const decisions =
       req.prompt === undefined && ref && !question ? this.taskDecisions(ws, ref) : [];
+    // The task text, its thread and its parents, so a work or review run need not fetch them
+    // first; and for a PM's inbox run, the briefs behind their closed children.
+    const standard = req.prompt === undefined && req.extra === undefined && !req.chat;
+    const context =
+      standard && ref && !question && !check && !resumed ? this.runContextOf(ws, ref) : undefined;
+    const briefs = standard && !task && roleOf(agent) === 'pm' ? this.briefsOf(ws) : undefined;
     // A custom prompt is used as given, plus the store-checkout rule when it applies, plus the
     // read-only Codex note.
     const prompt =
@@ -3556,6 +3641,8 @@ export class Supervisor extends EventEmitter {
             scratch: readOnly || req.chat ? undefined : scratch,
             notes,
             decisions,
+            context,
+            briefs,
           })) +
       (inv.note ?? '') +
       // The releases and tags a Codex PM run cannot read itself (AO-0350).
@@ -3563,6 +3650,8 @@ export class Supervisor extends EventEmitter {
       checksNote +
       // What the work changes in tests and check configuration, for the reviewer (AO-0291).
       (req.review && ref && !req.chat ? this.testChangesNoteOf(ws, ref) : '');
+    // A resumed session gets a short delta instead: its first prompt is in the session.
+    const input = resumed ? resumed.prompt : prompt;
 
     // Claim before the process starts, so two runs never race for one task.
     let claimedHere = false;
@@ -3647,6 +3736,8 @@ export class Supervisor extends EventEmitter {
         base,
         scratch,
         around,
+        resumed: resumed?.session,
+        resumed_from: resumed?.from,
       };
       this.store.save(record);
     } catch (err) {
@@ -3676,12 +3767,12 @@ export class Supervisor extends EventEmitter {
       this.saveSignIn();
     }
     child.on('exit', (code) => this.finish(id, code));
-    if (spawned.launch) void this.handOver(liveRun, spawned.launch, prompt);
+    if (spawned.launch) void this.handOver(liveRun, spawned.launch, input);
     else {
       child.stdin?.on('error', () => {});
-      child.stdin?.end(prompt);
+      child.stdin?.end(input);
     }
-    if (notes.length > 0 && ref) {
+    if (notes.length > 0 && ref && !resumed) {
       // Usage accounting must never stop a run whose prompt was already built. Resolve the
       // display refs back to notes only here, after the process successfully started.
       this.safe(() =>
@@ -3697,8 +3788,9 @@ export class Supervisor extends EventEmitter {
         ws.recordRun(
           `${rootName}/${task}`,
           'run-start',
-          { run: id },
-          `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}`,
+          { run: id, ...(resumed ? { session: resumed.session } : {}) },
+          `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
+            (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),
       );
     }
@@ -3816,6 +3908,8 @@ export class Supervisor extends EventEmitter {
     r.exit = l.killReason ? null : exit;
     r.reason = l.killReason ?? (l.child ? 'exit' : 'lost');
     r.tokens = l.meter.tokens;
+    const session = l.meter.sessionId ?? l.meter.threadId;
+    if (session) r.session = session;
     this.noteRunHealth(l, r);
     // Saved with the end, so a swarmupd that stops before the wrap-up is over resumes it.
     r.wrap_up = 'pending';
@@ -3898,6 +3992,7 @@ export class Supervisor extends EventEmitter {
               reason: r.reason,
               minutes,
               tokens: r.tokens || undefined,
+              session: r.session,
             },
             notes.join('\n\n'),
           ),

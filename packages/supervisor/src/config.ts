@@ -351,6 +351,14 @@ export interface OpsdConfig {
    * swarmupd then only names them in its log.
    */
   remove_stale_temp: boolean;
+  /**
+   * When a task comes back with `changes` to the agent whose run did the work, the next work run
+   * resumes that run's session instead of starting fresh (see `resume.ts`). On unless set to
+   * false.
+   */
+  resume_on_changes: boolean;
+  /** Hours after a run ended that its session may still be resumed. */
+  resume_max_hours: number;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -492,6 +500,8 @@ export function opsdConfig(
     repair_stores: raw.repair_stores ?? true,
     review_checks: raw.review_checks ?? false,
     remove_stale_temp: raw.remove_stale_temp ?? false,
+    resume_on_changes: raw.resume_on_changes ?? true,
+    resume_max_hours: raw.resume_max_hours ?? 24,
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -522,6 +532,10 @@ export function opsdConfig(
   if (typeof cfg.remove_stale_temp !== 'boolean') {
     throw new OpsError('swarmupd.remove_stale_temp: use true or false', 2);
   }
+  if (typeof cfg.resume_on_changes !== 'boolean') {
+    throw new OpsError('swarmupd.resume_on_changes: use true or false', 2);
+  }
+  amount(cfg.resume_max_hours, 'resume_max_hours');
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');
   amount(cfg.scratch_days, 'scratch_days');
   amount(cfg.log_days, 'log_days');

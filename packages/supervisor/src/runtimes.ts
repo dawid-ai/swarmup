@@ -2,6 +2,8 @@ import type { AgentDef, LogEntry } from '@swarmup/core';
 import { actorSlug, decisionLines, roleOf, runtimeOf } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkEffort, checkModel } from './config.js';
+import type { BriefRefresh, RunContext } from './run-context.js';
+import { briefRefreshLines, runContextLines } from './run-context.js';
 
 /** Tools for a Claude role that lists none: edit, read and the usual dev commands. */
 export const DEFAULT_CLAUDE_TOOLS = [
@@ -403,6 +405,13 @@ export interface PromptInput {
    * what `swarmup decisions --log --task ID` lists. A run without a task has none.
    */
   decisions?: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>;
+  /**
+   * What a work or review run would otherwise fetch first: the task text, its recent thread and
+   * its chain of parents with their briefs (`run-context.ts`).
+   */
+  context?: RunContext;
+  /** For a PM's inbox run: parents whose brief is behind their closed children. */
+  briefs?: BriefRefresh[];
 }
 
 /** The rule that keeps a run's scratch files out of every repo (AO-0230). */
@@ -943,6 +952,8 @@ export function runPrompt(p: PromptInput): string {
       );
     }
   }
+  if (p.task && p.context) lines.push(...runContextLines(p.task, p.context));
+  if (!p.task && p.briefs) lines.push(...briefRefreshLines(p.briefs));
   // Inline, not a command to run: a line in the prompt is read every time (AO-0109). A question
   // run answers and changes nothing, so it has no plan to check and gets no list.
   if (p.task && !p.question && p.decisions && p.decisions.length > 0) {
