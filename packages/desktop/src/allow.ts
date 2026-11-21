@@ -46,6 +46,10 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // The project map (W2): the map, one node and search.
     'map',
     'map/(node|search)',
+    'defs',
+    'bench/(sets|runs)',
+    `bench/runs/${SEG}`,
+    `bench/runs/${SEG}/attempt`,
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
@@ -76,6 +80,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'signin/resume',
     'projects/(archive|unarchive|label|remove)',
     'map/(check|index|init)',
+    'defs/(validate|import|create|save)',
+    'bench/(run|compare)',
+    `bench/runs/${SEG}/stop`,
   ].map((p) => new RegExp(`^/api/${p}$`)),
 };
 

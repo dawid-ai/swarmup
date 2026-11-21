@@ -39,6 +39,8 @@ export interface DefsRootView {
   stale: boolean;
   agents: number;
   problems: DefProblem[];
+  /** The text of `swarm.yaml` as hashed (no BOM, LF line ends), when the root has one. */
+  text?: string;
 }
 
 export interface DefsView {
@@ -46,6 +48,8 @@ export interface DefsView {
   applied: DefsMerge['applied'];
   overrides: DefsMerge['overrides'];
   conflicts: DefsMerge['conflicts'];
+  /** Each key the git definitions set: the value in effect and its source (git or machine). */
+  values: DefsMerge['values'];
 }
 
 interface RootDefs extends DefsRoot {
@@ -222,11 +226,13 @@ export class DefsState {
           stale: r.stale,
           agents: r.set.agents.length,
           problems: r.set.problems,
+          ...(r.set.present ? { text: r.set.texts[SWARM_FILE] ?? '' } : {}),
         };
       }),
       applied: this.merge?.applied ?? [],
       overrides: this.merge?.overrides ?? [],
       conflicts: this.merge?.conflicts ?? [],
+      values: this.merge?.values ?? [],
     };
   }
 }

@@ -14,6 +14,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -365,7 +366,7 @@ export function runAgentProcess(
     let hard: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid !== undefined) stopTree(child.pid);
+      if (child.pid !== undefined) stopBenchTree(child.pid);
       // A tree that does not end still lets the attempt finish.
       hard = setTimeout(() => finish(null), 30_000);
     }, opts.timeoutMs);
@@ -380,7 +381,7 @@ export function runAgentProcess(
 }
 
 /** Stops a child this process started, and every process under it, while it still runs. */
-function stopTree(pid: number): void {
+export function stopBenchTree(pid: number): void {
   if (!WIN) {
     killTree(pid);
     return;
@@ -1177,57 +1178,120 @@ export async function runAttempt(
   return result;
 }
 
+/** A run's `status.json`: where a run that is under way stands, for the desktop app. */
+export interface BenchStatus {
+  state: 'running' | 'done' | 'failed';
+  /** Attempts finished, of `total`. */
+  done: number;
+  total: number;
+  /** The attempt under way, such as `TB-02 #1`. */
+  current?: string;
+  /** The runner's process id. */
+  pid: number;
+  startedAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+
+/**
+ * Files of an out folder that do not make it "already holds files": what the desktop app writes
+ * before the runner starts (its request and the runner's output), and the runner's status.
+ */
+export const BENCH_RUN_FILES = ['request.json', 'run.log', 'status.json'] as const;
+
+/** Writes `status.json` whole, through a temporary file, so a reader never sees half of it. */
+export function writeBenchStatus(out: string, status: BenchStatus): void {
+  const file = join(out, 'status.json');
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`);
+  renameSync(tmp, file);
+}
+
 /**
  * Runs a benchmark: every planned attempt in turn, then `summary.json` and `summary.md` in the
  * out folder. With `dryRun`, prints the plan and touches nothing. Returns the summary, or null
- * for a dry run.
+ * for a dry run. While it runs, `status.json` in the out folder says how far it got.
  */
 export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | null> {
   const plan = planBench(opts);
   const out = resolve(opts.out);
   for (const line of planLines(plan, opts)) opts.log(line);
   if (opts.dryRun) return null;
-  if (existsSync(out) && readdirSync(out).length > 0) {
+  if (
+    existsSync(out) &&
+    readdirSync(out).some((f) => !(BENCH_RUN_FILES as readonly string[]).includes(f))
+  ) {
     throw new OpsError(`${out} already holds files: pick a new --out`, 2);
   }
   mkdirSync(out, { recursive: true });
   const now = opts.now ?? (() => new Date());
   const startedAt = now().toISOString();
+  const status: BenchStatus = {
+    state: 'running',
+    done: 0,
+    total: plan.attempts.length,
+    pid: process.pid,
+    startedAt,
+    updatedAt: startedAt,
+  };
+  const report = (patch: Partial<BenchStatus>): void => {
+    Object.assign(status, patch, { updatedAt: now().toISOString() });
+    try {
+      writeBenchStatus(out, status);
+    } catch (err) {
+      opts.log(`could not write status.json: ${(err as Error).message.split('\n')[0]}`);
+    }
+  };
+  report({});
   const results: AttemptResult[] = [];
-  for (const a of plan.attempts) {
-    opts.log(`${a.entry.id} #${a.attempt}: ${a.mode === 'agent' ? `running ${a.agent}` : a.mode}`);
-    const r = await runAttempt(a, {
-      opts,
+  try {
+    for (const a of plan.attempts) {
+      opts.log(
+        `${a.entry.id} #${a.attempt}: ${a.mode === 'agent' ? `running ${a.agent}` : a.mode}`,
+      );
+      report({ current: `${a.entry.id} #${a.attempt}` });
+      const r = await runAttempt(a, {
+        opts,
+        repo: plan.repo,
+        out,
+        ...(plan.hiddenDir ? { hiddenDir: plan.hiddenDir } : {}),
+      });
+      results.push(r);
+      report({ done: results.length });
+      const fails = r.criteria.filter((c) => c.result === 'fail').map((c) => c.id);
+      opts.log(
+        `${a.entry.id} #${a.attempt}: ${r.score.passed}/${r.score.checkable} checkable pass` +
+          (r.score.hidden.total
+            ? `, hidden ${r.score.hidden.passed}/${r.score.hidden.total}`
+            : '') +
+          (fails.length ? `; failed ${fails.join(', ')}` : '') +
+          (r.run.timedOut ? '; timed out' : '') +
+          (r.run.error ? `; ${r.run.error}` : ''),
+      );
+    }
+    const first = plan.attempts[0]!;
+    const entries = summarizeEntries(results);
+    const summary: BenchSummary = {
+      set: opts.set.id,
+      mode: first.mode,
+      agent: opts.referenceDir ? 'reference' : (opts.agent ?? first.agent),
+      ...(first.mode === 'agent' && opts.model ? { model: opts.model } : {}),
+      ...(first.mode === 'agent' && opts.effort ? { effort: opts.effort } : {}),
       repo: plan.repo,
       out,
-      ...(plan.hiddenDir ? { hiddenDir: plan.hiddenDir } : {}),
-    });
-    results.push(r);
-    const fails = r.criteria.filter((c) => c.result === 'fail').map((c) => c.id);
-    opts.log(
-      `${a.entry.id} #${a.attempt}: ${r.score.passed}/${r.score.checkable} checkable pass` +
-        (r.score.hidden.total ? `, hidden ${r.score.hidden.passed}/${r.score.hidden.total}` : '') +
-        (fails.length ? `; failed ${fails.join(', ')}` : '') +
-        (r.run.timedOut ? '; timed out' : '') +
-        (r.run.error ? `; ${r.run.error}` : ''),
-    );
+      startedAt,
+      finishedAt: now().toISOString(),
+      entries,
+      overall: overallOf(entries),
+    };
+    writeFileSync(join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    writeFileSync(join(out, 'summary.md'), summaryMarkdown(summary));
+    delete status.current;
+    report({ state: 'done', finishedAt: summary.finishedAt });
+    return summary;
+  } catch (err) {
+    report({ state: 'failed', finishedAt: now().toISOString(), error: (err as Error).message });
+    throw err;
   }
-  const first = plan.attempts[0]!;
-  const entries = summarizeEntries(results);
-  const summary: BenchSummary = {
-    set: opts.set.id,
-    mode: first.mode,
-    agent: opts.referenceDir ? 'reference' : (opts.agent ?? first.agent),
-    ...(first.mode === 'agent' && opts.model ? { model: opts.model } : {}),
-    ...(first.mode === 'agent' && opts.effort ? { effort: opts.effort } : {}),
-    repo: plan.repo,
-    out,
-    startedAt,
-    finishedAt: now().toISOString(),
-    entries,
-    overall: overallOf(entries),
-  };
-  writeFileSync(join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
-  writeFileSync(join(out, 'summary.md'), summaryMarkdown(summary));
-  return summary;
 }

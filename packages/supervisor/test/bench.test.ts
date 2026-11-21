@@ -324,6 +324,58 @@ describe('runBench', () => {
     ]);
     expect(summary!.overall).toMatchObject({ attempts: 2, costUsd: 0.5, costPerAttempt: 0.25 });
     expect(readFileSync(join(out, 'summary.md'), 'utf8')).toContain('| E-1 | 2 | 100% | 2/2 |');
+    // The app reads how far the run got from status.json.
+    expect(JSON.parse(readFileSync(join(out, 'status.json'), 'utf8'))).toMatchObject({
+      state: 'done',
+      done: 2,
+      total: 2,
+      pid: process.pid,
+    });
+    expect(JSON.parse(readFileSync(join(out, 'status.json'), 'utf8')).current).toBeUndefined();
+  });
+
+  it('marks status.json failed when the run fails, and takes an out folder with the app files', async () => {
+    const { dir: repoDir } = repo();
+    const set = parseBenchSet(
+      {
+        id: 'broken',
+        entries: [
+          {
+            id: 'E-1',
+            base: { ref: 'main' },
+            prompt: 'x',
+            done_when: [{ kind: 'command', run: 'check' }],
+          },
+        ],
+      },
+      join(repoDir, 'set.yaml'),
+    );
+    const out = scratch('bench-out-');
+    // The app writes its request and the runner's log before the runner starts.
+    writeFileSync(join(out, 'request.json'), '{}\n');
+    writeFileSync(join(out, 'run.log'), '');
+    await expect(
+      runBench({
+        set,
+        repo: repoDir,
+        out,
+        agent: 'none',
+        log: () => {},
+        runCommand: () => {
+          throw new Error('boom');
+        },
+      }),
+    ).rejects.toThrow('boom');
+    expect(JSON.parse(readFileSync(join(out, 'status.json'), 'utf8'))).toMatchObject({
+      state: 'failed',
+      done: 0,
+      total: 1,
+      error: 'boom',
+    });
+    writeFileSync(join(out, 'other.txt'), 'x');
+    await expect(
+      runBench({ set, repo: repoDir, out, agent: 'none', log: () => {} }),
+    ).rejects.toThrow(/already holds files/);
   });
 
   it('stops an agent that runs past its budget', async () => {

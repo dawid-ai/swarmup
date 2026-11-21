@@ -43,7 +43,9 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
   lazily so the CLI never prints its warning), scratch folders.
 - `api.ts` serves 127.0.0.1 with a token per request; `admin.ts` backs the app's Settings,
   Schedules and Standups. Runs get their own run token, never the human's. `state.db` also
-  serves score history (`agentScoreHistory`) to `GET /api/scores/history`.
+  serves score history (`agentScoreHistory`) to `GET /api/scores/history`. `/api/defs/*` and
+  `/api/bench/*` live in `defs-import.ts` and `bench-runs.ts` (see `core/defs` and `bench`);
+  `swarmupd.bench` names extra benchmark sets and results folders.
 - `task-criteria.ts` backs the task panel: a task's brief with its children, and **Run checks**
   (`swarmup criteria check` in the background, one run per task).
 - `doctor.ts` checks config, roots, CLIs and sign-ins; `notify.ts` posts to a webhook URL.

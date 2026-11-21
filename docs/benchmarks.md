@@ -135,6 +135,7 @@ The out folder holds one folder per attempt and the run's summary:
   BUG-12/1/agent.log          # the agent's stream-json or --json output
   BUG-12/1/diff.patch         # every change against the base, new files included
   BUG-12/1/worktree/          # with --keep only
+  status.json                 # where the run stands; see Run from the app
 ```
 
 Each attempt records:
@@ -154,6 +155,37 @@ Each attempt records:
 whose hidden criteria all passed, pending criteria, and the mean cost, time and tool calls before
 the first edit. The last row covers the run: the pass rate weighs every entry the same, and the
 other figures count attempts.
+
+## Run from the app
+
+The desktop app's **Benchmarks** view lists sets and runs, starts runs and compares them; see
+[the desktop app](desktop.md#benchmarks). It finds sets in two places:
+
+- Each project's `.swarmup/benchmarks/*.yaml`.
+- The files and folders of `.yaml` files in your user config under `swarmupd.bench.sets`. A
+  relative path is read from the user config's folder.
+
+```yaml
+swarmupd:
+  bench:
+    sets: [C:/work/benchmarks/tally.yaml, C:/work/more-sets]
+    results: [C:/work/bench-results] # optional: more folders of run folders to list
+```
+
+A run from the app writes to `bench/<run-id>/` in swarmupd's state folder, with `<run-id>` the
+set's id and the UTC start time. swarmupd starts `swarmup bench run` there in a background process
+with no window, with the flags the form sets; the folder also holds `request.json` (what the app
+asked for) and `run.log` (the runner's output). Before it starts a run, the app makes a dry run
+and shows the plan; an agent run needs an explicit confirmation of its cost. The API is
+`GET /api/bench/sets`, `GET /api/bench/runs`, `GET /api/bench/runs/<id>`,
+`GET /api/bench/runs/<id>/attempt?entry=E&n=1&file=diff|log`, `POST /api/bench/run`,
+`POST /api/bench/runs/<id>/stop` and `POST /api/bench/compare` with `{ a, b }`.
+
+While it runs, every run, from the app or the command line, keeps `status.json` in its out folder:
+`state` (`running`, `done` or `failed`), `done` and `total` attempts, the attempt under way as
+`current`, the runner's `pid`, and the times. A run whose runner ended without `done` shows as
+failed. `--out` may hold the app's `request.json` and `run.log` already; any other file still
+refuses the folder.
 
 ## Compare two runs
 

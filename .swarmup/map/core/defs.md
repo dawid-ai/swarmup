@@ -8,6 +8,9 @@ covers:
   - scripts/gen-schemas.mjs
   - packages/supervisor/src/defs-config.ts
   - packages/supervisor/src/defs-state.ts
+  - packages/supervisor/src/defs-import.ts
+  - packages/desktop/ui/src/ui/defs.tsx
+  - packages/desktop/test/defs-view.test.ts
   - packages/cli/src/defs-cmd.ts
   - docs/definitions.md
 links: [store, /cli, /supervisor, /supervisor/runs, /leaks]
@@ -32,6 +35,14 @@ limits in git; each machine's user config still wins. Phase 1 of W5; see `docs/d
   `defs-config.ts` `withDefinitions` merges git values under the machine config; the supervisor
   keeps both configs and stamps each run (`RunRecord.defs`, `run-start.defs`, `state.db`).
 - `defs-cmd.ts` holds `swarmup validate` and `swarmup defs show|hash|diff|import-config`.
+- `withDefinitions` also returns `values`: each git key with its effective value and source
+  (`git`, `machine`, `unused`), which `GET /api/defs` serves with each root's `swarm.yaml` text.
+- `defs-import.ts` holds what the CLI and the API share to write `swarm.yaml`: the importable part
+  of the user config, the import preview and line diff, the template, and an atomic write that
+  checks the text and refuses a file changed since it was read. The API adds
+  `POST /api/defs/{validate,import,create,save}`.
+- `desktop/ui/src/ui/defs.tsx` is **Settings > Definitions**: a card per root with the hash and
+  commit, effective values, problems, the YAML with problem lines marked, and in-place edits.
 
 ## Invariants
 

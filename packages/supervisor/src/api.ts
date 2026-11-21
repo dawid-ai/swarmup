@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { sep } from 'node:path';
+import { join, sep } from 'node:path';
 import type {
   AgentDef,
   MarkInput,
@@ -14,6 +14,7 @@ import type {
 import {
   checkDefinitionText,
   COMMAND_TIMEOUT_MS,
+  loadDefinitions,
   parseCriteriaResults,
   parseDoneWhen,
   findAttachment,
@@ -22,6 +23,7 @@ import {
   OpsError,
   openQuestion,
   readPresence,
+  SWARM_FILE,
 } from '@swarmup/core';
 import {
   agentDirectory,
@@ -35,6 +37,9 @@ import {
   settingsView,
   standup,
 } from './admin.js';
+import type { BenchHost, BenchRunRequest } from './bench-runs.js';
+import { BenchRuns, listBenchSets } from './bench-runs.js';
+import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
 import { doctor, installUserSkills } from './doctor.js';
@@ -185,6 +190,14 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   });
   // Task events the reports read, kept so a report opened again reads only the tasks that changed.
   const reportEvents = new ReportEvents();
+  const benchHost = (): BenchHost => ({
+    stateDir: sup.store.dir,
+    roots: benchRoots(sup),
+    config: sup.config.bench,
+    configPath: sup.configPath,
+    env: sup.context.env,
+  });
+  const bench = new BenchRuns(benchHost);
   const server = createServer((req, res) => {
     // The app reads some seven paths at once after each run or task event. Answered back to
     // back they held a write that arrived then, such as a chat send at the start or end of a
@@ -717,20 +730,37 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (method === 'GET' && area === 'milestones') return send(res, 200, wsAs().planProgress());
     // Definitions as code (W5): each root's swarm.yaml and agent files, what they set in the
     // config, and the machine keys that won over them.
-    if (method === 'GET' && area === 'defs' && !id) return send(res, 200, sup.defsView());
-    // Checks a definition file's text while a person edits it; writes nothing.
-    if (method === 'POST' && area === 'defs' && id === 'validate') {
-      const text = body.text;
-      if (typeof text !== 'string') throw new HttpError(400, 'text: send the file text');
-      const kind = body.kind === 'agent' || body.kind === 'swarm' ? body.kind : undefined;
-      const problems = checkDefinitionText(str(body.file) || 'swarm.yaml', text, {
-        strict: body.strict === true,
-        kind,
-      });
-      return send(res, 200, {
-        ok: !problems.some((p) => p.severity === 'error'),
-        problems,
-      });
+    if (area === 'defs') {
+      const defs = await defsRoute(sup, method, id, body, humanOnly);
+      if (defs !== undefined) return send(res, 200, defs);
+    }
+    // Benchmarks (W7): sets, runs under the state folder, and runs started from the app.
+    if (area === 'bench') {
+      const sub = parts[4];
+      if (method === 'GET' && id === 'sets' && !action) {
+        return send(res, 200, listBenchSets(benchHost()));
+      }
+      if (method === 'GET' && id === 'runs' && !action) return send(res, 200, bench.list());
+      if (method === 'GET' && id === 'runs' && action && !sub) {
+        return send(res, 200, bench.detail(action));
+      }
+      if (method === 'GET' && id === 'runs' && action && sub === 'attempt') {
+        return sendText(
+          res,
+          bench.attemptFile(action, q.get('entry') ?? '', q.get('n') ?? '', q.get('file') ?? ''),
+        );
+      }
+      if (method === 'POST') humanOnly('benchmarks');
+      if (method === 'POST' && id === 'run' && !action) {
+        const started = bench.start(benchRequest(body));
+        return send(res, started.id ? 201 : 200, started);
+      }
+      if (method === 'POST' && id === 'runs' && action && sub === 'stop') {
+        return send(res, 200, bench.stop(action));
+      }
+      if (method === 'POST' && id === 'compare' && !action) {
+        return send(res, 200, bench.compare(need(body.a, 'a'), need(body.b, 'b')));
+      }
     }
     if (method === 'GET' && area === 'agents') {
       // Role files, plus agents only the swarmupd config names; `wake` from the config.
@@ -1374,4 +1404,137 @@ function roleOut({ file: _file, body, ...rest }: AgentDef): Omit<AgentDef, 'file
 
 function taskSignature(views: TaskView[]): string {
   return views.map((v) => `${v.root}/${v.meta.id}:${v.lastEvent ?? ''}:${v.status}`).join('|');
+}
+
+/**
+ * `GET /api/defs`, `POST /api/defs/validate` (a file's text, or a whole root with `root`),
+ * `POST /api/defs/import` (a preview, then a write with `write: true` and the previewed text as
+ * `expect`), `POST /api/defs/create` (the template, when the root has no swarm.yaml) and
+ * `POST /api/defs/save` (edited text, with the text it started from as `expect`). Undefined for a
+ * route it does not serve.
+ */
+async function defsRoute(
+  sup: Supervisor,
+  method: string,
+  id: string | undefined,
+  body: Json,
+  humanOnly: (what: string) => void,
+): Promise<unknown> {
+  if (method === 'GET' && !id) return sup.defsView();
+  if (method !== 'POST') return undefined;
+  const storeOf = (): { name: string; dir: string } => {
+    const name = str(body.root);
+    const r = name ? sup.ws().roots.find((x) => x.name === name && !x.isMirror) : undefined;
+    if (!r) throw new HttpError(400, name ? `no root named '${name}'` : 'root: name a root');
+    return r;
+  };
+  // Checks a definition file's text while a person edits it, or a whole root; writes nothing.
+  if (id === 'validate') {
+    const text = body.text;
+    if (typeof text !== 'string' && str(body.root)) {
+      const r = storeOf();
+      const machine = sup.machineConfig;
+      const set = loadDefinitions(r.dir, {
+        strict: body.strict === true,
+        machineRuntimes: Object.keys(machine.runtimes),
+        machineAgents: Object.keys(machine.agents),
+      });
+      return { ok: set.ok, present: set.present, hash: set.hash, problems: set.problems };
+    }
+    if (typeof text !== 'string') throw new HttpError(400, 'text: send the file text');
+    const kind = body.kind === 'agent' || body.kind === 'swarm' ? body.kind : undefined;
+    const problems = checkDefinitionText(str(body.file) || 'swarm.yaml', text, {
+      strict: body.strict === true,
+      kind,
+    });
+    return { ok: !problems.some((p) => p.severity === 'error'), problems };
+  }
+  if (id === 'import') {
+    const r = storeOf();
+    const plan = planDefsImport(r.dir, sup.userConfig);
+    if (body.write !== true) return plan;
+    humanOnly('writing swarm.yaml');
+    if (plan.empty) throw new HttpError(400, 'the user config sets nothing to import');
+    // The file must still be what the preview read, and the result what it showed.
+    if (body.expect !== plan.after) {
+      throw new OpsError('swarm.yaml or your settings changed since the preview; preview again', 1);
+    }
+    writeSwarmFile(plan.file, plan.after, plan.before);
+    await sup.tick();
+    return { ...plan, written: true };
+  }
+  if (id === 'create') {
+    humanOnly('creating swarm.yaml');
+    const file = createSwarmFile(storeOf().dir);
+    await sup.tick();
+    return { file };
+  }
+  if (id === 'save') {
+    humanOnly('saving swarm.yaml');
+    const r = storeOf();
+    const text = body.text;
+    if (typeof text !== 'string') throw new HttpError(400, 'text: send the file text');
+    writeSwarmFile(join(r.dir, SWARM_FILE), text, str(body.expect) ?? '');
+    await sup.tick();
+    return { file: join(r.dir, SWARM_FILE) };
+  }
+  return undefined;
+}
+
+/** A `POST /api/bench/run` body, checked for shape; the runner checks the rest. */
+function benchRequest(body: Json): BenchRunRequest {
+  const text = (k: string): string | undefined => {
+    const v = body[k];
+    if (v === undefined || v === null || v === '') return undefined;
+    if (typeof v !== 'string') throw new HttpError(400, `${k}: expected text`);
+    return v;
+  };
+  const number = (k: string, whole: boolean): number | undefined => {
+    const v = body[k];
+    if (v === undefined || v === null || v === '') return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0 || (whole && !Number.isInteger(n))) {
+      throw new HttpError(400, `${k}: expected a ${whole ? 'whole ' : ''}number above 0`);
+    }
+    return n;
+  };
+  const raw = body.entries;
+  const entries =
+    raw === undefined || raw === null
+      ? undefined
+      : (Array.isArray(raw) ? raw : String(raw).split(','))
+          .map((e) => String(e).trim())
+          .filter(Boolean);
+  const mode = text('mode') ?? 'agent';
+  if (mode !== 'agent' && mode !== 'reference' && mode !== 'none') {
+    throw new HttpError(400, 'mode: agent, reference or none');
+  }
+  const out: BenchRunRequest = {
+    set: text('set') ?? '',
+    repo: text('repo') ?? '',
+    mode,
+    dry_run: body.dry_run === true,
+  };
+  if (entries?.length) out.entries = entries;
+  for (const k of ['agent', 'model', 'effort', 'hidden_dir', 'reference_dir'] as const) {
+    const v = text(k);
+    if (v !== undefined) out[k] = v;
+  }
+  const repeat = number('repeat', true);
+  if (repeat !== undefined) out.repeat = repeat;
+  const budget = number('budget_min', false);
+  if (budget !== undefined) out.budget_min = budget;
+  return out;
+}
+
+/** The task stores benchmark sets are read from; none when no root is set up. */
+function benchRoots(sup: Supervisor): Array<{ name: string; dir: string }> {
+  try {
+    return sup
+      .ws()
+      .roots.filter((r) => !r.isMirror)
+      .map((r) => ({ name: r.name, dir: r.dir }));
+  } catch {
+    return [];
+  }
 }

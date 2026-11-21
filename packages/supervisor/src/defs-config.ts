@@ -29,12 +29,33 @@ export interface DefsConflict {
   roots: string[];
 }
 
+/**
+ * Where an effective value came from: `git` (a `swarm.yaml` gave it), `machine` (the user config
+ * set the key too, with the same or another value), or `unused` (no runtime of this machine
+ * takes it).
+ */
+export type DefsSourceKind = 'git' | 'machine' | 'unused';
+
+/** One key a `swarm.yaml` sets, with the value swarmupd runs with and where that came from. */
+export interface DefsValue {
+  /** Key under `swarmupd`, such as `runtimes.claude.model`. */
+  key: string;
+  /** The value in effect; for `unused`, the git value. */
+  value: unknown;
+  source: DefsSourceKind;
+  /** The git value, and the root whose `swarm.yaml` gave it. */
+  git: unknown;
+  root: string;
+}
+
 export interface DefsMerge {
   config: OpsdConfig;
   /** Git keys the config took, each with the root it came from. */
   applied: Array<{ key: string; root: string }>;
   overrides: DefsOverride[];
   conflicts: DefsConflict[];
+  /** Every key the git definitions set, with its effective value and source, sorted by key. */
+  values: DefsValue[];
 }
 
 const ROLE_KEYS = [
@@ -59,7 +80,8 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
   const applied: DefsMerge['applied'] = [];
   const overrides: DefsOverride[] = [];
   const conflicts: DefsConflict[] = [];
-  if (sources.length === 0) return { config: cfg, applied, overrides, conflicts };
+  const values: DefsValue[] = [];
+  if (sources.length === 0) return { config: cfg, applied, overrides, conflicts, values };
 
   // The git value of each key: from the first root that sets it.
   const git = new Map<string, { value: unknown; root: string }>();
@@ -94,19 +116,17 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
     for (const k of ['model', 'effort'] as const) {
       const g = git.get(`runtimes.${rt}.${k}`) ?? git.get(`defaults.${k}`);
       if (!g) continue;
+      const key = `runtimes.${rt}.${k}`;
       if (rc[k] !== undefined) {
         if (!same(rc[k], g.value)) {
-          overrides.push({
-            key: `runtimes.${rt}.${k}`,
-            machine: rc[k],
-            git: g.value,
-            root: g.root,
-          });
+          overrides.push({ key, machine: rc[k], git: g.value, root: g.root });
         }
+        values.push({ key, value: rc[k], source: 'machine', git: g.value, root: g.root });
         continue;
       }
       next[k] = g.value as string;
-      applied.push({ key: `runtimes.${rt}.${k}`, root: g.root });
+      applied.push({ key, root: g.root });
+      values.push({ key, value: g.value, source: 'git', git: g.value, root: g.root });
     }
     runtimes[rt] = next;
   }
@@ -121,23 +141,33 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
     for (const k of ROLE_KEYS) {
       const g = git.get(`roles.${role}.${k}`);
       if (!g) continue;
+      const key = `roles.${role}.${k}`;
       if (machine[k] !== undefined) {
         if (!same(machine[k], g.value)) {
-          overrides.push({
-            key: `roles.${role}.${k}`,
-            machine: machine[k],
-            git: g.value,
-            root: g.root,
-          });
+          overrides.push({ key, machine: machine[k], git: g.value, root: g.root });
         }
+        values.push({ key, value: machine[k], source: 'machine', git: g.value, root: g.root });
         continue;
       }
       (next as Record<string, unknown>)[k] = g.value;
-      applied.push({ key: `roles.${role}.${k}`, root: g.root });
+      applied.push({ key, root: g.root });
+      values.push({ key, value: g.value, source: 'git', git: g.value, root: g.root });
     }
     roles[role] = next;
   }
-  return { config: { ...cfg, runtimes, roles }, applied, overrides, conflicts };
+  // Git keys of runtimes this machine lacks, and defaults no runtime took: set, but in no effect.
+  const seen = new Set(values.map((v) => v.key));
+  for (const [key, g] of git) {
+    if (key.startsWith('roles.') || seen.has(key)) continue;
+    const [area, name, k] = key.split('.');
+    const used =
+      area === 'defaults'
+        ? values.some((v) => v.key.endsWith(`.${name}`) && same(v.git, g.value))
+        : Object.hasOwn(cfg.runtimes, name!) && k !== undefined;
+    if (!used) values.push({ key, value: g.value, source: 'unused', git: g.value, root: g.root });
+  }
+  values.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { config: { ...cfg, runtimes, roles }, applied, overrides, conflicts, values };
 }
 
 /**
