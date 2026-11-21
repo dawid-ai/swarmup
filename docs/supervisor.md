@@ -1052,6 +1052,22 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Where the work is (AO-0384).** `swarmup review` records the HEAD commit, the branch and the
+  repo kind (`code` or `store`) of the git checkout it runs in as the fields `commit`, `branch` and
+  `repo` of the review event (no commit or branch on a base branch or a detached HEAD);
+  `--commit` with `--branch` overrides the checkout, and a `<commit> on branch <name>` in the
+  message that is not the checkout's HEAD wins over it, with a note. The merge reads these fields
+  before the review's text, so the wording no longer decides what is merged. A checkout counts as
+  the store's repo when a root's task store is in it and either that root's code is a checkout of
+  its own (`swarmupd.code.<root>`, as for a store repo that holds several roots beside notes and
+  docs) or its HEAD holds nothing at the top but store folders and dotfiles. From the store's repo,
+  a commit named in the message that the store repo does not have, or one named by `--commit` that
+  only a root's code checkout has, is recorded as `repo: code`, with a note, so code work named
+  from the store folder is still merged; a `--commit` neither has is refused. An approved review with `repo: store`
+  is store work that `swarmup sync` already pushed: swarmupd records "nothing to merge: store work,
+  synced" (a `no_merge` comment), files no finding, and the tasks blocked on it go on; the
+  approval itself does not hold them for a merge. Reviews without the fields (older ones, or sent
+  from outside a checkout, or from a detached HEAD) are read from their text, as below.
 - **What it merges.** A task whose last verdict approves it, when the review that verdict answers
   names `<commit> on branch <name>` (the form `swarmup review` asks for, and the one swarmupd's own
   leftover reviews use) or `branch <name>`, which merges the branch tip. The commit wins over the
@@ -1213,7 +1229,9 @@ swarmupd:
   still start). When they time out again, the work stays approved and swarmupd comments to the
   root's human instead of sending it back, since the author cannot make the machine faster: raise
   `timeout_minutes` or make the checks faster, then comment on the task, and swarmupd merges it
-  again. The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
+  again. A check that timed out after it printed a failed test (vitest's `FAIL` or `×` lines,
+  node:test's `not ok`) is the code, not the machine: it sends the task back at once, on either try.
+  The one more merge belongs to that merge: a later review of the task gets its own. Each git command of the merge (rebase, fast-forward) may take 5 minutes; then swarmupd stops
   git and what it started, such as a hook, and comments to the root's human with the command, the
   stage it hung in and the last lines it printed; the whole output goes to a log file. When a
   process it started outlives the stop and keeps git's output open, swarmupd stops reading after 5

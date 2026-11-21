@@ -1246,6 +1246,214 @@ describe('a review request for code left uncommitted (AO-0136)', () => {
   });
 });
 
+describe('a review request records where its work is (AO-0384)', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
+
+  /** A started code task in a fresh repo; `code` puts a file beside the store, as a code repo has. */
+  function started(code: boolean): string {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    swarmup(d, 'human:dawid', 'new', 'Fix login', '--to', 'claude:engineer');
+    if (code) writeFileSync(join(d, 'login.ts'), 'export {};\n');
+    git(d, 'add', '-A');
+    git(d, 'commit', '-qm', 'start');
+    swarmup(d, 'claude:engineer', 'start', '1', 'plan');
+    return d;
+  }
+
+  /** The frontmatter of the task's newest review event, as text. */
+  function lastReview(d: string): string {
+    const dir = ['.swarmup', '.agent-ops']
+      .map((s) => join(d, s, 'tasks', 'T-0001', 'events'))
+      .find((p) => existsSync(p))!;
+    const files = readdirSync(dir).sort();
+    const texts = files.map((f) => readFileSync(join(dir, f), 'utf8'));
+    return texts
+      .filter((t) => /^type: review$/m.test(t))
+      .at(-1)!
+      .split('\n---')[0]!;
+  }
+
+  it('takes the HEAD commit, branch and repo of a code checkout, without the message naming them', () => {
+    const d = started(true);
+    git(d, 'switch', '-q', '-c', 'claude/t-0001-login');
+    writeFileSync(join(d, 'login.ts'), 'export const x = 1;\n');
+    git(d, 'commit', '-qam', 'Fix login');
+    const head = git(d, 'rev-parse', 'HEAD');
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'fixed, see the commit',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    const front = lastReview(d);
+    expect(front).toContain(`commit: ${head}`);
+    expect(front).toContain('branch: claude/t-0001-login');
+    expect(front).toContain('repo: code');
+  });
+
+  it('marks a review sent from the task store repo as store work', () => {
+    const d = started(false);
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'agent notes updated',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    expect(lastReview(d)).toContain('repo: store');
+  });
+
+  it('records a commit and branch the message names over a HEAD that differs, with a note', () => {
+    const d = started(true);
+    const res = swarmup(
+      d,
+      'claude:engineer',
+      'review',
+      '1',
+      'a1b2c3d on branch claude/t-0001-login: fixed',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    expect(res.err).toMatch(/note: the message names a1b2c3d on branch claude\/t-0001-login/);
+    const front = lastReview(d);
+    expect(front).toContain('commit: a1b2c3d');
+    expect(front).toContain('branch: claude/t-0001-login');
+  });
+
+  it('takes --commit and --branch over the checkout, and refuses a commit that is no hex id', () => {
+    const d = started(true);
+    const first = git(d, 'rev-parse', 'HEAD');
+    git(d, 'switch', '-q', '-c', 'claude/t-0001-login');
+    git(d, 'commit', '-q', '--allow-empty', '-m', 'later');
+    const args = ['review', '1', 'fixed', '--to', 'codex:qa'];
+    const bad = swarmup(d, 'claude:engineer', ...args, '--commit', 'nothex!', '--branch', 'x/y');
+    expect(bad.code).toBe(2);
+    const short = first.slice(0, 8).toUpperCase();
+    const ok = swarmup(d, 'claude:engineer', ...args, '--commit', short, '--branch', 'x/y');
+    expect(ok.code).toBe(0);
+    const front = lastReview(d);
+    expect(front).toContain(`commit: ${first}`);
+    expect(front).toContain('branch: x/y');
+    expect(front).toContain('repo: code');
+  });
+
+  /**
+   * A store repo laid out as `swarmup-store` is: two roots (`.swarmup/` and `web/.swarmup/`)
+   * beside a README, docs and other folders, with the code of root `demo` in a checkout of its
+   * own named by `swarmupd.code.demo` (AO-0252). Returns the store, the code checkout and a
+   * commit that only the code checkout has.
+   */
+  function storeRepo(withCodeEntry: boolean): { store: string; code: string; codeCommit: string } {
+    const code = repo();
+    writeFileSync(join(code, 'login.ts'), 'export {};\n');
+    git(code, 'add', '-A');
+    git(code, 'commit', '-qm', 'code');
+    const codeCommit = git(code, 'rev-parse', 'HEAD');
+    const store = repo();
+    // The user config the helper reads lives in the checkout; keep it out of git's changes.
+    writeFileSync(join(store, '.git', 'info', 'exclude'), 'none.yml\n');
+    const config = withCodeEntry
+      ? `swarmupd:\n  code:\n    demo: ${JSON.stringify(code)}\n`
+      : 'swarmupd: {}\n';
+    writeFileSync(join(store, 'none.yml'), config);
+    swarmup(store, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    mkdirSync(join(store, 'web'));
+    swarmup(join(store, 'web'), 'human:dawid', 'init', '--name', 'web', '--human', 'human:dawid');
+    writeFileSync(join(store, 'README.md'), '# Store\n');
+    mkdirSync(join(store, 'docs'));
+    writeFileSync(join(store, 'docs', 'notes.md'), 'notes\n');
+    mkdirSync(join(store, 'blender'));
+    writeFileSync(join(store, 'blender', 'scene.txt'), 'scene\n');
+    swarmup(store, 'human:dawid', 'new', 'Fix login', '--to', 'claude:engineer');
+    git(store, 'add', '-A');
+    git(store, 'commit', '-qm', 'store');
+    expect(existsSync(join(store, 'web', '.swarmup', 'config.yml'))).toBe(true);
+    swarmup(store, 'claude:engineer', 'start', '1', 'plan');
+    return { store, code, codeCommit };
+  }
+
+  it('marks a review from a multi-root store repo whose code lives elsewhere as store work', () => {
+    const { store } = storeRepo(true);
+    const res = swarmup(
+      store,
+      'claude:engineer',
+      'review',
+      '1',
+      'notes updated',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    const front = lastReview(store);
+    expect(front).toContain('repo: store');
+    expect(front).not.toMatch(/^commit:/m);
+  });
+
+  it('keeps an explicit store commit as store work, and a commit the store lacks as code work', () => {
+    const { store, codeCommit } = storeRepo(true);
+    const storeHead = git(store, 'rev-parse', 'HEAD');
+    const args = ['review', '1', 'done', '--to', 'codex:qa'];
+    const own = swarmup(
+      store,
+      'claude:engineer',
+      ...args,
+      '--commit',
+      storeHead,
+      '--branch',
+      'main',
+    );
+    expect(own.code).toBe(0);
+    expect(lastReview(store)).toContain('repo: store');
+    expect(lastReview(store)).toContain(`commit: ${storeHead}`);
+
+    swarmup(store, 'human:dawid', 'verdict', '1', 'changes', 'again');
+    swarmup(store, 'claude:engineer', 'start', '1', 'again');
+    const branch = ['--branch', 'claude/t-0001-login'];
+    const other = swarmup(store, 'claude:engineer', ...args, '--commit', codeCommit, ...branch);
+    expect(other.code).toBe(0);
+    expect(other.err).toMatch(/note: .+ is not a commit of the task store repo/);
+    const front = lastReview(store);
+    expect(front).toContain(`commit: ${codeCommit}`);
+    expect(front).toContain('branch: claude/t-0001-login');
+    expect(front).toContain('repo: code');
+
+    swarmup(store, 'human:dawid', 'verdict', '1', 'changes', 'once more');
+    swarmup(store, 'claude:engineer', 'start', '1', 'once more');
+    const short = codeCommit.slice(0, 8);
+    const prose = `\`${short}\` on branch \`claude/t-0001-login\`: fixed`;
+    expect(swarmup(store, 'claude:engineer', 'review', '1', prose, '--to', 'codex:qa').code).toBe(
+      0,
+    );
+    expect(lastReview(store)).toContain('repo: code');
+    expect(lastReview(store)).toContain(`commit: ${short}`);
+  });
+
+  it('treats the same layout as code without a code checkout of its own', () => {
+    const { store } = storeRepo(false);
+    const res = swarmup(
+      store,
+      'claude:engineer',
+      'review',
+      '1',
+      'notes updated',
+      '--to',
+      'codex:qa',
+    );
+    expect(res.code).toBe(0);
+    expect(lastReview(store)).toContain('repo: code');
+  });
+});
+
 describe('swarmup repeat (AO-0142)', () => {
   it('adds, edits, pauses, runs and deletes a repeating task', () => {
     const d = repo();

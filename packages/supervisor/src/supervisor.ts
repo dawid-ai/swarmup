@@ -534,8 +534,15 @@ export interface MergeJob {
   /** The root's human, who gets notes on merges swarmupd cannot do. */
   human?: string;
   root: string;
+  /** The task store that owns the approved task and may hold store-only work. */
+  store: string;
   /** The text of the review request the approval answers. */
   review: string;
+  /**
+   * Whether that request names `<commit> on branch <name>`, in its source fields (AO-0384) or its
+   * text: then the merge takes what it names, and no other commit of its text is looked for.
+   */
+  named: boolean;
 }
 
 /** One task of a batch merge (AO-0381). */
@@ -3124,7 +3131,9 @@ export class Supervisor extends EventEmitter {
   private async learnLaunchCheckouts(req: LaunchRequest): Promise<void> {
     const want = async (dir: string): Promise<void> => {
       const top = await this.gitTopAsync(resolve(dir));
-      if (top && !this.wantedTops.has(top)) this.wantedTops.set(top, this.now());
+      // Always refreshed: an interest older than WANTED_CHECKOUT_MS is dropped by readCheckouts,
+      // and the launch then read the checkout with git on the event loop (AO-0402).
+      if (top) this.wantedTops.set(top, this.now());
     };
     try {
       const ws = this.ws();

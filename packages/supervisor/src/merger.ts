@@ -30,8 +30,8 @@ import {
   opsdCodeChanges,
   pickMergeSource,
   reviewCommits,
-  reviewSources,
 } from './merge.js';
+import { reviewSourcesOf, storeReview, type ReviewText } from '@swarmup/core';
 import { gitError } from './push.js';
 import type { WorktreeEntry } from './worktree.js';
 import { parseWorktreeList, taskIdOfWorktree } from './worktree.js';
@@ -258,7 +258,7 @@ export class Merger {
       const id = v.meta.id;
       const named =
         !before &&
-        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSources(e.body).named);
+        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSourcesOf(e).named);
       if (named) {
         this.mergeNote(
           ref,
@@ -522,22 +522,29 @@ export class Merger {
       .filter((e) => e.type === 'review');
     const review = reviews[0];
     if (!review) return null;
-    const root = ws.resolve(ref).root;
-    const top = cfg.checkout ? resolve(cfg.checkout) : this.sup.codeTopOf(root);
-    if (!top) return null;
-    const repo = new MergeRepo(top, '', [], this.sup.commandEnv());
+    const { root, id } = ws.resolve(ref);
     // A run may ask for review before it ends, then leave files that its sandbox could not
     // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
     // the review. The approval covers the review plus that note, so it is the source to merge;
     // the branch named by the earlier review lacks the files (AO-0356).
     const committed = committedRunSource(events);
-    const src =
-      committed ??
-      (await this.pickSource(
-        repo,
-        reviews.map((e) => e.body),
-        () => this.mergeHalted(),
-      ));
+    // A review sent from the task store's own repo is store work (AO-0384): `swarmup sync` has
+    // pushed it, and the code repo has nothing of it, so nothing is merged and no finding says
+    // that the work is missing from the base. The tasks blocked on it go on.
+    if (!committed && storeReview(review)) {
+      const storeAt = review.commit ? ` (store commit ${short(review.commit)})` : '';
+      this.mergeNothing(
+        ref,
+        `swarmupd merges nothing for ${id}: nothing to merge: store work, synced. ` +
+          `Its approved review was sent from the task store's repo${storeAt}, which \`swarmup sync\` ` +
+          'pushes. The tasks blocked on it go on.',
+      );
+      return null;
+    }
+    const top = cfg.checkout ? resolve(cfg.checkout) : this.sup.codeTopOf(root);
+    if (!top) return null;
+    const repo = new MergeRepo(top, '', [], this.sup.commandEnv());
+    const src = committed ?? (await this.pickSource(repo, reviews, () => this.mergeHalted()));
     if (!src || src === 'halted') return null;
     const what = src.commit
       ? `${src.commit} on branch ${src.branch}`
@@ -552,7 +559,9 @@ export class Merger {
       author,
       human: root.config.human,
       root: root.name,
+      store: root.dir,
       review: review.body,
+      named: !!reviewSourcesOf(review).named,
     };
   }
 
@@ -564,7 +573,7 @@ export class Merger {
    */
   async pickSource(
     repo: MergeRepo,
-    texts: string[],
+    texts: (string | ReviewText)[],
     halted: () => boolean,
   ): Promise<MergeSource | null | 'halted'> {
     const commits = new Set<string>();
@@ -815,6 +824,11 @@ export class Merger {
         ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
         : null;
     if (!source) {
+      const store = src.commit ? await repo.storeWith(src.commit, job.store) : null;
+      if (store) {
+        this.mergeStoreOnly(ref, top, [src.commit!]);
+        return;
+      }
       const missing = src.commit ? `commit ${src.commit}` : `branch ${src.branch}`;
       this.mergeNote(
         ref,
@@ -892,9 +906,20 @@ export class Merger {
         if (late === 'again') return 'again';
         this.mergeLooks.delete(ref);
         if (late) return 'again';
-        const lacks = await this.unmergedNamed(repo, job, approved, onto);
+        // A named commit of a task store apart from the code is store-only work (AO-0377).
+        const named = await this.unmergedNamed(repo, job, approved, onto);
+        const inStore = new Set<string>();
+        for (const sha of named) {
+          const store = await repo.storeWith(sha, job.store);
+          if (store) inStore.add(sha);
+        }
+        const lacks = named.filter((sha) => !inStore.has(sha));
         if (lacks.length > 0) {
           this.mergeLacks(ref, job, lacks, onto);
+          return;
+        }
+        if (inStore.size > 0) {
+          this.mergeStoreOnly(ref, top, inStore);
           return;
         }
         this.mergeRecord(
@@ -963,8 +988,9 @@ export class Merger {
           );
           return 'again';
         }
-        // A check that hangs may be the machine, not the code: merged again once (AO-0172).
-        if (failed?.timedOut && !this.mergeTimedOut.has(ref)) {
+        // A check that hangs may be the machine, not the code: merged again once (AO-0172). One
+        // that printed a failed test before the timeout is the code, so it goes back (AO-0385).
+        if (failed?.timedOut && !failed.failedTest && !this.mergeTimedOut.has(ref)) {
           this.mergeTimedOut.add(ref);
           this.sup.emit(
             'warn',
@@ -974,7 +1000,7 @@ export class Merger {
         }
         // Timed out again, with the machine to itself: a slow suite or a busy PC, which the author
         // cannot change, so the work stays approved and the human hears of it (AO-0385).
-        if (failed?.timedOut) {
+        if (failed?.timedOut && !failed.failedTest) {
           this.mergeTimeoutNote(ref, job, failed.command, failed.output, timeout * 2);
           return;
         }
@@ -983,7 +1009,7 @@ export class Merger {
             ref,
             job.what,
             job.author,
-            `\`${failed.command}\` failed (${failed.why}) on it rebased onto ${cfg.base} (${short(onto)})`,
+            `\`${failed.command}\` failed (${failed.why}${failed.failedTest ? ', after a failed test' : ''}) on it rebased onto ${cfg.base} (${short(onto)})`,
             failed.output,
           );
           return;
@@ -1457,8 +1483,15 @@ export class Merger {
     const steps = cfg.build ?? [];
     const dirs = p.install === true ? ['.'] : (p.install ?? []);
     const install = steps.length > 0 ? installSteps(cfg.install, p.top, dirs) : [];
-    let build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
-      this.mergeCommand('build', s),
+    // The installs run without an inherited `NODE_ENV` or dependency-type setting, which would
+    // make the next plain install in the checkout purge `node_modules` (AO-0391).
+    let build = await runner.runAll(
+      [...install, ...steps],
+      p.top,
+      timeout,
+      (s) => this.mergeCommand('build', s),
+      undefined,
+      install.length,
     );
     let installs = install.length;
     // An install step with nothing to do leaves no result (AO-0229), so a result's place in the
@@ -1483,8 +1516,13 @@ export class Merger {
         'warn',
         `merge of ${p.ref}: build \`${broke.command}\` failed (${broke.why}) in ${p.top}; swarmupd installs the dependencies there and builds once more`,
       );
-      build = await runner.runAll([...again, ...steps], p.top, timeout, (s) =>
-        this.mergeCommand('build', s),
+      build = await runner.runAll(
+        [...again, ...steps],
+        p.top,
+        timeout,
+        (s) => this.mergeCommand('build', s),
+        undefined,
+        again.length,
       );
       installs = again.length;
       broke = build.find((c) => !c.ok);
@@ -1600,7 +1638,7 @@ export class Merger {
     source: string,
     onto: string,
   ): Promise<string[]> {
-    if (reviewSources(job.review).named) return [];
+    if (job.named) return [];
     const lacks: string[] = [];
     for (const sha of reviewCommits(job.review)) {
       const commit = await repo.commit(sha);
@@ -1814,6 +1852,20 @@ export class Merger {
   mergeNote(ref: string, text: string, to?: string): void {
     this.attemptEnd(ref, 'note', firstLines(text));
     this.sup.safe(() => this.sup.ws(MERGE_ACTOR).comment(ref, text, to));
+  }
+
+  /**
+   * Records that the approved work is task store commits, so there is no code merge: `swarmup
+   * sync` shares them. Tasks blocked on `ref` go on (AO-0377).
+   */
+  private mergeStoreOnly(ref: string, top: string, commits: Iterable<string>): void {
+    const names = [...commits].map((c) => `\`${c}\``);
+    const one = names.length === 1;
+    this.mergeNothing(
+      ref,
+      `Nothing to merge into \`${top}\`: the approved work ${names.join(', ')} ` +
+        `${one ? 'is a commit' : 'are commits'} of the task store for this task, which \`swarmup sync\` shares.`,
+    );
   }
 
   /** A comment from swarmupd that it has nothing to merge for `ref`; tasks blocked on it go on. */

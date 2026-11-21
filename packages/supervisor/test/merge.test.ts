@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,9 +11,17 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, sep } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initRoot, PATCH_KEY_ARGS, patchKey, samePath, secretKind, Workspace } from '@swarmup/core';
+import {
+  initRoot,
+  PATCH_KEY_ARGS,
+  patchKey,
+  reviewSourcesOf,
+  samePath,
+  secretKind,
+  Workspace,
+} from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
 import type {
   MergeCheck,
@@ -47,6 +56,7 @@ import {
   repairInstallCommand,
   reviewCommits,
   reviewSources,
+  showsFailedTest,
   staleWorktree,
   startApi,
   Supervisor,
@@ -234,6 +244,10 @@ if (code.includes('nap') && !existsSync(process.env.MERGE_NAPPED)) {
   while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
   console.error('Test timed out in 5000ms');
   process.exit(1);
+}
+if (code.includes('stuck')) {
+  console.log(' FAIL  test/a.test.ts > breaks');
+  while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
 }
 if (code.includes('slow')) while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
 if (code.includes('bad')) { console.error('code says bad'); process.exit(1); }
@@ -472,6 +486,34 @@ function alive(pid: number): boolean {
     return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
+
+describe('showsFailedTest (AO-0385)', () => {
+  it('finds the failed-test lines of vitest and node:test', () => {
+    for (const out of [
+      ' FAIL  packages/core/test/fold.test.ts > folds events',
+      '   × folds events 12ms',
+      ' ❯ packages/core/test/fold.test.ts (12 tests | 1 failed) 340ms',
+      '      Tests  1 failed | 411 passed (412)',
+      ' Test Files  2 failed | 40 passed (42)',
+      'not ok 3 - folds events',
+      '✖ folds events (2.1ms)',
+      '   \x1b[31m×\x1b[39m folds events \x1b[2m12ms\x1b[22m',
+    ])
+      expect(showsFailedTest(`RUN  v3\n ✓ a.test.ts (3 tests) 20ms\n${out}\n`), out).toBe(true);
+  });
+
+  it('finds none in a run that passed so far', () => {
+    const out = [
+      ' RUN  v3.2.4 C:/dev/swarmup',
+      ' ✓ packages/core/test/fold.test.ts (12 tests) 340ms',
+      '   ✓ reports 1 failed check to the human 1203ms',
+      ' ✓ packages/supervisor/test/push.test.ts (40 tests | 2 skipped) 97000ms',
+      'ok 1 - folds events',
+      '# fail 0',
+    ].join('\n');
+    expect(showsFailedTest(out)).toBe(false);
+  });
+});
 
 describe('merging approved work', () => {
   it('reads the branch and commit a review names', () => {
@@ -2312,6 +2354,26 @@ describe('merging approved work', () => {
     );
   }, 60_000);
 
+  it('runs the install entries without NODE_ENV, and the rest with it (AO-0391)', async () => {
+    const dir = temp();
+    writeFileSync(
+      join(dir, 'env.mjs'),
+      "import { appendFileSync } from 'node:fs';\nappendFileSync('env.txt', process.argv[2] + '=' + (process.env.NODE_ENV ?? 'none') + '\\n');\n",
+    );
+    const base = { ...process.env, NODE_ENV: 'production' };
+    const runner = new CommandRunner(base, { killTree: () => {}, job: false });
+    const results = await runner.runAll(
+      ['node env.mjs install', () => 'node env.mjs repair', 'node env.mjs build'],
+      dir,
+      60_000,
+      undefined,
+      undefined,
+      2,
+    );
+    expect(results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(text(join(dir, 'env.txt'))).toBe('install=none\nrepair=none\nbuild=production\n');
+  }, 60_000);
+
   it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {
     const dir = temp();
     writeFileSync(
@@ -2657,23 +2719,53 @@ describe('merging approved work', () => {
   });
 
   /**
-   * A git timeout that stops at once the commands `hung` picks, once `on` holds a commit, and
-   * gives every other command a minute: spawning git alone takes longer than 1 ms.
+   * A git timeout that stops at once the commands `hung` picks, once `arm` names a commit, and
+   * gives every other command a minute.
+   *
+   * Off Windows, `env` puts a `git` first on swarmupd's PATH that runs those commands as a `sleep`
+   * that does not end, and every other command as the real git, so the timeout always wins: with
+   * the real git, a fast Linux machine finished the command inside the 1 ms and both tasks merged
+   * (AO-0395). `hungSh` is `hung` as a shell function of git's arguments and `$commit`. On
+   * Windows, libuv finds only `.exe` and `.com` files for `git`, so no script can stand in for it;
+   * there, starting a process alone takes longer than 1 ms.
    */
-  const hangOn = (hung: (args: readonly string[], commit: string) => boolean) => {
-    const on = { commit: '' };
-    const timeout: MergeGitTimeout = (args) => (on.commit && hung(args, on.commit) ? 1 : 60_000);
-    return { on, timeout };
+  const hangOn = (hung: (args: readonly string[], commit: string) => boolean, hungSh: string) => {
+    let commit = '';
+    const timeout: MergeGitTimeout = (args) => (commit && hung(args, commit) ? 1 : 60_000);
+    const env: Record<string, string> = {};
+    const file = join(temp(), 'hang-commit.txt');
+    if (!WIN) {
+      const bin = temp();
+      const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+      writeFileSync(
+        join(bin, 'git'),
+        [
+          '#!/bin/sh',
+          `commit=$(cat '${file}' 2>/dev/null)`,
+          `hung() { ${hungSh}; }`,
+          'if [ -n "$commit" ] && hung "$@"; then exec sleep 600; fi',
+          `exec '${real}' "$@"`,
+          '',
+        ].join('\n'),
+      );
+      chmodSync(join(bin, 'git'), 0o755);
+      env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`;
+    }
+    const arm = (c: string): void => {
+      commit = c;
+      writeFileSync(file, c);
+    };
+    return { arm, timeout, env };
   };
 
   /** Checks that a git timeout on task 2 of a batch is task 2's, and task 1 still merges. */
   const secondTimesOut = async (
     s: ReturnType<typeof mergeSetup>,
-    on: { commit: string },
+    arm: (commit: string) => void,
     stage: RegExp,
   ) => {
     const t = twoApproved(s, 'second\n');
-    on.commit = git(s.repo, 'rev-parse', 'feature2');
+    arm(git(s.repo, 'rev-parse', 'feature2'));
     await s.merged();
 
     // Task 1 merges alone after task 2 leaves the batch; it gets no note about task 2.
@@ -2805,33 +2897,24 @@ describe('merging approved work', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
-  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
-  it(
-    'blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)',
-    { retry: 3 },
-    async () => {
-      // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
-      const h = hangOn((args, commit) => {
-        const rev = (args[3] ?? '').replace('^{commit}', '');
-        return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
-      });
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
-      await secondTimesOut(s, h.on, /rev-parse/);
-    },
-  );
+  it('blames a git timeout reading a later batch task on that task, and merges the first (AO-0381)', async () => {
+    // `git rev-parse --verify -q <commit>^{commit}`, for the commit task 2's review names.
+    const h = hangOn((args, commit) => {
+      const rev = (args[3] ?? '').replace('^{commit}', '');
+      return args[0] === 'rev-parse' && rev.length >= 7 && commit.startsWith(rev);
+    }, '[ "$1" = rev-parse ] || return 1; rev=${4%%^*}; [ ${#rev} -ge 7 ] || return 1; ' + 'case $commit in "$rev"*) return 0;; esac; return 1');
+    const s = mergeSetup({ gitTimeoutMs: h.timeout, env: h.env });
+    await secondTimesOut(s, h.arm, /rev-parse/);
+  });
 
-  // The 1 ms timeout races git itself: on a fast Linux runner git can finish first, the hang never
-  // happens and both tasks merge. A retry starts a fresh repo; a real failure fails every attempt.
-  it(
-    'blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)',
-    { retry: 3 },
-    async () => {
-      const h = hangOn((args, commit) => args[0] === 'checkout' && args.includes(commit));
-      const s = mergeSetup({ gitTimeoutMs: h.timeout });
-      await secondTimesOut(s, h.on, /checkout/);
-    },
-  );
+  it('blames a git timeout rebasing a later batch task on that task, and merges the first (AO-0381)', async () => {
+    const h = hangOn(
+      (args, commit) => args[0] === 'checkout' && args.includes(commit),
+      '[ "$1" = checkout ] || return 1; for a; do [ "$a" = "$commit" ] && return 0; done; return 1',
+    );
+    const s = mergeSetup({ gitTimeoutMs: h.timeout, env: h.env });
+    await secondTimesOut(s, h.arm, /checkout/);
+  });
 
   it('merges each task alone with batch 1 (AO-0381)', async () => {
     const s = mergeSetup({ batch: 1 });
@@ -3035,6 +3118,26 @@ describe('merging approved work', () => {
     expect(reasonsOf('test/T-0001')).toBe('starts at the next tick');
     expect(s.sup.blocker('fake:engineer', 'test', { live: [] })).toMatch(/per_project is 0/);
     expect(s.sup.blocker('fake:engineer', 'test', { live: [], finish: true })).toBeNull();
+  });
+
+  it('sends the task back on a check that timed out after a failed test, without merging once more (AO-0385)', async () => {
+    // 0.25 min is 15 s; the `stuck` check prints a failed test, then waits for go.txt. Under load,
+    // Node can take more than 3 s to start and print, which would read as a timeout with no output.
+    const s = mergeSetup({ timeoutMinutes: 0.25 });
+    const warns: string[] = [];
+    s.sup.on('warn', (m: string) => warns.push(m));
+    const before = git(s.repo, 'rev-parse', 'main');
+    s.approve(s.branch('stuck\n'));
+    await s.merged();
+    expect(s.sup.merge).toBeNull();
+    expect(warns.join('\n')).not.toContain('merges once more');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'verdict', verdict: 'changes', actor: MERGE_ACTOR });
+    expect(e.body).toMatch(
+      /`node check\.mjs` failed \(timed out after \d+ min, after a failed test\)/,
+    );
+    expect(e.body).toContain('FAIL  test/a.test.ts > breaks');
   });
 
   it('gives a later review its own merge once more after a check timeout, when the earlier merge ended another way (AO-0172)', async () => {
@@ -3674,6 +3777,10 @@ describe('merging approved work', () => {
     const s = mergeSetup();
     const before = git(s.repo, 'rev-parse', 'main');
     s.approve(s.branch('two\n'));
+    // A verdict in the same millisecond as swarmupd's first look counts as after it; a fast Linux
+    // machine got there inside one millisecond and merged (AO-0395).
+    const verdictAt = Date.parse(s.last().at);
+    await until(() => Date.now() > verdictAt);
     rmSync(join(s.state, 'merge.json'));
     await s.merged();
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
@@ -4178,5 +4285,72 @@ while (!existsSync(${JSON.stringify(go)})) await new Promise((r) => setTimeout(r
     for (const f of readdirSync(join(s.state, 'merge', 'logs'))) {
       expect(secretKind(text(join(s.state, 'merge', 'logs', f)))).toBeNull();
     }
+  });
+});
+
+describe('review source fields (AO-0384)', () => {
+  it('reads the fields before the prose, and a store review as naming no code', () => {
+    // AO-0328's wording: the extra word "store" misses the prose pattern.
+    const body = 'AO-0328: `98be9579` on store branch `main`; also see branch `old/x`.';
+    expect(reviewSources(body).named).toBeUndefined();
+    expect(reviewSourcesOf({ body, commit: 'ABCDEF1234', branch: 'claude/ao-0328' })).toEqual({
+      named: { commit: 'abcdef1234', branch: 'claude/ao-0328' },
+      loose: ['main', 'old/x'],
+    });
+    expect(reviewSourcesOf({ body, commit: '98be9579', branch: 'main', repo: 'store' })).toEqual({
+      loose: [],
+    });
+    // A commit without a branch (a detached HEAD) leaves the prose to name the source.
+    expect(reviewSourcesOf({ body: 'cc3d803 on branch x', commit: 'abcdef1' })).toEqual(
+      reviewSources('cc3d803 on branch x'),
+    );
+    const review = { body, commit: 'abcdef1', branch: 'claude/ao-0328', repo: 'code' as const };
+    expect(pickMergeSource([review], { branch: () => true, commit: () => true })).toEqual({
+      commit: 'abcdef1',
+      branch: 'claude/ao-0328',
+    });
+  });
+
+  it('merges the commit and branch a review recorded as fields when its prose names neither', async () => {
+    const s = mergeSetup();
+    const commit = s.branch('two\n');
+    const eng = s.as('fake:engineer');
+    eng.start('1', 'plan');
+    const body = `T-0001: \`${commit.slice(0, 8)}\` on store branch \`main\`.`;
+    eng.review('1', body, 'human:dawid', undefined, {
+      source: { commit, branch: 'feature', repo: 'code' },
+    });
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    expect(s.last()).toMatchObject({ type: 'merge', actor: MERGE_ACTOR, branch: 'feature' });
+    expect(text(join(s.repo, 'code.txt'))).toBe('two\n');
+  });
+
+  it('closes a review of store work with no merge and no finding, and frees its waiters', async () => {
+    const s = mergeSetup({ userMerge: true });
+    const tip = git(s.repo, 'rev-parse', 'main');
+    const eng = s.as('fake:engineer');
+    eng.start('2', 'plan');
+    eng.block('2', 'needs T-0001', { on: ['T-0001'] });
+    eng.start('1', 'plan');
+    // AO-0297's case: a store commit the code repo lacks, named as `<commit> on branch <name>`.
+    const body = 'T-0001: e4aa1570 on branch main: agent files updated.';
+    eng.review('1', body, 'human:dawid', undefined, {
+      source: { commit: 'e4aa1570', branch: 'main', repo: 'store' },
+    });
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    const human = s.as('human:dawid');
+    // Store work has no code to wait for: the approval frees the waiter on its own.
+    expect(human.view('1')).toMatchObject({ status: 'done', awaitsMerge: false });
+    expect(human.view('2').unblocked).toBe(true);
+    await s.merged();
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, no_merge: true });
+    expect(e.body).toContain('nothing to merge: store work, synced');
+    expect(git(s.repo, 'rev-parse', 'main')).toBe(tip);
+    // Once only, and no finding.
+    await s.merged();
+    expect(s.last().id).toBe(e.id);
+    expect(human.views().filter((v) => v.meta.type === 'finding')).toEqual([]);
   });
 });

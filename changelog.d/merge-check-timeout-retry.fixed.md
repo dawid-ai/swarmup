@@ -1,0 +1,1 @@
+- Send work back at once when a merge check times out after it printed a failed test, instead of merging it once more and then asking the human to raise the time limit.

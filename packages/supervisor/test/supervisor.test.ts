@@ -5312,6 +5312,33 @@ describe('what runs leave in the checkout', () => {
     await ended(s.sup, elsewhere.id);
   });
 
+  it('starts an API run without git on the event loop after the checkout interest expired (AO-0402)', async () => {
+    // Event ids come from the real clock, so the test clock runs with it, moved ahead by hand.
+    let ahead = 0;
+    const s = await setupAsync({ mode: 'edit', env: ID, now: () => Date.now() + ahead });
+    writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
+    s.as('human:dawid').newTask({ title: 'Next', owner: 'fake:engineer' });
+    await git(s.repo, 'add', '-A');
+    await git(s.repo, 'commit', '-qm', 'start');
+    const start = await git(s.repo, 'rev-parse', 'HEAD');
+    // The first launch marks the checkout wanted at this clock time.
+    const first = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
+    expect((await ended(s.sup, first.id)).wrap_up).toBe('done');
+    // Past the 10-minute interest window, the next readCheckouts drops an interest not refreshed.
+    ahead += 11 * 60_000;
+    const spy = spySyncProcs();
+    let next: RunRecord;
+    try {
+      next = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0002' });
+    } finally {
+      spy.restore();
+    }
+    expect(next).toMatchObject({ task: 'T-0002', base: start });
+    expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
+    await ended(s.sup, next.id);
+  });
+
   it('never commits changes a read-only run found in the checkout (AO-0136)', async () => {
     const { repo, sup } = await codeSetup('edit');
     writeFileSync(join(repo, 'notes.txt'), 'a person at work\n');
