@@ -483,7 +483,9 @@ export function Section(props: {
           </h1>
           {props.subtitle && <div className="truncate text-xs text-fg-3">{props.subtitle}</div>}
         </div>
-        <div className="ml-auto flex items-center gap-2">{props.actions}</div>
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {props.actions}
+        </div>
       </header>
       <div className="min-h-0 flex-1 overflow-auto">{props.children}</div>
     </section>

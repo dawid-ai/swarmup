@@ -312,3 +312,43 @@ describe('Agents view: model suggestions and the unknown-model warning', () => {
     expect(document.body.textContent).not.toContain('Not a known claude model');
   });
 });
+
+describe('Agents view: the model name in full', () => {
+  /** The width classes of `el`, such as `w-28`, other than the `w-0` a growing field starts at. */
+  function widths(el: Element): string[] {
+    return [...el.classList].filter(
+      (c) => /^(min-|max-)?w-/.test(c) && c !== 'w-0' && c !== 'min-w-0',
+    );
+  }
+
+  it('gives the model field a row as wide as the card, with no fixed width', () => {
+    const settings = net.data['/api/settings'] as {
+      opsd: { agents: Record<string, Record<string, unknown>> };
+    };
+    settings.opsd.agents['codex:qa'] = { budget: '30m', model: 'gpt-5.5-codex-high' };
+    settings.opsd.agents['claude:pm'] = { wake: true, model: 'claude-opus-5-5' };
+    mount();
+    for (const [id, name] of [
+      ['codex:qa', 'gpt-5.5-codex-high'],
+      ['claude:pm', 'claude-opus-5-5'],
+    ] as const) {
+      const input = card(id).querySelector<HTMLInputElement>('input[list]')!;
+      expect(input.value).toBe(name);
+      expect(widths(input)).toEqual([]);
+      expect(input.classList).toContain('flex-1');
+      expect(input.classList).not.toContain('truncate');
+      // Effort and budget sit on another row, so they take no width from the model.
+      expect(input.parentElement!.querySelectorAll('input')).toHaveLength(1);
+    }
+  });
+
+  it('gives the Add agent model field room for a long name', () => {
+    root = createRoot(box);
+    act(() =>
+      root!.render(createElement(AddAgentDialog, { id: 'codex:writer', onClose: () => {} })),
+    );
+    const input = document.body.querySelector<HTMLInputElement>('input[list]')!;
+    expect(input.classList).not.toContain('w-36');
+    expect(input.classList).toContain('w-56');
+  });
+});

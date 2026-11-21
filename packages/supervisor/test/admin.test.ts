@@ -308,6 +308,25 @@ describe('desktop admin api', () => {
     }
   });
 
+  it('keeps the activity of a time window: days, or from and to', async () => {
+    const { api, call, as } = await setup();
+    try {
+      const h = as('human:dawid');
+      h.newTask({ title: 'today' });
+      type Page = { total: number };
+      const total = async (path: string): Promise<number> =>
+        ((await call('GET', path)).data as unknown as Page).total;
+      expect(await total('/api/activity')).toBe(1);
+      expect(await total('/api/activity?days=1')).toBe(1);
+      expect(await total('/api/activity?from=2020-01-01&to=2020-01-02')).toBe(0);
+      expect(await total('/api/activity?from=2020-01-01&to=2020-06-01&q=today')).toBe(0);
+      expect((await call('GET', '/api/activity?days=0')).status).toBe(400);
+      expect((await call('GET', '/api/activity?to=2020-01-02')).status).toBe(400);
+    } finally {
+      await api.close();
+    }
+  });
+
   it('creates an idea from New task: unowned, listed, and out of every queue', async () => {
     const { api, call, as } = await setup();
     try {

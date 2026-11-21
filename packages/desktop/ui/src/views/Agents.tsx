@@ -950,59 +950,65 @@ function AgentSettings({
   const save = (): void => {
     if (dirty && !busy) onChange(patch);
   };
+  // The model has a row of its own, as wide as the card, so a long name such as
+  // `gpt-5.5-codex-high` shows in full instead of clipped in a narrow field.
   return (
-    <div className="relative mt-3 flex items-center gap-2 text-xs">
-      <Toggle
-        checked={config.wake ?? false}
-        onChange={(on) => !busy && onChange({ wake: on })}
-        label="Wake"
-      />
-      <span
-        className="ml-auto text-fg-4"
-        title="Model for this agent's runs; over its role file's and its provider's"
-      >
-        Model
-      </span>
-      <ModelInput
-        runtime={runtime}
-        value={model}
-        onChange={setModel}
-        placeholder={modelPlaceholder}
-        className="w-28"
-        onEnter={save}
-        compact
-      />
-      <span
-        className="text-fg-4"
-        title="Reasoning effort for this agent's runs, such as medium; over its role file's and its provider's"
-      >
-        Effort
-      </span>
-      <Input
-        value={effort}
-        onChange={setEffort}
-        placeholder={effortPlaceholder}
-        className="w-20 font-mono"
-        onEnter={save}
-      />
-      <span
-        className="text-fg-4"
-        title="Budget for each run of this agent, unless a run sets its own"
-      >
-        Budget
-      </span>
-      <Input
-        value={budget}
-        onChange={setBudget}
-        placeholder={placeholder}
-        className="w-16"
-        onEnter={save}
-      />
-      {dirty && (
-        <Button size="sm" disabled={busy} onClick={save}>
-          Save
-        </Button>
-      )}
+    <div className="relative mt-3 flex flex-col gap-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span
+          className="shrink-0 text-fg-4"
+          title="Model for this agent's runs; over its role file's and its provider's"
+        >
+          Model
+        </span>
+        <ModelInput
+          runtime={runtime}
+          value={model}
+          onChange={setModel}
+          placeholder={modelPlaceholder}
+          className="w-0 min-w-0 flex-1"
+          onEnter={save}
+          compact
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Toggle
+          checked={config.wake ?? false}
+          onChange={(on) => !busy && onChange({ wake: on })}
+          label="Wake"
+        />
+        <span
+          className="ml-auto text-fg-4"
+          title="Reasoning effort for this agent's runs, such as medium; over its role file's and its provider's"
+        >
+          Effort
+        </span>
+        <Input
+          value={effort}
+          onChange={setEffort}
+          placeholder={effortPlaceholder}
+          className="w-20 font-mono"
+          onEnter={save}
+        />
+        <span
+          className="text-fg-4"
+          title="Budget for each run of this agent, unless a run sets its own"
+        >
+          Budget
+        </span>
+        <Input
+          value={budget}
+          onChange={setBudget}
+          placeholder={placeholder}
+          className="w-16"
+          onEnter={save}
+        />
+        {dirty && (
+          <Button size="sm" disabled={busy} onClick={save}>
+            Save
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1073,7 +1079,7 @@ function AddAgent({
           value={model}
           onChange={setModel}
           placeholder="provider default"
-          className="w-36"
+          className="w-56"
         />
       </label>
       <div className="pb-1.5">

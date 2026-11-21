@@ -643,13 +643,29 @@ export interface ActivityOptions {
   before?: string;
   /** Items per page: 1 to 1000, default 100. */
   limit?: number;
+  /** Only items at or after this time, in ms since the epoch. */
+  since?: number;
+  /** Only items before this time, in ms since the epoch. */
+  until?: number;
 }
 
 /** One page of the activity feed across `roots`, newest first. */
 export function activityPage(roots: Root[], opts: ActivityOptions = {}): ActivityPage {
   const asked = Number.isFinite(opts.limit) ? Math.floor(opts.limit!) : 100;
   const limit = Math.max(1, Math.min(asked, 1000));
-  const match = matcher(parseActivityQuery(opts.q ?? ''));
+  const query = matcher(parseActivityQuery(opts.q ?? ''));
+  const { since, until } = opts;
+  const timed = since !== undefined || until !== undefined;
+  const match = timed
+    ? (r: Row): boolean => {
+        const at = Date.parse(r.item.at);
+        return (
+          (since === undefined || at >= since) &&
+          (until === undefined || at < until) &&
+          (!query || query(r))
+        );
+      }
+    : query;
   const cursor = opts.before ? parseCursor(opts.before) : null;
   const all = allRows(roots);
   const rows = all.rows;

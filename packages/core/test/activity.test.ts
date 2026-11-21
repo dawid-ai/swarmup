@@ -118,6 +118,29 @@ describe('activity feed', () => {
     expect(page.projects).toEqual(['api', 'site']);
   });
 
+  it('keeps only the items of a time window, with the query and the cursor', () => {
+    const clock = ticking();
+    const { as } = setup();
+    const h = as('human:dawid', { now: clock });
+    h.newTask({ title: 'Login page' });
+    for (let i = 1; i <= 4; i++) h.comment('1', `note ${i}`);
+
+    const ws = as('human:dawid');
+    // Newest first: four comments, then the creation, each at its own minute.
+    const at = ws.activityPage().items.map((i) => Date.parse(i.at));
+    expect(at).toHaveLength(5);
+    const since = at[3]!;
+    const until = at[0]!;
+    const page = ws.activityPage({ since, until });
+    expect(page.total).toBe(3);
+    expect(page.items.map((i) => Date.parse(i.at))).toEqual(at.slice(1, 4));
+    expect(ws.activityPage({ since: at[1]! }).total).toBe(2);
+    expect(ws.activityPage({ until: since }).items.map((i) => i.type)).toEqual(['created']);
+    expect(ws.activityPage({ q: 'note', since, until, limit: 2 }).total).toBe(3);
+    const first = ws.activityPage({ since, until, limit: 2 });
+    expect(ws.activityPage({ since, until, limit: 2, before: first.next! }).items).toHaveLength(1);
+  });
+
   it('searches the whole body and clips only the preview it returns', () => {
     const { as, rootDir } = setup();
     const h = as('human:dawid');
