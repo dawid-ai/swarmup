@@ -107,3 +107,19 @@ before that read ends records the hash alone.
 The schemas are written once, in `packages/core/src/defs`, and generated into
 `packages/core/schemas/*.schema.json` by `node scripts/gen-schemas.mjs`; a test fails when the two
 drift apart.
+
+## In the desktop app
+
+**Settings > Definitions** shows each project's `swarm.yaml`: whether there is one, the hash and
+commit, the effective value and source (git or this machine) of each key it sets, the problems,
+and the file with each problem's line marked. **Validate**, **Import from my settings** (a
+preview, then a write that keeps your user config as it is), **Create swarm.yaml** from the
+template, and **Edit** with checks as you type. See [the desktop app](desktop.md#definitions).
+
+`GET /api/defs` gives each root's `text` of `swarm.yaml` and `values`: each key the git
+definitions set, with `value`, `source` (`git`, `machine` or `unused`), the `git` value and the
+`root`. The writes are `POST /api/defs/import` with `{ root }` for a preview and
+`{ root, write: true, expect }` to write the previewed text, `POST /api/defs/create` with
+`{ root }`, and `POST /api/defs/save` with `{ root, text, expect }`. Each checks the result first
+and refuses a file that changed since `expect` was read. `POST /api/defs/validate` with `{ root }`
+checks a whole root under this machine's config.

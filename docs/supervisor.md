@@ -1017,6 +1017,9 @@ swarmupd:
   repeats: true # create the tasks of due repeats; false on every PC but one that shares a store
   test_changes: # per root: the test and check configuration files a review prompt lists changes of
     v2: { tests: ['**/test/**', '*.test.*'], checks: [package.json, 'vitest.config.*'] }
+  bench: # benchmarks the desktop app lists, beyond each root's .swarmup/benchmarks/ (docs/benchmarks.md)
+    sets: ['C:\work\benchmarks\tally.yaml'] # set files, or folders of them
+    results: ['C:\work\bench-results'] # more folders of run folders, beyond <state>/bench/
 ```
 
 - **Wake:** each tick, swarmupd carries out the wake plan (see "Limits"): one run per review request,

@@ -41,7 +41,9 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
 - State lives in `~/.swarmup/swarmupd/`: run records, logs, `state.db` (`node:sqlite`, loaded
   lazily so the CLI never prints its warning), scratch folders.
 - `api.ts` serves 127.0.0.1 with a token per request; `admin.ts` backs the app's Settings,
-  Schedules and Standups. Runs get their own run token, never the human's.
+  Schedules and Standups. Runs get their own run token, never the human's. `/api/defs/*` and
+  `/api/bench/*` live in `defs-import.ts` and `bench-runs.ts` (see `core/defs` and `bench`);
+  `swarmupd.bench` names extra benchmark sets and results folders.
 - `doctor.ts` checks config, roots, CLIs and sign-ins; `notify.ts` posts to a webhook URL.
 
 ## Invariants

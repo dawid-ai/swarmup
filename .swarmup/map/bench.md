@@ -1,14 +1,19 @@
 ---
 kind: flow
-summary: 'swarmup bench: replay benchmark set entries in throwaway worktrees, score their criteria, compare runs'
+summary: 'swarmup bench and the Benchmarks view: replay set entries in throwaway worktrees, score criteria, compare runs'
 covers:
   - packages/core/src/bench.ts
   - packages/supervisor/src/bench.ts
+  - packages/supervisor/src/bench-runs.ts
   - packages/cli/src/bench-cmd.ts
   - docs/benchmarks.md
   - packages/core/test/bench.test.ts
   - packages/supervisor/test/bench.test.ts
-links: [core, supervisor/stats, cli, docs]
+  - packages/supervisor/test/bench-api.test.ts
+  - packages/desktop/ui/src/views/Bench.tsx
+  - packages/desktop/ui/src/ui/bench.tsx
+  - packages/desktop/test/bench-view.test.ts
+links: [core, supervisor/stats, cli, docs, desktop/ui]
 ---
 
 # Benchmarks
@@ -16,7 +21,8 @@ links: [core, supervisor/stats, cli, docs]
 ## Purpose
 
 Show whether a change to a role, model, effort or the harness helped, by replaying real tasks
-against an agent configuration and scoring the results. Runs standalone, without swarmupd.
+against an agent configuration and scoring the results. The runner works standalone, without
+swarmupd; the desktop app's Benchmarks view starts it through swarmupd's API.
 
 ## How it works
 
@@ -29,7 +35,16 @@ against an agent configuration and scoring the results. Runs standalone, without
   then each hidden command with the hidden folder copied in and removed after. Metrics come from
   the log, orientation from `orientation.ts`. It writes `results.json` per attempt and
   `summary.json`/`summary.md`, and compares two summaries.
-- `cli/src/bench-cmd.ts` is `swarmup bench run|compare`.
+- `cli/src/bench-cmd.ts` is `swarmup bench run|compare`. `runBench` keeps `status.json` (state,
+  attempts done of total, the attempt under way, the runner's pid) in the out folder.
+- `supervisor/src/bench-runs.ts` serves `/api/bench/*`: sets from each root's
+  `benchmarks/` and `swarmupd.bench.sets`, runs under `<state>/bench/` and
+  `swarmupd.bench.results`, a dry run's plan, and a run started as `swarmup bench run` in a
+  detached child with no window (`request.json`, `run.log`). `SWARMUP_BENCH_CLI` names another
+  runner for tests.
+- `desktop/ui/src/views/Bench.tsx` and `ui/bench.tsx` are the Benchmarks view: sets, runs with
+  live progress, a run's attempts and criteria, the run dialog with the plan and cost
+  confirmation, and Compare.
 
 ## Invariants
 
@@ -38,3 +53,5 @@ against an agent configuration and scoring the results. Runs standalone, without
 - Results and worktrees go to an out folder outside the repo; an existing non-empty one is
   refused, never overwritten.
 - The agent's command line ignores machine runtime settings, so runs compare across machines.
+- The API starts only sets it lists; an agent run from the app follows a dry run's plan and an
+  explicit cost confirmation in the run dialog.
