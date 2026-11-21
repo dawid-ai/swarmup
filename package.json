@@ -14,7 +14,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b && tsc -p tsconfig.test.json && tsc -p packages/desktop/ui/tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint . && prettier --check .",
+    "lint": "eslint . && node scripts/prettier-check.mjs",
     "format": "prettier --write .",
     "leaks": "node scripts/check-leaks.mjs",
     "swarmup": "node packages/cli/dist/main.js",

@@ -23,6 +23,7 @@ covers:
   - scripts/bench-next.mjs
   - scripts/desktop-smoke.mjs
   - scripts/orientation.mjs
+  - scripts/prettier-check.mjs
 links: [leaks, release]
 ---
 
