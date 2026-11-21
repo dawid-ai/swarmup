@@ -38,6 +38,7 @@ export const sups: Supervisor[] = [];
 afterEach(async () => {
   const mine = sups.splice(0);
   const gone = dirs.splice(0);
+  let failed: unknown;
   try {
     for (const s of mine) {
       s.stop({ killRuns: true });
@@ -45,11 +46,22 @@ afterEach(async () => {
     }
   } finally {
     // Windows can hold a just-written file in a stopped swarmupd's state folder for a few seconds
-    // (EPERM); retry for about 5 s, as push.test.ts and merge-setup.ts do.
+    // (EPERM); retry for about 5 s, as push.test.ts and merge-setup.ts do. A folder Windows still
+    // holds after that is left in the temp folder: the test itself has passed or failed already.
     for (const d of gone) {
-      rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      try {
+        rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EPERM' || code === 'EBUSY' || code === 'ENOTEMPTY') {
+          console.warn(`left ${d}: ${code}`);
+        } else {
+          failed ??= err;
+        }
+      }
     }
   }
+  if (failed) throw failed;
 }, 90_000);
 
 export function temp(): string {
