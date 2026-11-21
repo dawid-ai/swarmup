@@ -3,19 +3,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import type { ParseArgsConfig } from 'node:util';
-import type {
-  DefinitionSet,
-  DefProblem,
-  Root,
-  SwarmImport,
-  UserConfig,
-  Workspace,
-} from '@swarmup/core';
+import type { DefinitionSet, DefProblem, Root, UserConfig, Workspace } from '@swarmup/core';
 import {
   assertNoSecret,
   checkDefinitionText,
   daemonKeyIn,
-  daemonSection,
   definitionHash,
   editUserConfig,
   formatProblem,
@@ -30,7 +22,7 @@ import {
   SWARM_FILE,
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
-import { opsdConfig, withDefinitions } from '@swarmup/supervisor';
+import { importableConfig, lineDiff, opsdConfig, withDefinitions } from '@swarmup/supervisor';
 
 /** What `swarmup validate` and `swarmup defs` need of the CLI's context. */
 interface DefsCtx {
@@ -362,70 +354,10 @@ function defsDiff(ctx: DefsCtx, ref: string): number {
   return 0;
 }
 
-const ROLE_KEYS = ['providers', 'overflow', 'writes', 'per_project', 'burst', 'max_children'];
-
-/** The git-able part of the user config: runtime model and effort, and role settings. */
-function importable(user: UserConfig): SwarmImport {
-  const section = daemonSection(user) ?? {};
-  const runtimes: Record<string, { model?: string; effort?: string }> = {};
-  const rts = section.runtimes;
-  if (rts && typeof rts === 'object') {
-    for (const [name, rc] of Object.entries(rts as Record<string, unknown>)) {
-      if (!rc || typeof rc !== 'object') continue;
-      const r = rc as { model?: unknown; effort?: unknown };
-      const out: { model?: string; effort?: string } = {};
-      if (typeof r.model === 'string') out.model = r.model;
-      if (typeof r.effort === 'string') out.effort = r.effort;
-      if (Object.keys(out).length > 0) runtimes[name] = out;
-    }
-  }
-  const roles: SwarmImport['roles'] = {};
-  const rs = section.roles;
-  if (rs && typeof rs === 'object') {
-    for (const [name, rc] of Object.entries(rs as Record<string, unknown>)) {
-      if (!rc || typeof rc !== 'object') continue;
-      const out: Record<string, unknown> = {};
-      for (const k of ROLE_KEYS) {
-        const v = (rc as Record<string, unknown>)[k];
-        if (v !== undefined && v !== null) out[k] = v;
-      }
-      if (Object.keys(out).length > 0) roles[name] = out;
-    }
-  }
-  return { runtimes, roles };
-}
-
-/** A line diff of two texts: the lines `old` lacks with `+`, the ones `next` lacks with `-`. */
-function lineDiff(old: string, next: string): string[] {
-  const a = old.split('\n');
-  const b = next.split('\n');
-  // Longest common subsequence: the files are small.
-  const n = a.length;
-  const m = b.length;
-  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      lcs[i]![j] =
-        a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
-    }
-  }
-  const out: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i] === b[j]) {
-      i++;
-      j++;
-    } else if (j < m && (i >= n || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) out.push(`+${b[j++]}`);
-    else out.push(`-${a[i++]}`);
-  }
-  return out.filter((l) => l !== '+' && l !== '-');
-}
-
 function importConfig(ctx: DefsCtx): number {
   const ws = ctx.ws();
   const root = ws.defaultRoot();
-  const { runtimes, roles } = importable(ws.user);
+  const { runtimes, roles } = importableConfig(ws.user);
   const file = join(root.dir, SWARM_FILE);
   const before = existsSync(file) ? normalText(readFileSync(file, 'utf8')) : '';
   if (Object.keys(runtimes).length === 0 && Object.keys(roles).length === 0) {

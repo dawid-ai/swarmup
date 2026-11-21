@@ -1,19 +1,22 @@
 // Definitions as code (W5): git definitions merged under the machine config, and the stamp of
 // the definitions each run started with.
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadDefinitions, shortHash } from '@swarmup/core';
 import type { SwarmDefs } from '@swarmup/core';
 import type { RunRecord } from '../src/index.js';
 import {
+  createSwarmFile,
   opsdConfig,
   overridesFor,
+  planDefsImport,
   roleLimits,
   startApi,
   StateDb,
   withDefinitions,
+  writeSwarmFile,
 } from '../src/index.js';
 import { ended, FAKE_AGENT, setupAsync, temp } from './supervisor-setup.js';
 import { spySyncProcs } from './sync-procs.js';
@@ -276,6 +279,139 @@ describe('definitions API', () => {
       });
       expect(agent.data).toMatchObject({ ok: false, problems: [{ line: 3, path: 'flavor' }] });
       expect((await call('POST', '/api/defs/validate', {})).status).toBe(400);
+    } finally {
+      await api.close();
+      await sup.defsSettled();
+    }
+  });
+});
+
+describe('effective values', () => {
+  it('names the source of each key swarm.yaml sets: git, this machine, or unused', () => {
+    const cfg = machine({
+      runtimes: { claude: { command: 'claude', model: 'sonnet' }, codex: { command: 'codex' } },
+      roles: { qa: { burst: 5 } },
+    });
+    const { values } = withDefinitions(cfg, [
+      {
+        root: 'a',
+        swarm: {
+          swarmup_defs: 1,
+          runtimes: { claude: { model: 'opus' }, codex: { effort: 'low' }, cursor: { model: 'x' } },
+          roles: { qa: { burst: 5, per_project: 2 } },
+        },
+      },
+    ]);
+    expect(values).toEqual([
+      { key: 'roles.qa.burst', value: 5, source: 'machine', git: 5, root: 'a' },
+      { key: 'roles.qa.per_project', value: 2, source: 'git', git: 2, root: 'a' },
+      { key: 'runtimes.claude.model', value: 'sonnet', source: 'machine', git: 'opus', root: 'a' },
+      { key: 'runtimes.codex.effort', value: 'low', source: 'git', git: 'low', root: 'a' },
+      { key: 'runtimes.cursor.model', value: 'x', source: 'unused', git: 'x', root: 'a' },
+    ]);
+  });
+});
+
+describe('swarm.yaml writes', () => {
+  const user = {
+    swarmupd: {
+      runtimes: { claude: { command: 'claude', model: 'opus', effort: 'high' } },
+      roles: { qa: { burst: 3, max_live: 1 } },
+    },
+  };
+
+  it('previews import-config without writing, keeping comments, and refuses a stale write', () => {
+    const store = temp();
+    writeFileSync(join(store, 'swarm.yaml'), '# team\nswarmup_defs: 1\n');
+    const plan = planDefsImport(store, user as never);
+    expect(plan).toMatchObject({
+      exists: true,
+      empty: false,
+      keys: ['runtimes.claude.model', 'runtimes.claude.effort', 'roles.qa.burst'],
+      problems: [],
+    });
+    expect(plan.after).toContain('# team');
+    expect(plan.diff).toContain('+runtimes:');
+    expect(readFileSync(join(store, 'swarm.yaml'), 'utf8')).toBe('# team\nswarmup_defs: 1\n');
+    // An edit after the preview: the write is refused and the edit stays.
+    writeFileSync(join(store, 'swarm.yaml'), '# edited\nswarmup_defs: 1\n');
+    expect(() => writeSwarmFile(plan.file, plan.after, plan.before)).toThrow(/changed since/);
+    expect(readFileSync(join(store, 'swarm.yaml'), 'utf8')).toContain('# edited');
+    expect(planDefsImport(store, {} as never).empty).toBe(true);
+  });
+
+  it('refuses text that does not check, and creates the template only once', () => {
+    const store = temp();
+    const bad = 'swarmup_defs: 1\nroles: {qa: {burst: x}}\n';
+    expect(() => writeSwarmFile(join(store, 'swarm.yaml'), bad)).toThrow(/would not check/);
+    expect(existsSync(join(store, 'swarm.yaml'))).toBe(false);
+    const file = createSwarmFile(store);
+    expect(readFileSync(file, 'utf8')).toContain('swarmup_defs: 1');
+    expect(loadDefinitions(store).ok).toBe(true);
+    expect(() => createSwarmFile(store)).toThrow(/exists already/);
+  });
+});
+
+describe('definitions API writes', () => {
+  it('validates a root, creates swarm.yaml, imports the user config and saves edits', async () => {
+    const repo = temp();
+    const { sup } = await setupAsync({ repo });
+    await sup.tick();
+    Object.defineProperty(sup, 'userConfig', {
+      get: () => ({ swarmupd: { roles: { qa: { burst: 3 } } } }),
+    });
+    const api = await startApi(sup, { port: 0, token: 'defs-token', version: 't', build: '1' });
+    const call = async (path: string, body?: unknown) => {
+      const res = await fetch(`http://127.0.0.1:${api.port}${path}`, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { authorization: 'Bearer defs-token', 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: res.status, data: (await res.json()) as Record<string, unknown> };
+    };
+    const file = join(repo, '.swarmup', 'swarm.yaml');
+    try {
+      expect((await call('/api/defs/validate', { root: 'test' })).data).toMatchObject({
+        ok: true,
+        present: false,
+      });
+      expect((await call('/api/defs/validate', { root: 'nope' })).status).toBe(400);
+      expect((await call('/api/defs/create', { root: 'test' })).status).toBe(200);
+      expect(existsSync(file)).toBe(true);
+      expect((await call('/api/defs/create', { root: 'test' })).status).toBe(409);
+      const view = (await call('/api/defs')).data as {
+        roots: Array<{ present: boolean; text?: string }>;
+      };
+      expect(view.roots[0]).toMatchObject({ present: true });
+      expect(view.roots[0]!.text).toContain('swarmup_defs: 1');
+
+      const preview = await call('/api/defs/import', { root: 'test' });
+      expect(preview.data).toMatchObject({ keys: ['roles.qa.burst'], empty: false });
+      const before = readFileSync(file, 'utf8');
+      const stale = { root: 'test', write: true, expect: 'stale' };
+      expect((await call('/api/defs/import', stale)).status).toBe(409);
+      expect(readFileSync(file, 'utf8')).toBe(before);
+      const wrote = await call('/api/defs/import', {
+        root: 'test',
+        write: true,
+        expect: preview.data.after,
+      });
+      expect(wrote.data).toMatchObject({ written: true });
+      expect(readFileSync(file, 'utf8')).toContain('burst: 3');
+
+      const now = readFileSync(file, 'utf8');
+      const bad = 'swarmup_defs: 1\nroles: {qa: {burst: x}}\n';
+      expect((await call('/api/defs/save', { root: 'test', text: bad, expect: now })).status).toBe(
+        409,
+      );
+      const good = 'swarmup_defs: 1\nroles: {qa: {burst: 4}}\n';
+      expect((await call('/api/defs/save', { root: 'test', text: good, expect: 'x' })).status).toBe(
+        409,
+      );
+      expect((await call('/api/defs/save', { root: 'test', text: good, expect: now })).status).toBe(
+        200,
+      );
+      expect(readFileSync(file, 'utf8')).toBe(good);
     } finally {
       await api.close();
       await sup.defsSettled();

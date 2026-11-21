@@ -201,6 +201,17 @@ export const DEFAULT_MERGE_BATCH = 8;
  * matches the file name in any folder; `*` and `?` stay inside one path segment, `**` crosses
  * folders. An unset list takes the defaults (`DEFAULT_TEST_PATTERNS`, `DEFAULT_CHECK_PATTERNS`).
  */
+/**
+ * Benchmarks the desktop app lists and runs (`docs/benchmarks.md`): set files beyond each root's
+ * `.swarmup/benchmarks/`, and results folders beyond swarmupd's own `bench/`.
+ */
+export interface BenchConfig {
+  /** Set files (`<set>.yaml`) or folders of them. */
+  sets: string[];
+  /** Folders whose subfolders are bench runs (each with a `summary.json` or `status.json`). */
+  results: string[];
+}
+
 export interface TestChangesConfig {
   /** Test files. */
   tests?: string[];
@@ -361,6 +372,7 @@ export interface OpsdConfig {
   resume_on_changes: boolean;
   /** Hours after a run ended that its session may still be resumed. */
   resume_max_hours: number;
+  bench: BenchConfig;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -477,6 +489,7 @@ export function opsdConfig(
     remove_stale_temp: raw.remove_stale_temp ?? false,
     resume_on_changes: raw.resume_on_changes ?? true,
     resume_max_hours: raw.resume_max_hours ?? 24,
+    bench: checkBench((raw as { bench?: unknown }).bench),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -646,6 +659,27 @@ function checkChat(c: ChatConfig): void {
     }
     parseDuration(c.budget);
   }
+}
+
+function checkBench(raw: unknown): BenchConfig {
+  if (raw === undefined || raw === null) return { sets: [], results: [] };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError('swarmupd.bench: use sets and results, each a list of paths', 2);
+  }
+  const extra = Object.keys(raw).filter((k) => k !== 'sets' && k !== 'results');
+  if (extra.length > 0) {
+    throw new OpsError(`swarmupd.bench: unknown key ${extra[0]}; use sets and results`, 2);
+  }
+  const paths = (v: unknown, name: string): string[] => {
+    if (v === undefined || v === null) return [];
+    const list = typeof v === 'string' ? [v] : v;
+    if (!Array.isArray(list) || list.some((p) => typeof p !== 'string' || !p.trim())) {
+      throw new OpsError(`swarmupd.bench.${name}: use a list of paths`, 2);
+    }
+    return list as string[];
+  };
+  const b = raw as { sets?: unknown; results?: unknown };
+  return { sets: paths(b.sets, 'sets'), results: paths(b.results, 'results') };
 }
 
 function checkPushBranches(raw: unknown): Record<string, boolean> {
