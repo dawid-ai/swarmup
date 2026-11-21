@@ -1,11 +1,13 @@
 import { Check, ChevronDown, FolderPlus, SquarePen } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, refreshSoon } from '../api';
-import { Button, ErrorLine, Field, Modal, PriorityIcon, useAction, cx } from '../components';
+import { Button, ErrorLine, Field, Modal, PriorityIcon, toast, useAction, cx } from '../components';
 import { rootOfProject, setBoardShowsIdeas } from '../lib/filters';
 import { PRIORITIES } from '../lib/identity';
 import { QUESTION } from '../lib/question';
 import type { RootInfo, Task } from '../types';
+import type { DraftCriterion } from '../ui/criteria';
+import { CriteriaEditor, draftsProblem, entryOf, notesOf } from '../ui/criteria';
 import type { Due } from '../ui/pickers';
 import { AgentPicker, DuePicker, dueToApi, MentionArea, Popover } from '../ui/pickers';
 import { useProjectLabel } from '../ui/project-label';
@@ -182,6 +184,8 @@ export function NewTask({
     if (added) setPicked(added);
   }, [added]);
   const [due, setDue] = useState<Due | null>(null);
+  // Typed criteria and plain-text ones, sent as `done_when`.
+  const [criteria, setCriteria] = useState<DraftCriterion[]>([]);
   // The sidebar's projects: every root but the Master Repo, which stays only when it is the
   // default root, so the choice the form opens with is in the list.
   const fallback = roots?.[0]?.name;
@@ -200,8 +204,12 @@ export function NewTask({
   const question = type === QUESTION;
   const people = owner.some((o) => o.startsWith('human:'));
   const missing = question && (owner.length === 0 || people);
+  // Ideas and questions are not work a check closes, so they take no criteria here.
+  const takesCriteria = !idea && !question;
+  const sent = takesCriteria ? criteria : [];
+  const badCriteria = draftsProblem(sent);
   const create = (): void => {
-    if (!title.trim() || act.busy || uploading || missing) return;
+    if (!title.trim() || act.busy || uploading || missing || badCriteria) return;
     let created = '';
     act.run(
       async () => {
@@ -216,8 +224,12 @@ export function NewTask({
           // The filter's own name while its root is the choice, so the task shows in that view;
           // otherwise the root's default project.
           project: shownProject && root === shownRoot ? shownProject : undefined,
+          ...(sent.length > 0 ? { done_when: sent.map(entryOf) } : {}),
         });
         created = `${t.root}/${t.id}`;
+        // Such as work with only prose criteria: the task is filed, and the note says what to
+        // add. The task opens next, with **Add criteria** under Done when.
+        for (const n of notesOf(t)) toast(`${t.id}: ${n}`, { tone: 'bad' });
         if (question) return;
         if (idea) {
           setBoardShowsIdeas(true);
@@ -246,7 +258,9 @@ export function NewTask({
       icon={SquarePen}
       onClose={onClose}
       width={640}
-      dirty={Boolean(title.trim() || body.trim() || owner.length > 0 || picked || due)}
+      dirty={Boolean(
+        title.trim() || body.trim() || owner.length > 0 || picked || due || criteria.length > 0,
+      )}
     >
       <div className="flex flex-col gap-4">
         {/* While the task is being created the fields hold still: a change made then would not be
@@ -368,6 +382,16 @@ export function NewTask({
               </Field>
             )}
           </div>
+          {takesCriteria && (
+            <div data-new-criteria className="flex flex-col gap-1.5">
+              <span className="label-caps">Done when</span>
+              <CriteriaEditor value={criteria} onChange={setCriteria} />
+              <span className="text-xs text-fg-4">
+                A command, a check, a rubric or a question someone can verify. Prose without an id
+                is plain text.
+              </span>
+            </div>
+          )}
         </fieldset>
         <ErrorLine error={act.error} />
         <div className="flex items-center justify-end gap-2">
@@ -379,13 +403,13 @@ export function NewTask({
           </Button>
           <Button
             kind="primary"
-            disabled={!title.trim() || act.busy || uploading || missing}
+            disabled={!title.trim() || act.busy || uploading || missing || Boolean(badCriteria)}
             title={
               uploading
                 ? 'Waiting for the image upload'
                 : missing
                   ? 'Pick the agent that answers first'
-                  : undefined
+                  : (badCriteria ?? undefined)
             }
             onClick={create}
           >

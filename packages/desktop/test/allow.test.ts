@@ -37,6 +37,13 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan')).toBe(false);
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-apply')).toBe(false);
     expect(allowedCall('GET', '/api/milestones')).toBe(true);
+    // Done when and the goal brief: change the criteria, run the checks, write a brief.
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/criteria')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/criteria-check')).toBe(true);
+    expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/criteria-check')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/brief')).toBe(true);
+    expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/brief')).toBe(false);
+    expect(allowedCall('GET', '/api/scores?task=demo%2FAO-0001')).toBe(true);
     expect(allowedCall('POST', '/api/milestones')).toBe(false);
     expect(allowedCall('POST', '/api/runs/01ABC/kill')).toBe(true);
     expect(allowedCall('POST', '/api/decisions/D-0001/vote')).toBe(true);

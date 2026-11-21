@@ -210,6 +210,60 @@ that model, and says which model's runs wait while the others go on.
 task back to to do, so the agent goes on; **Comment** adds a note and the task keeps waiting.
 Ctrl+Enter sends the highlighted button: **Answer** while the task waits on you, else **Comment**.
 
+**Done when.** The task panel lists a task's criteria (see
+[Done when](protocol.md#done-when)), each with its kind (**Prose**, **Command**, **Check**,
+**Rubric**, **Human** or **Map**), what it checks (the command, the built-in check and its
+arguments, the rubric file and the score that passes, the question) and its last result: pass,
+fail or n/a, the score, the note, the evidence under **Evidence**, who recorded it, when, and
+whether a verdict, **Run checks** or the merge did. A milestone's one criterion shows with its plan.
+
+- **Edit** (or **Add criteria** on a task without any) opens the builder: a row per criterion with
+  its kind, an optional id and the fields that kind takes, moved up or down or removed, and an
+  **Add** button per kind. Prose without an id saves as plain text with a position id (`c1`, `c2`,
+  ...), as `task.md` writes it; give it an id or pick another kind to make it typed. **Save
+  criteria** writes a `criteria` event with the whole list, as
+  `swarmup criteria ID --set-file F` does (`POST /api/tasks/ID/criteria` with `done_when`, and
+  `add: true` to append). The same rules apply: the task's creator, a person, the orchestrator or
+  a PM on a task nobody holds may change them, and swarmupd's refusal shows under the form. A
+  criterion you change or remove loses its last result.
+- **Run checks** runs the task's `command` and `check` criteria, as `swarmup criteria check ID`
+  does, in the task's worktree, else the root's code checkout, and records the results in one
+  `criteria-check` event. It runs in swarmupd, in the background: each criterion shows **queued**,
+  **running…** and then its result, and the button says how many are done. Only a person can
+  start it, never a run's token (`POST /api/tasks/ID/criteria-check`; `GET` reads the running or
+  last run).
+
+**Review with criteria.** On a task with criteria that waits for your review, the task panel shows
+**Review against the criteria** instead of the two plain buttons: **pass**, **fail** or **n/a** per
+criterion with a note, and a score for a rubric. The `command`, `check` and `map` criteria show
+their last result; the checks judge them, so you usually leave them unmarked. The results go with
+the verdict as its `criteria` map. **Approve** with a criterion marked fail asks first; **Approve
+anyway** sends the verdict with `force`, as `swarmup verdict --force`, and the thread marks it
+**forced**. **Request changes** needs a message. In the Inbox, **Criteria** on a review reads the
+task's criteria and gives the same choices. A verdict, a check run or a merge in the thread lists
+its result per criterion, and a `criteria` event lists the new criteria.
+
+**New task** has a **Done when** builder (the same rows as the task panel's) for any type but idea
+and question; prose without an id is plain text. When swarmupd notes that the work has no
+checkable criterion (only prose), the note shows as a warning and the task opens, so you can add
+one under **Done when**.
+
+**Brief.** A milestone, a task with children and a task that has a brief show **Brief**: the
+newest `brief` event as Markdown with its author and when, and how many children are done.
+**Edit** (or **Write a brief**) writes a new brief, as `swarmup brief ID --body-file -` does
+(`POST /api/tasks/ID/brief` with `message`); a first one starts from the outline: outcome, done,
+next, open questions, decisions in force. When children closed after the brief (or a milestone
+has closed children and no brief), a hint names them; they are the ones the PM's inbox runs list
+(see [Goal briefs](protocol.md#goal-briefs)). `brief` events show in the thread.
+
+**Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
+`GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what
+it measures, its threshold and what to change when it fails.
+
+**Resumed runs.** A `run-start` event of a run that resumed the session of an earlier one (see
+[Resume after changes](supervisor.md#resume-after-changes)) shows **Resumed** in the thread; hover
+it for the session id.
+
 The window updates when `swarmupd` reports a change (Server-Sent Events): at once after a write
 through the app, and within 3 seconds after an agent writes from the CLI. A message you send shows
 in the open task at once; an item you handle in the inbox leaves with a confirmation that links to

@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowRightLeft,
+  BookOpen,
   Bot,
   CalendarClock,
   Check,
@@ -12,6 +13,7 @@ import {
   Eye,
   FileDiff,
   FileText,
+  FlaskConical,
   GitMerge,
   GitPullRequestArrow,
   Hand,
@@ -19,8 +21,10 @@ import {
   ListChecks,
   MessageCircleQuestion,
   MessageSquare,
+  Pencil,
   Play,
   Reply,
+  RotateCcw,
   Undo2,
   UserRoundPlus,
   X,
@@ -35,6 +39,7 @@ import {
   Input,
   PriorityIcon,
   StatusIcon,
+  toast,
   useAction,
   Who,
   cx,
@@ -59,8 +64,24 @@ import {
 } from '../lib/thread';
 import { taskLoop } from '../lib/statusloop';
 import { moveTo, shownStatus } from '../lib/transitions';
-import { criterionText } from '../lib/plan';
-import type { OpsEvent, Status, Task, TaskDetail } from '../types';
+import type { Criterion, CriterionLast, OpsEvent, Status, Task, TaskDetail } from '../types';
+import { BriefSection } from '../ui/brief';
+import { TaskScoresSection } from '../ui/task-scores';
+import type { ReviewMarks } from '../ui/criteria';
+import {
+  CriteriaForm,
+  CriteriaList,
+  CriteriaReview,
+  EventCriteria,
+  EventDoneWhen,
+  failedIds,
+  ForceApprove,
+  notesOf,
+  RUN_KINDS,
+  RunChecksButton,
+  useCriteriaCheck,
+  verdictCriteria,
+} from '../ui/criteria';
 import { DiffDialog } from '../ui/diff';
 import { Markdown } from '../ui/markdown';
 import { useMover } from '../ui/move';
@@ -149,6 +170,13 @@ export function TaskPanel({
   // A review request names the commits to look at; swarmupd reads their diff (AO-0106).
   const hasWork = events.some((e) => e.type === 'review' && !e.pending);
   const [diff, setDiff] = useState(Boolean(showDiff));
+  const criteria = data?.criteria ?? [];
+  const [editCriteria, setEditCriteria] = useState(false);
+  const check = useCriteriaCheck(id, reload);
+  // A review with criteria gives a result per criterion: the form replaces the plain buttons.
+  const reviewForm = reviewsMe && criteria.length > 0;
+  // A milestone, a parent, or a task that has a brief anyway.
+  const briefShown = Boolean(t && (milestone || (data?.children?.length ?? 0) > 0 || data?.brief));
 
   return (
     <div
@@ -333,6 +361,17 @@ export function TaskPanel({
             />
           )}
 
+          {briefShown && t && (
+            <BriefSection
+              task={id}
+              me={nav.me}
+              brief={data?.brief}
+              children={data?.children}
+              closed={data?.closedSinceBrief}
+              onWrote={wrote}
+            />
+          )}
+
           {open && t && TRIAGED.has(t.type) && (
             <div className="mt-4 rounded-xl border border-warn/20 bg-warn/[0.04] p-3">
               <div className="label-caps mb-2 !text-warn">
@@ -356,7 +395,7 @@ export function TaskPanel({
 
           {t && (
             <div className="mt-4 flex flex-wrap gap-2">
-              {reviewsMe && (
+              {reviewsMe && !reviewForm && (
                 <>
                   <Button
                     kind="primary"
@@ -394,6 +433,15 @@ export function TaskPanel({
               )}
             </div>
           )}
+          {reviewForm && t && (
+            <ReviewForm
+              id={id}
+              nav={nav}
+              criteria={criteria}
+              results={data?.criteriaResults}
+              onWrote={wrote}
+            />
+          )}
           {open && panel === 'delegate' && t && (
             <DelegateForm id={id} t={t} nav={nav} onDone={() => setPanel(null)} />
           )}
@@ -414,38 +462,58 @@ export function TaskPanel({
             </>
           )}
 
-          {!milestone && data?.criteria && data.criteria.length > 0 && (
-            <>
+          {/* A milestone's one criterion shows with its plan. */}
+          {!milestone && t && (criteria.length > 0 || open) && (
+            <section data-done-when>
               <h3 className="label-caps mt-6 mb-2 flex items-center gap-1.5">
                 <ListChecks size={12} /> Done when
+                {open && !editCriteria && (
+                  <button
+                    type="button"
+                    onClick={() => setEditCriteria(true)}
+                    className="ml-auto inline-flex items-center gap-1 font-sans text-xs font-normal tracking-normal text-fg-4 normal-case hover:text-signal"
+                  >
+                    <Pencil size={11} /> {criteria.length > 0 ? 'Edit' : 'Add criteria'}
+                  </button>
+                )}
               </h3>
-              <ul data-criteria className="space-y-1 text-sm text-fg-2">
-                {data.criteria.map((c) => {
-                  const r = data.criteriaResults?.[c.id];
-                  return (
-                    <li key={c.id} data-criterion={c.id} className="flex items-baseline gap-2">
-                      <span className="font-mono text-[11px] text-fg-4">{c.id}</span>
-                      <span className="font-mono text-[11px] text-fg-3">{c.kind}</span>
-                      <span className="min-w-0 flex-1">{criterionText(c)}</span>
-                      <span
-                        className={cx(
-                          'font-mono text-[11px]',
-                          r?.result === 'pass' && 'text-ok',
-                          r?.result === 'fail' && 'text-bad',
-                          !r && 'text-fg-4',
-                        )}
-                        title={
-                          r ? `${r.type} by ${r.actor}${r.note ? `: ${r.note}` : ''}` : undefined
-                        }
-                      >
-                        {r?.result ?? '-'}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </>
+              {editCriteria ? (
+                <CriteriaForm
+                  task={id}
+                  me={nav.me}
+                  criteria={criteria}
+                  onSaved={(res) => {
+                    setEditCriteria(false);
+                    wrote(res);
+                  }}
+                  onCancel={() => setEditCriteria(false)}
+                />
+              ) : criteria.length > 0 ? (
+                <>
+                  <CriteriaList
+                    criteria={criteria}
+                    results={data?.criteriaResults}
+                    job={check.job}
+                  />
+                  {criteria.some((c) => RUN_KINDS.has(c.kind)) && (
+                    <div className="mt-2">
+                      <RunChecksButton
+                        check={check}
+                        me={nav.me}
+                        count={criteria.filter((c) => RUN_KINDS.has(c.kind)).length}
+                      />
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-fg-4">
+                  No criteria yet. Add a command, a check or a question someone can verify.
+                </p>
+              )}
+            </section>
           )}
+
+          {t && <TaskScoresSection task={`${t.root}/${t.id}`} />}
 
           <h3 className="label-caps mt-7 mb-3 flex items-center gap-1.5">
             <History size={12} /> Conversation and history
@@ -639,6 +707,9 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; label?: str
   'plan-approve': { icon: Check, color: '#3ddc97', label: 'approved the plan' },
   'plan-amend': { icon: ListChecks, color: '#ff7eb6', label: 'added to the plan' },
   'plan-reject': { icon: Undo2, color: '#ffb547', label: 'sent the plan back' },
+  criteria: { icon: ListChecks, color: '#ffd166', label: 'changed the criteria' },
+  'criteria-check': { icon: FlaskConical, color: '#5aa9ff', label: 'ran the checks' },
+  brief: { icon: BookOpen, color: '#5ce1e6', label: 'wrote the brief' },
 };
 
 /**
@@ -773,7 +844,21 @@ function EventRow({
           : (e.verdict ?? e.ref ?? (e.on ? `on ${e.on.join(', ')}` : ''));
   const quiet =
     ['renew', 'progress', 'run-start', 'run-end', 'claim'].includes(e.type) && !e.body.trim();
-  const said = ['comment', 'review', 'ask', 'answer', 'verdict', 'delegate', 'handoff', 'block'];
+  const said = [
+    'comment',
+    'review',
+    'ask',
+    'answer',
+    'verdict',
+    'delegate',
+    'handoff',
+    'block',
+    'brief',
+  ];
+  // A run that resumed the session of an earlier one (`resume_on_changes`).
+  const resumed = e.type === 'run-start' && e.session;
+  const results =
+    e.criteria && ['verdict', 'criteria-check', 'merge'].includes(e.type) ? e.criteria : null;
   return (
     <li id={`ev-${e.id}`} className={cx('relative pb-4 pl-6', quiet && 'pb-2.5')}>
       <span
@@ -794,6 +879,15 @@ function EventRow({
           </span>
         )}
         {e.forced && <span className="text-warn">forced</span>}
+        {resumed && (
+          <span
+            data-resumed
+            className="inline-flex items-center gap-1 rounded bg-info/10 px-1.5 text-[11px] text-info"
+            title={`Resumed session ${e.session}`}
+          >
+            <RotateCcw size={10} /> Resumed
+          </span>
+        )}
         {e.decision && (
           <span
             data-event-decision
@@ -846,7 +940,92 @@ function EventRow({
           dangerouslySetInnerHTML={{ __html: renderMarkdown(e.body) }}
         />
       )}
+      {results && Object.keys(results).length > 0 && <EventCriteria results={results} />}
+      {e.type === 'criteria' && e.done_when && <EventDoneWhen list={e.done_when} />}
     </li>
+  );
+}
+
+/**
+ * The verdict of a review on a task with criteria: pass, fail or n/a per criterion with notes,
+ * sent as the verdict's `criteria` map. **Approve** with a failed criterion asks first and then
+ * sends `force`, as `swarmup verdict --force`; **Request changes** needs a message.
+ */
+function ReviewForm({
+  id,
+  nav,
+  criteria,
+  results,
+  onWrote,
+}: {
+  id: string;
+  nav: Nav;
+  criteria: Criterion[];
+  results?: Record<string, CriterionLast>;
+  onWrote: (res: unknown) => void;
+}) {
+  const [marks, setMarks] = useState<ReviewMarks>({});
+  const [text, setText] = useState('');
+  const [confirm, setConfirm] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const act = useAction();
+  const failed = failedIds(marks);
+  const wait = act.busy || uploading;
+  const send = (verdict: 'approve' | 'changes', force = false): void =>
+    act.run(async () => {
+      const res = await api('POST', `/api/tasks/${q(id)}/verdict`, {
+        as: nav.me,
+        verdict,
+        message: text,
+        criteria: verdictCriteria(marks),
+        ...(force ? { force: true } : {}),
+      });
+      setConfirm(false);
+      setMarks({});
+      setText('');
+      onWrote(res);
+      for (const n of notesOf(res)) toast(n);
+    });
+  return (
+    <div data-review-form className="panel animate-rise mt-3 flex flex-col gap-3 p-4">
+      <div className="label-caps">Review against the criteria</div>
+      <CriteriaReview criteria={criteria} results={results} value={marks} onChange={setMarks} />
+      <MentionArea
+        value={text}
+        onChange={setText}
+        me={nav.me}
+        rows={2}
+        placeholder="What to fix, or why it is good"
+        attach={{ task: id }}
+        onUploading={setUploading}
+      />
+      {confirm && (
+        <ForceApprove
+          failed={failed}
+          onConfirm={() => send('approve', true)}
+          onCancel={() => setConfirm(false)}
+        />
+      )}
+      <div className="flex items-center gap-2">
+        <Button
+          kind="primary"
+          icon={Check}
+          disabled={wait}
+          onClick={() => (failed.length > 0 ? setConfirm(true) : send('approve'))}
+        >
+          Approve
+        </Button>
+        <Button
+          icon={Undo2}
+          disabled={!text.trim() || wait}
+          title={text.trim() ? 'Sends the task back with your results' : 'Write what to fix first'}
+          onClick={() => send('changes')}
+        >
+          Request changes
+        </Button>
+      </div>
+      <ErrorLine error={act.error} />
+    </div>
   );
 }
 
