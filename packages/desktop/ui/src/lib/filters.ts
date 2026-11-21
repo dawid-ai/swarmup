@@ -267,6 +267,40 @@ export function setBoardShowsIdeas(
   }
 }
 
+const DONE_LIMIT_KEY = 'swarmup.board-done-limit';
+/** How many cards the board's Done column may show, newest first. */
+export const DONE_LIMITS = ['20', '100', '250', 'all'] as const;
+export type DoneLimit = (typeof DONE_LIMITS)[number];
+
+/** The board's Done column limit on this machine; 20 until someone picks another. */
+export function boardDoneLimit(
+  storage: Pick<Storage, 'getItem'> | undefined = safeStorage(),
+): DoneLimit {
+  try {
+    const v = storage?.getItem(DONE_LIMIT_KEY);
+    return DONE_LIMITS.find((x) => x === v) ?? '20';
+  } catch {
+    return '20';
+  }
+}
+
+/** Remembers the board's Done column limit on this machine. */
+export function setBoardDoneLimit(
+  limit: DoneLimit,
+  storage: Pick<Storage, 'setItem'> | undefined = safeStorage(),
+): void {
+  try {
+    storage?.setItem(DONE_LIMIT_KEY, limit);
+  } catch {
+    // No storage in this window: the limit lasts until the board closes.
+  }
+}
+
+/** A Done column limit as a card count; `all` is no limit. */
+export function doneLimitCount(limit: DoneLimit): number {
+  return limit === 'all' ? Infinity : Number(limit);
+}
+
 // ---- The project the open view is filtered to ----------------------------------------------------
 
 let shownProject: string | undefined;

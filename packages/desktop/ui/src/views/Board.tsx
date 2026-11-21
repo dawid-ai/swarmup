@@ -14,14 +14,18 @@ import {
   Who,
   cx,
 } from '../components';
-import type { Lanes, TaskFilter } from '../lib/filters';
+import type { DoneLimit, Lanes, TaskFilter } from '../lib/filters';
 import {
+  boardDoneLimit,
   boardShowsIdeas,
+  DONE_LIMITS,
+  doneLimitCount,
   IDEAS_CHANGED,
   LANES,
   lanesOf,
   loadViews,
   matchesFilter,
+  setBoardDoneLimit,
   setBoardShowsIdeas,
   setViewProject,
 } from '../lib/filters';
@@ -72,6 +76,8 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
   // is remembered, and creating an idea turns it on so the new idea shows here.
   const [filter, setFilter] = useState<TaskFilter>(() => ({ ideas: boardShowsIdeas() }));
   const [lanes, setLanes] = useState<Lanes>('none');
+  // The Done column shows the newest done tasks up to this many, here and in each lane.
+  const [doneLimit, setDoneLimit] = useState<DoneLimit>(() => boardDoneLimit());
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const [drag, setDrag] = useState<Task | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -169,7 +175,8 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
     );
   };
 
-  const header = (key: string, title: string, count: number, inRow = false) => {
+  /** `count` cards of `total`: the Done column says how many it leaves out. */
+  const header = (key: string, title: string, count: number, total: number, inRow = false) => {
     const info = statusInfo(TARGET[key]!);
     return (
       <div
@@ -182,20 +189,49 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
       >
         <StatusIcon status={TARGET[key]!} />
         <span className="font-display text-sm font-semibold tracking-wide">{title}</span>
+        {key === 'done' && (
+          <select
+            aria-label="Done tasks shown"
+            title="How many done tasks to show, newest first"
+            value={doneLimit}
+            onChange={(e) => {
+              const limit = e.target.value as DoneLimit;
+              setDoneLimit(limit);
+              setBoardDoneLimit(limit);
+            }}
+            className="h-6 rounded-md border border-white/10 bg-ink-950/60 px-1 font-mono text-[11px] text-fg-3 outline-none transition hover:border-white/20 hover:text-fg-2 focus:border-signal/60"
+          >
+            {DONE_LIMITS.map((v) => (
+              <option key={v} value={v} className="bg-ink-850">
+                {v === 'all' ? 'All' : v}
+              </option>
+            ))}
+          </select>
+        )}
         <span
           className="ml-auto rounded-full px-2 py-0.5 font-mono text-[11px]"
+          title={count < total ? `${count} of ${total} shown` : undefined}
           style={{
             color: info.color,
             background: `color-mix(in oklab, ${info.color} 12%, transparent)`,
           }}
         >
-          {count}
+          {count < total ? `${count} of ${total}` : total}
         </span>
       </div>
     );
   };
 
-  const all = columns(shown);
+  const limit = doneLimitCount(doneLimit);
+  // Uncapped, for the header totals; the Done column then shows the newest `limit`.
+  const full = columns(shown, Infinity);
+  const all: Record<string, Task[]> = { ...full, done: full.done!.slice(0, limit) };
+  const laneCols = new Map(
+    lanes === 'none' ? [] : groups.map((g) => [g.key, columns(g.tasks, limit)] as const),
+  );
+  // Each lane caps its own Done cards, so the header counts the cards of every lane.
+  const laneCount = (key: string): number =>
+    [...laneCols.values()].reduce((n, cols) => n + cols[key]!.length, 0);
   return (
     <Section
       title="Board"
@@ -253,7 +289,7 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
                 key={c.key}
                 className="flex min-w-60 flex-1 flex-col rounded-2xl border border-white/7 bg-ink-850/60"
               >
-                {header(c.key, c.title, all[c.key]!.length)}
+                {header(c.key, c.title, all[c.key]!.length, full[c.key]!.length)}
                 {column('all', c.key, all[c.key]!, true)}
               </div>
             ))}
@@ -261,13 +297,15 @@ export function Board({ nav, preset }: { nav: Nav; preset?: string }) {
         ) : (
           <div className="min-h-0 flex-1 overflow-auto px-6 pb-6">
             <div className="sticky top-0 z-10 flex gap-3 bg-ink-900/95 pt-4 backdrop-blur">
-              {COLUMNS.map((c) => header(c.key, c.title, all[c.key]!.length, true))}
+              {COLUMNS.map((c) =>
+                header(c.key, c.title, laneCount(c.key), full[c.key]!.length, true),
+              )}
             </div>
             {groups.length === 0 && (
               <div className="py-10 text-center text-sm text-fg-4">No tasks match.</div>
             )}
             {groups.map((g) => {
-              const cols = columns(g.tasks);
+              const cols = laneCols.get(g.key)!;
               const closed = folded.has(g.key);
               return (
                 <div key={g.key} className="mt-3 rounded-2xl border border-white/7 bg-ink-850/50">
