@@ -6,7 +6,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { initRoot, MERGE_ACTOR, Workspace } from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
 import type { RunRecord } from '../src/index.js';
-import { buildReport, reportText, reportWindow } from '../src/index.js';
+import {
+  buildReport,
+  buildReportAsync,
+  ReportEvents,
+  reportText,
+  reportWindow,
+} from '../src/index.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -264,5 +270,87 @@ describe('reports', () => {
     expect(unblocked(0, 7)).toMatchObject({ given: 1, measured: 1, unblocked: 1 });
     // The window starts after the approval: the merge alone is no answer.
     expect(unblocked(2, 7)).toMatchObject({ given: 0, measured: 0, unblocked: 0, top: [] });
+  });
+});
+
+describe('report events kept between reports', () => {
+  it('builds the same report, reads only changed tasks again, and shows a new event', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'swarmupd-report-'));
+    dirs.push(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'test', human: 'human:dawid' });
+    let now = T0 - 2 * DAY;
+    const h = new Workspace({
+      cwd: repo,
+      env: { SWARMUP_CONFIG: join(repo, 'none.yml') },
+      actor: 'human:dawid',
+      user: {},
+      now: () => now,
+    });
+    // Before the window: one task closed, one left open; neither is read for the window.
+    h.newTask({ title: 'old done', project: 'site' });
+    h.done('1');
+    h.newTask({ title: 'old open', project: 'site' });
+    now = T0 + DAY;
+    h.newTask({ title: 'asks', project: 'site' });
+    h.newTask({ title: 'closes', project: 'api' });
+    h.block('3', 'waiting', { to: 'human:dawid' });
+    h.unblock('3', 'go on');
+    h.done('4');
+    const runs = [run('claude:engineer', 1, 30, 1000), run('codex:qa', -3, 10, 500)];
+    const from = T0;
+    const to = T0 + 7 * DAY;
+
+    const events = new ReportEvents();
+    const first = await buildReportAsync(h, runs, from, to, { events });
+    // The same report as one built without kept events.
+    expect(first).toEqual(buildReport(h, runs, from, to));
+    expect(first.totals).toMatchObject({ opened: 2, closed: 1, runs: 1 });
+    expect(first.answers.given).toBe(1);
+    // Only the tasks with an event in the window were read.
+    expect(events.reads).toBe(2);
+
+    // The same request again reads no task.
+    expect(await buildReportAsync(h, runs, from, to, { events })).toEqual(first);
+    expect(events.reads).toBe(2);
+
+    // A new event in the window shows at once, and only its task is read again.
+    h.done('3');
+    const after = await buildReportAsync(h, runs, from, to, { events });
+    expect(after.totals.closed).toBe(2);
+    expect(after).toEqual(buildReport(h, runs, from, to));
+    expect(events.reads).toBe(3);
+
+    // The events read off the event loop are the ones read in one piece.
+    const root = h.roots[0]!;
+    expect(await root.readEventsAsync('T-0003')).toEqual(root.readEvents('T-0003'));
+  });
+
+  it('drops the tasks read least recently past its limit', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'swarmupd-report-'));
+    dirs.push(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    initRoot(repo, { name: 'test', human: 'human:dawid' });
+    const h = new Workspace({
+      cwd: repo,
+      env: { SWARMUP_CONFIG: join(repo, 'none.yml') },
+      actor: 'human:dawid',
+      user: {},
+      now: () => T0 + DAY,
+    });
+    for (const title of ['one', 'two', 'three']) {
+      h.newTask({ title });
+      h.comment(String(h.list({ all: true }).length), 'a note');
+    }
+    const events = new ReportEvents(2);
+    const [a, b, c] = h.list({ all: true }).sort((x, y) => x.meta.id.localeCompare(y.meta.id));
+    for (const t of [a!, b!, c!]) events.get(h, t);
+    expect(events.reads).toBe(3);
+    // Room for two events: the third task pushed out the first.
+    events.get(h, c!);
+    events.get(h, b!);
+    expect(events.reads).toBe(3);
+    events.get(h, a!);
+    expect(events.reads).toBe(4);
   });
 });

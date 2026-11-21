@@ -1,0 +1,1 @@
+- Reports open faster: a weekly report reads only the tasks that changed in its window, and opening the same report again reuses what it read. The app no longer freezes while a report builds, and Reports shows that it is building the report until it is ready.

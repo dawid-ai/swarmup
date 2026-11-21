@@ -246,3 +246,21 @@ describe('timeline route', () => {
     expect((await call('/api/report?days=7&root=nope')).status).toBe(400);
   });
 });
+
+describe('report route', () => {
+  it('answers a repeated report from kept events and shows a new event at once', async () => {
+    const { call, env, repo } = await setup();
+    const h = new Workspace({ cwd: repo, env, actor: 'human:dawid' });
+    h.newTask({ title: 'Engine' });
+    h.newTask({ title: 'Docs' });
+    h.done('T-1', 'shipped');
+    type Totals = { totals: { closed: number; opened: number } };
+    const first = (await call('/api/report?days=7')).data as unknown as Totals;
+    expect(first.totals).toMatchObject({ closed: 1, opened: 2 });
+    const again = (await call('/api/report?days=7')).data as unknown as Totals;
+    expect(again.totals).toEqual(first.totals);
+    h.done('T-2', 'written');
+    const after = (await call('/api/report?days=7')).data as unknown as Totals;
+    expect(after.totals).toMatchObject({ closed: 2, opened: 2 });
+  });
+});

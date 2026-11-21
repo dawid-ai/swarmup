@@ -1,4 +1,4 @@
-import { BarChart3, Vote } from 'lucide-react';
+import { BarChart3, Loader2, Vote } from 'lucide-react';
 import { useState } from 'react';
 import type { Nav } from '../App';
 import { q, useData } from '../api';
@@ -17,6 +17,28 @@ const RANGES: Array<[number, string]> = [
   [90, '90 days'],
 ];
 
+const STAT_SKELETONS = ['Closed', 'Opened', 'Runs', 'Tokens', 'Decisions'];
+
+/** The busy state while swarmupd builds the report: a long window can take a few seconds. */
+function Building() {
+  return (
+    <div role="status" aria-busy="true" data-testid="report-building" className="animate-fade">
+      <div className="flex items-center gap-2 text-sm text-fg-3">
+        <Loader2 size={15} className="animate-spin text-signal" />
+        Building the report…
+      </div>
+      <div className="mt-3 flex flex-wrap gap-3" aria-hidden="true">
+        {STAT_SKELETONS.map((label) => (
+          <div key={label} className="panel min-w-32 px-3.5 py-2.5">
+            <div className="label-caps">{label}</div>
+            <div className="mt-2 h-6 w-12 animate-pulse rounded bg-white/8" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Progress per project and usage per provider and agent over a window. */
 export function Reports({ nav }: { nav: Nav }) {
   const [days, setDays] = useState(7);
@@ -28,8 +50,10 @@ export function Reports({ nav }: { nav: Nav }) {
       ? `/api/report?from=${q(from)}${to ? `&to=${q(to)}` : ''}`
       : null
     : `/api/report?days=${days}`;
+  // A new window clears the report, and an answer for an earlier window is dropped (useData).
   const { data, error } = useData<Report>(path);
   const r = data;
+  const loading = path !== null && !r && !error;
   const maxMin = Math.max(1, ...(r?.providers ?? []).map((p) => p.minutes));
   return (
     <Section
@@ -88,6 +112,7 @@ export function Reports({ nav }: { nav: Nav }) {
           </div>
         )}
         <ErrorLine error={error} />
+        {loading && <Building />}
         {r && (
           <div className="flex flex-wrap gap-3">
             <Stat label="Closed" value={r.totals.closed} tone="#3ddc97" />

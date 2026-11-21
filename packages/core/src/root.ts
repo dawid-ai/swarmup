@@ -8,6 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import type { RootConfig } from './config.js';
 import { ID_BLOCK_SIZE, isMirrorDir, readRootConfig } from './config.js';
@@ -85,6 +86,15 @@ function fileStamp(path: string): string {
   } catch {
     return '';
   }
+}
+
+/** Event files {@link Root.readEventsAsync} reads at once. */
+const EVENT_BATCH = 64;
+
+/** One event file: the id is the file name's ULID. */
+function eventOf(name: string, text: string): OpsEvent {
+  const doc = parseDoc<Omit<OpsEvent, 'id' | 'body'>>(text);
+  return { ...doc.data, id: name.slice(0, 26), body: doc.body } as OpsEvent;
 }
 
 /** Freezes a cached state all the way down: every read shares it, so no caller may change it. */
@@ -319,8 +329,30 @@ export class Root {
     const events: OpsEvent[] = [];
     for (const name of readdirSync(dir)) {
       if (!name.endsWith('.md')) continue;
-      const doc = parseDoc<Omit<OpsEvent, 'id' | 'body'>>(readFileSync(join(dir, name), 'utf8'));
-      events.push({ ...doc.data, id: name.slice(0, 26), body: doc.body } as OpsEvent);
+      events.push(eventOf(name, readFileSync(join(dir, name), 'utf8')));
+    }
+    return events.sort((a, b) => (a.id < b.id ? -1 : 1));
+  }
+
+  /**
+   * {@link readEvents} without holding the event loop for the whole task: the files are read in
+   * batches off the main thread, and only their parsing runs on it. swarmupd's API reads this way
+   * for work that reads many tasks, where a task with thousands of events took half a second.
+   */
+  async readEventsAsync(id: string): Promise<OpsEvent[]> {
+    const dir = join(this.taskDir(id), 'events');
+    let names: string[];
+    try {
+      names = (await readdir(dir)).filter((name) => name.endsWith('.md'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const events: OpsEvent[] = [];
+    for (let i = 0; i < names.length; i += EVENT_BATCH) {
+      const batch = names.slice(i, i + EVENT_BATCH);
+      const texts = await Promise.all(batch.map((name) => readFile(join(dir, name), 'utf8')));
+      texts.forEach((text, j) => events.push(eventOf(batch[j]!, text)));
     }
     return events.sort((a, b) => (a.id < b.id ? -1 : 1));
   }
