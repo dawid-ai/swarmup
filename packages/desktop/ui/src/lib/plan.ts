@@ -2,7 +2,7 @@
 // plan, and the texts the inbox, the task panel and the board show. Pure functions, so they are
 // tested without a browser. The plan's rules (keys, owners, reviewers, cycles, the 25-item limit)
 // live in core alone: the app sends the rows and shows what swarmupd refuses.
-import type { OpsEvent, PlanProgress, PlanRow, Task } from '../types';
+import type { CriterionSpec, OpsEvent, PlanProgress, PlanRow, Task } from '../types';
 
 /** Minutes as a plan's estimate sum reads: `45 min`, `6 h`, `1 h 30 min`. Same form as core's. */
 export function minutesText(minutes: number): string {
@@ -45,6 +45,8 @@ export interface EditRow {
   /** Kept as proposed: edit mode has no field for them. */
   body?: string;
   for?: string;
+  /** A typed `done_when` criterion, kept as proposed while `done_when` stays empty. */
+  typedDoneWhen?: CriterionSpec;
   /**
    * The task the item already has. Its title, `done_when`, reviewer, type and priority live in
    * the task's file and never change in place, so those fields are read-only; **Replace item**
@@ -64,7 +66,8 @@ export function editRows(items: readonly PlanRow[]): EditRow[] {
     owner: i.owner,
     estimate: i.estimate,
     after: i.after.join(', '),
-    done_when: i.done_when ?? '',
+    done_when: typeof i.done_when === 'string' ? i.done_when : '',
+    ...(i.done_when && typeof i.done_when === 'object' ? { typedDoneWhen: i.done_when } : {}),
     review: i.review ?? '',
     type: i.type ?? '',
     priority: i.priority ?? '',
@@ -72,6 +75,21 @@ export function editRows(items: readonly PlanRow[]): EditRow[] {
     ...(i.for ? { for: i.for } : {}),
     ...(i.task ? { task: i.task } : {}),
   }));
+}
+
+/** A `done_when` entry in one line: the text, or a typed criterion's kind and what it checks. */
+export function doneWhenText(v: string | CriterionSpec | undefined): string {
+  if (!v) return '';
+  return typeof v === 'string' ? v : `${v.kind}: ${criterionText(v)}`;
+}
+
+/** What a typed criterion checks: its text, command, question, rubric or built-in check. */
+export function criterionText(v: CriterionSpec): string {
+  if (v.text) return v.text;
+  if (v.check) return `${v.check} ${JSON.stringify(v.args ?? {})}`;
+  return (
+    v.run ?? v.ask ?? v.rubric ?? (v.kind === 'map' ? 'the project map covers the change' : '')
+  );
 }
 
 /** The keys an `after` field names. */
@@ -86,7 +104,7 @@ export interface PlanItemOut {
   owner: string;
   estimate: string;
   after?: string[];
-  done_when?: string;
+  done_when?: string | CriterionSpec;
   review?: string;
   type?: string;
   priority?: string;
@@ -113,6 +131,7 @@ export function planOf(
       const v = opt(r[f]);
       if (v) item[f] = v;
     }
+    if (!item.done_when && r.typedDoneWhen) item.done_when = r.typedDoneWhen;
     return item;
   });
   return { ...(notes?.trim() ? { notes: notes.trim() } : {}), items };

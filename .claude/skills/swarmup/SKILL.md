@@ -225,6 +225,11 @@ EOF
   `credentials`, `client`, `delete-data` or `irreversible` goes to the human on its own.
 - As a reviewer: `swarmup show ID`, check the work, then `swarmup verdict ID approve "why"` (closes it) or
   `swarmup verdict ID changes "what to fix"` (back to the owner).
+- Criteria have ids and kinds (`swarmup show ID` prints them). As the author, name the evidence
+  for each id in the review request. As the reviewer, give a result per criterion with the
+  verdict: `--criteria-file -` with YAML such as `c1: {result: fail, note: "..."}`, or
+  `--pass ID` and `--fail ID:"note"`. Judge `prose`, `rubric` and `human` criteria by reading the
+  work; leave `command`, `check` and `map` criteria to the merge. An approval gives no `fail`.
 
 ## Importing old decisions
 
