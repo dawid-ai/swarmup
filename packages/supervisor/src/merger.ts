@@ -559,6 +559,7 @@ export class Merger {
       author,
       human: root.config.human,
       root: root.name,
+      store: root.dir,
       review: review.body,
       named: !!reviewSourcesOf(review).named,
     };
@@ -823,6 +824,11 @@ export class Merger {
         ? ((await repo.commit(`refs/heads/${src.branch}`)) ?? (await repo.commit(src.branch)))
         : null;
     if (!source) {
+      const store = src.commit ? await repo.storeWith(src.commit, job.store) : null;
+      if (store) {
+        this.mergeStoreOnly(ref, top, [src.commit!]);
+        return;
+      }
       const missing = src.commit ? `commit ${src.commit}` : `branch ${src.branch}`;
       this.mergeNote(
         ref,
@@ -900,9 +906,20 @@ export class Merger {
         if (late === 'again') return 'again';
         this.mergeLooks.delete(ref);
         if (late) return 'again';
-        const lacks = await this.unmergedNamed(repo, job, approved, onto);
+        // A named commit of a task store apart from the code is store-only work (AO-0377).
+        const named = await this.unmergedNamed(repo, job, approved, onto);
+        const inStore = new Set<string>();
+        for (const sha of named) {
+          const store = await repo.storeWith(sha, job.store);
+          if (store) inStore.add(sha);
+        }
+        const lacks = named.filter((sha) => !inStore.has(sha));
         if (lacks.length > 0) {
           this.mergeLacks(ref, job, lacks, onto);
+          return;
+        }
+        if (inStore.size > 0) {
+          this.mergeStoreOnly(ref, top, inStore);
           return;
         }
         this.mergeRecord(
@@ -1835,6 +1852,20 @@ export class Merger {
   mergeNote(ref: string, text: string, to?: string): void {
     this.attemptEnd(ref, 'note', firstLines(text));
     this.sup.safe(() => this.sup.ws(MERGE_ACTOR).comment(ref, text, to));
+  }
+
+  /**
+   * Records that the approved work is task store commits, so there is no code merge: `swarmup
+   * sync` shares them. Tasks blocked on `ref` go on (AO-0377).
+   */
+  private mergeStoreOnly(ref: string, top: string, commits: Iterable<string>): void {
+    const names = [...commits].map((c) => `\`${c}\``);
+    const one = names.length === 1;
+    this.mergeNothing(
+      ref,
+      `Nothing to merge into \`${top}\`: the approved work ${names.join(', ')} ` +
+        `${one ? 'is a commit' : 'are commits'} of the task store for this task, which \`swarmup sync\` shares.`,
+    );
   }
 
   /** A comment from swarmupd that it has nothing to merge for `ref`; tasks blocked on it go on. */

@@ -53,7 +53,7 @@ describe('what runs leave in the checkout', () => {
     // Ignored output is no change of the checkout.
     mkdirSync(join(repo, 'dist'));
     writeFileSync(join(repo, 'dist', 'out.js'), 'built\n');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
 
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
@@ -96,7 +96,7 @@ describe('what runs leave in the checkout', () => {
     as('human:dawid').saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'qa role');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1')).toMatchObject({
       status: 'needs-review',
@@ -111,7 +111,7 @@ describe('what runs leave in the checkout', () => {
     h.saveRole({ id: 'claude:qa', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'release task');
-    const run = sup.launch({ agent: 'fake:engineer', task: '2' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '2' });
     await ended(sup, run.id);
     expect(h.view('2')).toMatchObject({ status: 'needs-review', reviewer: 'human:dawid' });
   });
@@ -123,14 +123,14 @@ describe('what runs leave in the checkout', () => {
     h.saveRole({ id: 'claude:reviewer', status: 'active' }, { create: true });
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'roles');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(h.view('1')).toMatchObject({ status: 'needs-review', reviewer: 'claude:reviewer' });
   });
 
   it('tells the reviewer where the files went when the run asked for review itself', async () => {
     const { sup, as } = codeSetup('edit-review');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(as('human:dawid').view('1').status).toBe('needs-review');
     const last = as('human:dawid').showEvents('1').events.at(-1)!;
@@ -141,7 +141,7 @@ describe('what runs leave in the checkout', () => {
 
   it('leaves runs that commit themselves alone', async () => {
     const { repo, sup, as, start } = codeSetup('commit');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
     expect(git(repo, 'rev-parse', 'HEAD^')).toBe(start);
@@ -175,11 +175,11 @@ describe('what runs leave in the checkout', () => {
     expect(sup.runs({ live: true })).toHaveLength(0);
     expect(as('human:dawid').view('1').status).toBe('todo');
     // Roles that only read start anyway.
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     // Once the checkout is clean, the writer starts.
     git(repo, 'checkout', '--', 'tracked.txt');
     rmSync(join(repo, 'notes.txt'));
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.runs({ live: true })).toHaveLength(2);
   });
 
@@ -199,7 +199,7 @@ describe('what runs leave in the checkout', () => {
         .filter((i) => i.kind === 'mention' && i.from === 'opsd:checkout');
     // A live run in the checkout may be what made the changes: no notice while it runs.
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
-    const qa = sup.launch({ agent: 'fake:qa' });
+    const qa = await sup.launchFresh({ agent: 'fake:qa' });
     await sup.tick();
     expect(sup.runs({ live: true }).map((r) => r.agent)).toEqual(['fake:qa']);
     expect(notices()).toHaveLength(0);
@@ -239,7 +239,7 @@ describe('what runs leave in the checkout', () => {
 
   it('commits what a read-only run left when it started on a clean checkout (AO-0136)', async () => {
     const { repo, sup, start, branch } = codeSetup('edit');
-    const run = sup.launch({ agent: 'fake:qa' });
+    const run = await sup.launchFresh({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBe(start);
     const name = `fake/run-${run.id.toLowerCase()}`;
@@ -262,7 +262,7 @@ describe('what runs leave in the checkout', () => {
     git(s.repo, 'remote', 'add', 'origin', remote);
     git(s.repo, 'push', '-q', '-u', 'origin', 'HEAD');
     const sup = s.sup;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     const name = `fake/t-0001-${run.id.toLowerCase()}`;
     const synced = new Promise<void>((res) => sup.on('sync', () => res()));
     const spy = spySyncProcs();
@@ -332,10 +332,64 @@ describe('what runs leave in the checkout', () => {
     await ended(sup, next.id);
   });
 
+  it('starts the first API run in a checkout it has not seen without git on the event loop (AO-0398)', async () => {
+    const s = setup({ mode: 'edit', env: ID });
+    writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
+    git(s.repo, 'add', '-A');
+    git(s.repo, 'commit', '-qm', 'start');
+    const start = git(s.repo, 'rev-parse', 'HEAD');
+    const other = temp();
+    git(other, 'init', '-q');
+    git(other, 'commit', '-q', '--allow-empty', '-m', 'other');
+    // No tick or wait plan ran: swarmupd knows neither checkout's top nor its state.
+    const spy = spySyncProcs();
+    let run: RunRecord;
+    let elsewhere: RunRecord;
+    try {
+      run = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
+      elsewhere = await s.sup.launchFresh({ agent: 'fake:qa', cwd: other });
+    } finally {
+      spy.restore();
+    }
+    expect(run).toMatchObject({ task: 'T-0001', base: start });
+    expect(elsewhere.cwd).toBe(other);
+    expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
+    await ended(s.sup, run.id);
+    await ended(s.sup, elsewhere.id);
+  });
+
+  it('starts an API run without git on the event loop after the checkout interest expired (AO-0402)', async () => {
+    // Event ids come from the real clock, so the test clock runs with it, moved ahead by hand.
+    let ahead = 0;
+    const s = setup({ mode: 'edit', env: ID, now: () => Date.now() + ahead });
+    writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
+    s.as('human:dawid').newTask({ title: 'Next', owner: 'fake:engineer' });
+    git(s.repo, 'add', '-A');
+    git(s.repo, 'commit', '-qm', 'start');
+    const start = git(s.repo, 'rev-parse', 'HEAD');
+    // The first launch marks the checkout wanted at this clock time.
+    const first = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
+    expect((await ended(s.sup, first.id)).wrap_up).toBe('done');
+    // Past the 10-minute interest window, the next readCheckouts drops an interest not refreshed.
+    ahead += 11 * 60_000;
+    const spy = spySyncProcs();
+    let next: RunRecord;
+    try {
+      next = await s.sup.launchFresh({ agent: 'fake:engineer', task: 'T-0002' });
+    } finally {
+      spy.restore();
+    }
+    expect(next).toMatchObject({ task: 'T-0002', base: start });
+    expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
+    await ended(s.sup, next.id);
+  });
+
   it('never commits changes a read-only run found in the checkout (AO-0136)', async () => {
     const { repo, sup } = codeSetup('edit');
     writeFileSync(join(repo, 'notes.txt'), 'a person at work\n');
-    const run = sup.launch({ agent: 'fake:qa' });
+    const run = await sup.launchFresh({ agent: 'fake:qa' });
     const rec = await ended(sup, run.id);
     expect(rec.base).toBeUndefined();
     expect(sup.run(run.id)?.leftovers).toBeUndefined();
@@ -359,7 +413,7 @@ describe('what runs leave in the checkout', () => {
       env: { CODEX_CALL: out },
       opsd: { runtimes: { codex: { command: process.execPath, args: [recorder] } } },
     });
-    const run = sup.launch({ agent: 'codex:qa' });
+    const run = await sup.launchFresh({ agent: 'codex:qa' });
     await ended(sup, run.id);
     const call = JSON.parse(text(out)) as { args: string[]; prompt: string };
     const store = join(repo, '.swarmup');
@@ -373,7 +427,7 @@ describe('what runs leave in the checkout', () => {
     expect(call.prompt).toContain('You can also write your scratch folder');
     expect(call.prompt).toContain('swarmupd commits and pushes the task store when this run ends');
     // A writing Codex run still works in its checkout.
-    const writer = sup.launch({ agent: 'codex:engineer' });
+    const writer = await sup.launchFresh({ agent: 'codex:engineer' });
     await ended(sup, writer.id);
     const wcall = JSON.parse(text(out)) as { args: string[]; prompt: string };
     expect(samePath(wcall.args[wcall.args.indexOf('-C') + 1]!, repo)).toBe(true);
@@ -403,7 +457,7 @@ describe('what runs leave in the checkout', () => {
     git(repo, 'commit', '-q', '--allow-empty', '-m', 'start');
     const wt = join(temp(), 'wt');
     git(repo, 'worktree', 'add', '-q', '-b', 'side', wt);
-    const run = sup.launch({ agent: 'codex:engineer', cwd: wt });
+    const run = await sup.launchFresh({ agent: 'codex:engineer', cwd: wt });
     await ended(sup, run.id);
     const call = JSON.parse(text(out)) as { args: string[] };
     const added = call.args.filter((_, i) => call.args[i - 1] === '--add-dir');
@@ -503,14 +557,17 @@ describe('what runs leave in the checkout', () => {
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
     as('human:dawid').newTask({ title: 'b', owner: 'fake:planner' });
     // A chat turn of a role that writes starts beside a writing run in the same checkout...
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.blocker('fake:planner', 'test', { cwd: repo })).toMatch(
       /one writing run per checkout/,
     );
     expect(sup.blocker('fake:planner', 'test', { cwd: repo, chat: true })).toBeNull();
     // ...and on a checkout with changes, and gets no start commit there.
     writeFileSync(join(repo, 'tracked.txt'), 'a person at work\n');
-    const turn = sup.launch({ agent: 'fake:planner', chat: { session: 's1', resume: false } });
+    const turn = await sup.launchFresh({
+      agent: 'fake:planner',
+      chat: { session: 's1', resume: false },
+    });
     expect(turn.base).toBeUndefined();
     // A live chat turn holds no writing run in its checkout.
     git(repo, 'checkout', '--', 'tracked.txt');
@@ -714,7 +771,7 @@ describe('what runs leave in the checkout', () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'start');
     as('human:dawid').newTask({ title: 'a', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     const top = git(repo, 'rev-parse', '--show-toplevel');
     let prompt = readFileSync(promptFile, 'utf8');
@@ -736,7 +793,7 @@ describe('what runs leave in the checkout', () => {
     expect(prompt).toContain(`- ${top} holds the task store: keep \`v2\` checked out`);
 
     // A custom prompt is used as given, with the rule appended.
-    const custom = sup.launch({ agent: 'fake:engineer', prompt: 'Look into X.\n' });
+    const custom = await sup.launchFresh({ agent: 'fake:engineer', prompt: 'Look into X.\n' });
     await ended(sup, custom.id);
     prompt = readFileSync(promptFile, 'utf8');
     expect(prompt.startsWith('Look into X.\n\nRule for this folder:\n')).toBe(true);
@@ -747,14 +804,14 @@ describe('what runs leave in the checkout', () => {
     const wt = join(temp(), 'wt');
     git(repo, 'worktree', 'add', '-q', wt, '-b', 'code');
     as('human:dawid').newTask({ title: 'b', owner: 'fake:engineer' });
-    const inWorktree = sup.launch({ agent: 'fake:engineer', task: '2', cwd: wt });
+    const inWorktree = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: wt });
     await ended(sup, inWorktree.id);
     expect(readFileSync(promptFile, 'utf8')).not.toContain('holds the task store');
   });
 
   it('leaves the changes alone when HEAD moved during the run', async () => {
     const { repo, sup, as, start } = codeSetup('edit-move');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(run.base).toBe(start);
     await ended(sup, run.id);
     expect(git(repo, 'branch', '--list', 'fake/*')).toBe('');
@@ -768,7 +825,7 @@ describe('what runs leave in the checkout', () => {
 
   it('tells the reviewer when a run asked for review with changes swarmupd could not commit (AO-0300)', async () => {
     const { repo, sup, as } = codeSetup('edit-move-review');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(text(join(repo, 'tracked.txt'))).toBe('changed after the move\n');
     expect(as('human:dawid').view('1').status).toBe('needs-review');
@@ -820,7 +877,7 @@ describe('what runs leave in the checkout', () => {
     };
     const { repo, sup, start } = codeSetup('edit-wait', { FAKE_GO: go }, lister);
     repoDir = repo;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     wrapStep = () => sup.store.get(run.id)?.wrap_up;
     await until(() => existsSync(join(repo, 'src', 'new', 'added.txt')));
     await sup.trackProcs();
@@ -843,9 +900,13 @@ describe('what runs leave in the checkout', () => {
       FAKE_GO: join(temp(), 'never'),
       FAKE_HELPER_GO: 'helper.txt',
     });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await until(() => as('human:dawid').view('1').status === 'in-progress');
-    const helper = sup.launch({ agent: 'fake:engineer', parent: run.id, prompt: 'help' });
+    const helper = await sup.launchFresh({
+      agent: 'fake:engineer',
+      parent: run.id,
+      prompt: 'help',
+    });
     // Helpers write until they are killed; the parent ends first. The file exists before its
     // first line is in it, so wait for the content the commit must hold (AO-0239).
     await until(() => !!statSync(join(repo, 'helper.txt'), { throwIfNoEntry: false })?.size);
@@ -908,10 +969,14 @@ describe('what runs leave in the checkout', () => {
     const s = codeSetup('edit-wait', { FAKE_GO: go, FAKE_HELPER_GO: 'helper.txt' }, lister);
     const { repo, sup, as } = s;
     repoDir = repo;
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     parentId = run.id;
     await until(() => as('human:dawid').view('1').status === 'in-progress');
-    const helper = sup.launch({ agent: 'fake:engineer', parent: run.id, prompt: 'help' });
+    const helper = await sup.launchFresh({
+      agent: 'fake:engineer',
+      parent: run.id,
+      prompt: 'help',
+    });
     await until(() => existsSync(join(repo, 'helper.txt')));
     await sup.trackProcs();
     Object.assign(late, { alive: true, ppid: sup.run(helper.id).pid, start: Date.now() });

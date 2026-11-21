@@ -39,25 +39,26 @@ describe('run limits', () => {
     h.newTask({ title: 'site work', owner: 'fake:engineer', project: 'site' });
     h.newTask({ title: 'ops work', owner: 'fake:engineer', project: 'ops' });
     h.newTask({ title: 'more site work', owner: 'fake:engineer', project: 'site' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     // Another project's engineer works in another checkout: one writing run per checkout.
-    const b = sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    const b = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     expect(a.project).toBe('site');
     expect(b.project).toBe('ops');
     expect(() => sup.launch({ agent: 'fake:engineer', task: '3' })).toThrow(
       /1 engineer run\(s\) live on site; per_project is 1/,
     );
-    for (let i = 0; i < 3; i++) sup.launch({ agent: 'fake:qa' });
+    for (let i = 0; i < 3; i++) await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(
       /3 qa run\(s\) live on test; per_project is 3/,
     );
     expect(sup.runs({ live: true })).toHaveLength(5);
   });
 
-  it('lists live runs newest first without reading every run record', () => {
+  it('lists live runs newest first without reading every run record', async () => {
     // AO-0164: GET /api/health and /api/runs?live read all run files, ~85 ms with 1,500 runs.
     const { sup } = setup({ mode: 'hang' });
-    const ids = [0, 1, 2].map(() => sup.launch({ agent: 'fake:qa' }).id);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) ids.push((await sup.launchFresh({ agent: 'fake:qa' })).id);
     const ended = {
       ...sup.run(ids[0]!),
       id: '00000000000000000000000000',
@@ -79,7 +80,7 @@ describe('run limits', () => {
     expect(sup.runs().map((r) => r.id)).toContain('00000000000000000000000000');
   });
 
-  it('counts every provider against the role limit', () => {
+  it('counts every provider against the role limit', async () => {
     const { sup, as } = setup({
       mode: 'hang',
       opsd: {
@@ -90,7 +91,7 @@ describe('run limits', () => {
     });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer', project: 'site' });
     as('human:dawid').newTask({ title: 'y', project: 'site' });
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(() => sup.launch({ agent: 'other:engineer', task: '2' })).toThrow(
       /1 engineer run\(s\) live on site/,
     );
@@ -100,7 +101,7 @@ describe('run limits', () => {
     const { sup, as, repo } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     as('fake:engineer').claim('1');
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(new Root(join(repo, '.swarmup')).claimRecord('T-0001').run).toBe(run.id);
     const asRun = (id: string) =>
       new Workspace({
@@ -117,7 +118,7 @@ describe('run limits', () => {
   it('never renews or releases a claim that another run of the agent took over', async () => {
     const { sup, as, repo } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     // The claim now belongs to run B, as after A lost it and B claimed again.
     new Workspace({
       cwd: repo,
@@ -137,9 +138,9 @@ describe('run limits', () => {
     ).not.toContain('release');
   });
 
-  it('keeps to max_runs on this PC', () => {
+  it('keeps to max_runs on this PC', async () => {
     const { sup } = setup({ mode: 'hang', opsd: { max_runs: 1 } });
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:engineer' })).toThrow(/1 runs live; max_runs is 1/);
   });
 
@@ -147,8 +148,8 @@ describe('run limits', () => {
     const { sup, as } = setup({ mode: 'hang' });
     as('human:dawid').newTask({ title: 'site', owner: 'fake:engineer', project: 'site' });
     as('human:dawid').newTask({ title: 'ops', owner: 'fake:engineer', project: 'ops' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
-    const b = sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
+    const b = await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     const runA = as('fake:engineer');
     const asRun = (run: string) =>
       new Workspace({
@@ -277,7 +278,7 @@ describe('run limits', () => {
     expect(outsideSession(later, { token: 'T2' })?.at).toBe(Date.parse(at(9)));
   });
 
-  it('keeps to the PC, provider and role settings', () => {
+  it('keeps to the PC, provider and role settings', async () => {
     let free = 64 * 2 ** 30;
     const { sup } = setup({
       mode: 'hang',
@@ -294,8 +295,8 @@ describe('run limits', () => {
         },
       },
     });
-    sup.launch({ agent: 'fake:qa' });
-    sup.launch({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:qa' });
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(/2 fake runs live; max_live is 2/);
     expect(sup.blocker('fake:qa', 'test')).toMatch(/max_live is 2/);
     free = 2 * 2 ** 30;
@@ -312,7 +313,7 @@ describe('run limits', () => {
       env: { FAKE_RESET: String(reset) },
       now: () => now,
     });
-    const r = sup.launch({ agent: 'fake:qa' });
+    const r = await sup.launchFresh({ agent: 'fake:qa' });
     await ended(sup, r.id);
     expect(() => sup.launch({ agent: 'fake:qa' })).toThrow(
       /fake usage at 95% of the seven_day window \(pause at 90%\)/,
@@ -398,7 +399,7 @@ describe('run limits', () => {
     titles();
     expect(plans).toHaveBeenCalledTimes(3);
     // A run started outside a tick plans again: its task no longer waits.
-    sup.launch({ agent: 'fake:engineer', task: '1' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(sup.waits().map((w) => [w.title, w.reason])).toEqual([
       ['second', 'fake:engineer: 1 engineer run(s) live on test; per_project is 1'],
     ]);
@@ -453,7 +454,7 @@ describe('run limits', () => {
     h.newTask({ title: 'labeled', owner: 'fake:engineer', project: 'v2' });
     h.newTask({ title: 'unlabeled', owner: 'fake:engineer' });
     h.newTask({ title: 'docs', owner: 'fake:writer', project: 'docs' });
-    const a = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const a = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     expect(a.project).toBe('v2');
     // Another project in the same checkout, by the same role or another role that writes.
     expect(() => sup.launch({ agent: 'fake:engineer', task: '2' })).toThrow(
@@ -468,8 +469,8 @@ describe('run limits', () => {
       /one writing run per checkout/,
     );
     // Roles that only read share it; a run in another checkout starts.
-    sup.launch({ agent: 'fake:qa' });
-    sup.launch({ agent: 'fake:engineer', task: '2', cwd: temp() });
+    await sup.launchFresh({ agent: 'fake:qa' });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '2', cwd: temp() });
     expect(sup.runs({ live: true })).toHaveLength(3);
   });
 
@@ -486,7 +487,7 @@ describe('run limits', () => {
     h.newTask({ title: 'core', owner: 'fake:engineer', project: 'v2' });
     h.newTask({ title: 'cli', owner: 'fake:engineer', project: 'other' });
     h.newTask({ title: 'docs', owner: 'fake:writer', project: 'docs' });
-    sup.launch({ agent: 'fake:engineer', task: '1', cwd: sub('core') });
+    await sup.launchFresh({ agent: 'fake:engineer', task: '1', cwd: sub('core') });
     // An explicit launch folder in another subfolder of the same checkout.
     expect(() => sup.launch({ agent: 'fake:engineer', task: '2', cwd: sub('cli') })).toThrow(
       /one writing run per checkout/,

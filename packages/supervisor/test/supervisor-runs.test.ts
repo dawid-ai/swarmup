@@ -18,7 +18,7 @@ describe('runs', () => {
   it('claims, runs the agent to the end and records the run on the task', async () => {
     const { sup, as } = setup();
     as('human:dawid').newTask({ title: 'fake work', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: 'T-0001' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: 'T-0001' });
     expect(as('human:dawid').view('1').claimedBy).toBe('fake:engineer');
     expect(() => sup.launch({ agent: 'fake:engineer' })).toThrow(
       /1 engineer run\(s\) live on test; per_project is 1/,
@@ -51,7 +51,7 @@ describe('runs', () => {
       title: 'Taskkill refused leaves the process tree alive',
       body: 'Use a job object.',
     });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
     await ended(sup, run.id);
     expect(readFileSync(promptFile, 'utf8')).toContain(
       '- `windows/taskkill-refused-leaves-the-process-tree-alive`: Taskkill refused leaves the ' +
@@ -81,7 +81,7 @@ describe('runs', () => {
     }).meta.id;
     for (let i = 1; i <= 31; i++) human.recordDecision({ text: `rule ${i} of r`, project: 'r' });
     const promptOf = async (req: { task?: string; extra?: string }): Promise<string> => {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', ...req }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', ...req })).id);
       return readFileSync(promptFile, 'utf8');
     };
 
@@ -115,7 +115,7 @@ describe('runs', () => {
   it('frees the task when the run ends without finishing', async () => {
     const { sup, as } = setup({ mode: 'crash' });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-    const r = await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+    const r = await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     expect(r).toMatchObject({ exit: 3, reason: 'exit' });
     const { events } = as('human:dawid').showEvents('1');
     expect(events.at(-1)).toMatchObject({ type: 'release', actor: 'fake:engineer' });
@@ -166,12 +166,13 @@ describe('runs', () => {
       ['fake:engineer', opus.id],
       ['fake:qa', fable.id],
     ] as const) {
-      for (let i = 0; i < 2; i++) await ended(sup, sup.launch({ agent, task }).id);
+      for (let i = 0; i < 2; i++) await ended(sup, (await sup.launchFresh({ agent, task })).id);
     }
     // The third runs end while the Fable window is past pause_at.
-    const third = [opus.id, fable.id].map((task, i) =>
-      sup.launch({ agent: i === 0 ? 'fake:engineer' : 'fake:qa', task }),
-    );
+    const third = [
+      await sup.launchFresh({ agent: 'fake:engineer', task: opus.id }),
+      await sup.launchFresh({ agent: 'fake:qa', task: fable.id }),
+    ];
     fableWindowFull(sup);
     for (const r of third) await ended(sup, r.id);
     // The Opus run is not paused: its task is stuck and stopped. The Fable run is paused: its
@@ -194,7 +195,7 @@ describe('runs', () => {
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     // The first two runs free the task, and say what their logs say.
     for (let i = 0; i < 2; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
       expect(as('human:dawid').view('1').status).toBe('todo');
     }
     const release = as('human:dawid').showEvents('1').events.at(-1)!;
@@ -206,7 +207,10 @@ describe('runs', () => {
     expect(release.body).toContain('[line removed: it looks like a GitHub token]');
     expect(release.body).not.toContain('ghp_');
     // The third is stopped: blocked for the PM of another provider, not freed for a fourth.
-    const third = await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+    const third = await ended(
+      sup,
+      (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id,
+    );
     const v = as('human:dawid').view('1');
     expect(v.status).toBe('blocked');
     expect(v.waitingOn).toBe('claude:pm');
@@ -237,7 +241,7 @@ describe('runs', () => {
     roleFiles(repo, ['claude:pm', 'fake:pm', 'fake:engineer']);
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     for (let i = 0; i < 3; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     }
     const v = as('human:dawid').view('1');
     expect(v.status).toBe('blocked');
@@ -255,7 +259,7 @@ describe('runs', () => {
     const { sup, as } = setup({ mode: 'sandbox-fail', opsd: { stuck_runs: 0 } });
     as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
     for (let i = 0; i < 3; i++) {
-      await ended(sup, sup.launch({ agent: 'fake:engineer', task: '1' }).id);
+      await ended(sup, (await sup.launchFresh({ agent: 'fake:engineer', task: '1' })).id);
     }
     expect(as('human:dawid').view('1').status).toBe('todo');
   });
@@ -519,8 +523,8 @@ describe('runs', () => {
     const { sup, as } = setup({ mode: 'hang', now: () => now });
     as('human:dawid').newTask({ title: 'slow', owner: 'fake:engineer' });
     as('human:dawid').newTask({ title: 'hungry', owner: 'fake:qa' });
-    const slow = sup.launch({ agent: 'fake:engineer', task: '1', budget: '5m' });
-    const hungry = sup.launch({ agent: 'fake:qa', task: '2', tokens: '100' });
+    const slow = await sup.launchFresh({ agent: 'fake:engineer', task: '1', budget: '5m' });
+    const hungry = await sup.launchFresh({ agent: 'fake:qa', task: '2', tokens: '100' });
     await until(() => readFileSync(hungry.log, 'utf8').includes('usage'));
     await until(() => as('human:dawid').view('2').status === 'in-progress');
     await sup.tick();
@@ -538,7 +542,7 @@ describe('runs', () => {
     let now = Date.now();
     const { sup, as } = setup({ mode: 'hang', now: () => now });
     as('human:dawid').newTask({ title: 'long', owner: 'fake:engineer' });
-    const run = sup.launch({ agent: 'fake:engineer', task: '1', budget: '10h' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1', budget: '10h' });
     await until(() => as('human:dawid').view('1').status === 'in-progress');
     await sup.tick();
     expect(

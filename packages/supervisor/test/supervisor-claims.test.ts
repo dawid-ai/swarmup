@@ -765,7 +765,7 @@ describe('api', () => {
         body: JSON.stringify(body),
       });
     try {
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       expect((await post({ ifIdle: true })).status).toBe(409);
       // Callers such as the desktop's update install tell the refusal apart by its status.
       const info = {
@@ -810,7 +810,7 @@ describe('api', () => {
         headers: { authorization: 'Bearer secret-test-token' },
       });
       expect(((await health.json()) as { runs_outlive: boolean }).runs_outlive).toBe(false);
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       const res = await post({ killRuns: false });
       expect(res.status).toBe(409);
       expect(((await res.json()) as { error: string }).error).toMatch(/1 live run would end/);
@@ -1394,7 +1394,7 @@ describe('fail-closed identity', () => {
   it('records the creation time before the run command starts, so it can be adopted', async () => {
     const mark = join(temp(), 'started');
     const { sup } = setup({ mode: 'hang', env: { FAKE_MARK: mark } });
-    const run = sup.launch({ agent: 'fake:engineer' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer' });
     if (process.platform !== 'win32') {
       expect(sup.store.get(run.id)?.proc_start).toBeTruthy();
     } else {
@@ -1445,7 +1445,7 @@ describe('fail-closed identity', () => {
           env: { FAKE_MARK: mark },
         });
         as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-        const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+        const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
         expect(run.pid).toBe(run.shim_pid);
         sup.stop();
         await sup.close();
@@ -1496,7 +1496,7 @@ describe('fail-closed identity', () => {
           env: { FAKE_MARK: mark, FAKE_PID: agentPid },
         });
         as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-        const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+        const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
         await until(() => existsSync(mark) && existsSync(agentPid));
         const launcher = sup.store.get(run.id)!.pid;
         expect(launcher).not.toBe(run.shim_pid);
@@ -1607,7 +1607,7 @@ describe('fail-closed identity', () => {
       as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
       // A launcher that never gets its command, as when swarmupd cannot record it in time.
       Object.assign(sup, { handOver: () => Promise.resolve() });
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       sup.stop();
       await sup.close();
       expect(sup.store.get(run.id)).toMatchObject({ status: 'ended', reason: 'shutdown' });
@@ -1647,7 +1647,7 @@ describe('fail-closed identity', () => {
       const mark = join(temp(), 'started');
       const { sup, as } = setup({ mode: 'hang', env: { FAKE_MARK: mark } });
       as('human:dawid').newTask({ title: 'x', owner: 'fake:engineer' });
-      const run = sup.launch({ agent: 'fake:engineer', task: '1' });
+      const run = await sup.launchFresh({ agent: 'fake:engineer', task: '1' });
       sup.kill(run.id);
       expect((await ended(sup, run.id)).reason).toBe('killed');
       expect(as('human:dawid').view('1').claimedBy).toBeNull();
@@ -1880,7 +1880,7 @@ describe('process ledger', () => {
   it('records what a run started and kills a grandchild left behind after its parent exited', async () => {
     const { env, marker } = orphanScripts();
     const { sup } = setup({ mode: 'orphan', env });
-    const run = sup.launch({ agent: 'fake:engineer' });
+    const run = await sup.launchFresh({ agent: 'fake:engineer' });
     await until(() => existsSync(marker) && readFileSync(marker, 'utf8') !== '');
     const cPid = Number(readFileSync(marker, 'utf8'));
     const cSeen = Date.now();
