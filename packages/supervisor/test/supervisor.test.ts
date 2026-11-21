@@ -6773,6 +6773,96 @@ describe('task worktrees (AO-0168)', () => {
     expect(existsSync(scratch)).toBe(false);
   });
 
+  it('skips a scratch folder it cannot remove for a day, and warns about it once', async () => {
+    let now = Date.now();
+    const { sup, state } = storeSetup({ mode: 'stray', now: () => now });
+    const stuck = join(state, 'scratch', '01OLDRUNTHATWINDOWSKEEPS');
+    mkdirSync(stuck, { recursive: true });
+    const old = new Date(now - 30 * 24 * 3_600_000);
+    utimesSync(stuck, old, old);
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    // As Windows refuses files a Codex sandbox session made.
+    let tries = 0;
+    sup.removeScratch = async () => {
+      tries++;
+      throw Object.assign(new Error('EPERM, Permission denied'), { code: 'EPERM' });
+    };
+    await sup.housekeep();
+    await sup.housekeep();
+    expect(tries).toBe(1);
+    expect(warns.filter((w) => w.includes('cannot remove the scratch folder'))).toEqual([
+      expect.stringContaining('swarmupd tries again in a day'),
+    ]);
+    now += 25 * 3_600_000;
+    await sup.housekeep();
+    expect(tries).toBe(2);
+    expect(warns.filter((w) => w.includes('cannot remove the scratch folder'))).toHaveLength(1);
+  });
+
+  it('removes the logs and process ledgers of runs past log_days, and old merge logs, and keeps the runs', async () => {
+    let now = Date.now();
+    const { sup, state } = storeSetup({ mode: 'stray', now: () => now });
+    const day = 24 * 3_600_000;
+    const run = (id: string, endedDaysAgo: number) => {
+      sup.store.save({
+        id,
+        agent: 'fake:engineer',
+        pid: 1,
+        image: 'fake',
+        command: 'fake',
+        cwd: state,
+        log: join(state, 'logs', `${id}.log`),
+        started_at: new Date(now - endedDaysAgo * day - 60_000).toISOString(),
+        ended_at: new Date(now - endedDaysAgo * day).toISOString(),
+        status: 'ended',
+        reason: 'exit',
+        exit: 0,
+      } as RunRecord);
+      writeFileSync(join(state, 'logs', `${id}.log`), 'log\n');
+      writeFileSync(join(state, 'procs', `${id}.json`), '{}');
+    };
+    run('01OLDRUN', 40);
+    run('01NEWRUN', 2);
+    mkdirSync(join(state, 'merge', 'logs'), { recursive: true });
+    const oldMerge = join(state, 'merge', 'logs', 'old.log');
+    const newMerge = join(state, 'merge', 'logs', 'new.log');
+    writeFileSync(oldMerge, 'x');
+    writeFileSync(newMerge, 'x');
+    const old = new Date(now - 40 * day);
+    utimesSync(oldMerge, old, old);
+
+    await sup.housekeep();
+    expect(existsSync(join(state, 'logs', '01OLDRUN.log'))).toBe(false);
+    expect(existsSync(join(state, 'procs', '01OLDRUN.json'))).toBe(false);
+    expect(existsSync(join(state, 'logs', '01NEWRUN.log'))).toBe(true);
+    expect(existsSync(join(state, 'procs', '01NEWRUN.json'))).toBe(true);
+    expect(existsSync(oldMerge)).toBe(false);
+    expect(existsSync(newMerge)).toBe(true);
+    // The run records stay: history and reports keep the run.
+    expect(sup.store.get('01OLDRUN')).toMatchObject({ id: '01OLDRUN' });
+    now += 1;
+  });
+
+  it('says in its log when something held its event loop, and what it was doing', async () => {
+    const { sup } = storeSetup({ mode: 'stray' });
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    sup.start();
+    try {
+      await new Promise((r) => setTimeout(r, 600));
+      // A synchronous step holds the loop, as the scratch cleanup's rmSync retries did.
+      const until = Date.now() + 2_600;
+      while (Date.now() < until) {
+        /* hold the event loop */
+      }
+      await new Promise((r) => setTimeout(r, 1_200));
+      expect(warns.join('\n')).toMatch(/swarmupd was busy for \d+\.\d s and answered nothing/);
+    } finally {
+      sup.stop();
+    }
+  });
+
   describe('one Electron for every worktree (AO-0306)', () => {
     const VERSION = '9.9.9';
     const exe =

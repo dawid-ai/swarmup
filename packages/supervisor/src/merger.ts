@@ -502,6 +502,14 @@ export class Merger {
     return since;
   }
 
+  /**
+   * True when the planner looked at `ref` as it is now (`lastEvent`) and found nothing for
+   * swarmupd to merge: the work is on the base already, or the approval names nothing it can merge.
+   */
+  nothingToMerge(ref: string, lastEvent: string | null): boolean {
+    return lastEvent !== null && this.mergeNone.get(ref) === lastEvent;
+  }
+
   /** What merging `ref` takes, or null when the task has nothing for swarmupd to merge. */
   async mergeJob(
     ws: Workspace,

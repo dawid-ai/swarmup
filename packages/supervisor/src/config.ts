@@ -329,6 +329,11 @@ export interface OpsdConfig {
   /** Days a run's scratch folder is kept after the run ends. */
   scratch_days: number;
   /**
+   * Days a run's log and process ledger, and a merge's log, are kept after they end. The run
+   * record stays, so `swarmup runs` and the reports keep the run.
+   */
+  log_days: number;
+  /**
    * On Windows, make the files and folders a Codex sandbox session left in a task store again
    * under the signed-in user, and remove the stale locks it left, so the next session can write
    * them (AO-0287). On unless set to false.
@@ -482,7 +487,8 @@ export function opsdConfig(
     task_worktrees: raw.task_worktrees ?? true,
     reclaim_worktrees: raw.reclaim_worktrees ?? true,
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
-    scratch_days: raw.scratch_days ?? 7,
+    scratch_days: raw.scratch_days ?? 2,
+    log_days: raw.log_days ?? 14,
     repair_stores: raw.repair_stores ?? true,
     review_checks: raw.review_checks ?? false,
     remove_stale_temp: raw.remove_stale_temp ?? false,
@@ -518,6 +524,7 @@ export function opsdConfig(
   }
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');
   amount(cfg.scratch_days, 'scratch_days');
+  amount(cfg.log_days, 'log_days');
   amount(cfg.min_free_gb, 'min_free_gb');
   amount(cfg.tick_seconds, 'tick_seconds');
   amount(cfg.proc_seconds, 'proc_seconds');

@@ -548,6 +548,7 @@ export async function startDaemon(
       : join(dirname(here), 'main.js'));
   const args = [main, 'run', ...(opts.port !== undefined ? ['--port', String(opts.port)] : [])];
   const logFile = join(stateDir(env), 'opsd.log');
+  rotateLog(logFile);
   const fd = openSync(logFile, 'a');
   const logStart = fstatSync(fd).size;
   // Inside Electron, execPath is the app; ELECTRON_RUN_AS_NODE makes it a plain Node process, and
@@ -573,6 +574,27 @@ export async function startDaemon(
 }
 
 const LOG_TAIL_BYTES = 4096;
+
+/** The size past which `opsd.log` moves to `opsd.1.log` when swarmupd starts. */
+export const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Moves `opsd.log` to `opsd.1.log`, replacing the older one, when it is past
+ * {@link LOG_ROTATE_BYTES}. A running swarmupd holds the file as its output, so this happens as
+ * it starts, which every update and restart does. It grew without end before.
+ */
+export function rotateLog(file: string, max = LOG_ROTATE_BYTES): boolean {
+  try {
+    if (statSync(file).size <= max) return false;
+    const older = file.replace(/\.log$/, '.1.log');
+    rmSync(older, { force: true });
+    renameSync(file, older);
+    return true;
+  } catch {
+    // Missing, or held by a swarmupd still running: it rotates at a later start.
+    return false;
+  }
+}
 const LOG_TAIL_LINES = 20;
 
 /**

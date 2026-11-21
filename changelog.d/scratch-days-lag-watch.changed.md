@@ -1,0 +1,1 @@
+- swarmupd keeps a run's scratch folder 2 days after the run instead of 7 (`scratch_days`): two weeks of runs had filled 15 GB. It also says in `opsd.log` when anything held it for more than 2 s, so the app's calls waited, and what it was doing then.

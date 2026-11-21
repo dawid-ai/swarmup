@@ -1,0 +1,1 @@
+- swarmupd cleans up after itself: run logs, process ledgers and merge logs go after `log_days` (14), `opsd.log` moves to `opsd.1.log` past 10 MB at the next start, and the worktree of a closed task whose work is already merged no longer waits for a merge that never comes.

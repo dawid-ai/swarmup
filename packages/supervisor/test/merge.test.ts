@@ -2849,6 +2849,26 @@ describe('merging approved work', () => {
     expect(e.body).toContain('timed out twice');
   });
 
+  it('does not hold a worktree for a merge it found nothing to do for', async () => {
+    const s = mergeSetup();
+    // The review names no commit or branch: there is nothing for swarmupd to merge.
+    s.as('fake:engineer').start('1', 'plan');
+    s.as('fake:engineer').review('1', 'done, the notes are in the task', 'human:dawid');
+    s.as('human:dawid').verdict('1', 'approve', 'looks right');
+    await s.merged();
+    const ws = s.as('human:dawid');
+    const v = ws.view('1');
+    expect(s.sup.merger.nothingToMerge('test/T-0001', v.lastEvent)).toBe(true);
+    // Worktree cleanup no longer waits for a merge that never comes.
+    const notDue = (
+      s.sup as unknown as { notDue: (w: typeof ws, ref: string) => string | null }
+    ).notDue.bind(s.sup);
+    expect(notDue(ws, 'test/T-0001')).not.toBe('merge');
+    // A change to the task makes the planner look again before cleanup counts on it.
+    ws.comment('1', 'one more note');
+    expect(s.sup.merger.nothingToMerge('test/T-0001', ws.view('1').lastEvent)).toBe(false);
+  });
+
   it('starts no merge while swarmupd is paused, and merges once it resumes', async () => {
     const s = mergeSetup();
     const before = git(s.repo, 'rev-parse', 'main');
