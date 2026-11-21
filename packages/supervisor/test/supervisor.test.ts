@@ -6784,6 +6784,25 @@ describe('task worktrees (AO-0168)', () => {
     now += 1;
   });
 
+  it('says in its log when something held its event loop, and what it was doing', async () => {
+    const { sup } = storeSetup({ mode: 'stray' });
+    const warns: string[] = [];
+    sup.on('warn', (m: string) => warns.push(m));
+    sup.start();
+    try {
+      await new Promise((r) => setTimeout(r, 600));
+      // A synchronous step holds the loop, as the scratch cleanup's rmSync retries did.
+      const until = Date.now() + 2_600;
+      while (Date.now() < until) {
+        /* hold the event loop */
+      }
+      await new Promise((r) => setTimeout(r, 1_200));
+      expect(warns.join('\n')).toMatch(/swarmupd was busy for \d+\.\d s and answered nothing/);
+    } finally {
+      sup.stop();
+    }
+  });
+
   describe('one Electron for every worktree (AO-0306)', () => {
     const VERSION = '9.9.9';
     const exe =

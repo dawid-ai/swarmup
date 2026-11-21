@@ -487,7 +487,7 @@ export function opsdConfig(
     task_worktrees: raw.task_worktrees ?? true,
     reclaim_worktrees: raw.reclaim_worktrees ?? true,
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
-    scratch_days: raw.scratch_days ?? 7,
+    scratch_days: raw.scratch_days ?? 2,
     log_days: raw.log_days ?? 14,
     repair_stores: raw.repair_stores ?? true,
     review_checks: raw.review_checks ?? false,

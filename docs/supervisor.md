@@ -451,12 +451,14 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   `SWARMUP_SCRATCH` and in `TEMP`, `TMP` and `TMPDIR`. It is an extra writable folder for Claude
   (`--add-dir`) and Codex. The prompt of a run that writes tells it to put logs, test output,
   experiments and downloads there, and never in the repo, its `out/` folder or the folder that
-  holds the repo. swarmupd removes a scratch folder `swarmupd.scratch_days` (7) days after its run
+  holds the repo. swarmupd removes a scratch folder `swarmupd.scratch_days` (2) days after its run
   ends, in the background, so the app's calls never wait for it. A folder it cannot remove, such
   as one a process of an old run still holds, gets one warning and another try a day later. It
   removes a run's log and process ledger, and a merge's log, `swarmupd.log_days` (14) days after
   they end; the run record stays. `opsd.log` moves to `opsd.1.log` when swarmupd starts and it is
-  past 10 MB. A closed task's worktree also goes when swarmupd finds nothing to merge for its
+  past 10 MB. When anything holds swarmupd's event loop for more than 2 s, so the API answers
+  nothing, `opsd.log` says for how long and what swarmupd was doing (housekeeping, a merge, live
+  runs). A closed task's worktree also goes when swarmupd finds nothing to merge for its
   approval, such as work that is on the base already; before, it waited for a merge that never
   came. For a writing run, swarmupd lists the folder that holds the store checkout (unless that is
   a home, temp or drive-root folder), plus the store checkout and its `out/` for a run in a task
@@ -880,7 +882,7 @@ swarmupd:
   sync: true # commit, pull and push each root when its sync policy says so
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that
-  scratch_days: 7 # how long a run's scratch folder stays after the run
+  scratch_days: 2 # how long a run's scratch folder stays after the run
   log_days: 14 # how long a run's log and process ledger, and a merge's log, stay
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
   review_checks: false # true: run the merge checks for a Codex reviewer, whose sandbox cannot

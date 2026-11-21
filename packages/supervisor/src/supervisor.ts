@@ -968,6 +968,8 @@ export class Supervisor extends EventEmitter {
   /** Task worktrees swarmupd is checking or deleting, by path: no run starts there meanwhile. */
   private readonly reclaiming = new Set<string>();
   private timer?: NodeJS.Timeout;
+  /** Measures how late the event loop answers, so a step that holds it is named in the log. */
+  private lagTimer?: NodeJS.Timeout;
   private procTimer?: NodeJS.Timeout;
   private ticking = false;
   private lister?: ProcLister;
@@ -4845,6 +4847,33 @@ export class Supervisor extends EventEmitter {
     this.timer = setInterval(() => void this.tick(), this.config.tick_seconds * 1000);
     // Processes are looked at more often than the tick, so short-lived parents are seen.
     this.procTimer = setInterval(() => void this.trackProcs(), this.config.proc_seconds * 1000);
+    this.watchLag();
+  }
+
+  /**
+   * Warns when swarmupd's event loop was held for more than {@link LAG_WARN_MS}, with what it was
+   * doing. While it is held, the API answers nothing: the app's New task waited 100 s for a
+   * synchronous cleanup on 2026-11-21. The warning names such a step, so it can be fixed.
+   */
+  private watchLag(): void {
+    let last = Date.now();
+    this.lagTimer = setInterval(() => {
+      const now = Date.now();
+      const held = now - last - LAG_TICK_MS;
+      last = now;
+      if (held < LAG_WARN_MS) return;
+      const doing = [
+        this.housekeeping ? 'housekeeping' : '',
+        this.merger.merging ? `a merge of ${this.merger.merging.ref}` : '',
+        this.live.size > 0 ? `${this.live.size} live run(s)` : '',
+      ].filter(Boolean);
+      this.emit(
+        'warn',
+        `swarmupd was busy for ${(held / 1000).toFixed(1)} s and answered nothing meanwhile` +
+          (doing.length > 0 ? ` (during ${doing.join(', ')})` : ''),
+      );
+    }, LAG_TICK_MS);
+    this.lagTimer.unref?.();
   }
 
   /**
@@ -4867,6 +4896,8 @@ export class Supervisor extends EventEmitter {
     this.timer = undefined;
     if (this.procTimer) clearInterval(this.procTimer);
     this.procTimer = undefined;
+    if (this.lagTimer) clearInterval(this.lagTimer);
+    this.lagTimer = undefined;
     this.chat.close();
     if (opts.killRuns || !this.runsOutlive) {
       this.killingAll = true;
@@ -6742,6 +6773,11 @@ export function samePath(a: string, b: string): boolean {
   const y = resolve(b);
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
+
+/** How often swarmupd checks that its event loop answers in time. */
+const LAG_TICK_MS = 500;
+/** How long the event loop may be held before swarmupd says so in its log. */
+const LAG_WARN_MS = 2_000;
 
 /** How long swarmupd waits before it tries a scratch folder it could not remove again. */
 const SCRATCH_RETRY_MS = 24 * 3_600_000;
