@@ -206,6 +206,39 @@ async function create(): Promise<Record<string, unknown>> {
   return posted.at(-1)!;
 }
 
+describe('New task while swarmupd is slow', () => {
+  it('holds the fields still while the task is created, so nothing changed then is lost', async () => {
+    let answer!: () => void;
+    const call = window.swarmup!.call.bind(window.swarmup);
+    window.swarmup!.call = (async (
+      method: 'GET' | 'POST',
+      path: string,
+      body?: Record<string, unknown>,
+    ) => {
+      if (method === 'POST' && path === '/api/tasks') {
+        // swarmupd answers late, as when its event loop was busy for a minute.
+        await new Promise<void>((r) => (answer = r));
+      }
+      return call(method, path, body);
+    }) as typeof call;
+    await start();
+    click(button('New task'));
+    type(title(), 'Runs > date ranges');
+    click(button('Create task', dialog('New task')!));
+    await settle();
+    const form = dialog('New task')!.querySelector('fieldset')!;
+    expect(form.disabled).toBe(true);
+    expect(form.getAttribute('aria-busy')).toBe('true');
+    // The browser disables every field in a disabled fieldset; happy-dom does not model that.
+    expect(combo().closest('fieldset[disabled]')).toBe(form);
+    expect(title().closest('fieldset[disabled]')).toBe(form);
+    answer();
+    await settle(300);
+    expect(posted.at(-1)).toMatchObject({ title: 'Runs > date ranges' });
+    expect(dialog('New task')).toBeNull();
+  });
+});
+
 describe('New task: project dropdown', () => {
   it('lists the sidebar projects, filters as you type and picks with the keyboard', async () => {
     await start();

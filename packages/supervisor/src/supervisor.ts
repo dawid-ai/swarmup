@@ -14,6 +14,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { readdir as readdirAsync, rm as rmAsync, stat as statAsync } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import type {
@@ -958,6 +959,8 @@ export class Supervisor extends EventEmitter {
   private housekeptAt = 0;
   /** What swarmupd last warned about each worktree it leaves in place, so it warns once. */
   private readonly reclaimWarned = new Map<string, string>();
+  /** Scratch folders swarmupd could not remove, by path, with when it last tried. */
+  private readonly scratchStuck = new Map<string, number>();
   /** Worktrees of closed tasks the last finished sweep left in place, by path (AO-0298). */
   private kept = new Map<string, KeptWorktree>();
   /** The same, for the sweep under way; it replaces {@link kept} when the sweep ends. */
@@ -1689,7 +1692,8 @@ export class Supervisor extends EventEmitter {
       // Read at each sweep: a change from Settings applies from the next one, with no restart.
       if (this.config.reclaim_worktrees) await this.reclaimWorktrees();
       else this.kept = new Map();
-      this.safe(() => this.pruneScratch());
+      await this.pruneScratch();
+      await this.pruneLogs();
     })()
       .catch((err: unknown) => {
         this.emit('warn', `housekeeping failed: ${String(err)}`);
@@ -1942,7 +1946,10 @@ export class Supervisor extends EventEmitter {
     if (this.now() - Date.parse(v.updatedAt) < this.config.reclaim_after_minutes * 60_000) {
       return 'recent';
     }
-    return this.mergeWaits(ws, ref) ? 'merge' : null;
+    // A merge the planner already found nothing to do for never comes: waiting for it kept the
+    // worktrees of approved tasks whose work was on the base already, for good.
+    if (!this.mergeWaits(ws, ref) || this.merger.nothingToMerge(ref, v.lastEvent)) return null;
+    return 'merge';
   }
 
   /**
@@ -2140,34 +2147,91 @@ export class Supervisor extends EventEmitter {
     this.emit('warn', message);
   }
 
-  /** Removes the scratch folders of runs that ended more than `scratch_days` ago (AO-0230). */
-  private pruneScratch(): void {
+  /**
+   * Removes the scratch folders of runs that ended more than `scratch_days` ago (AO-0230), off the
+   * event loop. A synchronous removal with retries held swarmupd and its API about a second for
+   * each folder Windows refused (files a Codex sandbox session made, EPERM): 89 of them kept the
+   * New task dialog waiting 100 s. A folder it cannot remove is warned about once and tried again
+   * a day later.
+   */
+  private async pruneScratch(): Promise<void> {
     const dir = join(this.store.dir, 'scratch');
     let names: string[];
     try {
-      names = readdirSync(dir);
+      names = await readdirAsync(dir);
     } catch {
       return;
     }
-    const cutoff = this.now() - this.config.scratch_days * 24 * 3_600_000;
+    const now = this.now();
+    const cutoff = now - this.config.scratch_days * 24 * 3_600_000;
     for (const name of names) {
+      if (this.stopping) return;
       const r = this.store.get(name);
       if (r?.status === 'running' || this.live.has(name) || this.ending.has(name)) continue;
       const path = join(dir, name);
+      const tried = this.scratchStuck.get(path);
+      if (tried !== undefined && now - tried < SCRATCH_RETRY_MS) continue;
       // A run swarmupd no longer has a record of counts from the folder's last change.
       let endedAt: number;
       try {
-        endedAt = r?.ended_at ? Date.parse(r.ended_at) : statSync(path).mtimeMs;
+        endedAt = r?.ended_at ? Date.parse(r.ended_at) : (await statAsync(path)).mtimeMs;
       } catch {
         continue;
       }
       if (endedAt > cutoff) continue;
       try {
-        rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+        await this.removeScratch(path);
+        this.scratchStuck.delete(path);
       } catch (err) {
-        this.emit('warn', `cannot remove the scratch folder ${path}: ${String(err)}`);
+        if (tried === undefined) {
+          this.emit(
+            'warn',
+            `cannot remove the scratch folder ${path}: ${String(err)}; swarmupd tries again in a day`,
+          );
+        }
+        this.scratchStuck.set(path, now);
       }
     }
+  }
+
+  /**
+   * Removes, off the event loop, the logs and process ledgers of runs that ended more than
+   * `log_days` ago, and merge logs older than that. They grew for good before: about 3,000 run
+   * logs and ledgers in two weeks. The run records stay.
+   */
+  private async pruneLogs(): Promise<void> {
+    const cutoff = this.now() - this.config.log_days * 24 * 3_600_000;
+    const dir = this.store.dir;
+    for (const r of this.store.list()) {
+      if (this.stopping) return;
+      if (r.status === 'running' || !r.ended_at || Date.parse(r.ended_at) > cutoff) continue;
+      if (this.live.has(r.id) || this.ending.has(r.id)) continue;
+      for (const file of [join(dir, 'logs', `${r.id}.log`), join(dir, 'procs', `${r.id}.json`)]) {
+        await rmAsync(file, { force: true }).catch(() => undefined);
+      }
+    }
+    const merges = join(dir, 'merge', 'logs');
+    let names: string[] = [];
+    try {
+      names = await readdirAsync(merges);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (this.stopping) return;
+      const file = join(merges, name);
+      try {
+        if ((await statAsync(file)).mtimeMs > cutoff) continue;
+        await rmAsync(file, { force: true });
+      } catch {
+        // Gone already, or in use: the next sweep tries again.
+      }
+    }
+  }
+
+  /** Removes one scratch folder, off the event loop. */
+  removeScratch(path: string): Promise<void> {
+    return rmAsync(path, { recursive: true, force: true });
   }
 
   /**
@@ -6678,6 +6742,9 @@ export function samePath(a: string, b: string): boolean {
   const y = resolve(b);
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
+
+/** How long swarmupd waits before it tries a scratch folder it could not remove again. */
+const SCRATCH_RETRY_MS = 24 * 3_600_000;
 
 function inside(child: string, parent: string): boolean {
   const rel = relative(resolve(parent), resolve(child));
