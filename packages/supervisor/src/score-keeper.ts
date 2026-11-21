@@ -149,7 +149,7 @@ export class ScoreKeeper {
       status: t.status,
       events: this.events.get(ws, t),
     }));
-    this.readOrientations(ended);
+    await this.readOrientations(ended);
     const results = computeScores(
       { tasks, runs, orientation: (r) => this.orientations.get(r.id) },
       { settings, now: this.opts.now },
@@ -159,11 +159,15 @@ export class ScoreKeeper {
     return this.results();
   }
 
-  /** Reads the orientation of ended runs not read yet, newest first, up to the limit. */
-  private readOrientations(ended: RunRecord[]): void {
+  /**
+   * Reads the orientation of ended runs not read yet, newest first, up to the limit. A log read is
+   * synchronous and a run log can run to megabytes, so the loop yields to the event loop between
+   * logs: swarmupd's tick and API never wait for more than one log.
+   */
+  private async readOrientations(ended: RunRecord[]): Promise<void> {
     const provider = this.opts.orientation;
     if (!provider) return;
-    let budget = this.opts.logsPerRefresh ?? 50;
+    let budget = this.opts.logsPerRefresh ?? 20;
     for (const r of ended) {
       if (budget <= 0) break;
       if (this.orientations.has(r.id)) continue;
@@ -171,6 +175,7 @@ export class ScoreKeeper {
         continue;
       }
       budget--;
+      await new Promise<void>((resolve) => setImmediate(resolve));
       this.orientations.set(r.id, provider(r) ?? null);
     }
   }
