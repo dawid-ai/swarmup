@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from 'node:fs';
 import { sniffImage } from './attachments.js';
+import { OpsError } from './ids.js';
 
 /** Secret patterns shared by the write path (events, tasks) and the leak check (files). */
 export const SECRET_PATTERNS: ReadonlyArray<{ kind: string; re: RegExp }> = [
@@ -28,6 +29,23 @@ export function isKeyFile(path: string): boolean {
 export function secretKind(text: string): string | null {
   for (const p of SECRET_PATTERNS) if (p.re.test(text)) return p.kind;
   return null;
+}
+
+/**
+ * Throws (code 2) when any of `texts` looks like it holds a secret, before anything is written.
+ * The message names the kind, never the secret.
+ */
+export function assertNoSecret(...texts: (string | undefined)[]): void {
+  for (const t of texts) {
+    if (!t) continue;
+    const kind = secretKind(t);
+    if (kind) {
+      throw new OpsError(
+        `refusing to write: the text looks like a ${kind}. Nothing was written.`,
+        2,
+      );
+    }
+  }
 }
 
 /**

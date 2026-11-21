@@ -3,6 +3,8 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { UserConfig } from '@swarmup/core';
 import {
+  checkEffort,
+  checkModel,
   daemonSection,
   envVar,
   isActorId,
@@ -381,35 +383,8 @@ export const DEFAULT_AGENT_ROLES = ['engineer', 'qa', 'reviewer', 'pm'];
 /** Written as `swarmupd.seeded`; bump it when the seed adds something a seeded config should get. */
 export const SEED_VERSION = 1;
 
-const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,99}$/;
-
-/** Checks a model name: one word that cannot read as a flag, such as `opus` or `gpt-5-codex`. */
-export function checkModel(v: unknown, where: string): string {
-  if (typeof v !== 'string' || !MODEL_RE.test(v)) {
-    throw new OpsError(
-      `${where}: name a model such as opus or gpt-5-codex (letters, digits and . _ : / @ - [ ])`,
-      2,
-    );
-  }
-  return v;
-}
-
-const EFFORT_RE = /^[a-z][a-z0-9_-]{0,19}$/;
-
-/**
- * Checks a reasoning effort: one lowercase word that cannot read as a flag, such as `medium`.
- * Each provider names its own levels, so the provider refuses a level it does not know when the
- * run starts.
- */
-export function checkEffort(v: unknown, where: string): string {
-  if (typeof v !== 'string' || !EFFORT_RE.test(v)) {
-    throw new OpsError(
-      `${where}: name an effort level such as low, medium or high (lowercase letters, digits, _ and -)`,
-      2,
-    );
-  }
-  return v;
-}
+// Moved to core, where the definition schemas check the same values (W5); kept here for callers.
+export { checkEffort, checkModel };
 
 const WINDOW_RE = /^[A-Za-z0-9_-]{1,60}$/;
 

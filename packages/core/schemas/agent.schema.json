@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmup.tech/schemas/agent.schema.json",
+  "title": "Agent file frontmatter",
+  "description": "Frontmatter of an agent file.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "The agent id, `<runtime>:<role>`. Defaults to the file name.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$"
+    },
+    "name": {
+      "description": "Display name.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "description": "One line on what the agent does.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "description": "Only an active agent runs and takes work. Default active.",
+      "enum": [
+        "active",
+        "paused",
+        "proposed",
+        null
+      ]
+    },
+    "can_claim": {
+      "description": "Task types the role takes from the queue; `*` for any.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "projects": {
+      "description": "Projects the agent works on; `*` for any.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "model": {
+      "description": "Model for the agent's runs; `default` takes the runtime's.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@[\\]-]{0,99}$"
+    },
+    "effort": {
+      "description": "Reasoning effort for the agent's runs.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z][a-z0-9_-]{0,19}$"
+    },
+    "budget_min": {
+      "description": "Default run budget in minutes.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "tools": {
+      "description": "Tool permissions for the role.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "mcp": {
+      "description": "MCP server names the role may use.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "kb": {
+      "description": "Learn-note topics (`kb/<topic>/`) the agent reads before it works.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "files": {
+      "description": "Files or folders the agent reads before it works, relative to the project.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "style": {
+      "description": "How the agent writes: tone, format, words to use and avoid.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtimes": {
+      "description": "Overrides per runtime; a machine setting for the agent still wins.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*$"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/agent-runtime"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "role": {
+      "description": "Accepted but not active yet: agent folders (phase 2)."
+    },
+    "providers": {
+      "description": "Accepted but not active yet: agent folders (phase 2)."
+    },
+    "writes": {
+      "description": "Accepted but not active yet: agent folders (phase 2)."
+    },
+    "scorers": {
+      "description": "Accepted but not active yet: scorers in git come in phase 4."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "agent-runtime": {
+      "description": "Overrides for one runtime.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Model for this runtime's runs of the agent.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "Reasoning effort for this runtime's runs of the agent.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,19}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

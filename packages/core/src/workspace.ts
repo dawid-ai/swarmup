@@ -191,7 +191,7 @@ import {
   writeRepeatCache,
 } from './repeats.js';
 import { Root } from './root.js';
-import { secretKind } from './secrets.js';
+import { assertNoSecret } from './secrets.js';
 import type { SyncResult } from './sync.js';
 import { mirrorCopies, mirrorPartners, syncAll } from './mirror.js';
 import { ulidTime, ulidTimePrefix } from './ulid.js';
@@ -831,19 +831,6 @@ function decisionLine(raw: string, where: string): string {
 
 /** A decision's source that is a task event: `AO-0107#<event id>` or `root/AO-0107#<event id>`. */
 const EVENT_SOURCE = /^((?:[A-Za-z0-9._-]+\/)?[A-Za-z][A-Za-z0-9]*-\d+)#(\S+)$/;
-
-function assertNoSecret(...texts: (string | undefined)[]): void {
-  for (const t of texts) {
-    if (!t) continue;
-    const kind = secretKind(t);
-    if (kind) {
-      throw new OpsError(
-        `refusing to write: the text looks like a ${kind}. Nothing was written.`,
-        2,
-      );
-    }
-  }
-}
 
 /** All data roots the current process can see, plus the acting id. The API behind `swarmup`. */
 export class Workspace {

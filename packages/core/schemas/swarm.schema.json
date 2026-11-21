@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmup.tech/schemas/swarm.schema.json",
+  "title": "swarm.yaml",
+  "description": "Team settings kept in the task store. Machine settings in the user config win over these.",
+  "type": "object",
+  "properties": {
+    "swarmup_defs": {
+      "description": "Format version of the definition files. Always 1 for now.",
+      "enum": [
+        1
+      ]
+    },
+    "defaults": {
+      "description": "Fallbacks for every runtime.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "budget_min": {
+          "description": "Accepted but not active yet: budget defaults come with the policy keys (phase 2)."
+        },
+        "effort": {
+          "description": "Effort for runtimes that set none, here or on the machine.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,19}$"
+        },
+        "model": {
+          "description": "Model for runtimes that set none, here or on the machine. It applies to every runtime, so set it per runtime when you run several providers.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@[\\]-]{0,99}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimes": {
+      "description": "Model and effort per runtime. Commands, arguments and environment stay in the user config.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9]*$"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/runtime"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "roles": {
+      "description": "Providers and limits per role, as `swarmupd.roles` takes them.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/role"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "policy": {
+      "description": "Accepted but not active yet: team policy moves into git in phase 2."
+    },
+    "work_types": {
+      "description": "Accepted but not active yet: work types come with workflows (phase 3)."
+    },
+    "scoring": {
+      "description": "Accepted but not active yet: scorers in git come in phase 4."
+    },
+    "checks": {
+      "description": "Accepted but not active yet: checks in git come in phase 4, after `swarmup defs trust`."
+    },
+    "variants": {
+      "description": "Accepted but not active yet: variants come in phase 5."
+    },
+    "experiments": {
+      "description": "Accepted but not active yet: experiments come in phase 5."
+    },
+    "improvement": {
+      "description": "Accepted but not active yet: the improvement loop comes in phase 5."
+    }
+  },
+  "required": [
+    "swarmup_defs"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "role": {
+      "description": "The git half of `swarmupd.roles.<role>`. A machine value for the same key wins.",
+      "type": "object",
+      "properties": {
+        "providers": {
+          "description": "Runtimes in order of preference for tasks owned by `*:<role>`; default: the machine's runtime order.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*$"
+          }
+        },
+        "overflow": {
+          "description": "Hand a `*:<role>` task to the next provider when the preferred ones have no room. Default true.",
+          "type": "boolean"
+        },
+        "writes": {
+          "description": "The role changes files. Default true, except for qa, reviewer, pm and orchestrator.",
+          "type": "boolean"
+        },
+        "per_project": {
+          "description": "Most live runs of the role on one project. Default 1 if it writes, else 3.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "burst": {
+          "description": "Live runs per project while reviews pile up there.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_children": {
+          "description": "Most helper runs (`swarmup spawn`) one run of this role may have live at once. Default 2.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime": {
+      "description": "The git half of `swarmupd.runtimes.<rt>`: model and effort only.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Model for this runtime's runs. A machine's `swarmupd.runtimes.<rt>.model` wins.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "Reasoning effort for this runtime's runs. A machine's `swarmupd.runtimes.<rt>.effort` wins.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,19}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
