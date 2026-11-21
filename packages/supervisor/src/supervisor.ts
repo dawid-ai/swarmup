@@ -167,6 +167,7 @@ import { readTestChanges, testChangesNote } from './test-changes.js';
 import { readReleases, RELEASES_TTL_MS, type ReleaseSnapshot, releasesNote } from './releases.js';
 import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
+import { taskMapPrompt } from './map-prompt.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
 
 /** Most referenced tasks a question's prompt lists; the agent reads more with `swarmup show`. */
@@ -3526,6 +3527,15 @@ export class Supervisor extends EventEmitter {
     }
     // Custom prompts are used as given, so only a standard task prompt lists related notes.
     const notes = req.prompt === undefined && ref ? this.taskNotes(ws, ref) : [];
+    // The project map of the run's checkout, else of the root's code checkout (`.swarmup/map/`).
+    const mapRoot = ws.roots.find((r) => r.name === rootName);
+    const map =
+      req.prompt === undefined && ref
+        ? taskMapPrompt(ws, ref, [checkoutTop, mapRoot ? this.codeTopOf(mapRoot) : null], {
+            review: req.review,
+            base: rootName ? this.config.merge[rootName]?.base : undefined,
+          })
+        : undefined;
     // The decisions in force for the task (AO-0109), for a work run, a review run and a schedule
     // with a task. A question run answers and plans nothing; inbox runs and schedules without a
     // task have no one root to take decisions from, and get them from `swarmup start`.
@@ -3555,6 +3565,7 @@ export class Supervisor extends EventEmitter {
             taskWorktree,
             scratch: readOnly || req.chat ? undefined : scratch,
             notes,
+            map,
             decisions,
           })) +
       (inv.note ?? '') +

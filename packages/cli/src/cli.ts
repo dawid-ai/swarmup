@@ -103,6 +103,7 @@ import {
 import { envVar, reviewSources } from '@swarmup/core';
 import type { ReviewSourceFields } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
+import { mapCommand } from './map-cmd.js';
 import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
 
@@ -1959,6 +1960,7 @@ const COMMANDS: Record<string, Command> = {
       }
     },
   },
+  map: mapCommand,
   kb: {
     usage: 'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale] [--days N]',
     summary:

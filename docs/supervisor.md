@@ -164,6 +164,26 @@ reads. A work run's prompt also asks the agent to write a learn note before it f
 agent should know something; a review run's prompt asks the reviewer to write one when the work took
 several review rounds.
 
+### The project map in the prompt
+
+When the run's checkout, or else the code checkout of the task's root, has a project map
+(`.swarmup/map/`, see [map.md](map.md)), the standard prompt of a task run adds a short block
+after the learn notes: the root node's summary, and up to 5 nodes whose `covers` match the
+task's files or whose id, summary or kind share words with the task. A word of the task's title
+scores 3 in a node's id and 2 in its summary or kind; a word only in the description scores 1.
+Words that more than half the nodes share count for nothing.
+
+- A work run is told to read nodes on demand with `swarmup map show <id>`, to update or add the
+  nodes its change affects on the task branch in the same commit, and to run `swarmup map index`
+  and `swarmup map check` before it asks for review.
+- A review run is asked whether the change made any node wrong. When the latest review request
+  names a commit, swarmupd lists the `map check` warnings for it: the nodes of the checkout's
+  map whose covered files the commit changes (since it left the root's merge `base`, else the
+  remote's default branch, `main` or `master`) while it leaves the node file alone.
+- A question run gets the block without either rule.
+
+A project without a map gets no block. A map that cannot be read never stops a run.
+
 ### The review prompt
 
 A review run's prompt tells the reviewer what to review against and what it may run:
@@ -1061,6 +1081,14 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Project map.** A repo with a project map (`.swarmup/map/`, see [map.md](map.md)) can gate
+  merges on it with a plain check entry, `swarmup map check --base <base>` (for this example,
+  `--base v2`): it fails when the work changes a path no node covers, breaks a link or leaves
+  `_INDEX.md` stale, and prints its warnings in the check output. It runs in swarmupd's worktree
+  like any other check, with `swarmup` from the `PATH` swarmupd runs with; use
+  `node packages/cli/dist/main.js map check --base <base>` in a repo that builds SwarmUp itself.
+  Map files sit in a `.swarmup/` folder, but swarmupd counts `.swarmup/map/` as code: a branch
+  that changes them merges with the work instead of going back as a task store change.
 - **Where the work is (AO-0384).** `swarmup review` records the HEAD commit, the branch and the
   repo kind (`code` or `store`) of the git checkout it runs in as the fields `commit`, `branch` and
   `repo` of the review event (no commit or branch on a base branch or a detached HEAD);

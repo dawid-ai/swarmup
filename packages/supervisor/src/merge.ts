@@ -91,6 +91,9 @@ export function opsdCodeChanges(files: string[]): string[] {
   );
 }
 
+/** The project map's files in any folder: code, though a store exclude covers `.swarmup/`. */
+const MAP_PATHSPEC = ':(glob)**/.swarmup/map/**';
+
 /** The lockfiles npm installs from; when a directory has both, npm takes the first. */
 const NPM_LOCKFILES = ['npm-shrinkwrap.json', 'package-lock.json'];
 
@@ -783,6 +786,7 @@ export class MergeRepo {
   async sameCode(a: string, b: string): Promise<boolean> {
     try {
       await this.git(this.top, ['diff', '--quiet', a, b, '--', '.', ...this.excludes]);
+      await this.git(this.top, ['diff', '--quiet', a, b, '--', MAP_PATHSPEC]);
       return true;
     } catch (err) {
       if (err instanceof GitTimeout) throw err;
@@ -824,8 +828,21 @@ export class MergeRepo {
 
   /** Files that differ between two commits, outside task stores. */
   async changedFiles(a: string, b: string): Promise<string[]> {
+    return [
+      ...lines(
+        await this.git(this.top, ['diff', '--name-only', a, b, '--', '.', ...this.excludes]),
+      ),
+      ...(await this.mapFiles(a, b)),
+    ];
+  }
+
+  /**
+   * Project map files (`.swarmup/map/`) that differ between two commits. The map sits in a
+   * `.swarmup/` folder but belongs to the work, not to the task store, so it counts as code.
+   */
+  private async mapFiles(a: string, b: string, args: string[] = []): Promise<string[]> {
     return lines(
-      await this.git(this.top, ['diff', '--name-only', a, b, '--', '.', ...this.excludes]),
+      await this.git(this.top, ['diff', ...args, '--name-only', a, b, '--', MAP_PATHSPEC]),
     );
   }
 
@@ -834,18 +851,21 @@ export class MergeRepo {
    * code into a path a check skips still counts as changing code (AO-0382).
    */
   async touchedFiles(a: string, b: string): Promise<string[]> {
-    return lines(
-      await this.git(this.top, [
-        'diff',
-        '--no-renames',
-        '--name-only',
-        a,
-        b,
-        '--',
-        '.',
-        ...this.excludes,
-      ]),
-    );
+    return [
+      ...lines(
+        await this.git(this.top, [
+          'diff',
+          '--no-renames',
+          '--name-only',
+          a,
+          b,
+          '--',
+          '.',
+          ...this.excludes,
+        ]),
+      ),
+      ...(await this.mapFiles(a, b, ['--no-renames'])),
+    ];
   }
 
   /** Task store files that differ between two commits. */
