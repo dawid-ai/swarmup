@@ -321,6 +321,53 @@ export class StateDb {
     return out;
   }
 
+  /**
+   * The rows of agent-level scores from `since` to `until` (ISO), oldest first, and the last row
+   * of each before `since`, which opens a trend. Retired rows are left out. At most `limit` rows.
+   */
+  agentScoreHistory(opts: {
+    since: string;
+    until: string;
+    agent?: string;
+    scorer?: string;
+    limit?: number;
+  }): Array<{ agent: string; scorer: string; computed_at: string; value: number; n: number }> {
+    const where: string[] = [];
+    const args: string[] = [];
+    if (opts.agent) {
+      where.push('AND agent = ?');
+      args.push(opts.agent);
+    }
+    if (opts.scorer) {
+      where.push('AND scorer = ?');
+      args.push(opts.scorer);
+    }
+    const filter = where.join(' ');
+    type Row = { agent: string; scorer: string; computed_at: string; value: number; n: number };
+    return this.use((db) => {
+      const opening = db
+        .prepare(
+          `SELECT s.agent, s.scorer, s.computed_at, s.value, json_extract(s.result, '$.n') AS n
+           FROM scores s
+           JOIN (SELECT agent, scorer, max(computed_at) AS at FROM scores
+                 WHERE level = 'agent' AND computed_at < ? ${filter}
+                 GROUP BY agent, scorer) l
+             ON s.agent = l.agent AND s.scorer = l.scorer AND s.computed_at = l.at
+           WHERE s.level = 'agent' AND s.result IS NOT NULL`,
+        )
+        .all(opts.since, ...args) as Row[];
+      const rows = db
+        .prepare(
+          `SELECT agent, scorer, computed_at, value, json_extract(result, '$.n') AS n FROM scores
+           WHERE level = 'agent' AND result IS NOT NULL AND computed_at >= ? AND computed_at < ?
+           ${filter}
+           ORDER BY computed_at LIMIT ?`,
+        )
+        .all(opts.since, opts.until, ...args, opts.limit ?? 5000) as Row[];
+      return [...opening, ...rows].map((r) => ({ ...r, n: Number(r.n) || 0 }));
+    });
+  }
+
   // ---- Definitions ----------------------------------------------------------------------------
 
   /** Keeps the files of a definition hash the first time it is seen; a known hash is left alone. */

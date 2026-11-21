@@ -25,6 +25,7 @@ Everything about one run after the launch: where it works, what it may see, what
 - `runs.ts` keeps each run in `<state>/runs/<id>.json`, with `defs`, `model` and `effort` when a
   store has a `swarm.yaml` (see `core/defs`); `runenv.ts` builds its environment
   (`SWARMUP_AGENT`, `SWARMUP_RUN`, `SWARMUP_RUN_TOKEN`, `SWARMUP_SCRATCH`, TEMP in scratch).
+  `pageRuns` serves the desktop Runs view one page, narrowed by range, `resumed` and `model`.
 - `proc.ts` spawns hidden processes that can outlive swarmupd; `procs.ts` records every process a
   run starts and kills only by PID plus creation time.
 - `worktree.ts`: a code task in a store checkout works in `out/wt-<ID>` on its own branch.

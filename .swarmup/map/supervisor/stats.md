@@ -7,6 +7,7 @@ covers:
   - packages/supervisor/src/wrapped.ts
   - packages/supervisor/src/scores.ts
   - packages/supervisor/src/score-keeper.ts
+  - packages/supervisor/src/score-history.ts
   - packages/supervisor/src/orientation.ts
 links: [/core/search, /desktop/replay]
 ---
@@ -28,6 +29,10 @@ cards.
 - `scores.ts` holds the deterministic scorers over task events and run records, at run, task
   and agent level; `score-keeper.ts` reads the tasks and keeps the scores in `state.db`, and
   `orientation.ts` parses how much a run read before its first edit from its run log.
+- `score-history.ts` turns the kept scores and the agent-score rows of `state.db` into each
+  agent's trend per scorer, a point per hour or day, for `GET /api/scores/history` and the
+  desktop's Agents and Reports views. The keeper also hands the Runs view each run's orientation
+  from memory.
 - `wrapped.ts` turns the report and the replay timeline of one window into a short card
   sequence.
 

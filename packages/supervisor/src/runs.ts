@@ -174,6 +174,8 @@ export interface RunPage {
   live: number;
   /** The run `pick` names, by id or by the end of its id, wherever it is in the list. */
   pick: RunRecord | null;
+  /** The models runs in the range started with, before `model` narrows them, sorted. */
+  models: string[];
 }
 
 /** A run that ended on its own with a non-zero exit, hit a budget, or was lost; a kill is not one. */
@@ -203,7 +205,8 @@ export function runInRange(r: RunRecord, start?: number, end?: number): boolean 
 /**
  * One page of `all`, which is newest first, with the counts the Runs view shows. `since`
  * defaults to the local midnight of today. `start` and `end` (ISO times) limit the list, the
- * counts and `today` to the runs in that range (AO-0404).
+ * counts and `today` to the runs in that range (AO-0404). `resumed` keeps only runs that resumed
+ * a session, and `model` only runs started with that model; they narrow the counts too.
  */
 export function pageRuns(
   all: RunRecord[],
@@ -216,6 +219,8 @@ export function pageRuns(
     start?: string;
     end?: string;
     pick?: string;
+    resumed?: boolean;
+    model?: string;
   },
 ): RunPage {
   const filter = opts.filter ?? 'all';
@@ -230,9 +235,13 @@ export function pageRuns(
   const runs: RunRecord[] = [];
   let more = false;
   let live = 0;
+  const models = new Set<string>();
   for (const r of all) {
     if (r.status === 'running') live++;
     if (ranged && !runInRange(r, start, end)) continue;
+    if (opts.resumed && !(r.resumed || r.resumed_from)) continue;
+    if (r.model) models.add(r.model);
+    if (opts.model !== undefined && r.model !== opts.model) continue;
     const failed = runFailed(r);
     counts.all++;
     if (r.status === 'running') counts.live++;
@@ -253,7 +262,7 @@ export function pageRuns(
   const pick = want
     ? (all.find((r) => r.id === want) ?? all.find((r) => r.id.endsWith(want)) ?? null)
     : null;
-  return { runs, more, counts, today, total: all.length, live, pick };
+  return { runs, more, counts, today, total: all.length, live, pick, models: [...models].sort() };
 }
 
 export class RunStore {
