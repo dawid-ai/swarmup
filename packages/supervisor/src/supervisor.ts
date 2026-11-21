@@ -178,6 +178,7 @@ import { readReleases, RELEASES_TTL_MS, type ReleaseSnapshot, releasesNote } fro
 import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
 import { taskMapPrompt } from './map-prompt.js';
+import { msysTmpDir } from './msys-tmp.js';
 import { runSignInCheck, SIGN_IN_CHECK_TIMEOUT_MS, SIGN_IN_CHECKS, signInSteps } from './signin.js';
 
 /** Most referenced tasks a question's prompt lists; the agent reads more with `swarmup show`. */
@@ -2253,10 +2254,23 @@ export class Supervisor extends EventEmitter {
     } catch {
       return;
     }
+    // The scratch folder Git Bash mounts as `/tmp` stays: removing it breaks `/tmp` for every Git
+    // Bash on the machine (see msys-tmp.ts). One already removed is made again.
+    const pinned = await this.msysTmp();
+    const kept =
+      pinned && samePath(dirname(pinned), dir) ? basename(resolve(pinned)).toLowerCase() : null;
+    if (kept && pinned && !names.some((n) => n.toLowerCase() === kept)) {
+      try {
+        mkdirSync(pinned, { recursive: true });
+      } catch {
+        // The next sweep tries again.
+      }
+    }
     const now = this.now();
     const cutoff = now - this.config.scratch_days * 24 * 3_600_000;
     for (const name of names) {
       if (this.stopping) return;
+      if (name.toLowerCase() === kept) continue;
       const r = this.store.get(name);
       if (r?.status === 'running' || this.live.has(name) || this.ending.has(name)) continue;
       const path = join(dir, name);
@@ -2318,6 +2332,11 @@ export class Supervisor extends EventEmitter {
         // Gone already, or in use: the next sweep tries again.
       }
     }
+  }
+
+  /** The folder Git Bash mounts as `/tmp`, or null; looked up off the event loop. */
+  msysTmp(): Promise<string | null> {
+    return msysTmpDir();
   }
 
   /** Removes one scratch folder, off the event loop. */

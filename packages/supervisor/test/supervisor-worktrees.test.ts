@@ -654,6 +654,26 @@ describe('task worktrees (AO-0168)', () => {
     expect(warns.filter((w) => w.includes('cannot remove the scratch folder'))).toHaveLength(1);
   });
 
+  it('keeps the scratch folder Git Bash mounts as /tmp, and makes it again when it is gone', async () => {
+    const now = Date.now();
+    const { sup, state } = storeSetup({ mode: 'stray', now: () => now });
+    const old = new Date(now - 30 * 24 * 3_600_000);
+    const pinned = join(state, 'scratch', '01PINNEDASMSYSTMP');
+    const other = join(state, 'scratch', '01OTHEROLDRUN');
+    for (const d of [pinned, other]) {
+      mkdirSync(d, { recursive: true });
+      utimesSync(d, old, old);
+    }
+    sup.msysTmp = async () => pinned.toUpperCase();
+    await sup.housekeep();
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(other)).toBe(false);
+    // Removed by an older build: the sweep makes it again, so `/tmp` works once more.
+    rmSync(pinned, { recursive: true, force: true });
+    await sup.housekeep();
+    expect(existsSync(pinned)).toBe(true);
+  });
+
   it('removes the logs and process ledgers of runs past log_days, and old merge logs, and keeps the runs', async () => {
     let now = Date.now();
     const { sup, state } = storeSetup({ mode: 'stray', now: () => now });

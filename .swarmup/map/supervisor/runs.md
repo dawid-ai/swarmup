@@ -10,6 +10,7 @@ covers:
   - packages/supervisor/src/worktree.ts
   - packages/supervisor/src/electron-dist.ts
   - packages/supervisor/src/store-repair.ts
+  - packages/supervisor/src/msys-tmp.ts
 links: [wake, merge]
 ---
 
@@ -40,3 +41,6 @@ Everything about one run after the launch: where it works, what it may see, what
 
 - The leftovers commit excludes `.swarmup/**`, so it does not take uncommitted map edits; runs
   commit map changes with their work.
+- Git Bash mounts `/tmp` on the `TEMP` of the first MSYS process, often a run's scratch folder,
+  and keeps it for days. Scratch cleanup keeps that folder (`msys-tmp.ts`) and makes it again if
+  it is gone.
