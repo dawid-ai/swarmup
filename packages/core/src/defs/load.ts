@@ -3,12 +3,12 @@ import type { AgentDef, AgentFileProblem } from '../agents.js';
 import { readAgentFiles } from '../agents.js';
 import { AGENT_SCHEMA } from './agent.js';
 import type { DefFile } from './hash.js';
-import { definitionHash, digestFiles, fingerprintOf, listDefFiles } from './hash.js';
+import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
 import { checkYaml } from './schema.js';
 import type { SwarmDefs } from './swarm.js';
 import { SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
-import { validateDefinitions } from './validate.js';
+import { secretProblems, validateDefinitions } from './validate.js';
 
 /** The definitions of one task store, read and checked. */
 export interface DefinitionSet {
@@ -24,6 +24,8 @@ export interface DefinitionSet {
   agentProblems: AgentFileProblem[];
   /** Every definition file, sorted by path. */
   files: DefFile[];
+  /** Each file's text as hashed (no BOM, LF line ends), by path; for snapshots. */
+  texts: Record<string, string>;
   /** {@link definitionHash} of `files`. */
   hash: string;
   /** {@link definitionsFingerprint} when the set was read. */
@@ -141,6 +143,7 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
     agents: read.agents,
     agentProblems: read.problems,
     files,
+    texts: Object.fromEntries(texts),
     hash: definitionHash(files),
     fingerprint,
     problems: sortProblems(problems),
@@ -148,6 +151,31 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
   };
   cache.set(key, set);
   return set;
+}
+
+/**
+ * Checks one definition file's text without its store: `swarm.yaml`, or an agent file's
+ * frontmatter when `kind` is `agent` or the name ends in `.md`. For loose files and editors;
+ * the checks across files need {@link loadDefinitions}.
+ */
+export function checkDefinitionText(
+  file: string,
+  text: string,
+  opts: { strict?: boolean; kind?: 'swarm' | 'agent' } = {},
+): DefProblem[] {
+  const src = normalText(text);
+  const kind = opts.kind ?? (/\.md$/i.test(file) ? 'agent' : 'swarm');
+  const problems: DefProblem[] = [];
+  if (kind === 'agent') {
+    const yamlText = frontmatter(src);
+    if (yamlText !== null) {
+      problems.push(
+        ...checkYaml(AGENT_SCHEMA, yamlText, { file, strict: opts.strict, lineOffset: 1 }).problems,
+      );
+    }
+  } else problems.push(...checkYaml(SWARM_SCHEMA, src, { file, strict: opts.strict }).problems);
+  problems.push(...secretProblems(file, src));
+  return sortProblems(problems);
 }
 
 /** Problems by file, then line and column. */

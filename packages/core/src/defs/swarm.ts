@@ -3,6 +3,8 @@
  * `runtimes.<rt>.{model, effort}` and `roles`; the other top-level keys are accepted and warned
  * about until their phase lands.
  */
+import YAML from 'yaml';
+import { OpsError } from '../ids.js';
 import { any, bool, enumOf, int, list, map, obj, ref, str } from './schema.js';
 import type { Schema } from './schema.js';
 import {
@@ -212,4 +214,43 @@ export function swarmDefs(value: unknown): SwarmDefs {
     out.roles = roles;
   }
   return out;
+}
+
+/** Values `swarmup defs import-config` writes into `swarm.yaml`. */
+export interface SwarmImport {
+  runtimes: Record<string, SwarmRuntime>;
+  roles: Record<string, SwarmRole>;
+}
+
+/**
+ * `swarm.yaml` text with `values` set in it, comments and other keys kept; a new file when
+ * `before` is empty. Returns the keys it set, such as `runtimes.claude.model`.
+ */
+export function setSwarmValues(
+  before: string,
+  values: SwarmImport,
+): { text: string; keys: string[] } {
+  const doc = before.trim()
+    ? YAML.parseDocument(before)
+    : new YAML.Document({ swarmup_defs: DEFS_FORMAT });
+  if (doc.errors.length > 0) {
+    throw new OpsError(
+      `${SWARM_FILE}: ${doc.errors[0]!.message.split('\n')[0]}; fix it by hand first`,
+      2,
+    );
+  }
+  if (!doc.has('swarmup_defs')) doc.set('swarmup_defs', DEFS_FORMAT);
+  const keys: string[] = [];
+  for (const [area, entries] of Object.entries(values) as Array<
+    [string, Record<string, Record<string, unknown>>]
+  >) {
+    for (const [name, r] of Object.entries(entries)) {
+      for (const [k, v] of Object.entries(r)) {
+        if (v === undefined) continue;
+        doc.setIn([area, name, k], doc.createNode(v, { flow: Array.isArray(v) }));
+        keys.push(`${area}.${name}.${k}`);
+      }
+    }
+  }
+  return { text: doc.toString(), keys };
 }

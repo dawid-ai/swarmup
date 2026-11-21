@@ -221,6 +221,30 @@ describe('swarmup doctor', () => {
     });
   });
 
+  it('checks the definitions of a root with swarm.yaml, and says nothing of one without (W5)', async () => {
+    const repo = temp();
+    execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+    const root = initRoot(repo, { name: 'site', human: 'human:dawid' });
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\n');
+    const id = `defs:${root}`;
+    expect(
+      byId(await doctor({ env: envFor(config), cwd: repo, home: temp() }), id),
+    ).toBeUndefined();
+    writeFileSync(join(root, 'swarm.yaml'), 'swarmup_defs: 1\nroles: {qa: {burst: 2}}\n');
+    expect(byId(await doctor({ env: envFor(config), cwd: repo, home: temp() }), id)).toMatchObject({
+      status: 'ok',
+    });
+    writeFileSync(join(root, 'swarm.yaml'), 'swarmup_defs: 1\nroles: {qa: {burst: -1}}\n');
+    expect(byId(await doctor({ env: envFor(config), cwd: repo, home: temp() }), id)).toMatchObject({
+      label: 'Definitions of site',
+      status: 'fail',
+      detail: expect.stringMatching(
+        /swarm\.yaml:2:21: error: roles\.qa\.burst: use a whole number/,
+      ),
+    });
+  });
+
   it('warns about user-level skill copies that differ from the shipped skill', async () => {
     const cwd = temp();
     const config = join(cwd, 'config.yml');

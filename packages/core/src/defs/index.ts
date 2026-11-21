@@ -19,7 +19,12 @@ export {
   shortHash,
 } from './hash.js';
 export type { DefinitionSet, LoadOptions } from './load.js';
-export { clearDefinitionsCache, loadDefinitions, sortProblems } from './load.js';
+export {
+  checkDefinitionText,
+  clearDefinitionsCache,
+  loadDefinitions,
+  sortProblems,
+} from './load.js';
 export type { Checked, CheckOptions, DefProblem, Locate, Schema, Severity } from './schema.js';
 export {
   checkValue,
@@ -28,10 +33,10 @@ export {
   JSON_SCHEMA_DIALECT,
   toJsonSchema,
 } from './schema.js';
-export type { SwarmDefs, SwarmRole, SwarmRuntime } from './swarm.js';
-export { DEFS_FORMAT, SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
+export type { SwarmDefs, SwarmImport, SwarmRole, SwarmRuntime } from './swarm.js';
+export { DEFS_FORMAT, setSwarmValues, SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
 export type { ValidateInput } from './validate.js';
-export { validateDefinitions } from './validate.js';
+export { secretProblems, validateDefinitions } from './validate.js';
 export {
   checkEffort,
   checkModel,

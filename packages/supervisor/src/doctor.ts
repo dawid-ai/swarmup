@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { UserConfig } from '@swarmup/core';
-import { userConfigPath, Workspace } from '@swarmup/core';
+import { formatProblem, loadDefinitions, userConfigPath, Workspace } from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
 import { opsdConfig } from './config.js';
 import { buildStamp, daemonCall, readDaemon } from './daemon.js';
@@ -505,6 +505,48 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
             fix: `run \`${command}\` once in a terminal and sign in, if runs fail to start`,
           },
     );
+  }
+
+  // Definitions as code (W5): problems in each root's swarm.yaml and agent files. Agent files a
+  // root without swarm.yaml skips are reported above already.
+  for (const r of ws?.roots ?? []) {
+    if (r.isMirror) continue;
+    let set;
+    try {
+      set = loadDefinitions(r.dir, {
+        machineRuntimes: cfg ? Object.keys(cfg.runtimes) : undefined,
+        machineAgents: cfg ? Object.keys(cfg.agents) : undefined,
+      });
+    } catch (err) {
+      add({
+        id: `defs:${r.dir}`,
+        label: `Definitions of ${r.name}`,
+        status: 'fail',
+        detail: (err as Error).message,
+      });
+      continue;
+    }
+    if (!set.present) continue;
+    const errors = set.problems.filter((p) => p.severity === 'error');
+    const warnings = set.problems.length - errors.length;
+    add({
+      id: `defs:${r.dir}`,
+      label: `Definitions of ${r.name}`,
+      status: errors.length > 0 ? 'fail' : warnings > 0 ? 'warn' : 'ok',
+      detail:
+        set.problems.length === 0
+          ? `swarm.yaml and ${set.agents.length} agent file(s) are valid`
+          : set.problems.slice(0, 5).map(formatProblem).join('\n') +
+            (set.problems.length > 5 ? `\n... and ${set.problems.length - 5} more` : ''),
+      ...(set.problems.length > 0
+        ? {
+            fix:
+              errors.length > 0
+                ? `fix the files; swarmupd keeps the last good swarm.yaml of ${r.name} until then (\`swarmup validate --root ${r.name}\` lists every problem)`
+                : `\`swarmup validate --root ${r.name}\` lists every problem`,
+          }
+        : {}),
+    });
   }
 
   // User-level skill copies.

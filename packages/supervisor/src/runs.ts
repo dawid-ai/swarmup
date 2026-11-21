@@ -119,6 +119,29 @@ export interface RunRecord {
   resumed?: string;
   /** The run whose session this run resumed. */
   resumed_from?: string;
+  /**
+   * The definitions the run started with, when a task store has a `swarm.yaml` (W5). Runs
+   * without one record none of `defs`, `model` and `effort`.
+   */
+  defs?: RunDefs;
+  /** The model the run was started with; unset for the runtime's default. */
+  model?: string;
+  /** The reasoning effort the run was started with. */
+  effort?: string;
+}
+
+/** Which definitions a run started with (`RunRecord.defs`). */
+export interface RunDefs {
+  /** The root whose definitions these are. */
+  root: string;
+  /** The definition hash, `d:` and a SHA-256. */
+  hash: string;
+  /** The last store commit that changed a definition file, when they are all committed. */
+  commit?: string;
+  /** A definition file had uncommitted changes. */
+  dirty?: boolean;
+  /** Machine settings that overrode git for this run, such as `runtimes.claude.model`. */
+  local?: string[];
 }
 
 /** A commit of what a run left, in the checkout `top`; `into` is the branch to merge it into. */

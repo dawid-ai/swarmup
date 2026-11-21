@@ -103,26 +103,32 @@ export function validateDefinitions(input: ValidateInput): DefProblem[] {
       }
     }
     // Only with the machine's agents: most agents live in the user config, not in agent files.
-    if (input.machineAgents && !knownRoles.has(role)) {
+    if (input.machineAgents && knownRoles.size > 0 && !knownRoles.has(role)) {
       at(swarmFile, `roles.${role}`, 'warning', `no agent has the role ${role}`);
     }
   }
 
-  // Definitions are shared through git: a secret in one reaches every clone.
-  for (const [path, text] of input.texts) {
-    const lines = text.split('\n');
-    lines.forEach((line, i) => {
-      const kind = secretKind(line);
-      if (!kind) return;
-      out.push({
-        file: join(input.root, path),
-        path: '(top)',
-        line: i + 1,
-        col: 1,
-        severity: 'error',
-        message: `this line looks like a ${kind}; keep secrets in the user config`,
-      });
+  for (const [path, text] of input.texts) out.push(...secretProblems(join(input.root, path), text));
+  return out;
+}
+
+/**
+ * An error for each line of `text` that looks like it holds a secret: definitions are shared
+ * through git, so a secret in one reaches every clone.
+ */
+export function secretProblems(file: string, text: string): DefProblem[] {
+  const out: DefProblem[] = [];
+  text.split('\n').forEach((line, i) => {
+    const kind = secretKind(line);
+    if (!kind) return;
+    out.push({
+      file,
+      path: '(top)',
+      line: i + 1,
+      col: 1,
+      severity: 'error',
+      message: `this line looks like a ${kind}; keep secrets in the user config`,
     });
-  }
+  });
   return out;
 }

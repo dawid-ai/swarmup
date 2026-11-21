@@ -12,6 +12,7 @@ import type {
   Workspace,
 } from '@swarmup/core';
 import {
+  checkDefinitionText,
   parseCriteriaResults,
   parseDoneWhen,
   findAttachment,
@@ -637,6 +638,23 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
 
     // Each milestone's progress on its plan, for the board's cards and its Milestone lanes.
     if (method === 'GET' && area === 'milestones') return send(res, 200, wsAs().planProgress());
+    // Definitions as code (W5): each root's swarm.yaml and agent files, what they set in the
+    // config, and the machine keys that won over them.
+    if (method === 'GET' && area === 'defs' && !id) return send(res, 200, sup.defsView());
+    // Checks a definition file's text while a person edits it; writes nothing.
+    if (method === 'POST' && area === 'defs' && id === 'validate') {
+      const text = body.text;
+      if (typeof text !== 'string') throw new HttpError(400, 'text: send the file text');
+      const kind = body.kind === 'agent' || body.kind === 'swarm' ? body.kind : undefined;
+      const problems = checkDefinitionText(str(body.file) || 'swarm.yaml', text, {
+        strict: body.strict === true,
+        kind,
+      });
+      return send(res, 200, {
+        ok: !problems.some((p) => p.severity === 'error'),
+        problems,
+      });
+    }
     if (method === 'GET' && area === 'agents') {
       // Role files, plus agents only the swarmupd config names; `wake` from the config.
       const defined = sup
