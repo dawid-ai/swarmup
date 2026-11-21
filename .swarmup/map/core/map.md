@@ -5,8 +5,9 @@ covers:
   - packages/core/src/map.ts
   - packages/cli/src/map-cmd.ts
   - packages/supervisor/src/map-prompt.ts
+  - packages/supervisor/src/map-api.ts
   - docs/map.md
-links: [/cli, /supervisor/prompts, /supervisor/merge]
+links: [/cli, /supervisor/prompts, /supervisor/merge, /desktop/ui]
 ---
 
 # Project map
@@ -24,6 +25,10 @@ is for, so a run reads one node instead of the whole tree. This folder is that m
 - `searchMap`, `nodesCovering` and `findNode` back `swarmup map`, `--file` and `show`.
 - `mapPromptOf` and `mapPromptLines` give a run's prompt the root summary and up to 5 matching
   nodes; `mapReviewWarnings` adds the check's warnings to a review prompt.
+- `map-api.ts` serves `/api/map` (map, node, search, check, index, init) for the desktop's Map
+  view, at `Supervisor.mapTopOf(root)`: the root's code checkout, else its store's folder.
+- `checkMapAsync`, `mapBaseAsync`, `projectFilesAsync` and `detectMapTypeAsync` run git with
+  `execOffThread`, since swarmupd runs no git on its event loop; node files are read in sync.
 
 ## Invariants
 

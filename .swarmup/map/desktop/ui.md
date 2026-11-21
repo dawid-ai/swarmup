@@ -17,7 +17,7 @@ covers:
   - packages/desktop/ui/src/views
   - packages/desktop/ui/src/ui
   - packages/desktop/ui/src/lib
-links: [index, replay]
+links: [index, replay, /core/map]
 ---
 
 # Desktop UI
@@ -29,13 +29,14 @@ What the person sees: one React app with a view per area.
 ## How it works
 
 - `App.tsx` routes between `views/*.tsx`: Inbox, Board, List, TaskPanel, Chat, Runs, Agents,
-  Schedules, Repeating, Channels, Decisions, Findings, Knowledge, Search, Activity, Reports,
-  Replay, Settings, Setup, AddProject, NewTask and Standups.
+  Schedules, Repeating, Channels, Decisions, Findings, Knowledge, Map, Search, Activity,
+  Reports, Replay, Settings, Setup, AddProject, NewTask and Standups.
 - `api.ts` holds the hooks and calls to swarmupd through the main process; `types.ts` the shapes.
-- `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice);
-  `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
-  the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`) and Runs;
-  `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history).
+- `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the
+  map graph); `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG
+  sparkline, links to the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`) and
+  Runs;
+  `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history, map).
 - `assets/brand/` holds the tiles and status icons.
 
 ## Invariants

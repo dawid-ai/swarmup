@@ -35,6 +35,7 @@ import {
   standup,
 } from './admin.js';
 import { NoDiff } from './diff.js';
+import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
 import { scorerCatalog, scorerSettings, summarizeScores } from './scores.js';
@@ -937,6 +938,34 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         200,
         hits.map(({ note: { file: _file, ...note }, score }) => ({ ...note, score })),
       );
+    }
+    // The project map of a root (`?root=` or `{ root }`, else the default root): in its code
+    // checkout, else in its store's folder. The check and type detection run git off the loop.
+    if (area === 'map' && !action) {
+      const ws = wsAs();
+      const root = requestedRoot(ws, method === 'GET' ? q.get('root') : body.root);
+      const name = (root ?? ws.defaultRoot()).name;
+      const top = await sup.mapTopOf(root ?? ws.defaultRoot());
+      if (method === 'GET' && !id) return send(res, 200, await mapView(name, top));
+      if (method === 'GET' && id === 'node') {
+        const node = mapNodeView(top, need(q.get('id'), 'id'));
+        if (!node) throw new HttpError(404, `no map node '${q.get('id')}'`);
+        return send(res, 200, node);
+      }
+      if (method === 'GET' && id === 'search') {
+        const file = q.get('file') || undefined;
+        return send(res, 200, mapSearch(top, { q: (q.get('q') ?? '').slice(0, 500), file }));
+      }
+      // The check reads; the root's merge base is the default it compares with.
+      if (method === 'POST' && id === 'check') {
+        return send(res, 200, await mapCheck(top, str(body.base) || sup.config.merge[name]?.base));
+      }
+      if (method === 'POST' && (id === 'index' || id === 'init'))
+        humanOnly('writing the project map');
+      if (method === 'POST' && id === 'index') return send(res, 200, mapIndex(top));
+      if (method === 'POST' && id === 'init') {
+        return send(res, 201, await mapInit(top, str(body.type) || undefined));
+      }
     }
     if (area === 'attachments') {
       if (method === 'POST' && !id) {

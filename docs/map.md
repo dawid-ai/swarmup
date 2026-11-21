@@ -89,7 +89,9 @@ swarmup map check [--base REF]    # check the map against the change; --json for
 swarmup map init [--type code|website|campaign]   # start a map: root node, ignore, README
 ```
 
-Each takes `--cwd DIR`. `swarmup map init` writes no content: it detects the type from the
+Each takes `--cwd DIR`. The desktop app's **Map** view does the same from a window: list,
+search, show, check, rebuild the index and create a map; see
+[the desktop app](desktop.md#views). `swarmup map init` writes no content: it detects the type from the
 repo survey `swarmup adopt` uses (a site framework or mostly pages is a website, a manifest or
 source files is code, otherwise a campaign) and leaves the root summary for you to write.
 

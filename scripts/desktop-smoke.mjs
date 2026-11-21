@@ -155,6 +155,31 @@ swarmup(
 );
 // A recorded decision, for the Log tab of Decisions (AO-0315).
 swarmup('human:smoke', 'decision', 'Docs ship with every feature');
+// A project map with a few linked nodes, for the Map view (W2).
+swarmup(null, 'map', 'init', '--type', 'code');
+const mapNode = (rel, lines, body = []) =>
+  writeFileSync(
+    join(repo, '.swarmup', 'map', rel),
+    ['---', ...lines, '---', '', ...body, ''].join('\n'),
+  );
+mapNode('index.md', [
+  'kind: root',
+  'type: code',
+  'summary: Smoke project; a docs page and a guide',
+  'links: [docs, guide]',
+]);
+mapNode(
+  'docs.md',
+  ['kind: module', 'summary: The docs page count', 'covers: [docs.ts]', 'links: [guide]'],
+  ['# Docs', '', 'Counts the **pages**.'],
+);
+mapNode('guide.md', [
+  'kind: page',
+  'summary: The user guide',
+  'covers: [guide.md, https://example.com/guide]',
+  'review_after: 2026-01-01',
+]);
+swarmup(null, 'map', 'index');
 
 // Two milestones (AO-0110, AO-0321). One has an approved plan with a task done, for the board's
 // milestone card (`1/3 done`) and its Milestone lanes. The other has a plan that waits, for the
@@ -264,6 +289,7 @@ const views = [
   'chat',
   'channels',
   'knowledge',
+  'map',
   // Every Settings category gets its own screenshot and the app checks that the link selected it.
   'settings:general',
   'settings:projects',

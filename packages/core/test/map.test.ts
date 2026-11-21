@@ -3,8 +3,10 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   checkMap,
+  checkMapAsync,
   coverMatcher,
   detectMapType,
+  detectMapTypeAsync,
   findNode,
   ignoreMatcher,
   initMap,
@@ -283,6 +285,23 @@ describe('checkMap', () => {
     expect(after.errors).toEqual([]);
     expect(after.warnings.map((w) => w.node)).toEqual(['docs/b']);
     expect(() => checkMap(top, { base: 'no-such-branch' })).toThrow(/no merge base/);
+  });
+
+  it('checks the same with git off the event loop', async () => {
+    const top = project();
+    writeMapIndex(readMap(top)!);
+    repo(top);
+    git(top, 'checkout', '-q', '-b', 'work');
+    write(top, 'src/a.ts', 'export const a = 2;\n');
+    write(top, 'src/new.ts', 'x\n');
+    const res = await checkMapAsync(top);
+    expect(res).toEqual(checkMap(top));
+    expect(res.base?.ref).toBe('main');
+    expect(res.errors.map((e) => e.path)).toEqual(['src/new.ts']);
+    expect(res.warnings.map((w) => w.node)).toEqual(['core']);
+    await expect(checkMapAsync(top, { base: 'no-such-branch' })).rejects.toThrow(/no merge base/);
+    expect(await detectMapTypeAsync(top)).toBe(detectMapType(top));
+    expect((await checkMapAsync(tempDir())).hasMap).toBe(false);
   });
 
   it('warns on a reviewed commit against the checkout map', () => {

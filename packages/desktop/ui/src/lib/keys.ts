@@ -15,6 +15,7 @@ export const GO_KEYS: Record<string, { view: string; label: string }> = {
   c: { view: 'channels', label: 'Channels' },
   d: { view: 'decisions', label: 'Decisions' },
   k: { view: 'knowledge', label: 'Knowledge' },
+  m: { view: 'map', label: 'Map' },
 };
 
 export const SHORTCUTS: Array<[string, string]> = [
