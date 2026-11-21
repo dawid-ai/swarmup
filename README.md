@@ -133,7 +133,8 @@ The commands work the same in PowerShell, Command Prompt and bash.
 `swarmup help` lists every command. The protocol, statuses and permissions are in
 [docs/protocol.md](docs/protocol.md); swarmupd is in [docs/supervisor.md](docs/supervisor.md) and the
 app in [docs/desktop.md](docs/desktop.md). The project map, which tells agents what each part of a
-project is for, is in [docs/map.md](docs/map.md).
+project is for, is in [docs/map.md](docs/map.md). Team settings kept in the task store
+(`swarm.yaml`) are in [docs/definitions.md](docs/definitions.md).
 
 ## How data is stored
 

@@ -854,7 +854,8 @@ non-empty list, the task is blocked on those tasks in the same event, after the 
 cleared, and a `reopen` with `to` also sets the owner), `decision` (answer, verdict, comment,
 retype, park: the id of the recorded decision the event marks; see [Decisions](#decisions)),
 `session` (run-end: the runtime's session id; run-start: the session the run resumed),
-`plan_apply` and `plan_skip` (the markers
+`defs` (run-start: the short hash of the definitions the run started with, when its task store
+has a `swarm.yaml`; see [docs/definitions.md](definitions.md)), `plan_apply` and `plan_skip` (the markers
 of a milestone's plan change on one plan item), `done_when` (criteria: the whole new list) and
 `criteria` (verdict, criteria-check, merge: results by criterion id, each
 `{ result: pass|fail|na, score?, evidence?, note? }`). Types that change state:
