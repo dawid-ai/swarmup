@@ -15,6 +15,7 @@ import {
   processStart,
   Supervisor,
 } from '../src/index.js';
+import { gitAsync } from '../src/git.js';
 import { WAIT_MS } from './until.js';
 
 export const here = dirname(fileURLToPath(import.meta.url));
@@ -191,6 +192,8 @@ export function setup(
     runsOutlive?: boolean;
     /** The task repo's folder, under a `temp()` folder; a new temp folder by default. */
     repo?: string;
+    /** The caller already initialized `repo` as git; used by off-thread test setup. */
+    initialized?: boolean;
     /**
      * A file holding `in` or `out`: the fake runtime gets a sign-in check that reads it
      * (AO-0154). Without it, the fake runtime has no sign-in check.
@@ -200,7 +203,7 @@ export function setup(
 ) {
   const repo = opts.repo ?? temp();
   mkdirSync(repo, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
+  if (!opts.initialized) execFileSync('git', ['init', '-q'], { cwd: repo, windowsHide: true });
   initRoot(repo, { name: 'test', human: 'human:dawid' });
   const agentFile = join(temp(), 'fake-agent.mjs');
   writeFileSync(agentFile, FAKE_AGENT);
@@ -254,6 +257,14 @@ export function setup(
   const sup = opsd();
   const as = (actor: string) => new Workspace({ cwd: repo, env, actor, user: {}, now: opts.now });
   return { repo, sup, as, state, opsd };
+}
+
+/** {@link setup} with repository initialization off the Vitest worker's event loop. */
+export async function setupAsync(opts: Parameters<typeof setup>[0] = {}) {
+  const repo = opts.repo ?? temp();
+  mkdirSync(repo, { recursive: true });
+  await gitAsync(repo, ['init', '-q']);
+  return setup({ ...opts, repo, initialized: true });
 }
 
 /** A runtime whose runs hang until stopped. */
