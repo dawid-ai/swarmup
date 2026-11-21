@@ -53,6 +53,11 @@ describe('IPC allowlist', () => {
     expect(allowedCall('GET', '/api/doctor')).toBe(true);
     expect(allowedCall('POST', '/api/doctor/skills')).toBe(true);
     expect(allowedCall('GET', '/api/report?days=30')).toBe(true);
+    expect(allowedCall('GET', '/api/scores?task=site%2FT-0002')).toBe(true);
+    expect(allowedCall('GET', '/api/scores/history?since=2026-11-01T00%3A00%3A00Z&tz=-60')).toBe(
+      true,
+    );
+    expect(allowedCall('POST', '/api/scores/refresh')).toBe(false);
     expect(allowedCall('POST', '/api/notify/test')).toBe(true);
     expect(allowedCall('GET', '/api/machines')).toBe(true);
     expect(allowedCall('GET', '/api/notify/test')).toBe(false);

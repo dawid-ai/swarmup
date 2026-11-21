@@ -2,18 +2,22 @@ import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
   AlertOctagon,
+  Brain,
   CalendarClock,
   CheckCircle2,
   Clock,
+  Compass,
   Cpu,
   ExternalLink,
   Eye,
+  Fingerprint,
   GitFork,
   Inbox,
   Layers,
   Play,
   Plus,
   Radio,
+  RotateCcw,
   Skull,
   SquareTerminal,
   XCircle,
@@ -40,7 +44,7 @@ import {
 import { ago, minutes, readableLog, tokens } from '../lib/format';
 import { identity } from '../lib/identity';
 import { runLoop } from '../lib/statusloop';
-import type { ProcView, RunPage, RunRecord } from '../types';
+import type { ProcView, RunOrientation, RunPage, RunRecord } from '../types';
 import { AgentPicker } from '../ui/pickers';
 import { StatusLoop } from '../ui/statusloop';
 import { ProjectName } from '../ui/project-label';
@@ -183,6 +187,25 @@ function Target({ run, nav }: { run: RunRecord; nav?: Nav }) {
   );
 }
 
+/** `d:` and the first 12 hex digits of a definition hash, as the `run-start` event names it. */
+export function shortDefs(hash: string): string {
+  return hash.startsWith('d:') ? hash.slice(0, 14) : hash.slice(0, 12);
+}
+
+/** The tooltip of a run's definition stamp: root, full hash, commit or dirty, local overrides. */
+export function defsTitle(defs: NonNullable<RunRecord['defs']>): string {
+  const lines = [`Definitions of ${defs.root}: ${defs.hash}`];
+  if (defs.dirty) lines.push('A definition file had uncommitted changes.');
+  else if (defs.commit) lines.push(`Last definition commit: ${defs.commit}`);
+  if (defs.local?.length) lines.push(`Overridden on this machine: ${defs.local.join(', ')}`);
+  return lines.join('\n');
+}
+
+/** `opus · high`: the model and effort a run started with; '' when it records neither. */
+export function modelText(run: Pick<RunRecord, 'model' | 'effort'>): string {
+  return [run.model, run.effort].filter(Boolean).join(' · ');
+}
+
 /** Rows the list shows; swarmupd sends one page of this size with the counts (AO-0167). */
 export const PAGE = 50;
 
@@ -237,6 +260,9 @@ interface Older {
 export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const [pick, setPick] = useState<string | undefined>(selected);
   const [filter, setFilter] = useState<Filter>('all');
+  // Narrow the list and its counts to resumed runs, or to the runs of one model.
+  const [resumedOnly, setResumedOnly] = useState(false);
+  const [model, setModel] = useState('');
   // **Day** by default: the stats keep counting today, and live runs show in every range to now.
   const [picked, setPicked] = useTimeRange({ days: 1, custom: false, from: '', to: '' });
   const [older, setOlder] = useState<Older | null>(null);
@@ -249,7 +275,8 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const midnight = new Date(now);
   midnight.setHours(0, 0, 0, 0);
   const range = runRange(picked, now);
-  const ranged = rangeQuery(range);
+  const ranged =
+    rangeQuery(range) + (resumedOnly ? '&resumed=1' : '') + (model ? `&model=${q(model)}` : '');
   // Rows **Show more** fetched belong to one filter and one range.
   const view = `${filter}${ranged}`;
   const tail = older?.view === view ? older : null;
@@ -297,6 +324,15 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
     setOlder(null);
     setMoreError(null);
   };
+  /** Turns the resumed-only filter on or off, or picks a model ('' for every model). */
+  const narrow = (patch: { resumed?: boolean; model?: string }): void => {
+    if (patch.resumed !== undefined) setResumedOnly(patch.resumed);
+    if (patch.model !== undefined) setModel(patch.model);
+    setOlder(null);
+    setMoreError(null);
+  };
+  // The picked model stays in the list while the range has none of its runs.
+  const models = [...new Set([...(page?.models ?? []), ...(model ? [model] : [])])].sort();
   /** Picks a range: a preset, **Custom**, or new **From** and **to** dates. */
   const chooseRange = (r: TimeRange): void => {
     setPicked(r);
@@ -462,10 +498,12 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
                   </button>
                 ))}
               </div>
+              <RunNarrow resumed={resumedOnly} model={model} models={models} onChange={narrow} />
               <div className="min-h-0 flex-1 overflow-auto p-1.5">
                 {page && shown.length === 0 && (
                   <div className="px-4 py-10 text-center text-sm text-fg-4">
-                    No {filter === 'errors' ? 'runs with errors' : `${filter} runs`} in this range.
+                    No {filter === 'errors' ? 'runs with errors' : `${filter} runs`}
+                    {resumedOnly || model ? ' that match the filters' : ''} in this range.
                   </div>
                 )}
                 {shown.map((r) => (
@@ -492,7 +530,7 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
             </div>
             <div className="panel min-w-0 flex-1 overflow-hidden">
               {current ? (
-                <RunLog run={current} nav={nav} />
+                <RunLog run={current} nav={nav} orientation={page?.orientation?.[current.id]} />
               ) : (
                 <Empty icon={SquareTerminal} title="Pick a run">
                   Its log shows here: what the agent said, the commands it ran, and how it ended.
@@ -544,12 +582,22 @@ function RunRow(props: { run: RunRecord; now: number; active: boolean; onPick: (
                 helper
               </Badge>
             )}
+            {(run.resumed_from || run.resumed) && (
+              <Badge color="#5ce1e6" icon={RotateCcw}>
+                resumed
+              </Badge>
+            )}
             {run.procs_left ? (
               <Badge color="#ff5d6c" icon={Layers}>
                 {run.procs_left} left
               </Badge>
             ) : null}
-            <span className="ml-auto shrink-0 font-mono text-[11px] text-fg-3">
+            <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-[11px] text-fg-3">
+              {run.model && (
+                <span className="max-w-24 truncate text-fg-4" title={modelText(run)}>
+                  {run.model}
+                </span>
+              )}
               {tokens(run.tokens)} tok
             </span>
           </div>
@@ -562,6 +610,47 @@ function RunRow(props: { run: RunRecord; now: number; active: boolean; onPick: (
         </div>
       </div>
     </button>
+  );
+}
+
+/** The list's filters past the tabs: resumed runs only, and one model. */
+function RunNarrow(props: {
+  resumed: boolean;
+  model: string;
+  models: string[];
+  onChange: (patch: { resumed?: boolean; model?: string }) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 border-b border-white/6 px-2 py-1.5 text-xs">
+      <button
+        type="button"
+        aria-pressed={props.resumed}
+        onClick={() => props.onChange({ resumed: !props.resumed })}
+        title="Only runs that resumed their earlier session after a changes verdict"
+        className={cx(
+          'inline-flex items-center gap-1 rounded-md px-2 py-1 transition',
+          props.resumed ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:bg-white/4 hover:text-fg-2',
+        )}
+      >
+        <RotateCcw size={11} />
+        Resumed
+      </button>
+      {props.models.length > 0 && (
+        <select
+          aria-label="Model"
+          value={props.model}
+          onChange={(e) => props.onChange({ model: e.target.value })}
+          className="ml-auto h-6 max-w-40 rounded-md border border-white/10 bg-ink-950/60 px-1 text-fg-2"
+        >
+          <option value="">Every model</option>
+          {props.models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
   );
 }
 
@@ -582,7 +671,16 @@ function Metric({
   );
 }
 
-function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
+function RunLog({
+  run,
+  nav,
+  orientation,
+}: {
+  run: RunRecord;
+  nav: Nav;
+  /** What the score keeper read of the run's log, when it read it. */
+  orientation?: RunOrientation;
+}) {
   const [log, setLog] = useState('');
   const [raw, setRaw] = useState(false);
   const [showProcs, setShowProcs] = useState(false);
@@ -648,6 +746,32 @@ function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
                   helper of {run.parent}
                 </Badge>
               )}
+              {(run.resumed_from || run.resumed) && (
+                <span
+                  data-testid="run-resumed"
+                  title={
+                    run.resumed
+                      ? `Resumed session ${run.resumed} after a changes verdict`
+                      : 'Resumed a session after a changes verdict'
+                  }
+                >
+                  <Badge color="#5ce1e6" icon={RotateCcw}>
+                    resumed
+                    {run.resumed_from && (
+                      <>
+                        {' from '}
+                        <button
+                          type="button"
+                          className="font-mono normal-case hover:underline"
+                          onClick={() => nav.go('runs', run.resumed_from)}
+                        >
+                          {run.resumed_from.slice(-6)}
+                        </button>
+                      </>
+                    )}
+                  </Badge>
+                </span>
+              )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
               <Target run={run} nav={nav} />
@@ -699,6 +823,47 @@ function RunLog({ run, nav }: { run: RunRecord; nav: Nav }) {
           <Metric icon={Cpu} title="Process id">
             pid {run.pid}
           </Metric>
+          {modelText(run) && (
+            <Metric icon={Brain} title="Model and reasoning effort the run started with">
+              {modelText(run)}
+            </Metric>
+          )}
+          {run.defs && (
+            <Metric icon={Fingerprint} title={defsTitle(run.defs)}>
+              {shortDefs(run.defs.hash)}
+              {run.defs.dirty && <span className="text-warn">dirty</span>}
+              {run.defs.local?.length ? (
+                <span className="text-fg-4">+{run.defs.local.length} local</span>
+              ) : null}
+            </Metric>
+          )}
+          {orientation && (
+            <Metric
+              icon={Compass}
+              title={
+                orientation.edited
+                  ? `Orientation: ${orientation.calls} tool calls before the first edit, after reading ${Math.round(orientation.share * 100)}% of the tool output of the whole run`
+                  : `Orientation: ${orientation.calls} tool calls and no edit through an edit tool`
+              }
+            >
+              <span
+                className={
+                  orientation.pass === false
+                    ? 'text-warn'
+                    : orientation.pass
+                      ? 'text-ok'
+                      : undefined
+                }
+              >
+                {orientation.edited
+                  ? `${orientation.calls} calls to edit`
+                  : `${orientation.calls} calls, no edit`}
+              </span>
+              {orientation.edited && (
+                <span className="text-fg-4">· {Math.round(orientation.share * 100)}% read</span>
+              )}
+            </Metric>
+          )}
           <div className="ml-auto flex items-center gap-2">
             <div className="flex rounded-lg bg-white/5 p-0.5 ring-1 ring-white/8">
               {(['readable', 'raw'] as const).map((m) => (
