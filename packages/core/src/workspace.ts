@@ -11,6 +11,8 @@ import type {
 } from './agents.js';
 import type { Attachment } from './attachments.js';
 import { attachmentRefs, findAttachment, saveAttachment } from './attachments.js';
+import type { Brief } from './brief.js';
+import { BRIEF_TYPE, foldBrief } from './brief.js';
 import {
   canClaimType,
   checkRole,
@@ -1961,10 +1963,25 @@ export class Workspace {
   recordRun(
     ref: string,
     type: 'run-start' | 'run-end',
-    fields: Pick<OpsEvent, 'run' | 'exit' | 'reason' | 'minutes' | 'tokens'>,
+    fields: Pick<OpsEvent, 'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session'>,
     message = '',
   ): ActResult {
     return this.act(ref, () => [{ type, ...fields, body: message }]);
+  }
+
+  /**
+   * Writes a new goal brief on a milestone or parent task: outcome, done, next, open questions,
+   * decisions in force. The newest brief wins. Anyone who may comment may write one, in any
+   * status; it changes no state.
+   */
+  brief(ref: string, body: string): ActResult {
+    if (!body.trim()) throw new OpsError('a brief needs text', 2);
+    return this.act(ref, () => [{ type: BRIEF_TYPE, body: body.trim() }]);
+  }
+
+  /** The task's current brief: its newest `brief` event, or null. */
+  briefOf(ref: string): Brief | null {
+    return foldBrief(this.showEvents(ref).events);
   }
 
   /** Records that swarmupd merged the task's approved work into a base branch. History only. */
