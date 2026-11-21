@@ -1710,6 +1710,31 @@ const COMMANDS: Record<string, Command> = {
         ctx.ws().checkpoint(arg(ctx, 0, 'task id'), message(ctx, 1, true), str(ctx.opts.next)),
       ),
   },
+  brief: {
+    usage: 'brief ID [--body-file F | -m TEXT]',
+    summary:
+      "print a milestone's or parent task's goal brief, or write a new one (Markdown: outcome, done, next, open questions, decisions in force; the newest wins)",
+    options: MESSAGE_OPTIONS,
+    run: (ctx) => {
+      const ref = arg(ctx, 0, 'task id');
+      const ws = ctx.ws();
+      const writing =
+        ctx.opts.message !== undefined ||
+        ctx.opts['body-file'] !== undefined ||
+        ctx.args.length > 1;
+      if (writing) return printAct(ctx, ws.brief(ref, message(ctx, 1, true)));
+      const b = ws.briefOf(ref);
+      if (ctx.opts.json) {
+        ctx.io.out(JSON.stringify(b, null, 2));
+        return b ? undefined : 3;
+      }
+      if (!b) {
+        ctx.io.err(`${ref} has no brief: write one with swarmup brief ${ref} --body-file -`);
+        return 3;
+      }
+      ctx.io.out(`${b.actor}, ${localTime(b.at)}:\n\n${b.body}`);
+    },
+  },
   release: {
     usage: 'release ID [MESSAGE]',
     summary: 'give the task back to the queue',

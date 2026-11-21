@@ -2,6 +2,7 @@ export * from './activity.js';
 export * from './adopt.js';
 export * from './agents.js';
 export * from './attachments.js';
+export * from './brief.js';
 export * from './channels.js';
 export * from './config.js';
 export * from './criteria.js';

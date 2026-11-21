@@ -79,6 +79,7 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | Command                                                                                  | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `comment ID MSG [--to ID]`                                                               | A note; `--to` puts it in that inbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `brief ID [--body-file F \| -m TEXT]`                                                    | Prints the goal brief of a milestone or parent task (exit 3 without one), or writes a new one. See [Goal briefs](#goal-briefs).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `inbox [--mark-read]`                                                                    | Unread messages addressed to you, asks and reviews waiting for you, and, for humans, tasks you own. Findings to triage go to the PM when one is configured, and to a person only when assigned to them; without a PM, to every person. A review item shows the latest request: who asked, its text, and the PR, commit and branch it names. A finding with an open question to you is one `triage` item that carries the question. The PM also gets a `record` item for each decision a person recorded in the last 7 days, to check it against the decisions in force. `--mark-read` clears messages and `record` items only.                                                                                                                                     |
 | `new TITLE [...]`                                                                        | Creates a task. A human or the orchestrator creates it as asked. An agent creates a task only with `--parent` naming an open, approved task (created by a human or the orchestrator, or accepted, assigned, delegated or reopened by a human, the orchestrator or a PM, or a subtask of one); otherwise `new` files a `finding` that waits for the PM's triage and prints a note. Ideas, findings and questions pass as filed. `--done-when CHECK` (repeatable) sets the task's `done_when` list; see [Done when](#done-when).                                                                                                                                                                                                                                     |
 | `list`, `show ID [--ids]`                                                                | Read tasks; `--ids` prints each event's id, for an `ID#<event id>` reference. `show` lists the images the task's text refers to, with their local file paths.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -379,6 +380,24 @@ settles it becomes `todo(unblocked)` for a QA role. The checker runs the milesto
 failure uses a `fix` amendment with one task per gap. After two fix rounds, another failure uses
 `swarmup ask ID` with the earlier evidence and the options to change `done_when`, add work or park
 the milestone.
+
+### Goal briefs
+
+A milestone, or any task with children, can carry a living brief: a short Markdown text with the
+outcome, what is done, what comes next, the open questions and the decisions in force.
+
+```bash
+swarmup brief AO-0120 --body-file - < brief.md   # writes a new brief; -m TEXT works too
+swarmup brief AO-0120                            # prints the current one; exit 3 without one
+```
+
+- Each `swarmup brief ID --body-file F` writes a `brief` event; the newest one is the brief.
+  Anyone who may comment may write one, in any status, and it changes no state.
+- The prompt of a work or review run on a child shows each parent's brief, or the first
+  paragraph of its text when it has none (see
+  [Run context](supervisor.md#run-context-in-the-prompt)).
+- The PM keeps briefs current: its inbox runs list the open milestones, and the open parents
+  that have a brief, whose children closed after their brief was written.
 
 ## Decisions
 
@@ -834,6 +853,7 @@ clears it), `on` (block: the tasks the task waits on; on a `handoff`, `delegate`
 non-empty list, the task is blocked on those tasks in the same event, after the old wait is
 cleared, and a `reopen` with `to` also sets the owner), `decision` (answer, verdict, comment,
 retype, park: the id of the recorded decision the event marks; see [Decisions](#decisions)),
+`session` (run-end: the runtime's session id; run-start: the session the run resumed),
 `plan_apply` and `plan_skip` (the markers
 of a milestone's plan change on one plan item), `done_when` (criteria: the whole new list) and
 `criteria` (verdict, criteria-check, merge: results by criterion id, each
@@ -843,9 +863,9 @@ of a milestone's plan change on one plan item), `done_when` (criteria: the whole
 milestone `plan-approve`, `plan-amend` and the `plan-reject` of its first proposal (the fold reads
 the plan itself from these and from `plan` events, which the `swarmup plan` commands write; see
 [Milestones and plans](#milestones-and-plans)). Other types (`comment`,
-`finding`, `learn`, `run-start`, `run-end`, `merge`, `criteria-check`) are history; the fold
-reads a task's current criteria from `criteria` events and their last results from `verdict`,
-`criteria-check` and `merge` events. Unknown types are kept and
+`finding`, `learn`, `run-start`, `run-end`, `merge`, `criteria-check`, `brief`) are history; the
+fold reads a task's current criteria from `criteria` events and their last results from
+`verdict`, `criteria-check` and `merge` events. Unknown types are kept and
 ignored, so older `swarmup` versions read newer data. swarmupd writes `merge` events, and the `changes`
 verdict that sends back approved work it could not merge, as `opsd:merge`.
 

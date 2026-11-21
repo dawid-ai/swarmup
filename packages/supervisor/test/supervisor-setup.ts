@@ -84,7 +84,7 @@ if (mode === 'auth') {
   console.log(JSON.stringify({ type: 'result', is_error: true, result: text }));
   process.exit(1);
 }
-const task = /Work on (\\S+):/.exec(prompt)?.[1];
+const task = /Work on (\\S+):/.exec(prompt)?.[1] ?? /earlier session of (\\S+) /.exec(prompt)?.[1];
 const ws = new Workspace({ cwd: process.cwd(), env: process.env });
 console.log(JSON.stringify({ type: 'assistant', message: { id: 'm1', usage: { input_tokens: 100, output_tokens: 50 } } }));
 // 'idle' hangs without touching the task, so it cannot see a claim swarmupd has yet to report lost.
@@ -177,6 +177,11 @@ else if (mode === 'stray') {
     fs.writeFileSync(path.join('node_modules', 'electron', 'path.txt'), exe);
   }
   if (task) ws.done(task, 'left a stray file');
+}
+else if (mode === 'session-review') {
+  // A Claude run: names its session, then asks for review.
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1' }));
+  if (task) ws.review(task, 'ready for review');
 }
 else if (mode === 'tail') process.stdout.write(JSON.stringify({ type: 'result', usage: { input_tokens: 1000, output_tokens: 1 } }));
 `;

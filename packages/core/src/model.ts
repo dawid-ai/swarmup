@@ -24,7 +24,7 @@ export type Priority = (typeof PRIORITIES)[number];
 
 /**
  * Event types. The fold acts on the ones that change state; the rest (comment, finding, learn,
- * run-start, run-end, merge) are history. The four plan events carry a milestone's plan
+ * run-start, run-end, merge, brief) are history. The four plan events carry a milestone's plan
  * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
  * results. Unknown types from newer versions are kept and ignored.
  */
@@ -62,6 +62,7 @@ export const EVENT_TYPES = [
   'plan-reject',
   'criteria',
   'criteria-check',
+  'brief',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -243,6 +244,11 @@ export interface OpsEvent {
   reason?: string;
   /** run-end: minutes the run took. */
   minutes?: number;
+  /**
+   * run-end: the runtime's session id (Claude's `session_id`, Codex's thread id), so a later run
+   * can resume the session. run-start: the session the run resumed.
+   */
+  session?: string;
   /**
    * merge: the commit the base branch moved to. review: the HEAD commit of the checkout
    * `swarmup review` ran in, or the one `--commit` names (AO-0384).

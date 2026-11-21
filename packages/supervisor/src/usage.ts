@@ -15,6 +15,8 @@ export class UsageMeter {
   rateLimitSeen = 0;
   /** Codex's thread id from `thread.started`: names its session file. */
   threadId: string | null = null;
+  /** Claude's session id from its `system` `init` message: `--resume` takes it. */
+  sessionId: string | null = null;
   /**
    * The run hit its provider's usage limit, from an error in its output; `resetsAt` (ms) when the
    * message names it. A fallback for runs whose output has no rate limit event.
@@ -86,6 +88,13 @@ export class UsageMeter {
     } else if (ev.type === 'rate_limit_event') {
       this.rateLimit = ev.rate_limit_info ?? null;
       this.rateLimitSeen++;
+    } else if (
+      ev.type === 'system' &&
+      ev.subtype === 'init' &&
+      typeof ev.session_id === 'string' &&
+      this.sessionId === null
+    ) {
+      this.sessionId = ev.session_id;
     } else if (ev.type === 'thread.started' && typeof ev.thread_id === 'string') {
       this.threadId = ev.thread_id;
     } else if (ev.type === 'turn.completed' && ev.usage) {
