@@ -27,6 +27,7 @@ import type { EditRow } from '../lib/plan';
 import {
   addRow,
   checkHistory,
+  doneWhenText,
   editRows,
   minutesText,
   moveRow,
@@ -371,7 +372,9 @@ function PlanTable(props: { rows: readonly PlanRow[]; tasks: boolean; nav: Nav; 
                 {r.review && <span>review {r.review}</span>}
                 {r.origin && r.origin !== 'approve' && <span>{r.origin}</span>}
               </div>
-              {r.done_when && <div className="mt-0.5 text-[11px] text-fg-3">{r.done_when}</div>}
+              {r.done_when && (
+                <div className="mt-0.5 text-[11px] text-fg-3">{doneWhenText(r.done_when)}</div>
+              )}
             </td>
             {tasks && (
               <td className="py-1.5 pr-2 whitespace-nowrap">
@@ -579,7 +582,11 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
                 label="Done when"
                 value={r.done_when}
                 disabled={fixed}
-                placeholder="The item's check; the title when empty"
+                placeholder={
+                  r.typedDoneWhen
+                    ? doneWhenText(r.typedDoneWhen)
+                    : "The item's check; the title when empty"
+                }
                 onChange={(done_when) => set(r.uid, { done_when })}
               />
             </div>

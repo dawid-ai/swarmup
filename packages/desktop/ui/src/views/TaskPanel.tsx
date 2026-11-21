@@ -59,6 +59,7 @@ import {
 } from '../lib/thread';
 import { taskLoop } from '../lib/statusloop';
 import { moveTo, shownStatus } from '../lib/transitions';
+import { criterionText } from '../lib/plan';
 import type { OpsEvent, Status, Task, TaskDetail } from '../types';
 import { DiffDialog } from '../ui/diff';
 import { Markdown } from '../ui/markdown';
@@ -410,6 +411,39 @@ export function TaskPanel({
                 className="md text-sm text-fg-2"
                 dangerouslySetInnerHTML={{ __html: renderMarkdown(data.body) }}
               />
+            </>
+          )}
+
+          {!milestone && data?.criteria && data.criteria.length > 0 && (
+            <>
+              <h3 className="label-caps mt-6 mb-2 flex items-center gap-1.5">
+                <ListChecks size={12} /> Done when
+              </h3>
+              <ul data-criteria className="space-y-1 text-sm text-fg-2">
+                {data.criteria.map((c) => {
+                  const r = data.criteriaResults?.[c.id];
+                  return (
+                    <li key={c.id} data-criterion={c.id} className="flex items-baseline gap-2">
+                      <span className="font-mono text-[11px] text-fg-4">{c.id}</span>
+                      <span className="font-mono text-[11px] text-fg-3">{c.kind}</span>
+                      <span className="min-w-0 flex-1">{criterionText(c)}</span>
+                      <span
+                        className={cx(
+                          'font-mono text-[11px]',
+                          r?.result === 'pass' && 'text-ok',
+                          r?.result === 'fail' && 'text-bad',
+                          !r && 'text-fg-4',
+                        )}
+                        title={
+                          r ? `${r.type} by ${r.actor}${r.note ? `: ${r.note}` : ''}` : undefined
+                        }
+                      >
+                        {r?.result ?? '-'}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
             </>
           )}
 

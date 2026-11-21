@@ -74,6 +74,38 @@ export interface TaskDetail {
   task: Task;
   body: string;
   events: OpsEvent[];
+  /** The task's current criteria, ids settled (mirrors `Criterion` in core). */
+  criteria?: Criterion[];
+  /** The latest result of each criterion, by id. */
+  criteriaResults?: Record<string, CriterionLast>;
+}
+
+/** A typed `done_when` entry (mirrors `CriterionSpec` in `packages/core/src/criteria.ts`). */
+export interface CriterionSpec {
+  id?: string;
+  kind: 'prose' | 'command' | 'check' | 'rubric' | 'human' | 'map';
+  text?: string;
+  run?: string;
+  check?: string;
+  args?: Record<string, unknown>;
+  rubric?: string;
+  pass?: number;
+  ask?: string;
+}
+
+export interface Criterion extends CriterionSpec {
+  id: string;
+}
+
+export interface CriterionLast {
+  result: 'pass' | 'fail' | 'na';
+  score?: number;
+  evidence?: string;
+  note?: string;
+  event: string;
+  actor: string;
+  at: string;
+  type: string;
 }
 
 export interface Question {
@@ -129,7 +161,8 @@ export interface PlanRow {
   origin?: 'approve' | 'subtask' | 'fix';
   for?: string;
   review?: string;
-  done_when?: string;
+  /** One line of text, or one typed criterion. */
+  done_when?: string | CriterionSpec;
   type?: string;
   priority?: Task['priority'];
   body?: string;

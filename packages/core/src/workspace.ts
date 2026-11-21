@@ -81,6 +81,17 @@ import {
   planLookup,
   summaryLine,
 } from './fold.js';
+import type { CriteriaResults, Criterion, DoneWhenEntry } from './criteria.js';
+import {
+  checkResultIds,
+  criteriaHint,
+  criterionWhat,
+  currentDoneWhen,
+  hasCheckable,
+  JUDGED_KINDS,
+  parseDoneWhen,
+  TYPE_CRITERIA,
+} from './criteria.js';
 import {
   assertActor,
   assertOwner,
@@ -88,7 +99,6 @@ import {
   isOrchestrator,
   isPm,
   messageNotes,
-  doneWhenLines,
   evidenceNotes,
   OpsError,
   ownerMatches,
@@ -222,8 +232,11 @@ export interface NewTaskInput {
   parent?: string;
   labels?: string[];
   blockedBy?: string[];
-  /** Checks that say when the task is done: one command or observable behavior per line. */
-  doneWhen?: string[];
+  /**
+   * Criteria that say when the task is done: text (one command or observable behavior per line)
+   * or typed criteria (`command`, `check`, `rubric`, `human`, `map`).
+   */
+  doneWhen?: unknown[] | string;
   /** The plan item the task is created for: `<milestone>#<key>` (AO-0110). */
   planItem?: string;
   /** The reviewer the plan item names: a concrete actor. */
@@ -1569,8 +1582,8 @@ export class Workspace {
     const actor = this.requireActor();
     const title = input.title.trim();
     if (!title) throw new OpsError('a task needs a title', 2);
-    const doneWhen = doneWhenLines(input.doneWhen);
-    assertNoSecret(title, input.body, ...(doneWhen ?? []));
+    const doneWhen = doneWhenOf(input);
+    assertNoSecret(title, input.body, ...criteriaTexts(doneWhen));
     if (input.type === MILESTONE_TYPE) assertMilestoneCheck(doneWhen);
     if (input.owner) assertOwner(input.owner);
     if (input.type === QUESTION_TYPE) assertQuestionTo(input.owner, actor, actor);
@@ -1619,18 +1632,26 @@ export class Workspace {
    * a subtask of an approved open task (a breakdown inherits the approval); anything else becomes
    * a finding, a proposal that waits for triage like any other.
    */
-  addTask(input: NewTaskInput, root?: Root): { meta: TaskMeta; proposed?: string } {
+  addTask(
+    input: NewTaskInput,
+    root?: Root,
+  ): { meta: TaskMeta; proposed?: string; notes?: string[] } {
     const actor = this.requireActor();
-    if (privileged(actor)) return { meta: this.newTask(input, root) };
     const type = input.type ?? 'task';
+    // Work filed as itself: the checkable-criteria rule first, so a refusal writes nothing. A
+    // proposal becomes a finding, which the rule leaves alone.
+    const direct = (): { meta: TaskMeta; notes?: string[] } => {
+      const notes = checkableNotes(input, type, root ?? this.defaultRoot());
+      const meta = this.newTask(input, root);
+      return notes.length > 0 ? { meta, notes } : { meta };
+    };
+    if (privileged(actor)) return direct();
     // A question (AO-0063) asks another agent and creates no work, so it needs no approval.
-    if (NOT_WORK_TYPES.has(type) || type === QUESTION_TYPE) {
-      return { meta: this.newTask(input, root) };
-    }
+    if (NOT_WORK_TYPES.has(type) || type === QUESTION_TYPE) return direct();
     const why = input.parent
       ? this.unapprovedReason(input.parent)
       : 'it has no --parent; new work needs the PM or a person to accept it';
-    if (!why) return { meta: this.newTask(input, root) };
+    if (!why) return direct();
     const body = [
       input.body?.trim(),
       `Proposed by ${actor} as a ${type}${input.parent ? ` under ${input.parent}` : ''}.`,
@@ -1973,7 +1994,7 @@ export class Workspace {
   /** Records that swarmupd merged the task's approved work into a base branch. History only. */
   recordMerge(
     ref: string,
-    fields: Required<Pick<OpsEvent, 'commit' | 'into'>> & Pick<OpsEvent, 'branch'>,
+    fields: Required<Pick<OpsEvent, 'commit' | 'into'>> & Pick<OpsEvent, 'branch' | 'criteria'>,
     message = '',
   ): ActResult {
     const freed = this.freedByMerge(ref);
@@ -1993,14 +2014,69 @@ export class Workspace {
    * Sends approved work back to whoever does it when merging it failed: a `changes` verdict on
    * a task the last verdict closed, so it is reopened, lands in their inbox and resumes first.
    */
-  sendBack(ref: string, message: string, to?: string): ActResult {
+  sendBack(ref: string, message: string, to?: string, criteria?: CriteriaResults): ActResult {
     if (to) assertActor(to, 'addressee');
     return this.act(ref, (v, ctx) => {
       if (v.status !== 'done') ctx.wrongState('send back');
       return [
-        { type: 'verdict', verdict: 'changes', to: to ?? v.owner ?? undefined, body: message },
+        {
+          type: 'verdict',
+          verdict: 'changes',
+          to: to ?? v.owner ?? undefined,
+          body: message,
+          ...(criteria && Object.keys(criteria).length > 0 ? { criteria } : {}),
+        },
       ];
     });
+  }
+
+  /** The task's current criteria, ids settled: `task.md`, or the latest `criteria` event. */
+  criteria(ref: string): Criterion[] {
+    return this.view(ref).criteria ?? [];
+  }
+
+  /**
+   * Replaces the task's criteria with a `criteria` event: `task.md` is written once, so the
+   * latest event's list is the current one. With `add`, `entries` go after the current list. The
+   * task's creator, a person, the orchestrator or a PM on a task nobody holds may change them;
+   * anyone else needs --force. A milestone keeps exactly one.
+   */
+  setCriteria(
+    ref: string,
+    entries: unknown[],
+    opts: { add?: boolean; message?: string } = {},
+  ): ActResult {
+    const { root, id } = this.resolve(ref);
+    return this.act(ref, (v, ctx) => {
+      ctx.requireOpen('change the criteria of');
+      if (ctx.actor !== v.meta.created_by) {
+        ctx.needTriager(
+          `only ${v.meta.created_by} (who filed ${v.meta.id}), a person, the orchestrator or ` +
+            'the PM changes its criteria',
+        );
+      }
+      const base = opts.add ? (currentDoneWhen(v.meta, root.readEvents(id)) ?? []) : [];
+      const next = parseDoneWhen([...base, ...entries]);
+      if (!next) throw new OpsError('a criteria change needs at least one criterion', 2);
+      assertNoSecret(...criteriaTexts(next));
+      if (v.meta.type === MILESTONE_TYPE) assertMilestoneCheck(next);
+      return [{ type: 'criteria', done_when: next, body: opts.message ?? '' }];
+    });
+  }
+
+  /**
+   * Records the results of a check run (`swarmup criteria check`) as a `criteria-check` event:
+   * history, which `show` reads as each criterion's last result. Refuses an unknown id.
+   */
+  recordCriteriaCheck(ref: string, results: CriteriaResults, message = ''): ActResult {
+    return this.act(
+      ref,
+      (v) => {
+        checkResultIds(v.criteria ?? [], results);
+        return [{ type: 'criteria-check', criteria: results, body: message }];
+      },
+      { helperOk: true },
+    );
   }
 
   checkpoint(ref: string, summary: string, next?: string): ActResult {
@@ -2101,7 +2177,10 @@ export class Workspace {
     let evidence: string[] = [];
     const res = this.act(ref, (v, ctx) => {
       ctx.requireStatus(['claimed', 'in-progress'], 'send for review');
-      evidence = evidenceNotes(message, v.meta.done_when);
+      evidence = evidenceNotes(
+        message,
+        v.criteria?.map((c) => criterionWhat(c)),
+      );
       ctx.needOwnerOrHolder();
       // The author is whoever holds the work, whoever sends it.
       const author = v.claimedBy ?? ctx.actor;
@@ -2201,6 +2280,7 @@ export class Workspace {
     verdict: 'approve' | 'changes',
     message: string,
     mark?: MarkInput,
+    criteria?: CriteriaResults,
   ): ActResult {
     // An approval closes the task, so the tasks waiting on it can go on (AO-0068). The tasks
     // blocked on work swarmupd still has to merge stay blocked; its merge event names them.
@@ -2210,7 +2290,8 @@ export class Workspace {
         : this.approvalAwaitsMerge(ref)
           ? freedFields(this.mergeSplit(ref).free)
           : this.freedBy(ref, false);
-    return this.markAct(ref, mark, (v, ctx) => {
+    let unjudged: string[] = [];
+    const res = this.markAct(ref, mark, (v, ctx) => {
       ctx.requireStatus(['needs-review'], 'give a verdict on');
       // A plain approval would close the milestone without creating its tasks, and a plain
       // rejection would not mark the plan rejected (AO-0110).
@@ -2223,6 +2304,17 @@ export class Workspace {
       if (!v.reviewer || !ownerMatches(v.reviewer, ctx.actor)) {
         ctx.needPrivilege(`${v.meta.id} waits for ${v.reviewer ?? 'a human'}'s review`);
       }
+      const results = criteria && Object.keys(criteria).length > 0 ? criteria : undefined;
+      if (results) {
+        const failed = checkResultIds(v.criteria ?? [], results);
+        // An approval says the work meets its criteria; one marked fail contradicts it.
+        if (verdict === 'approve' && failed.length > 0) {
+          ctx.needForce(`approve marks ${failed.join(', ')} fail: send it back with changes`);
+        }
+      }
+      unjudged = (v.criteria ?? [])
+        .filter((c) => JUDGED_KINDS.has(c.kind) && !results?.[c.id])
+        .map((c) => c.id);
       const req = v.lastReview;
       const waited = req
         ? Math.max(0, Math.round((this.now() - Date.parse(req.at)) / 60_000))
@@ -2238,9 +2330,17 @@ export class Workspace {
           ...(req?.recommend ? { accepted: verdict === 'approve' } : {}),
           // A review swarmupd moved to the author's provider says so on its verdict (AO-0341).
           ...(req?.fallback ? { fallback: req.fallback } : {}),
+          ...(results ? { criteria: results } : {}),
         },
       ];
     });
+    // A soft check, like the evidence note of a review request: it never refuses.
+    return unjudged.length > 0
+      ? withNotes(res, [
+          `the verdict gives no result for ${unjudged.join(', ')}: pass --criteria-file, or ` +
+            '--pass ID and --fail ID:"note", so the next round checks the same criteria',
+        ])
+      : res;
   }
 
   done(ref: string, message = ''): ActResult {
@@ -2574,7 +2674,7 @@ export class Workspace {
     return this.markAct(ref, opts.mark, (v, ctx) => {
       ctx.needTriager('only a person, the orchestrator or the PM changes a task type');
       if (v.meta.type === type) throw new OpsError(`${v.meta.id} is already a ${type}`, 1);
-      if (type === MILESTONE_TYPE) assertMilestoneCheck(v.meta.done_when);
+      if (type === MILESTONE_TYPE) assertMilestoneCheck(v.criteria);
       if (type === QUESTION_TYPE) {
         assertQuestionTo(opts.to ?? v.owner, v.meta.created_by, ctx.actor);
       }
@@ -3354,7 +3454,7 @@ export class Workspace {
       id,
       root: root.name,
       title: v.meta.title,
-      ...(v.meta.done_when?.[0] ? { doneWhen: v.meta.done_when[0] } : {}),
+      ...(v.criteria?.[0] ? { doneWhen: criterionWhat(v.criteria[0]) } : {}),
       status: v.status,
       approval: plan?.approval ?? null,
       planner: plan?.planner ?? null,
@@ -5331,11 +5431,41 @@ export class Workspace {
  * group the asker belongs to, or it would sit in the asker's own queue. Checked when the question
  * is filed and whenever its owner or type changes.
  */
+/** The text of each criterion, for the secret scan: a typed one's fields as JSON. */
+function criteriaTexts(entries: readonly DoneWhenEntry[] | undefined): string[] {
+  return (entries ?? []).map((e) => (typeof e === 'string' ? e : JSON.stringify(e)));
+}
+
+/** The criteria a new task gets: its own, else its type's defaults (`TYPE_CRITERIA`). */
+function doneWhenOf(input: NewTaskInput): DoneWhenEntry[] | undefined {
+  return (
+    parseDoneWhen(input.doneWhen) ??
+    parseDoneWhen([...(TYPE_CRITERIA[input.type ?? 'task']?.defaults ?? [])])
+  );
+}
+
+/**
+ * Work without a checkable criterion (one that is not prose): a note, or a refusal with exit 2
+ * where the root sets `require_checkable_criteria`. Findings, ideas, questions and milestones
+ * pass: they are not work a check closes, or have a rule of their own.
+ */
+function checkableNotes(input: NewTaskInput, type: string, root: Root): string[] {
+  if (NOT_WORK_TYPES.has(type) || type === QUESTION_TYPE || type === MILESTONE_TYPE) return [];
+  if (hasCheckable(doneWhenOf(input))) return [];
+  const what =
+    `the task has no checkable criterion: add ${criteriaHint(type)} ` +
+    '(`--done-when` with a YAML object, or `swarmup criteria ID --add` later)';
+  if (root.config.require_checkable_criteria === true) {
+    throw new OpsError(`${what}; root '${root.name}' sets require_checkable_criteria`, 2);
+  }
+  return [what];
+}
+
 /**
  * A milestone has exactly one `done_when` line (AO-0110): the check that closes it. Without one
  * nobody can check it, so it never closes; with several, the check has no single answer.
  */
-function assertMilestoneCheck(doneWhen: readonly string[] | undefined): void {
+function assertMilestoneCheck(doneWhen: readonly unknown[] | undefined): void {
   const n = doneWhen?.length ?? 0;
   if (n === 1) return;
   throw new OpsError(
@@ -5413,7 +5543,7 @@ export interface PlanRow {
    * The plan's own values of the fields that live in `task.md`: an edited plan built from the
    * rows, as the desktop's edit mode sends it, keeps them and so passes the in-place check.
    */
-  done_when?: string;
+  done_when?: DoneWhenEntry;
   type?: string;
   priority?: Priority;
   body?: string;

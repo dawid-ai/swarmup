@@ -4,6 +4,7 @@ export * from './agents.js';
 export * from './attachments.js';
 export * from './channels.js';
 export * from './config.js';
+export * from './criteria.js';
 export * from './decisions.js';
 export * from './decision-import.js';
 export * from './env.js';

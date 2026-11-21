@@ -10,6 +10,7 @@ import type {
   TaskView,
 } from './model.js';
 import { MERGE_ACTOR, OPEN_STATUSES, PLAN_CHECKER } from './model.js';
+import { foldCriteria } from './criteria.js';
 import { planChangedKeys, readPlanBody } from './plan.js';
 import { reviewSourcesOf } from './review-source.js';
 import { ownerMatches } from './ids.js';
@@ -426,6 +427,12 @@ export function fold(meta: TaskMeta, events: OpsEvent[]): TaskState {
             stale: p.base !== undefined && p.base !== plan.head,
           }
         : null;
+  }
+  // Typed criteria and their latest results: task.md, then `criteria` events and results.
+  const criteria = foldCriteria(meta, sorted);
+  if (criteria) {
+    s.criteria = criteria.criteria;
+    s.criteriaResults = criteria.results;
   }
   return s;
 }

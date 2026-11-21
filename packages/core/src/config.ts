@@ -65,6 +65,11 @@ export interface RootConfig {
    * name they were filed with in `task.md`; every reader sees the new one.
    */
   project_aliases?: Record<string, string>;
+  /**
+   * `swarmup new` and `POST /api/tasks` refuse work without a checkable criterion: one in
+   * `done_when` that is not prose. Default false: they print a note instead.
+   */
+  require_checkable_criteria?: boolean;
 }
 
 /** Per-machine settings, never committed: `SWARMUP_CONFIG` or the user config file. */

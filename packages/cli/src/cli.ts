@@ -6,6 +6,7 @@ import type { ParseArgsConfig } from 'node:util';
 import type {
   ActResult,
   AdoptOptions,
+  CriteriaResults,
   AppliedPlan,
   ApplyOptions,
   BlockedSet,
@@ -37,6 +38,11 @@ import {
   surveyRepo,
   formatMinutes,
   checkRoot,
+  criterionWhat,
+  doneWhenArg,
+  parseCriteriaResults,
+  parseCriteriaText,
+  runCriteria,
   editUserConfig,
   discoverRoots,
   initRoot,
@@ -1196,6 +1202,91 @@ export function blocksLabel(set: BlockedSet): string {
   return `blocks ${set.direct.length}: ${shown}${more}${indirect}`;
 }
 
+/**
+ * A task's criteria as a table: id, kind, last result and what each checks. A failed result's
+ * note follows on its own line.
+ */
+function criteriaTable(v: TaskView): string[] {
+  const cs = v.criteria ?? [];
+  if (cs.length === 0) return [];
+  const idW = Math.max(2, ...cs.map((c) => c.id.length));
+  const kindW = Math.max(4, ...cs.map((c) => c.kind.length));
+  const lines = [`  ${pad('id', idW)}  ${pad('kind', kindW)}  result  what`];
+  for (const c of cs) {
+    const r = v.criteriaResults?.[c.id];
+    const result = r ? `${r.result}` : '-';
+    lines.push(
+      `  ${pad(c.id, idW)}  ${pad(c.kind, kindW)}  ${pad(result, 6)}  ${criterionWhat(c)}`,
+    );
+    if (r && r.result !== 'pass' && (r.note || r.evidence)) {
+      const why = (r.note ?? r.evidence ?? '').split('\n')[0];
+      lines.push(`  ${' '.repeat(idW + kindW + 4)}${r.type} by ${r.actor}: ${why}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The criteria results of `verdict`: `--criteria-file` (YAML or JSON, `-` for stdin), then
+ * `--pass`, `--fail` and `--na`, each `ID` or `ID:note`. Undefined when none is given.
+ */
+function verdictCriteria(ctx: Ctx): CriteriaResults | undefined {
+  const file = str(ctx.opts['criteria-file']);
+  if (file === '-' && (str(ctx.opts['body-file']) === '-' || ctx.args.slice(2).join(' ') === '-')) {
+    usageError('the message and --criteria-file cannot both come from stdin');
+  }
+  const out: CriteriaResults = file
+    ? parseCriteriaResults(parseCriteriaText(readText(ctx, file), file === '-' ? 'stdin' : file))
+    : {};
+  for (const result of ['pass', 'fail', 'na'] as const) {
+    for (const given of texts(ctx.opts[result])) {
+      const at = given.indexOf(':');
+      const id = (at < 0 ? given : given.slice(0, at)).trim();
+      const note = at < 0 ? '' : given.slice(at + 1).trim();
+      if (!id) usageError(`--${result} needs a criterion id`);
+      out[id] = { result, ...(note ? { note } : {}) };
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * `swarmup criteria check ID`: runs the task's `command` and `check` criteria in `--cwd`, and its
+ * `map` ones when this build has `swarmup map check`; prints each result and records them unless
+ * `--no-record`. Exit 1 when one fails.
+ */
+async function criteriaCheck(ctx: Ctx, ref: string): Promise<number> {
+  const ws = ctx.ws();
+  const v = ws.view(ref);
+  const cwd = resolve(ctx.io.cwd, str(ctx.opts.cwd) ?? '.');
+  const mapCheck = COMMANDS.map
+    ? async (): Promise<{ result: 'pass' | 'fail'; evidence?: string }> => {
+        const lines: string[] = [];
+        const keep = (l: string): void => void lines.push(l);
+        const code = await run(['map', 'check'], { ...ctx.io, cwd, out: keep, err: keep });
+        const evidence = lines.join('\n').trim().slice(-1500);
+        return { result: code === 0 ? 'pass' : 'fail', ...(evidence ? { evidence } : {}) };
+      }
+    : undefined;
+  const results = await runCriteria(v.criteria ?? [], { cwd, ...(mapCheck ? { mapCheck } : {}) });
+  const ids = Object.keys(results);
+  if (ctx.opts.json) ctx.io.out(JSON.stringify(results, null, 2));
+  else if (ids.length === 0) ctx.io.out(`${v.meta.id} has no command, check or map criteria`);
+  else {
+    const idW = Math.max(...ids.map((id) => id.length));
+    for (const [id, r] of Object.entries(results)) {
+      const why = (r.note ?? r.evidence ?? '').split('\n')[0];
+      ctx.io.out(`${pad(id, idW)}  ${pad(r.result, 4)}  ${why}`);
+    }
+  }
+  if (ids.length > 0 && !ctx.opts['no-record']) {
+    const failed = ids.filter((id) => results[id]!.result === 'fail');
+    const summary = failed.length > 0 ? `failed: ${failed.join(', ')}` : 'all passed';
+    ws.recordCriteriaCheck(ref, results, `Checked ${ids.length} criteria in ${cwd}: ${summary}.`);
+  }
+  return ids.some((id) => results[id]!.result === 'fail') ? 1 : 0;
+}
+
 const COMMANDS: Record<string, Command> = {
   setup: {
     usage: 'setup [--me human:NAME] [--root DIR]...',
@@ -1362,9 +1453,9 @@ const COMMANDS: Record<string, Command> = {
   },
   new: {
     usage:
-      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [--done-when CHECK]... [-m BODY|--body-file F]',
+      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [--done-when CHECK|{YAML}]... [-m BODY|--body-file F]',
     summary:
-      'create a task; --done-when adds a check (a command or an observable behavior) that says when it is done; an agent files a proposal (finding) unless --parent names an approved open task',
+      'create a task; --done-when adds a criterion that says when it is done: text (a command or an observable behavior) or a typed one in braces, such as {id: tests, kind: command, run: npm test}; an agent files a proposal (finding) unless --parent names an approved open task',
     options: {
       to: { type: 'string' },
       type: { type: 'string' },
@@ -1381,7 +1472,7 @@ const COMMANDS: Record<string, Command> = {
       const body = bodyText(ctx);
       const ws = ctx.ws();
       const owner = str(ctx.opts.to);
-      const { meta, proposed } = ws.addTask({
+      const { meta, proposed, notes } = ws.addTask({
         title,
         body,
         owner,
@@ -1392,7 +1483,7 @@ const COMMANDS: Record<string, Command> = {
         labels: list(ctx.opts.label),
         blockedBy: list(ctx.opts['blocked-by']),
         // Not `list`: a check is free text and may hold a comma.
-        doneWhen: texts(ctx.opts['done-when']),
+        doneWhen: texts(ctx.opts['done-when']).map(doneWhenArg),
       });
       if (ctx.opts.json) {
         ctx.io.out(JSON.stringify(proposed ? { ...meta, proposed } : meta, null, 2));
@@ -1404,6 +1495,7 @@ const COMMANDS: Record<string, Command> = {
               `${ws.triagePm() ?? 'the human'}; don't start it.`,
           );
         }
+        for (const n of notes ?? []) ctx.io.err(`note: ${meta.id}: ${n}`);
       }
       // A refused owner gets here only with --force; then it is a warning.
       printWarnings(ctx, ws.reachWarnings([owner]));
@@ -1491,9 +1583,9 @@ const COMMANDS: Record<string, Command> = {
         );
       }
       if (body.trim()) o(`\n${body.trim()}`);
-      if (v.meta.done_when?.length) {
+      if (v.criteria?.length) {
         o('\ndone when:');
-        for (const line of v.meta.done_when) o(`  - ${line}`);
+        for (const line of criteriaTable(v)) o(line);
       }
       // Before the events, so a reader meets the decisions with the task text (AO-0109).
       printInForce(ctx, ref, { gap: true });
@@ -1674,18 +1766,74 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   verdict: {
-    usage: `verdict ID approve|changes MESSAGE ${MARK_USAGE}`,
-    summary: `finish a review: approve closes the task, changes sends it back; ${MARK_SUMMARY}`,
-    options: { ...MESSAGE_OPTIONS, ...MARK_OPTIONS },
+    usage: `verdict ID approve|changes MESSAGE [--criteria-file F|-] [--pass ID[:NOTE]]... [--fail ID[:NOTE]]... [--na ID[:NOTE]]... ${MARK_USAGE}`,
+    summary: `finish a review: approve closes the task, changes sends it back; --criteria-file (YAML or JSON, - for stdin) or --pass/--fail/--na give a result per criterion, and approve refuses one marked fail without --force; ${MARK_SUMMARY}`,
+    options: {
+      ...MESSAGE_OPTIONS,
+      ...MARK_OPTIONS,
+      'criteria-file': { type: 'string' },
+      pass: { type: 'string', multiple: true },
+      fail: { type: 'string', multiple: true },
+      na: { type: 'string', multiple: true },
+    },
     run: (ctx) => {
       const v = arg(ctx, 1, 'verdict');
       if (v !== 'approve' && v !== 'changes') usageError("verdict must be 'approve' or 'changes'");
       const ref = arg(ctx, 0, 'task id');
+      const criteria = verdictCriteria(ctx);
       const text = message(ctx, 2, v === 'changes');
       const marked = mark(ctx);
       // Before the write, so an inbox run that reviews sees them for this task (AO-0109).
       printInForce(ctx, ref);
-      printAct(ctx, ctx.ws().verdict(ref, v, text, marked));
+      printAct(ctx, ctx.ws().verdict(ref, v, text, marked, criteria));
+    },
+  },
+  criteria: {
+    usage:
+      'criteria ID [--set-file F|-] [--add CRITERION|{YAML}]... [-m MESSAGE] | criteria check ID [--cwd DIR] [--no-record]',
+    summary:
+      "print a task's criteria and their last results; --set-file replaces the list (YAML or JSON) and --add appends to it, as a `criteria` event; `check` runs the command and check criteria in --cwd (default: here) and records the results",
+    options: {
+      'set-file': { type: 'string' },
+      add: { type: 'string', multiple: true },
+      cwd: { type: 'string' },
+      'no-record': { type: 'boolean' },
+      message: { type: 'string', short: 'm' },
+    },
+    run: async (ctx) => {
+      if (ctx.args[0] === 'check') return criteriaCheck(ctx, arg(ctx, 1, 'task id'));
+      const ref = arg(ctx, 0, 'task id');
+      const file = str(ctx.opts['set-file']);
+      const add = texts(ctx.opts.add);
+      if (file && add.length > 0) usageError('pass --set-file or --add, not both');
+      const ws = ctx.ws();
+      if (file || add.length > 0) {
+        let entries: unknown[] = add.map(doneWhenArg);
+        if (file) {
+          const doc = parseCriteriaText(readText(ctx, file), file === '-' ? 'stdin' : file);
+          const list =
+            doc && typeof doc === 'object' && !Array.isArray(doc) && 'done_when' in doc
+              ? (doc as { done_when: unknown }).done_when
+              : doc;
+          entries = Array.isArray(list) ? list : [list];
+        }
+        const res = ws.setCriteria(ref, entries, {
+          add: add.length > 0,
+          message: str(ctx.opts.message),
+        });
+        printAct(ctx, res);
+        if (!ctx.opts.json) for (const line of criteriaTable(res.view)) ctx.io.out(line);
+        return;
+      }
+      const v = ws.view(ref);
+      if (ctx.opts.json) {
+        ctx.io.out(
+          JSON.stringify({ criteria: v.criteria ?? [], results: v.criteriaResults ?? {} }, null, 2),
+        );
+        return;
+      }
+      if (!v.criteria?.length) return void ctx.io.out(`${v.meta.id} has no criteria`);
+      for (const line of criteriaTable(v)) ctx.io.out(line);
     },
   },
   done: {

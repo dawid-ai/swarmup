@@ -1,5 +1,13 @@
-import type { AgentDef, LogEntry, MapPrompt } from '@swarmup/core';
-import { actorSlug, decisionLines, mapPromptLines, roleOf, runtimeOf } from '@swarmup/core';
+import type { AgentDef, Criterion, LogEntry, MapPrompt } from '@swarmup/core';
+import {
+  actorSlug,
+  criterionWhat,
+  decisionLines,
+  mapPromptLines,
+  roleOf,
+  RUN_KINDS,
+  runtimeOf,
+} from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkEffort, checkModel } from './config.js';
 
@@ -443,6 +451,8 @@ export interface PromptInput {
    * what `swarmup decisions --log --task ID` lists. A run without a task has none.
    */
   decisions?: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>;
+  /** The task's current criteria, ids settled; listed in work and review prompts. */
+  criteria?: Criterion[];
 }
 
 /** The rule that keeps a run's scratch files out of every repo (AO-0230). */
@@ -716,6 +726,44 @@ const DONE_WHEN_WORK = [
   'command, and name the commands you ran and their output in your review request.',
 ];
 
+/** A task's criteria, one line each: id, kind and what it checks. */
+function criteriaList(criteria: readonly Criterion[]): string[] {
+  return criteria.map((c) => `  - \`${c.id}\` (${c.kind}): ${criterionWhat(c)}`);
+}
+
+/** A work run's criteria, and the evidence its review request names for each. */
+function criteriaWorkLines(criteria: readonly Criterion[]): string[] {
+  const runs = criteria.some((c) => RUN_KINDS.has(c.kind));
+  return [
+    'Its criteria, by id:',
+    ...criteriaList(criteria),
+    'In your review request, name the evidence for each criterion by id: the command you ran and',
+    'its output, the file or page that shows it, or what the reviewer should read.',
+    ...(runs
+      ? ['swarmupd runs the `command` and `check` criteria again when it merges the work.']
+      : []),
+  ];
+}
+
+/**
+ * A review run's criteria and how it gives a result per criterion. It judges `prose`, `rubric`
+ * and `human` criteria by reading the work, and leaves `command`, `check` and `map` criteria to
+ * the merge and `swarmup criteria check`: reviewers run no tests or builds (2026-11-18).
+ */
+function criteriaReviewLines(task: string, criteria: readonly Criterion[]): string[] {
+  return [
+    "- The task's criteria, by id:",
+    ...criteriaList(criteria),
+    '- Give a result per criterion: `pass`, `fail` or `na`, with a `note` for each fail. Judge',
+    '  `prose`, `rubric` and `human` criteria by reading the work; for a rubric, read the rubric',
+    '  file and add a `score` from 0 to 1. Leave `command`, `check` and `map` criteria out: the',
+    '  merge runs them.',
+    `- Pass the results with the verdict: \`swarmup verdict ${task} changes "what to fix" --criteria-file -\``,
+    '  with YAML on stdin, such as `c1: {result: fail, note: "the intro skips pricing"}`, or inline',
+    '  with `--pass ID` and `--fail ID:"note"`. An approval gives no `fail`; any fail means changes.',
+  ];
+}
+
 /** The same for a review run: the list is what the reviewer checks the request against. */
 const DONE_WHEN_REVIEW = [
   '- If it prints a `done when:` list, check every line against the commands and output the request',
@@ -732,11 +780,12 @@ const DONE_WHEN_REVIEW = [
  * matters outside the task become findings, not change requests. It never edits, commits or
  * pushes. The role files of the reviewers say the same.
  */
-function reviewLines(task: string): string[] {
+function reviewLines(task: string, criteria: readonly Criterion[] = []): string[] {
   return [
     '',
     `Review ${task}: run \`swarmup show ${task}\` and check the work its review request names.`,
     ...DONE_WHEN_REVIEW,
+    ...(criteria.length > 0 ? criteriaReviewLines(task, criteria) : []),
     '- Review against the task text and its "Done when": approve work that meets them, and ask for',
     '  changes only where it does not. Leave style and matters outside the task out of the verdict;',
     `  file those with \`swarmup finding "<title>" --task ${task} -m "where, evidence, suggested fix"\`.`,
@@ -959,7 +1008,7 @@ export function runPrompt(p: PromptInput): string {
   if (p.extra) {
     lines.push('', p.extra.trim());
   } else if (p.task && p.review) {
-    lines.push(...reviewLines(p.task));
+    lines.push(...reviewLines(p.task, p.criteria));
   } else if (p.task && p.question) {
     lines.push(...questionLines(p.task, p.question));
   } else if (p.task && p.check) {
@@ -969,6 +1018,7 @@ export function runPrompt(p: PromptInput): string {
       '',
       `Work on ${p.task}: run \`swarmup show ${p.task}\`, then \`swarmup start ${p.task}\` with a one-line plan.`,
       ...DONE_WHEN_WORK,
+      ...(p.criteria && p.criteria.length > 0 ? criteriaWorkLines(p.criteria) : []),
       'Finish it with exactly one finishing command (review, done, handoff, ask, block or release).',
     );
   } else {

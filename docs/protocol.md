@@ -64,7 +64,8 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | Command                                                                   | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `review ID MSG [--to ID \| --human]`                                      | `needs-review`. Without `--to`, the reviewer is the root's `human` for `--human` or a task whose type or label is in the escalation list (`release`, `publish`, `money`, `billing`, `payment`, `account`, `accounts`, `credentials`, `client`, `delete-data`, `irreversible`); else the delegation's expected reviewer; else the reviewer the task's plan item names (`review` in `task.md`, set from a milestone's plan); else a reviewer agent of another provider than the author (`codex:reviewer` for Claude work); else the root's `human`. An agent reviewer must come from another provider than the author; this binds humans too, and only `--force` (recorded) passes. A request that names the same commit as the `changes` verdicts before it, with no new commit since, goes to the root's `human` instead of an agent reviewer, with those verdicts quoted; `--force` (recorded) keeps the agent. |
-| `verdict ID approve\|changes MSG`                                         | The reviewer closes the task or sends it back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `verdict ID approve\|changes MSG [--criteria-file F] [--pass/--fail ID]`  | The reviewer closes the task or sends it back. `--criteria-file` (YAML or JSON, `-` for stdin), `--pass ID`, `--fail ID:"note"` and `--na ID` give a result per criterion; see [Done when](#done-when).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `criteria ID [--set-file F \| --add C]`, `criteria check ID [--cwd DIR]`  | Prints the task's criteria and their last results, replaces or extends them with a `criteria` event, or runs its `command` and `check` criteria and records the results.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `done ID [MSG]`                                                           | Closes the task. On a `question`, MSG is the answer and goes to the asker's inbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `handoff ID TO MSG`                                                       | New owner; back to `todo`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `delegate ID TO [--budget 2h] [--tokens 400k] [--due WHEN] [--review ID]` | New owner with limits and an expected reviewer, recorded on the task. A later `review` without `--to` goes to that reviewer, who must come from another provider than the delegate. It comes before the reviewer a plan item names (`review` in `task.md`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -184,22 +185,81 @@ Global flags: `--as ID`, `--root NAME`, `--force`, `--json`. Exit codes: 0 ok, 1
 ## Done when
 
 A task says when it is done in `done_when`, a field of its `task.md` front matter: a short list
-where each line is a command or an observable behavior that someone can check.
+of criteria. A plain string is a `prose` criterion; an object is a typed one. Each criterion has
+an id: its own `id`, else `c1`, `c2`, ... by position.
 
 ```yaml
 done_when:
-  - npm test passes
-  - swarmup show prints the list under "done when:"
+  - npm test passes # prose, id c1
+  - id: tests
+    kind: command # swarmupd runs it at merge, never the reviewer
+    run: pnpm test -- --changed main
+  - id: links
+    kind: check # deterministic, no model
+    check: links-resolve
+    args: { path: content/post.md }
+  - id: voice
+    kind: rubric # a model judges it against the rubric; stored and shown for now
+    rubric: rubrics/brand-voice.md
+    pass: 0.8
+  - id: angle
+    kind: human # a person answers this question
+    ask: Does the intro make the pricing change clear?
+  - id: map
+    kind: map # the project map covers the change (`swarmup map check`, where present)
 ```
 
-- **Set it** with `swarmup new TITLE --done-when "CHECK"`, once per line. A value with several
-  lines is one check per line. The HTTP API takes `done_when` on `POST /api/tasks`. Like the rest
-  of `task.md`, the list does not change after the task is created.
+| Kind      | Fields                     | Who judges it                                                               |
+| --------- | -------------------------- | --------------------------------------------------------------------------- |
+| `prose`   | `text` (or a plain string) | The reviewer, by reading the work.                                          |
+| `command` | `run`                      | swarmupd at merge, and `swarmup criteria check`.                            |
+| `check`   | `check`, `args`            | swarmupd at merge, and `swarmup criteria check`.                            |
+| `rubric`  | `rubric`, `pass` (0 to 1)  | The reviewer, with a `score`; a model runner comes later.                   |
+| `human`   | `ask`                      | The reviewer, by reading the work.                                          |
+| `map`     | none                       | `swarmup criteria check` when the build has `swarmup map check`; else `na`. |
+
+Any kind may carry `text` as a description. The built-in checks are:
+
+- `file-exists`: `path` (one or a list) exists.
+- `regex`: the file at `path` matches `pattern` (with `flags`); `expect: false` wants no match.
+- `word-count`: the file at `path` has at least `min` and at most `max` words, front matter left
+  out.
+- `links-resolve`: the relative links of the Markdown or HTML file at `path` resolve to files
+  (`root` for links that start with `/`); web links are skipped unless `url-ok: true`.
+- `url-ok`: a GET of `url` (one or a list) answers 2xx or 3xx within 10 seconds.
+
+- **Set it** with `swarmup new TITLE --done-when "CHECK"`, once per criterion. A value in braces
+  is a typed criterion in YAML: `--done-when '{id: tests, kind: command, run: npm test}'`. A text
+  value with several lines is one check per line. The HTTP API takes `done_when` on
+  `POST /api/tasks`.
+- **Change it** with `swarmup criteria ID --set-file F` (a list, or `done_when:` with a list;
+  `-` for stdin) or `--add CRITERION`. `task.md` is written once, so the change is a `criteria`
+  event with the whole new list, and the latest one is the current list. The task's creator, a
+  person, the orchestrator or a PM on a task nobody holds may change it; others need `--force`.
+  A change drops the last results of the criteria it removes or changes.
+- **Checkable criteria.** `swarmup new` notes work that has no criterion beyond prose. Where the
+  root's `config.yml` sets `require_checkable_criteria: true`, it refuses such work instead.
+  Findings, ideas, questions and milestones are exempt.
+- **Run the checks** with `swarmup criteria check ID [--cwd DIR]`: it runs the `command` and
+  `check` criteria in the folder, prints each result, and records them in a `criteria-check`
+  event unless `--no-record`. It exits 1 when one fails.
+- **At merge**, after the configured checks pass, swarmupd runs the task's `command` and `check`
+  criteria in its worktree with the same time limit. A failure sends the task back as a `changes`
+  verdict from `opsd:merge` with the results; a pass records them on the `merge` event. Only what
+  each criterion names runs. A task with such criteria merges alone, outside a batch.
 - **Write lines an agent can check**: a command, a file, a test, a screenshot, a URL that
   responds. "Users like it" is the goal, not the check; it belongs in the body.
-- **Read it** with `swarmup show ID`, which prints the list under `done when:` after the body;
-  `show --json` carries it as `meta.done_when`. The run prompt and the review prompt of swarmupd
-  point at that list.
+- **Read it** with `swarmup show ID`, which prints a table under `done when:` after the body: id,
+  kind, last result and what each criterion checks. `show --json` carries `task.md`'s list as
+  `meta.done_when`; `swarmup criteria ID --json` gives the current list and results. The run
+  prompt and the review prompt of swarmupd list the criteria by id and kind.
+- **Verdicts give a result per criterion.** `swarmup verdict ID approve|changes MSG
+--criteria-file F` takes YAML or JSON (`-` for stdin) that maps ids to `pass`, `fail` or `na`,
+  or to `{ result, score?, evidence?, note? }`; `--pass ID`, `--fail ID:"note"` and `--na ID`
+  give them inline. Each id must be one of the task's current criteria. `approve` with a `fail`
+  is refused without `--force`. The reviewer judges `prose`, `rubric` and `human` criteria by
+  reading the work and leaves `command`, `check` and `map` criteria to the checks; reviewers run
+  no tests or builds. A verdict that leaves a judged criterion without a result prints a `note:`.
 - **Old tasks** have no `done_when` and read as before. A `task.md` written by hand with one text
   value (`done_when: npm test passes`) reads as a list of one.
 - **Review requests name the evidence.** On a task with `done_when`, `swarmup review` prints a
@@ -244,7 +304,7 @@ items:
 
 Each item needs a lowercase, never-reused `key`, a `title`, an `owner` and an `estimate` (`30m`,
 `2h`, `1d`, where a day is 8 hours). `after` names keys whose tasks must close first.
-`done_when` defaults to the title. `type` may be `task` (the default), `bug` or `docs`; plans do
+`done_when` defaults to the title; it is one line of text or one typed criterion. `type` may be `task` (the default), `bug` or `docs`; plans do
 not nest milestones. `priority` defaults to the milestone's priority. `review` is one concrete
 actor and must be on another provider than a concrete agent owner. `body` supplies more task
 detail. An item in a `subtask` amendment also needs `for`, naming the approved item it serves;
@@ -774,13 +834,17 @@ non-empty list, the task is blocked on those tasks in the same event, after the 
 cleared, and a `reopen` with `to` also sets the owner), `decision` (answer, verdict, comment,
 retype, park: the id of the recorded decision the event marks; see [Decisions](#decisions)),
 `plan_apply` and `plan_skip` (the markers
-of a milestone's plan change on one plan item). Types that change state:
+of a milestone's plan change on one plan item), `done_when` (criteria: the whole new list) and
+`criteria` (verdict, criteria-check, merge: results by criterion id, each
+`{ result: pass|fail|na, score?, evidence?, note? }`). Types that change state:
 `claim`, `start`, `progress`, `checkpoint`, `release`, `handoff`, `delegate`, `assign`, `review`,
 `verdict`, `done`, `ask`, `block`, `answer`, `unblock`, `priority`, `park`, `reopen`, and on a
 milestone `plan-approve`, `plan-amend` and the `plan-reject` of its first proposal (the fold reads
 the plan itself from these and from `plan` events, which the `swarmup plan` commands write; see
 [Milestones and plans](#milestones-and-plans)). Other types (`comment`,
-`finding`, `learn`, `run-start`, `run-end`, `merge`) are history. Unknown types are kept and
+`finding`, `learn`, `run-start`, `run-end`, `merge`, `criteria-check`) are history; the fold
+reads a task's current criteria from `criteria` events and their last results from `verdict`,
+`criteria-check` and `merge` events. Unknown types are kept and
 ignored, so older `swarmup` versions read newer data. swarmupd writes `merge` events, and the `changes`
 verdict that sends back approved work it could not merge, as `opsd:merge`.
 
