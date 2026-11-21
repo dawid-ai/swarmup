@@ -1,5 +1,6 @@
 import type { OpsEvent, TaskView, Workspace } from '@swarmup/core';
-import { foldBrief, MILESTONE_TYPE, OPEN_STATUSES } from '@swarmup/core';
+import { foldBrief, OPEN_STATUSES } from '@swarmup/core';
+import { closedSinceBrief } from './task-criteria.js';
 
 /**
  * Run context: what a task run would otherwise fetch before its first edit, inline in its prompt.
@@ -292,19 +293,19 @@ export function briefsToRefresh(ws: Workspace, views: readonly TaskView[]): Brie
     } catch {
       continue;
     }
-    if (!brief && v.meta.type !== MILESTONE_TYPE) continue;
-    const after = brief ? Date.parse(brief.at) : -Infinity;
-    const since = closed
-      .filter((k) => Date.parse(k.updatedAt) > after)
-      .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
-    if (since.length === 0) continue;
+    const ids = closedSinceBrief(
+      v.meta.type,
+      brief,
+      closed.map((k) => ({ id: k.meta.id, status: k.status, updatedAt: k.updatedAt })),
+    );
+    if (ids.length === 0) continue;
     out.push({
       ref: v.meta.id,
       title: v.meta.title,
       type: v.meta.type,
-      closed: since.map((k) => k.meta.id),
+      closed: ids,
       ...(brief ? { briefAt: brief.at } : {}),
-      since: since[0]!.updatedAt,
+      since: closed.find((k) => k.meta.id === ids[0])!.updatedAt,
     });
   }
   return out

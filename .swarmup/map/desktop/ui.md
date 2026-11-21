@@ -33,9 +33,9 @@ What the person sees: one React app with a view per area.
   Reports, Replay, Settings, Setup, AddProject, NewTask and Standups.
 - `api.ts` holds the hooks and calls to swarmupd through the main process; `types.ts` the shapes.
 - `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the
-  map graph); `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG
-  sparkline, links to the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`) and
-  Runs;
+  map graph, the criteria builder and review in `criteria.tsx`, the goal brief in `brief.tsx`);
+  `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
+  the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel;
   `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history, map).
 - `assets/brand/` holds the tiles and status icons.
 

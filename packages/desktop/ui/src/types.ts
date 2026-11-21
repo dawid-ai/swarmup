@@ -65,6 +65,12 @@ export interface OpsEvent {
   plan_kind?: 'subtask' | 'fix';
   /** The recorded decision this event marks, as `D-0042` (AO-0109). */
   decision?: string;
+  /** run-start: the session the run resumed; run-end: the runtime's session id. */
+  session?: string;
+  /** criteria: the whole new `done_when` list. */
+  done_when?: Array<string | CriterionSpec>;
+  /** verdict, criteria-check, merge: results by criterion id. */
+  criteria?: Record<string, CriterionVerdict>;
   body: string;
   /** Shown while its write is out; opsd has not stored it yet (AO-0171). */
   pending?: boolean;
@@ -78,6 +84,48 @@ export interface TaskDetail {
   criteria?: Criterion[];
   /** The latest result of each criterion, by id. */
   criteriaResults?: Record<string, CriterionLast>;
+  /** The goal brief: the newest `brief` event (mirrors `Brief` in core). */
+  brief?: Brief;
+  /** A parent's children, or none; set on a milestone, a parent and a task with a brief. */
+  children?: BriefChild[];
+  /** Children closed since the brief, as the PM's inbox run lists them. */
+  closedSinceBrief?: string[];
+}
+
+export interface Brief {
+  event: string;
+  actor: string;
+  at: string;
+  body: string;
+}
+
+export interface BriefChild {
+  id: string;
+  title: string;
+  status: Status;
+  updatedAt: string;
+}
+
+/** One criterion's result as an event records it (mirrors `CriterionVerdict` in core). */
+export interface CriterionVerdict {
+  result: 'pass' | 'fail' | 'na';
+  score?: number;
+  evidence?: string;
+  note?: string;
+}
+
+/** `GET /api/tasks/ID/criteria-check`: the task's running or last **Run checks**. */
+export interface CriteriaCheckJob {
+  task: string;
+  by: string;
+  cwd: string;
+  startedAt: string;
+  endedAt?: string;
+  ids: string[];
+  current?: string;
+  results: Record<string, CriterionVerdict>;
+  error?: string;
+  event?: string;
 }
 
 /** A typed `done_when` entry (mirrors `CriterionSpec` in `packages/core/src/criteria.ts`). */

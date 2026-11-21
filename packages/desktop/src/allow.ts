@@ -11,6 +11,7 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `tasks/${SEG}`,
     `tasks/${SEG}/diff`,
     `tasks/${SEG}/plan`,
+    `tasks/${SEG}/criteria-check`,
     'milestones',
     'agents',
     'directory',
@@ -49,6 +50,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
   POST: [
     'tasks',
     `tasks/${SEG}/(comment|answer|unblock|done|release|reopen|park|priority|verdict|delegate|start|block|review|assign|retype|plan-approve|plan-reject)`,
+    // Done when and the goal brief: `swarmup criteria`, `criteria check` and `brief`.
+    `tasks/${SEG}/(criteria|criteria-check|brief)`,
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,

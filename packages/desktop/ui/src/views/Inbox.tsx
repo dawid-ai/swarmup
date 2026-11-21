@@ -42,6 +42,8 @@ import { ago } from '../lib/format';
 import { planSize } from '../lib/plan';
 import { inboxLoop, inboxWaiting } from '../lib/statusloop';
 import type { InboxItem } from '../types';
+import type { ReviewMarks } from '../ui/criteria';
+import { failedIds, ForceApprove, ReviewCriteriaOf, verdictCriteria } from '../ui/criteria';
 import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 import { Markdown } from '../ui/markdown';
 import { MentionArea } from '../ui/pickers';
@@ -451,6 +453,21 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
   // of the text, or of the recommendation while the box is empty.
   const mark = useDecisionMark(text.trim() ? text : (it.recommend ?? ''));
   const wait = act.busy || uploading || mark.problem !== null;
+  // A result per criterion on a review, read when the person opens them.
+  const [byCriterion, setByCriterion] = useState(false);
+  const [marks, setMarks] = useState<ReviewMarks>({});
+  const [force, setForce] = useState(false);
+  const verdict = (v: 'approve' | 'changes', forced = false): void => {
+    const criteria = verdictCriteria(marks);
+    if (v === 'approve' && !forced && failedIds(marks).length > 0) return setForce(true);
+    setForce(false);
+    post('verdict', {
+      verdict: v,
+      message: text,
+      ...(criteria ? { criteria } : {}),
+      ...(forced ? { force: true } : {}),
+    });
+  };
   const post = (action: string, body: Record<string, unknown>): void => {
     if (wait) return;
     act.run(
@@ -462,6 +479,7 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
         }),
       () => {
         setText('');
+        setMarks({});
         mark.reset();
         // The item leaves the inbox once handled: say where the reply went.
         const what =
@@ -744,6 +762,16 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
               onUploading={setUploading}
             />
             <DecisionMark mark={mark} me={nav.me} />
+            {it.kind === 'review' && byCriterion && (
+              <ReviewCriteriaOf task={it.task} value={marks} onChange={setMarks} />
+            )}
+            {force && (
+              <ForceApprove
+                failed={failedIds(marks)}
+                onConfirm={() => verdict('approve', true)}
+                onCancel={() => setForce(false)}
+              />
+            )}
             <div className="flex items-center gap-2">
               {it.kind === 'ask' ? (
                 <Button
@@ -767,7 +795,7 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
                     size="sm"
                     icon={Check}
                     disabled={wait}
-                    onClick={() => post('verdict', { verdict: 'approve', message: text })}
+                    onClick={() => verdict('approve')}
                   >
                     Approve
                   </Button>
@@ -776,9 +804,18 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
                     icon={PenLine}
                     disabled={!text.trim() || wait}
                     title={text.trim() ? undefined : 'Write what to fix first'}
-                    onClick={() => post('verdict', { verdict: 'changes', message: text })}
+                    onClick={() => verdict('changes')}
                   >
                     Request changes
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind="ghost"
+                    icon={ListChecks}
+                    title="Pass, fail or n/a per criterion, sent with the verdict"
+                    onClick={() => setByCriterion((on) => !on)}
+                  >
+                    {byCriterion ? 'Hide criteria' : 'Criteria'}
                   </Button>
                 </>
               )}

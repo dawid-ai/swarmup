@@ -15,6 +15,7 @@ covers:
   - packages/supervisor/src/state-db.ts
   - packages/supervisor/src/migrate.ts
   - packages/supervisor/src/api.ts
+  - packages/supervisor/src/task-criteria.ts
   - packages/supervisor/src/admin.ts
   - packages/supervisor/src/doctor.ts
   - packages/supervisor/src/notify.ts
@@ -43,6 +44,8 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
 - `api.ts` serves 127.0.0.1 with a token per request; `admin.ts` backs the app's Settings,
   Schedules and Standups. Runs get their own run token, never the human's. `state.db` also
   serves score history (`agentScoreHistory`) to `GET /api/scores/history`.
+- `task-criteria.ts` backs the task panel: a task's brief with its children, and **Run checks**
+  (`swarmup criteria check` in the background, one run per task).
 - `doctor.ts` checks config, roots, CLIs and sign-ins; `notify.ts` posts to a webhook URL.
 
 ## Invariants
