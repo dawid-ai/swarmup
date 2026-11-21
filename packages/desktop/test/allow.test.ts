@@ -38,6 +38,24 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-apply')).toBe(false);
     expect(allowedCall('GET', '/api/milestones')).toBe(true);
     expect(allowedCall('POST', '/api/milestones')).toBe(false);
+    // Settings > Definitions and Benchmarks.
+    expect(allowedCall('GET', '/api/defs')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/validate')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/import')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/create')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/save')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/other')).toBe(false);
+    expect(allowedCall('GET', '/api/bench/sets')).toBe(true);
+    expect(allowedCall('GET', '/api/bench/runs')).toBe(true);
+    expect(allowedCall('GET', '/api/bench/runs/demo-20261121-120000')).toBe(true);
+    expect(
+      allowedCall('GET', '/api/bench/runs/demo-20261121-120000/attempt?entry=E-1&n=1&file=diff'),
+    ).toBe(true);
+    expect(allowedCall('POST', '/api/bench/run')).toBe(true);
+    expect(allowedCall('POST', '/api/bench/compare')).toBe(true);
+    expect(allowedCall('POST', '/api/bench/runs/demo-20261121-120000/stop')).toBe(true);
+    expect(allowedCall('POST', '/api/bench/runs/demo-20261121-120000')).toBe(false);
+    expect(allowedCall('GET', '/api/bench/run')).toBe(false);
     expect(allowedCall('POST', '/api/runs/01ABC/kill')).toBe(true);
     expect(allowedCall('POST', '/api/decisions/D-0001/vote')).toBe(true);
     // The decision log and a new record (AO-0315).

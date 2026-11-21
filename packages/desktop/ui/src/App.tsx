@@ -10,6 +10,7 @@ import {
   CalendarClock,
   ChevronRight,
   Clapperboard,
+  FlaskConical,
   FolderGit2,
   FolderPlus,
   Hash,
@@ -61,6 +62,7 @@ import { Activity as ActivityView } from './views/Activity';
 import type { AddProjectState } from './views/AddProject';
 import { ADD_PROJECT_EVENT, AddProject, pickProject } from './views/AddProject';
 import { AddAgentDialog, Agents } from './views/Agents';
+import { Bench } from './views/Bench';
 import { Board } from './views/Board';
 import { Channels } from './views/Channels';
 import { Chat } from './views/Chat';
@@ -92,6 +94,7 @@ export type View =
   | 'standups'
   | 'activity'
   | 'reports'
+  | 'bench'
   | 'replay'
   | 'agents'
   | 'runs'
@@ -122,6 +125,7 @@ const GROUPS: Array<{
       ['standups', 'Standups', Newspaper],
       ['activity', 'Activity', History],
       ['reports', 'Reports', BarChart3],
+      ['bench', 'Benchmarks', FlaskConical],
       ['replay', 'Replay', Clapperboard],
     ],
   },
@@ -885,6 +889,7 @@ export function App() {
             {view === 'standups' && <Standups nav={nav} />}
             {view === 'activity' && <ActivityView nav={nav} />}
             {view === 'reports' && <Reports nav={nav} />}
+            {view === 'bench' && <Bench nav={nav} selected={arg} />}
             {view === 'replay' && <Replay />}
             {view === 'agents' && <Agents nav={nav} selected={arg} />}
             {view === 'runs' && <Runs nav={nav} selected={arg} />}

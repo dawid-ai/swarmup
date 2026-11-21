@@ -222,6 +222,31 @@ const planned = milestone(
 // The milestone panel with the plan that waits, the same in edit mode, and the Milestone lanes.
 const planViews = [`task:${planned}`, `plan-edit:${planned}`, 'board:lanes:milestone'];
 
+// Settings > Definitions and Benchmarks: a swarm.yaml, a set in the root's benchmarks folder, and
+// one finished run with no agent, which costs nothing.
+const store = join(repo, '.swarmup');
+writeFileSync(join(store, 'swarm.yaml'), 'swarmup_defs: 1\nruntimes:\n  claude: { model: opus }\n');
+mkdirSync(join(store, 'benchmarks'));
+writeFileSync(
+  join(store, 'benchmarks', 'demo.yaml'),
+  [
+    'id: demo',
+    'entries:',
+    '  - id: DOC-1',
+    `    base: { ref: ${docsCommit} }`,
+    '    prompt: Write the guide.',
+    '    done_when:',
+    '      - { kind: check, check: file-exists, args: { path: guide.md } }',
+    '      - The guide reads well.',
+    '',
+  ].join('\n'),
+);
+swarmup(
+  null,
+  ...['bench', 'run', join(store, 'benchmarks', 'demo.yaml'), '--repo', repo, '--agent', 'none'],
+  ...['--out', join(state, 'bench', 'demo-smoke')],
+);
+
 // A repo without a data root, for Add project's proposal (AO-0274).
 const adoptable = join(base, 'shop');
 mkdirSync(adoptable);
@@ -264,11 +289,13 @@ const views = [
   'chat',
   'channels',
   'knowledge',
+  'bench',
   // Every Settings category gets its own screenshot and the app checks that the link selected it.
   'settings:general',
   'settings:projects',
   'settings:agents',
   'settings:runs',
+  'settings:definitions',
   'settings:cleanup',
   'settings:updates',
   'settings:notifications',

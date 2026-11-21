@@ -5,6 +5,7 @@ import {
   CircleX,
   Cpu,
   Download,
+  FileCode2,
   FileText,
   PenLine,
   Stethoscope,
@@ -58,6 +59,7 @@ import type {
   Settings as SettingsData,
   VoiceView,
 } from '../types';
+import { DefinitionsPanel } from '../ui/defs';
 import { ProviderMark } from '../ui/identity';
 import { RoleEditor } from '../ui/roles';
 import { setVoiceView } from '../ui/voice';
@@ -90,6 +92,12 @@ export const SETTINGS_CATEGORIES = [
     label: 'Runs',
     description: 'Machine and role limits',
     icon: Gauge,
+  },
+  {
+    id: 'definitions',
+    label: 'Definitions',
+    description: "Each project's swarm.yaml: team settings kept in git",
+    icon: FileCode2,
   },
   {
     id: 'cleanup',
@@ -278,6 +286,7 @@ export function Settings({
               <RolesCard data={data} onSaved={reload} />
             </>
           )}
+          {category === 'definitions' && <DefinitionsPanel />}
           {category === 'cleanup' && data && <CleanupCard data={data} onSaved={reload} />}
           {category === 'updates' && <UpdatesCard />}
           {category === 'notifications' && data && <NotifyCard data={data} onSaved={reload} />}

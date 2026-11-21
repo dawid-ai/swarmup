@@ -1216,3 +1216,209 @@ export interface Wrapped {
   } | null;
   blocked: { task: string; title: string; minutes: number; waits: number } | null;
 }
+
+// ---- Definitions and benchmarks (W5, W7) --------------------------------------------------------
+
+/** A definitions problem (mirrors `DefProblem` in `packages/core/src/defs/schema.ts`). */
+export interface DefProblem {
+  file: string;
+  path: string;
+  line: number;
+  col: number;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+/** One root's definitions (mirrors `DefsRootView` in `packages/supervisor/src/defs-state.ts`). */
+export interface DefsRoot {
+  root: string;
+  dir: string;
+  present: boolean;
+  hash: string;
+  short: string;
+  commit?: string;
+  dirty?: boolean;
+  ok: boolean;
+  stale: boolean;
+  agents: number;
+  problems: DefProblem[];
+  text?: string;
+}
+
+/** A key a swarm.yaml sets, with its effective value and source (`DefsValue`). */
+export interface DefsValue {
+  key: string;
+  value: unknown;
+  source: 'git' | 'machine' | 'unused';
+  git: unknown;
+  root: string;
+}
+
+/** `GET /api/defs`. */
+export interface DefsView {
+  roots: DefsRoot[];
+  applied: Array<{ key: string; root: string }>;
+  overrides: Array<{ key: string; machine: unknown; git: unknown; root: string }>;
+  conflicts: Array<{ key: string; roots: string[] }>;
+  values: DefsValue[];
+}
+
+/** `POST /api/defs/import` (mirrors `DefsImportPlan` in `defs-import.ts`). */
+export interface DefsImportPlan {
+  file: string;
+  exists: boolean;
+  before: string;
+  after: string;
+  diff: string[];
+  keys: string[];
+  empty: boolean;
+  problems: DefProblem[];
+  written?: boolean;
+}
+
+export type BenchMode = 'agent' | 'none' | 'reference';
+
+/** A benchmark set (mirrors `BenchSetView` in `packages/supervisor/src/bench-runs.ts`). */
+export interface BenchSetView {
+  id: string;
+  file: string;
+  source: string;
+  description?: string;
+  hiddenDir?: string;
+  defaults?: { agent?: string; budget?: number; repeat: number };
+  entries: Array<{
+    id: string;
+    title: string;
+    base: string;
+    agent?: string;
+    budget?: number;
+    repeat: number;
+    criteria: { visible: number; hidden: number; pending: number };
+  }>;
+  error?: string;
+}
+
+/** `summary.json` figures of a run or the entries of a comparison (`SummaryOverall`). */
+export interface BenchOverall {
+  attempts: number;
+  passRate: number | null;
+  hiddenPassRate: number | null;
+  costUsd: number | null;
+  costPerAttempt: number | null;
+  wallMs: number | null;
+  toolCallsBeforeEdit: number | null;
+}
+
+/** One entry of `summary.json` (`EntrySummary`). */
+export interface BenchEntrySummary {
+  entry: string;
+  attempts: number;
+  passRate: number | null;
+  hiddenPass: { passed: number; attempts: number } | null;
+  pending: number;
+  costUsd: number | null;
+  wallMs: number | null;
+  toolCallsBeforeEdit: number | null;
+  timedOut: number;
+  errors: number;
+}
+
+/** A run in the runs list (`BenchRunView`). */
+export interface BenchRunView {
+  id: string;
+  dir: string;
+  state: 'running' | 'done' | 'failed';
+  set?: string;
+  mode?: BenchMode;
+  agent?: string;
+  model?: string;
+  effort?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  done?: number;
+  total?: number;
+  current?: string;
+  error?: string;
+  overall?: BenchOverall;
+  fromApp: boolean;
+}
+
+/** One attempt's `results.json` (`AttemptResult`). */
+export interface BenchAttempt {
+  set: string;
+  entry: string;
+  attempt: number;
+  mode: BenchMode;
+  agent: string;
+  model?: string;
+  effort?: string;
+  base: { ref: string; sha: string };
+  budgetMin?: number;
+  startedAt: string;
+  run: { exitCode: number | null; timedOut: boolean; wallMs: number; error?: string };
+  metrics: {
+    costUsd: number | null;
+    turns: number | null;
+    toolCalls: number | null;
+    toolCallsBeforeEdit: number | null;
+    edited: boolean | null;
+  };
+  diff: { files: number; insertions: number; deletions: number };
+  criteria: Array<{
+    id: string;
+    kind: string;
+    hidden?: boolean;
+    what: string;
+    result: 'pass' | 'fail' | 'na' | 'pending';
+    evidence?: string;
+    note?: string;
+  }>;
+  score: {
+    checkable: number;
+    passed: number;
+    passRate: number | null;
+    hidden: { total: number; passed: number };
+    pending: number;
+  };
+}
+
+/** `GET /api/bench/runs/:id`. */
+export interface BenchRunDetail {
+  run: BenchRunView;
+  summary?: { entries: BenchEntrySummary[]; overall: BenchOverall; repo: string };
+  request?: { repo: string; hidden_dir?: string; reference_dir?: string; entries?: string[] };
+  attempts: BenchAttempt[];
+  log?: string;
+}
+
+/** A dry run's plan (`BenchPlanView`). */
+export interface BenchPlan {
+  set: string;
+  file: string;
+  mode: BenchMode;
+  agent: string;
+  model?: string;
+  effort?: string;
+  repo: string;
+  hiddenDir?: string;
+  referenceDir?: string;
+  entries: string[];
+  repeat: number;
+  attempts: Array<{ entry: string; attempt: number; base: string; budgetMin: number }>;
+  skipped: string[];
+  maxMinutes: number;
+  spends: boolean;
+  lines: string[];
+}
+
+/** `POST /api/bench/compare` (`Comparison`). */
+export interface BenchComparison {
+  a: { set: string; agent: string; model?: string; effort?: string; out: string };
+  b: { set: string; agent: string; model?: string; effort?: string; out: string };
+  rows: Array<{ entry: string; a: BenchEntrySummary | null; b: BenchEntrySummary | null }>;
+  overall: {
+    a: BenchOverall;
+    b: BenchOverall;
+    delta: Record<keyof BenchOverall, number | null>;
+  };
+}
