@@ -465,7 +465,7 @@ describe('desktop admin api', () => {
       expect(before.opsd).toMatchObject({
         reclaim_worktrees: true,
         reclaim_after_minutes: 60,
-        scratch_days: 7,
+        scratch_days: 2,
       });
       expect(before.kept).toEqual([]);
 
