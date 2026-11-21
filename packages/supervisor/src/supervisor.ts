@@ -2583,6 +2583,15 @@ export class Supervisor extends EventEmitter {
     return this.gitTopAsync(this.codeDirOf(root));
   }
 
+  /**
+   * The folder whose `.swarmup/map/` is a root's project map, with git off the event loop: its
+   * code checkout, else the folder its task store is in (a project with no repo).
+   */
+  async mapTopOf(root: Pick<Root, 'name' | 'dir'>): Promise<string> {
+    const dir = this.codeDirOf(root);
+    return (await this.gitTopAsync(dir)) ?? (basename(dir) === '.swarmup' ? dirname(dir) : dir);
+  }
+
   /** Whether `top` is the git checkout a task store is in (not only a code checkout). */
   /** @internal Used by the Merger. */
   holdsStore(top: string): boolean {

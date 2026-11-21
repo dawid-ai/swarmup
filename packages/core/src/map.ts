@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import YAML from 'yaml';
+import { execOffThread } from './exec-thread.js';
 import { parseDoc } from './frontmatter.js';
 import { OpsError } from './ids.js';
 import { topicWords } from './kb.js';
@@ -405,11 +406,18 @@ const WALK_SKIP = new Set(['.git', 'node_modules', '.swarmup', '.agent-ops']);
 export function projectFiles(top: string): string[] {
   if (isGit(top)) {
     try {
-      return git(top, ['ls-files', '-co', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+      return git(top, LS_FILES).split('\0').filter(Boolean);
     } catch {
       // A folder walk below.
     }
   }
+  return walkFiles(top);
+}
+
+const LS_FILES = ['ls-files', '-co', '--exclude-standard', '-z'];
+
+/** The files under `top` without git, skipping `.git`, `node_modules` and the task store. */
+function walkFiles(top: string): string[] {
   const out: string[] = [];
   const walk = (sub: string): void => {
     let names: string[];
@@ -450,8 +458,7 @@ export interface MapBase {
  */
 export function mapBase(top: string, base?: string): MapBase | null {
   if (!isGit(top)) return null;
-  const tries = base ? [base] : ['origin/HEAD', 'main', 'master', 'origin/main', 'origin/master'];
-  for (const ref of tries) {
+  for (const ref of baseTries(base)) {
     try {
       const commit = git(top, ['merge-base', ref, 'HEAD']).trim();
       if (commit) return { ref, commit };
@@ -459,22 +466,48 @@ export function mapBase(top: string, base?: string): MapBase | null {
       // Next.
     }
   }
-  if (base) throw new OpsError(`no merge base with ${base}: is it a branch or commit here?`, 2);
+  if (base) throw noMergeBase(base);
   return null;
+}
+
+function baseTries(base?: string): string[] {
+  return base ? [base] : ['origin/HEAD', 'main', 'master', 'origin/main', 'origin/master'];
+}
+
+function noMergeBase(base: string): OpsError {
+  return new OpsError(`no merge base with ${base}: is it a branch or commit here?`, 2);
 }
 
 /** What changed since `base` (a commit), committed or not, untracked files included. */
 export function changedSince(top: string, base: string): MapChange[] {
-  const seen = new Map<string, MapChange>();
-  const parts = git(top, ['diff', '--name-status', '--no-renames', '-z', base, '--'])
-    .split('\0')
-    .filter(Boolean);
+  return mergeChanges(git(top, diffSince(base)), git(top, UNTRACKED));
+}
+
+const diffSince = (base: string): string[] => [
+  'diff',
+  '--name-status',
+  '--no-renames',
+  '-z',
+  base,
+  '--',
+];
+const UNTRACKED = ['ls-files', '--others', '--exclude-standard', '-z'];
+
+/** The paths of `git diff --name-status -z` output. */
+function nameStatus(out: string): MapChange[] {
+  const parts = out.split('\0').filter(Boolean);
+  const changes: MapChange[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    seen.set(parts[i + 1]!, { path: parts[i + 1]!, deleted: parts[i]!.startsWith('D') });
+    changes.push({ path: parts[i + 1]!, deleted: parts[i]!.startsWith('D') });
   }
-  for (const f of git(top, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0')) {
-    if (f) seen.set(f, { path: f, deleted: false });
-  }
+  return changes;
+}
+
+/** A diff's changes plus the untracked files of `git ls-files --others -z`, by path. */
+function mergeChanges(diff: string, untracked: string): MapChange[] {
+  const seen = new Map<string, MapChange>();
+  for (const c of nameStatus(diff)) seen.set(c.path, c);
+  for (const f of untracked.split('\0')) if (f) seen.set(f, { path: f, deleted: false });
   return [...seen.values()].sort((a, b) => cmp(a.path, b.path));
 }
 
@@ -552,6 +585,8 @@ export interface MapCheckOptions {
   today?: string;
   /** The changes, instead of reading them from git (tests, review prompts). */
   changes?: MapChange[];
+  /** The project's files, instead of listing them (see {@link projectFiles}). */
+  files?: string[];
 }
 
 /** The nodes whose `covers` cover `path`. */
@@ -571,7 +606,7 @@ export function checkMap(top: string, opts: MapCheckOptions = {}): MapCheck {
   const ids = new Set(map.nodes.map((n) => n.id));
   // Listed only when a glob needs it: a plain path is looked up on disk.
   let listed: string[] | undefined;
-  const files = (): string[] => (listed ??= projectFiles(map.top));
+  const files = (): string[] => (listed ??= opts.files ?? projectFiles(map.top));
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
 
   if (!ids.has(MAP_ROOT_ID)) {
@@ -708,6 +743,79 @@ export function checkMap(top: string, opts: MapCheckOptions = {}): MapCheck {
     changed: changes.length,
     nodes: map.nodes.length,
   };
+}
+
+// ---- Off the event loop ----------------------------------------------------------------------
+// swarmupd runs no git on its event loop (AO-0171): these read the same as their synchronous
+// twins, with git in the process thread of `execOffThread`.
+
+function gitOff(top: string, args: string[]): Promise<string> {
+  return execOffThread('git', args, { cwd: top, maxBuffer: 256 * 1024 * 1024 });
+}
+
+async function isGitOff(top: string): Promise<boolean> {
+  try {
+    await gitOff(top, ['rev-parse', '--git-dir']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** {@link projectFiles} with git off the event loop. */
+export async function projectFilesAsync(top: string): Promise<string[]> {
+  if (await isGitOff(top)) {
+    try {
+      return (await gitOff(top, LS_FILES)).split('\0').filter(Boolean);
+    } catch {
+      // A folder walk below.
+    }
+  }
+  return walkFiles(top);
+}
+
+/** {@link mapBase} with git off the event loop. */
+export async function mapBaseAsync(top: string, base?: string): Promise<MapBase | null> {
+  if (!(await isGitOff(top))) return null;
+  for (const ref of baseTries(base)) {
+    try {
+      const commit = (await gitOff(top, ['merge-base', ref, 'HEAD'])).trim();
+      if (commit) return { ref, commit };
+    } catch {
+      // Next.
+    }
+  }
+  if (base) throw noMergeBase(base);
+  return null;
+}
+
+/** {@link checkMap} with git off the event loop; the node files are still read synchronously. */
+export async function checkMapAsync(top: string, opts: MapCheckOptions = {}): Promise<MapCheck> {
+  if (!mapDirOf(top)) return checkMap(top, opts);
+  const files = opts.files ?? (await projectFilesAsync(top));
+  let base: MapBase | undefined;
+  let changes = opts.changes;
+  if (!changes) {
+    const b = await mapBaseAsync(top, opts.base);
+    if (b) {
+      base = b;
+      const [diff, untracked] = await Promise.all([
+        gitOff(top, diffSince(b.commit)),
+        gitOff(top, UNTRACKED),
+      ]);
+      changes = mergeChanges(diff, untracked);
+    }
+  }
+  const res = checkMap(top, { ...opts, files, changes: changes ?? [] });
+  return base ? { ...res, base } : res;
+}
+
+/** {@link detectMapType} with git off the event loop. */
+export async function detectMapTypeAsync(
+  top: string,
+  survey?: { stacks: string[]; frameworks: string[] },
+): Promise<MapType> {
+  return detectMapType(top, survey, await projectFilesAsync(top));
 }
 
 // ---- Search ----------------------------------------------------------------------------------
@@ -874,12 +982,9 @@ export function mapReviewWarnings(top: string, commit: string, base?: string): s
   try {
     const b = base ?? mapBase(top)?.ref;
     if (!b) return [];
-    const out = git(top, ['diff', '--name-status', '--no-renames', '-z', `${b}...${commit}`]);
-    const parts = out.split('\0').filter(Boolean);
-    const changes: MapChange[] = [];
-    for (let i = 0; i + 1 < parts.length; i += 2) {
-      changes.push({ path: parts[i + 1]!, deleted: parts[i]!.startsWith('D') });
-    }
+    const changes = nameStatus(
+      git(top, ['diff', '--name-status', '--no-renames', '-z', `${b}...${commit}`]),
+    );
     if (changes.length === 0) return [];
     return checkMap(top, { changes })
       .warnings.filter((w) => w.code === 'node-not-updated')
@@ -951,9 +1056,11 @@ const WEBSITE_FRAMEWORKS = new Set([
 export function detectMapType(
   top: string,
   survey?: { stacks: string[]; frameworks: string[] },
+  /** The project's files, instead of listing them (see {@link projectFiles}). */
+  listed?: string[],
 ): MapType {
   if (survey?.frameworks.some((f) => WEBSITE_FRAMEWORKS.has(f))) return 'website';
-  const files = projectFiles(top).filter((f) => !f.startsWith('.'));
+  const files = (listed ?? projectFiles(top)).filter((f) => !f.startsWith('.'));
   const count = (re: RegExp): number => files.filter((f) => re.test(f)).length;
   const pages = count(/\.(html?|astro|mdx|njk|liquid|hbs|vue|svelte)$/i);
   const code = count(/\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|kt|cs|rb|php|c|cc|cpp|h|swift)$/i);
