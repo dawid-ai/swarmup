@@ -788,8 +788,10 @@ export interface MapPrompt {
   root: string;
   /** Nodes that may matter to the task, best first. */
   nodes: Array<{ id: string; kind: string; summary: string }>;
-  /** `map check` warnings for the reviewed change, for a review run. */
+  /** `map check` warnings for the reviewed change, when a caller computed them off the launch. */
   warnings?: string[];
+  /** For a review run: the `map check` command that lists the reviewed change's warnings. */
+  check?: string;
 }
 
 /** The words of a node id or a task text an id can match: short ones too (`map`, `ui`, `cli`). */
@@ -910,6 +912,11 @@ export function mapPromptLines(m: MapPrompt, mode: 'work' | 'review' | 'read' = 
       lines.push(
         '`swarmup map check` warns about this change:',
         ...m.warnings.slice(0, 10).map((w) => `- ${w}`),
+      );
+    } else if (m.check) {
+      lines.push(
+        `Run \`${m.check}\` in the reviewed checkout: its warnings name nodes whose files changed`,
+        'while the node did not.',
       );
     }
   } else if (mode === 'work') {

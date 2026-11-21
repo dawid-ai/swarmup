@@ -47,6 +47,16 @@ describe('project map in the run prompt', () => {
     expect(p).not.toContain('before you ask for review');
   });
 
+  it('gives a reviewer the map check command when no warnings were computed', () => {
+    const p = runPrompt({
+      agent: 'claude:qa',
+      task: 'T-0001',
+      review: true,
+      map: { ...map, check: 'swarmup map check --base main' },
+    });
+    expect(p).toContain('Run `swarmup map check --base main` in the reviewed checkout');
+  });
+
   it('adds nothing without a map', () => {
     expect(runPrompt({ agent: 'codex:backend', task: 'T-0001' })).not.toContain('Project map');
   });
