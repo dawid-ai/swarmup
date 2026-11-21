@@ -1,4 +1,4 @@
-import type { Workspace } from '@swarmup/core';
+import type { OpsEvent, TaskView, Workspace } from '@swarmup/core';
 import { MERGE_ACTOR, OpsError, runtimeOf } from '@swarmup/core';
 import type { LoopsReport, LoopsTask } from './loops.js';
 import { buildLoops, median } from './loops.js';
@@ -86,6 +86,119 @@ export function waitText(minutes: number): string {
 }
 
 /**
+ * Task events kept between reports. Events are only ever added, so a task's last event id and
+ * event count, which its folded state carries, tell whether the events read before still stand.
+ * swarmupd keeps one for its API, so a report opened again reads only the tasks that changed.
+ * Past `maxEvents` the tasks read least recently are dropped.
+ */
+export class ReportEvents {
+  private readonly tasks = new Map<string, { last: string | null; events: OpsEvent[] }>();
+  private size = 0;
+  /** Tasks whose events were read from disk, for tests and measurements. */
+  reads = 0;
+
+  constructor(private readonly maxEvents = 20_000) {}
+
+  /** The events of `t`, read again only when its state shows a new event. */
+  get(ws: Workspace, t: TaskView): OpsEvent[] {
+    return this.hit(t) ?? this.keep(t, ws.showEvents(`${t.root}/${t.meta.id}`).events);
+  }
+
+  /** Reads the events of `t` into the cache unless they are there, without blocking on I/O. */
+  async load(ws: Workspace, t: TaskView): Promise<void> {
+    if (this.hit(t)) return;
+    const root = ws.roots.find((r) => r.name === t.root);
+    if (!root) throw new OpsError(`no root named '${t.root}'`, 2);
+    this.keep(t, await root.readEventsAsync(t.meta.id));
+  }
+
+  private hit(t: TaskView): OpsEvent[] | undefined {
+    const key = `${t.root}/${t.meta.id}`;
+    const kept = this.tasks.get(key);
+    if (!kept || kept.last !== t.lastEvent || kept.events.length !== t.eventCount) return;
+    // Most recently used last, so the oldest entries go first.
+    this.tasks.delete(key);
+    this.tasks.set(key, kept);
+    return kept.events;
+  }
+
+  private keep(t: TaskView, events: OpsEvent[]): OpsEvent[] {
+    const key = `${t.root}/${t.meta.id}`;
+    this.reads++;
+    const kept = this.tasks.get(key);
+    if (kept) {
+      this.tasks.delete(key);
+      this.size -= kept.events.length;
+    }
+    // The key comes from the events read, not from the state: a state folded before an event
+    // landed then misses once and reads again, instead of keeping events that do not match it.
+    this.tasks.set(key, { last: events.at(-1)?.id ?? null, events });
+    this.size += events.length;
+    for (const [k, v] of this.tasks) {
+      if (this.size <= this.maxEvents || k === key) break;
+      this.tasks.delete(k);
+      this.size -= v.events.length;
+    }
+    return events;
+  }
+}
+
+export interface ReportOptions {
+  project?: string;
+  root?: string;
+  /** Events kept from earlier reports; without it the report reads each task it needs once. */
+  events?: ReportEvents;
+}
+
+/** The root and project filters of a report, and the tasks they let through. */
+function reportScope(
+  ws: Workspace,
+  opts: ReportOptions,
+): {
+  names: Set<string> | null;
+  inProject: (name: string | undefined) => boolean;
+  tasks: () => TaskView[];
+} {
+  // `root` narrows tasks, runs and decisions to that data root, before any project filter.
+  const root = opts.root;
+  if (root && !ws.roots.some((r) => r.name === root)) {
+    throw new OpsError(`no root named '${root}'`, 2);
+  }
+  // A project given by alias matches the name each root resolves it to.
+  const only = opts.project;
+  const names = only ? new Set([only, ...ws.roots.map((r) => r.projectName(only))]) : null;
+  const inProject = (name: string | undefined): boolean => !names || (!!name && names.has(name));
+  // Archived tasks count too.
+  const tasks = (): TaskView[] =>
+    ws
+      .list({ all: true })
+      .filter((t) => (!root || t.root === root) && inProject(t.meta.project ?? t.root));
+  return { names, inProject, tasks };
+}
+
+/**
+ * {@link buildReport} for swarmupd's API: reads the task events it needs without blocking on
+ * I/O, so other API calls go on while a report builds. With `events`, a task read for an earlier
+ * report is not read again until it changes, and only the counting runs in one piece.
+ */
+export async function buildReportAsync(
+  ws: Workspace,
+  runs: RunRecord[],
+  from: number,
+  to: number,
+  opts: ReportOptions = {},
+): Promise<Report> {
+  if (!(from < to)) throw new OpsError('report: the window must end after it starts', 2);
+  const fromIso = new Date(from).toISOString();
+  const events = opts.events ?? new ReportEvents();
+  for (const t of reportScope(ws, opts).tasks()) {
+    if (t.updatedAt >= fromIso) await events.load(ws, t);
+  }
+  // Tasks that changed while the events loaded show in the list read now.
+  return buildReport(ws, runs, from, to, { ...opts, events });
+}
+
+/**
  * What happened between `from` and `to` (ms): per project, tasks opened, closed, parked, and open
  * and blocked now; runs, minutes and tokens per agent and provider; decisions taken; channel posts;
  * answers given and the tasks they unblocked.
@@ -99,21 +212,16 @@ export function buildReport(
   runs: RunRecord[],
   from: number,
   to: number,
-  opts: { project?: string; root?: string } = {},
+  opts: ReportOptions = {},
 ): Report {
   if (!(from < to)) throw new OpsError('report: the window must end after it starts', 2);
   const fromIso = new Date(from).toISOString();
   const toIso = new Date(to).toISOString();
   const inWindow = (iso: string | undefined): boolean => !!iso && iso >= fromIso && iso < toIso;
-  // A project given by alias matches the name each root resolves it to.
   const only = opts.project;
-  // `root` narrows tasks, runs and decisions to that data root, before any project filter.
   const root = opts.root;
-  if (root && !ws.roots.some((r) => r.name === root)) {
-    throw new OpsError(`no root named '${root}'`, 2);
-  }
-  const names = only ? new Set([only, ...ws.roots.map((r) => r.projectName(only))]) : null;
-  const inProject = (name: string | undefined): boolean => !names || (!!name && names.has(name));
+  const { names, inProject, tasks } = reportScope(ws, opts);
+  const kept = opts.events ?? new ReportEvents();
   const tasksIn = new Set<string>();
 
   const projects = new Map<string, ProjectReport>();
@@ -132,18 +240,18 @@ export function buildReport(
   // verdicts, which are not answers because they unblock nothing.
   let recommended = 0;
   let accepted = 0;
-  for (const t of ws.list({ all: true })) {
-    if (root && t.root !== root) continue;
-    if (!inProject(t.meta.project ?? t.root)) continue;
+  for (const t of tasks()) {
     tasksIn.add(`${t.root}/${t.meta.id}`);
-    // Answers in the window: only tasks with an event since the window opened can have one.
-    if (t.updatedAt >= fromIso) {
+    // Only a task with an event since the window opened can have an answer or a closing event in
+    // it, so the events of the others are never read.
+    const events = t.updatedAt >= fromIso ? kept.get(ws, t) : null;
+    // Answers in the window.
+    if (events) {
       // The approval whose dependents wait for swarmupd's merge (AO-0228): the merge event, or
       // swarmupd's note that it merges nothing, names the tasks it frees, and they count for
       // that approval. Both events must lie in the window: a merge after its end adds nothing,
       // so the report of a past window does not change later.
       let approval: AnswerLine | undefined;
-      const { events } = ws.showEvents(`${t.root}/${t.meta.id}`);
       loopTasks.push({ root: t.root, id: t.meta.id, title: t.meta.title, events });
       for (const e of events) {
         if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) {
@@ -185,8 +293,7 @@ export function buildReport(
     if (!['done', 'parked'].includes(t.status)) p.open++;
     if (t.status === 'blocked' && !t.unblocked) p.blocked++;
     // Closing events in the window; a task closed, reopened and closed again counts once.
-    if (t.status === 'done' || t.status === 'parked') {
-      const { events } = ws.showEvents(`${t.root}/${t.meta.id}`);
+    if (events && (t.status === 'done' || t.status === 'parked')) {
       const last = [...events]
         .reverse()
         .find(

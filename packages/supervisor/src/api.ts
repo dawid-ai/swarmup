@@ -34,7 +34,7 @@ import {
 } from './admin.js';
 import { NoDiff } from './diff.js';
 import { doctor, installUserSkills } from './doctor.js';
-import { buildReport, reportWindow } from './report.js';
+import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
 import { buildWrapped } from './wrapped.js';
 import type { SettingsPatch } from './admin.js';
 import { pageRuns, RUN_FILTERS } from './runs.js';
@@ -162,6 +162,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   sup.on('tick', checkTasks);
 
   const reads = new TurnQueue();
+  // Task events the reports read, kept so a report opened again reads only the tasks that changed.
+  const reportEvents = new ReportEvents();
   const server = createServer((req, res) => {
     // The app reads some seven paths at once after each run or task event. Answered back to
     // back they held a write that arrived then, such as a chat send at the start or end of a
@@ -718,7 +720,13 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       const w = reportWindow({ days: q.get('days'), from: q.get('from'), to: q.get('to') });
       const project = q.get('project') || undefined;
       const root = q.get('root') || undefined;
-      return send(res, 200, buildReport(wsAs(), sup.runs(), w.from, w.to, { project, root }));
+      // The task events are read without holding the event loop, so other calls go on meanwhile.
+      const report = await buildReportAsync(wsAs(), sup.runs(), w.from, w.to, {
+        project,
+        root,
+        events: reportEvents,
+      });
+      return send(res, 200, report);
     }
     if (method === 'GET' && area === 'timeline') {
       // The replay timeline of `project` (or of every project) in `root` (or every root), for
@@ -747,7 +755,11 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         graph: q.get('graph') === '1',
       });
       if (q.get('wrapped') !== '1') return send(res, 200, timeline);
-      const report = buildReport(ws, sup.runs(), w.from, w.to, { project, root });
+      const report = await buildReportAsync(ws, sup.runs(), w.from, w.to, {
+        project,
+        root,
+        events: reportEvents,
+      });
       const named = { ...report, project: report.project ?? root ?? null };
       return send(res, 200, { ...timeline, wrapped: buildWrapped(named, timeline) });
     }
