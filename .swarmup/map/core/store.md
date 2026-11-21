@@ -19,6 +19,7 @@ covers:
   - packages/core/src/units.ts
   - packages/core/src/lock.ts
 links: [fold, workspace, sync]
+verified: 0837bfc6
 ---
 
 # Task store
@@ -45,6 +46,10 @@ Defines what a data root holds and how each file is named, read and written.
 - `ids.ts`: actor ids are `<runtime>:<role>` or `human:<name>`; task ids are `<PREFIX>-<n>`.
 - `ulid.ts` makes strictly increasing ULIDs, so file name order is time order.
 - `model.ts` lists event types and statuses; unknown event types from newer builds are kept.
+  A `run-start` event carries `session` when it resumes and `defs` (the definitions hash) when
+  the store has a `swarm.yaml`.
+- `agents.ts` reads role files; `runtimes.<rt>` gives a model and effort per runtime that wins
+  over the file's own `model` and `effort` (see `/core/defs`).
 - `lock.ts` takes file locks with stale takeover; `presence.ts` writes `machines/<name>.json`.
 - `store-move.ts` and `env.ts` keep the old `.agent-ops/` and `OPS_*` names readable.
 

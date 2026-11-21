@@ -6,6 +6,7 @@ covers:
   - packages/core/src/review-source.ts
   - packages/core/src/brief.ts
 links: [store, fold, knowledge, search]
+verified: 0837bfc6
 ---
 
 # Workspace
@@ -22,6 +23,8 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
 - Each command method validates, then writes one or more events with `act()`.
 - Read paths: `list`, `showEvents`, `inbox`, `next`, `kb`, `taskNotes` (learn notes for a run's
   prompt), `decisionLog`, `search`.
+- `recordRun` writes swarmupd's `run-start` and `run-end` events, with the resumed `session`
+  and the `defs` stamp.
 - `review-source.ts` reads where approved work is (commit and branch) from a review event or its
   text, for the merge.
 - `brief.ts` folds the newest `brief` event of a parent task, the goal brief `swarmup brief`
@@ -30,7 +33,7 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
 ## Invariants
 
 - Permissions follow `docs/protocol.md` ("Permissions"); `--force` is for people only.
-- No secrets in events: the write path scans text with `secrets.ts` and refuses a hit.
+- No secrets in events: the write path refuses text that `assertNoSecret` (`secrets.ts`) flags.
 
 ## Gotchas
 

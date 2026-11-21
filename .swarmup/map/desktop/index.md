@@ -10,25 +10,31 @@ covers:
   - packages/desktop/src
   - packages/desktop/test
 links: [ui, replay, /supervisor]
+verified: 0837bfc6
 ---
 
 # Desktop app
 
 ## Purpose
 
-The control room on top of swarmupd: inbox, board, task threads, runs, schedules, chat,
-knowledge, replay, and a tray icon that starts and stops swarmupd.
+The control room on top of swarmupd: inbox, board, task threads with criteria and briefs, runs,
+schedules, chat, knowledge, the project map, scores, benchmarks, definitions, replay, and a
+tray icon that starts and stops swarmupd.
 
 ## How it works
 
 - `src/main.ts` is the Electron main process: one window loading `ui/index.html` with
   `contextIsolation` and `preload.cts`, the tray, and swarmupd started from the app's files.
-- `allow.ts` is the allowlist of API calls the page may make through the main process.
+- `allow.ts` is the allowlist of API calls the page may make through the main process; a new
+  swarmupd endpoint the UI calls (criteria, brief, scores, map, defs, bench) needs a line here.
 - `service.ts` (tray, background service), `updates.ts` (Manual or Auto updates from GitHub
   Releases via `electron-updater`), `add-project.ts`, `voice.ts`, `models.ts`, and the save
   helpers (`images.ts`, `gifs.ts`, `videos.ts`) are pure modules, tested without Electron.
 - `scripts/package.mjs` and `electron-builder.yml` build the Windows installer;
-  `build/*.ps1` and `installer.nsh` add the PATH entry and shortcuts.
+  `build/*.ps1` and `installer.nsh` add the PATH entry and shortcuts; `extraResources` also
+  ships `packages/core/templates` as `resources/templates`.
+- `main.ts`'s screenshot mode renders the views in `SWARMUP_VIEWS`, Map, Bench and
+  `settings:definitions` among the defaults.
 
 ## Invariants
 

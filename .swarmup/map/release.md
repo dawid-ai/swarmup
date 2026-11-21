@@ -12,6 +12,7 @@ covers:
   - .github/workflows/release.yml
   - .claude/skills/release
 links: [tooling, desktop]
+verified: 0837bfc6
 ---
 
 # Release

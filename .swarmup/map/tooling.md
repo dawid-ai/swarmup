@@ -25,6 +25,7 @@ covers:
   - scripts/orientation.mjs
   - scripts/prettier-check.mjs
 links: [leaks, release]
+verified: 0837bfc6
 ---
 
 # Tooling
@@ -38,10 +39,15 @@ How the monorepo builds and checks itself, locally and in CI.
 - pnpm workspace (`pnpm-workspace.yaml`); `tsc -b` builds `core`, `supervisor`, `cli` and
   `desktop` through project references (`tsconfig.json`).
 - `pnpm run typecheck` also checks tests (`tsconfig.test.json`) and the UI.
-- `pnpm run lint` is ESLint plus `prettier --check .` (print width 100, single quotes).
+- `pnpm run lint` is ESLint plus `scripts/prettier-check.mjs`: Prettier (print width 100, single
+  quotes) over the files git tracks or would track, in batches, so folders a nested `.gitignore`
+  keeps out are skipped. `.prettierignore` also skips the generated `packages/core/schemas/`.
 - Vitest runs `packages/*/test/**/*.test.ts` against sources via aliases, at most 4 workers:
   process creation on Windows is the bottleneck.
 - CI (`ci.yml`): lint, typecheck, tests and the leak check, then the desktop smoke under xvfb.
+- `scripts/desktop-smoke.mjs` seeds a scratch root (tasks, milestones, a project map, a
+  `swarm.yaml`, a benchmark set and run) and renders every view, Map, Benchmarks and
+  **Settings > Definitions** included.
 - `scripts/setup-hooks.mjs` points git at `.githooks/` on install; `.claude/settings.json` holds
   the Claude Code hooks that sync the task store at session end and before compaction.
 

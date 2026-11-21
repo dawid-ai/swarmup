@@ -9,6 +9,7 @@ covers:
   - packages/supervisor/src/run-context.ts
   - packages/supervisor/src/resume.ts
 links: [wake, /core/knowledge, /core/map]
+verified: 0837bfc6
 ---
 
 # Runtimes and prompts
@@ -20,7 +21,8 @@ Turns a launch into a command line and a prompt for Claude Code, Codex or any co
 ## How it works
 
 - `invocation` builds the args per runtime: Claude's allowed tools and `CLAUDE_DENY`, Codex's
-  sandbox and writable dirs, read-only roles, model and effort.
+  sandbox and writable dirs, read-only roles, model and effort. For Claude and Codex it also
+  returns the `model` and `effort` it passed, for the run record.
 - `runPrompt` assembles the standard prompt: role file, learn notes (up to 3), the project map
   block, then the work, review, question or milestone-check lines with the task's criteria, the
   run context, decisions in force, and the rules for supervised runs. `chatPrompt` is the chat turn's prompt.
@@ -28,7 +30,7 @@ Turns a launch into a command line and a prompt for Claude Code, Codex or any co
   tests, and gets `test-changes.ts`'s list of changed tests and check configuration.
 - `run-context.ts` inlines what a run would otherwise fetch first: the task text, its recent
   thread and its parents with their briefs; for a PM's inbox run, the briefs behind their
-  closed children.
+  closed children (`briefsToRefresh`, through `task-criteria.ts`'s `closedSinceBrief`).
 - `resume.ts` decides whether a work run that came back with changes resumes its earlier
   session (`swarmupd.resume_on_changes`, `resume_max_hours`) and builds that invocation and
   its short delta prompt.

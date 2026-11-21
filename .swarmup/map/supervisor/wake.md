@@ -8,6 +8,7 @@ covers:
   - packages/supervisor/src/usage.ts
   - packages/supervisor/src/signin.ts
 links: [runs, prompts, merge, /docs]
+verified: 0837bfc6
 ---
 
 # Wake, launch and limits
@@ -28,6 +29,12 @@ their budget.
 - `usage.ts` counts tokens from the run's log; `quota.ts` reads provider plan windows and pauses
   new runs near the limit; `signin.ts` checks a signed-out CLI without sending a prompt.
 - `stuck.ts` stops a task whose runs keep ending without work.
+- Config is two layers: `machineConfig` (the user config, what Settings edits) and the
+  effective `config` with each root's `swarm.yaml` merged under it (`DefsState`, see
+  `/core/defs`). Each tick re-merges when a definition file changed, before limits are read.
+- A run's model and effort: Settings, then the role file's `runtimes.<rt>`, then its own
+  values, then the provider's. With a `swarm.yaml`, `run-start` records the `defs` hash.
+- `mapTopOf` finds a root's map folder; `criteriaDir` is where **Run checks** runs criteria.
 
 ## Invariants
 
