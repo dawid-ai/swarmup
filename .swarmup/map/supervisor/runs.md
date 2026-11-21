@@ -1,0 +1,42 @@
+---
+kind: module
+summary: A run's process, records, environment, task worktrees, leftovers commits and process ledger
+covers:
+  - packages/supervisor/src/runs.ts
+  - packages/supervisor/src/runenv.ts
+  - packages/supervisor/src/proc.ts
+  - packages/supervisor/src/procs.ts
+  - packages/supervisor/src/checkout.ts
+  - packages/supervisor/src/worktree.ts
+  - packages/supervisor/src/electron-dist.ts
+  - packages/supervisor/src/store-repair.ts
+links: [wake, merge]
+---
+
+# Runs and worktrees
+
+## Purpose
+
+Everything about one run after the launch: where it works, what it may see, what it leaves.
+
+## How it works
+
+- `runs.ts` keeps each run in `<state>/runs/<id>.json`; `runenv.ts` builds its environment
+  (`SWARMUP_AGENT`, `SWARMUP_RUN`, `SWARMUP_RUN_TOKEN`, `SWARMUP_SCRATCH`, TEMP in scratch).
+- `proc.ts` spawns hidden processes that can outlive swarmupd; `procs.ts` records every process a
+  run starts and kills only by PID plus creation time.
+- `worktree.ts`: a code task in a store checkout works in `out/wt-<ID>` on its own branch.
+- `checkout.ts` reads a checkout's dirty state and commits what a run left on a branch
+  `<runtime>/<task>-<run>`, then restores the files.
+- `electron-dist.ts` shares one unpacked Electron per version across worktrees;
+  `store-repair.ts` fixes file ownership a sandboxed Codex run leaves on Windows.
+
+## Invariants
+
+- Never kill by name, user or start time.
+- Task stores (`.swarmup/`) and package caches are never part of a run's changes.
+
+## Gotchas
+
+- The leftovers commit excludes `.swarmup/**`, so it does not take uncommitted map edits; runs
+  commit map changes with their work.
