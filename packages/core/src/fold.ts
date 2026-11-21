@@ -575,7 +575,12 @@ function waitOnChildren(
       !!kid && !plan.skipped.includes(key) && !kid.planApplied.includes(`${plan.approval}#${key}`)
     );
   });
-  const open = kids.filter((k) => OPEN_STATUSES.has(k.status)).map((k) => k.id);
+  // In id order: `kids` comes in the order the store lists its folders, which differs between
+  // file systems (Linux listed T-0003 before T-0002).
+  const open = kids
+    .filter((k) => OPEN_STATUSES.has(k.status))
+    .map((k) => k.id)
+    .sort();
   // A parked child is closed for good; a done one counts as open until its merge wait settles.
   const merging = kids.filter((k) => k.status === 'done' && mergePending(k.id)).map((k) => k.id);
   if (missing.length > 0) view.planMissing = missing;

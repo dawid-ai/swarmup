@@ -41,8 +41,9 @@ function run(agent: string, startDay: number, minutes: number, tokens: number): 
 describe('report windows', () => {
   const now = Date.parse('2026-11-10T12:00:00Z');
   it('takes whole days from 1 to 366, or a from and to', () => {
-    expect(reportWindow({}, now)).toEqual({ from: now - 7 * DAY, to: now });
-    expect(reportWindow({ days: '1' }, now)).toEqual({ from: now - DAY, to: now });
+    // A window that ends now takes in now: its end is exclusive.
+    expect(reportWindow({}, now)).toEqual({ from: now - 7 * DAY, to: now + 1 });
+    expect(reportWindow({ days: '1' }, now)).toEqual({ from: now - DAY, to: now + 1 });
     expect(reportWindow({ days: '366' }, now).from).toBe(now - 366 * DAY);
     for (const days of ['1.5', '0', '367', '-1', 'week', '']) {
       expect(() => reportWindow({ days }, now), days).toThrow(/whole number/);
@@ -53,7 +54,7 @@ describe('report windows', () => {
     });
     expect(reportWindow({ from: '2026-11-01' }, now)).toEqual({
       from: Date.parse('2026-11-01'),
-      to: now,
+      to: now + 1,
     });
     expect(() => reportWindow({ to: '2026-11-02' }, now)).toThrow(/give from/);
     expect(() => reportWindow({ from: '2026-11-03', to: '2026-11-02' }, now)).toThrow(/end after/);

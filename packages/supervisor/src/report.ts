@@ -503,7 +503,9 @@ export function reportWindow(
   if (input.from || input.to) {
     if (!input.from) throw new OpsError(`${what}: give from with to`, 2);
     const from = Date.parse(input.from);
-    const to = input.to ? Date.parse(input.to) : now;
+    // A window that ends now takes in now: its end is exclusive, and an event of this very
+    // millisecond was left out of the report asked for right after it.
+    const to = input.to ? Date.parse(input.to) : now + 1;
     if (Number.isNaN(from) || Number.isNaN(to)) {
       throw new OpsError(`${what}: use dates such as 2026-11-01 or ISO times`, 2);
     }
@@ -515,5 +517,5 @@ export function reportWindow(
   if (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 366) {
     throw new OpsError('days: use a whole number from 1 to 366', 2);
   }
-  return { from: now - Number(raw) * DAY_MS, to: now };
+  return { from: now - Number(raw) * DAY_MS, to: now + 1 };
 }
