@@ -6,6 +6,57 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.16 (2026-11-21)
+
+### Added
+
+- `swarmup bench run SET.yaml --repo DIR` replays the entries of a benchmark set against an agent
+  configuration: each attempt gets a throwaway worktree at the entry's base, a non-interactive
+  Claude or Codex run with swarmupd's command line and a time budget, and a score of its
+  `done_when` criteria, with hidden acceptance tests copied in only while they run. It writes
+  `results.json` per attempt and a `summary.json` and `summary.md` table with pass rate, hidden
+  pass, cost, time and tool calls before the first edit. `--reference-dir` and `--agent none`
+  check the harness without spending tokens. `swarmup bench compare A B` prints the deltas between
+  two runs. See `docs/benchmarks.md`.
+- A task store can keep the team's runtime models and efforts and its role limits in
+  `swarm.yaml`, versioned in git; each machine's user config still wins. `swarmup validate` checks
+  it and the agent files with line and column, `swarmup defs` shows, hashes and diffs it and imports
+  it from the user config, and each run records which definitions it started with. A store without
+  `swarm.yaml` works as before.
+- The task panel shows each criterion's kind, spec and last result (score, note, evidence, who
+  and when), edits criteria with a builder per kind (a `criteria` event), and runs the `command`
+  and `check` criteria with **Run checks**, with each result as it lands. **New task** has the
+  same builder.
+- A review in the task panel or the Inbox gives pass, fail or n/a per criterion with notes; an
+  approval with a failed criterion asks first and is recorded as forced.
+- Milestones and parent tasks show their goal brief with **Edit** and a hint when children closed
+  since it; the thread shows `brief`, `criteria` and check events, and **Resumed** on runs that
+  resumed a session.
+- The task panel lists the task's scores, with pass or fail and what to change on hover.
+- **Settings > Definitions** shows each project's `swarm.yaml`: the definition hash and commit,
+  the value swarmupd runs with for each key and whether it comes from git or your user config,
+  and the problems, with their lines marked in a view of the file. **Validate**, **Import from my
+  settings** (a preview, then a write; your user config keeps its keys), **Create swarm.yaml** from
+  the template, and **Edit** with checks as you type.
+- A **Benchmarks** view lists benchmark sets and runs, shows a run's attempts with each
+  criterion's result, cost, time, diff and agent log, follows a run under way, and compares two
+  runs with deltas. **Run benchmark** shows the plan of a dry run first and starts an agent run
+  only after you confirm its cost; reference and no-agent runs cost nothing. Sets come from each
+  project's `.swarmup/benchmarks/` and the new `swarmupd.bench.sets` key.
+- `swarmup bench run` keeps a `status.json` in its out folder with the run's state and progress.
+- Map view in the desktop app: browse a project's map by kind or as a tree, search by words or by
+  a file path, read a node with its covers and links, run the check with a health badge in the
+  header, rebuild `_INDEX.md`, and create a map for a project that has none. swarmupd serves it at
+  `/api/map`.
+- The **Agents** view shows each agent's scores: per scorer the value, count, pass rate, pass or
+  fail, a 30-day trend, what to change when it fails, and the worst tasks as links. **Reports**
+  adds a trend per scorer, the worst tasks per scorer and what each scorer measures on hover.
+- The **Runs** view shows the model, effort and definition stamp a run started with, a
+  **resumed** badge with the run it resumed from, and its orientation (tool calls before the first
+  edit). Filter the list to resumed runs or one model.
+- `GET /api/scores/history` serves each agent's score trend; `GET /api/scores?task=` adds the
+  orientation of the task's runs and a `scorers` list with each threshold and lever.
+
 ## 0.3.0-beta.15 (2026-11-21)
 
 ### Fixed

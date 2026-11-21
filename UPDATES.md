@@ -3,6 +3,30 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.16 (2026-11-21)
+
+- **Everything from beta.15 now lives in the app.** The task panel shows each **Done when** item
+  with its last result, lets you add and edit typed checks, and runs them with **Run checks**.
+  Reviews in the task panel and the Inbox give a pass or fail per item. **New task** builds
+  checks too. Milestones and parent tasks show their goal brief, with **Edit**, and tell you when
+  children closed since it was written.
+- **Map view.** Browse a project's map by kind, as a tree or as a graph, search by words or by
+  file, read what each part does, and check that the map still matches the code. Projects without
+  a map get **Create map**.
+- **Scores everywhere.** **Agents** shows each agent's scores with a 30-day trend, what to change
+  when one fails and the worst tasks behind it. **Reports** adds trends and worst tasks, the task
+  panel lists a task's own scores, and **Runs** shows each run's model, effort, whether it resumed
+  an earlier session and how much it read before its first change.
+- **Benchmarks.** Replay real tasks against an agent setup and score the results: the
+  **Benchmarks** view lists your sets and runs, follows a run as it goes, shows each attempt's
+  checks, cost, time, diff and log, and compares two runs side by side. Starting a run that uses
+  an agent shows the plan and asks you to confirm the cost first; calibration runs are free.
+- **Team settings in git.** A project can keep its agents' models, effort and limits in
+  `swarm.yaml` next to its tasks, so they travel with the project. **Settings > Definitions** shows
+  each value and whether it comes from the project or from this PC, flags problems by line,
+  imports your current settings and checks edits as you type. Each run records which settings it
+  started with.
+
 ## v0.3.0-beta.15 (2026-11-21)
 
 - **Every task can say what done means.** A task's **Done when** list can now hold checks, not
