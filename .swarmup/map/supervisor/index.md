@@ -9,6 +9,8 @@ covers:
   - packages/supervisor/src/opsd.ts
   - packages/supervisor/src/daemon.ts
   - packages/supervisor/src/config.ts
+  - packages/supervisor/src/defs-config.ts
+  - packages/supervisor/src/defs-state.ts
   - packages/supervisor/src/seed.ts
   - packages/supervisor/src/state-db.ts
   - packages/supervisor/src/migrate.ts
@@ -17,7 +19,7 @@ covers:
   - packages/supervisor/src/doctor.ts
   - packages/supervisor/src/notify.ts
   - packages/supervisor/test
-links: [wake, runs, prompts, merge, chat, stats, /core/sync]
+links: [wake, runs, prompts, merge, chat, stats, /core/sync, /core/defs]
 ---
 
 # swarmupd
@@ -34,7 +36,8 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
 - `Supervisor` (`supervisor.ts`, see `wake`) runs a tick: repeats, schedules, wake, merges,
   pushes and syncs.
 - `config.ts` reads the `swarmupd` section of the user config (providers, limits, wakes,
-  schedules, merge, notifications); `seed.ts` fills defaults once.
+  schedules, merge, notifications); `seed.ts` fills defaults once. The supervisor merges each
+  root's `swarm.yaml` under it (`defs-config.ts`, `defs-state.ts`, see `core/defs`).
 - State lives in `~/.swarmup/swarmupd/`: run records, logs, `state.db` (`node:sqlite`, loaded
   lazily so the CLI never prints its warning), scratch folders.
 - `api.ts` serves 127.0.0.1 with a token per request; `admin.ts` backs the app's Settings,

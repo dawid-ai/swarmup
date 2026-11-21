@@ -250,6 +250,11 @@ export interface OpsEvent {
    */
   session?: string;
   /**
+   * run-start: the short hash (`d:` and 12 hex digits) of the definitions the run started
+   * with, when its task store has a `swarm.yaml` (W5).
+   */
+  defs?: string;
+  /**
    * merge: the commit the base branch moved to. review: the HEAD commit of the checkout
    * `swarmup review` ran in, or the one `--commit` names (AO-0384).
    */

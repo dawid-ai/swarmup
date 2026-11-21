@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=.schemas/swarm.schema.json
+#
+# Team settings for this project, kept in the task store and shared through git. Copy this file
+# to .swarmup/swarm.yaml (or run `swarmup defs import-config` to start from your user config),
+# then check it with `swarmup validate`.
+#
+# Machine settings win: a key set in your user config under `swarmupd` beats the same key here.
+# Commands, arguments, environment and capacity (max_live) are machine-only and never go here.
+# `swarmup validate --write-schemas` writes the schema the first line points your editor to.
+
+# Format version. Always 1 for now.
+swarmup_defs: 1
+
+# Fallbacks for every runtime that sets no model or effort, here or on the machine.
+# defaults:
+#   effort: medium
+
+# Model and effort per runtime: the git half of `swarmupd.runtimes.<rt>`.
+runtimes:
+  claude:
+    model: opus
+    # effort: high
+  codex:
+    model: gpt-5-codex
+    effort: medium
+
+# Providers and limits per role, as `swarmupd.roles.<role>` takes them.
+roles:
+  engineer:
+    providers: [claude, codex]
+    per_project: 2
+  reviewer:
+    # Reviews go to Codex first, and to Claude when Codex has no room.
+    providers: [codex, claude]
+    overflow: true
+  qa:
+    writes: false
+    per_project: 3
+
+# Accepted but not active yet; they come in later phases:
+# policy, work_types, scoring, checks, variants, experiments, improvement.

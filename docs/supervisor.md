@@ -110,6 +110,9 @@ install and never in a project repo; tasks, events, decisions and the KB stay fi
   count per outcome (`?since=<ISO time>`).
 - **Scores.** Each change of a score is a row of `scores`, keyed by scorer, subject, agent and
   `computed_at`, so the table holds each score's history. See [Scores](#scores).
+- **Definitions.** The files behind each definition hash of a store with `swarm.yaml` are a row
+  of `definitions`, and the hash each run started with is a row of `run_defs`. See
+  [docs/definitions.md](definitions.md).
 - It needs Node 22.13 or later (`node:sqlite`); the app's Electron has it. When the file cannot be
   opened, swarmupd works from its JSON files alone.
 
@@ -955,6 +958,9 @@ The `swarmupd` section of the user config (`%APPDATA%\swarmup\config.yml`,
 the section by its earlier key; swarmupd reads and edits that section as it is while the file has
 no `swarmupd` key. To move to the new name, rename the key in the file. When a file has both,
 swarmupd uses `swarmupd` alone.
+
+A task store's `swarm.yaml` can hold `runtimes.<rt>.{model, effort}` and `roles` for the whole
+team; a key set here wins over the same key there. See [docs/definitions.md](definitions.md).
 
 ```yaml
 me: human:dawid

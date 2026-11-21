@@ -25,14 +25,34 @@ describe('state.db', () => {
     const d = mkdtempSync(join(tmpdir(), 'swarmup-state-'));
     dirs.push(d);
     const first = open(d);
-    expect(first.version).toBe(3);
+    expect(first.version).toBe(4);
     first.saveRun(
       { id: 'R1', agent: 'claude:engineer', status: 'ended', started_at: '2026-11-19T00:00:00Z' },
       { id: 'R1', agent: 'claude:engineer' },
     );
     const second = open(d);
-    expect(second.version).toBe(3);
+    expect(second.version).toBe(4);
     expect(second.runCount()).toBe(1);
+  });
+
+  it('keeps one definition snapshot per hash and the hash of each run (W5)', () => {
+    const db = open();
+    const snap = {
+      hash: 'd:abc',
+      root: 'demo',
+      commit: null,
+      created_at: '2026-11-21T00:00:00Z',
+      files: [{ path: 'swarm.yaml', sha256: 'f00', text: 'swarmup_defs: 1\n' }],
+    };
+    expect(db.saveDefinitions(snap)).toBe(true);
+    // The first sight of a hash wins: a later save with a commit changes nothing.
+    expect(db.saveDefinitions({ ...snap, commit: 'c1', files: [] })).toBe(false);
+    expect(db.definitions('d:abc')).toEqual(snap);
+    expect(db.definitions('d:none')).toBeUndefined();
+    db.saveRunDefs('R1', 'demo', 'd:abc');
+    db.saveRunDefs('R2', 'demo', 'd:abc');
+    db.saveRunDefs('R2', 'demo', 'd:abc');
+    expect(db.runsWithDefs('d:abc')).toEqual(['R1', 'R2']);
   });
 
   it('keeps run records, replaces one by its id, and imports the run files it lacks once', () => {

@@ -146,6 +146,10 @@ export interface Invocation {
   unsetEnv: string[];
   /** Lines the run's prompt must end with, because of how the run starts. */
   note?: string;
+  /** The model the arguments pass, for the run record; unset for the runtime's default. */
+  model?: string;
+  /** The reasoning effort the arguments pass, for the run record. */
+  effort?: string;
 }
 
 /**
@@ -337,10 +341,50 @@ export function invocation(
   fullAccess = false,
 ): Invocation {
   const runtime = runtimeOf(agentId);
-  const base = rc.args ?? [];
-  const unsetEnv = rc.unset_env ?? [];
   const model = runModel(rc, agent);
   const effort = runEffort(rc, agent);
+  const inv = invocationArgs(
+    rc,
+    agentId,
+    agent,
+    cwd,
+    addDirs,
+    roleDirs,
+    chat,
+    readOnly,
+    storeCheckout,
+    stores,
+    gitDirs,
+    scratch,
+    fullAccess,
+    model,
+    effort,
+  );
+  // Only Claude and Codex runs get the flags; other runtimes' `args` are the whole line.
+  if (runtime !== 'claude' && runtime !== 'codex') return inv;
+  return { ...inv, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
+function invocationArgs(
+  rc: RuntimeConfig,
+  agentId: string,
+  agent: AgentDef | undefined,
+  cwd: string,
+  addDirs: string[],
+  roleDirs: string[],
+  chat: ChatInvocation | undefined,
+  readOnly: boolean,
+  storeCheckout: boolean,
+  stores: string[],
+  gitDirs: string[],
+  scratch: string | undefined,
+  fullAccess: boolean,
+  model: string | undefined,
+  effort: string | undefined,
+): Invocation {
+  const runtime = runtimeOf(agentId);
+  const base = rc.args ?? [];
+  const unsetEnv = rc.unset_env ?? [];
   if (runtime === 'claude') {
     const own = agent?.tools ?? (chat ? CHAT_TOOLS : DEFAULT_CLAUDE_TOOLS);
     const denied = new Set([...(chat ? CHAT_DENY : []), ...(readOnly ? READ_ONLY_DENY : [])]);

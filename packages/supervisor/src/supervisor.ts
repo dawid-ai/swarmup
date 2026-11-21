@@ -30,6 +30,7 @@ import type {
 } from '@swarmup/core';
 import type { SyncResult } from '@swarmup/core';
 import {
+  agentRuntimeValues,
   assertActor,
   canClaimType,
   editUserConfig,
@@ -52,6 +53,7 @@ import {
   findRootUp,
   rootNameOf,
   ROOTS_ONLY_ENV,
+  shortHash,
   QUESTION_TYPE,
   MILESTONE_TYPE,
   PLAN_CHECKER,
@@ -71,6 +73,8 @@ import {
   MERGE_ACTOR,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
+import type { DefsRoot, DefsView } from './defs-state.js';
+import { DefsState } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
 import { ScoreKeeper } from './score-keeper.js';
@@ -886,7 +890,12 @@ class WorktreePending extends Error {
  * pushed, held).
  */
 export class Supervisor extends EventEmitter {
+  /** The effective config: {@link machineCfg} with the roots' git definitions under it (W5). */
   private cfg: OpsdConfig;
+  /** The user config's swarmupd section with defaults, before git definitions merge in. */
+  private machineCfg: OpsdConfig;
+  /** The roots' definitions (`swarm.yaml`, agent files) and their store commits. */
+  private readonly defsState: DefsState;
   readonly store: RunStore;
   private readonly env: NodeJS.ProcessEnv;
   private readonly cwd: string;
@@ -1057,10 +1066,19 @@ export class Supervisor extends EventEmitter {
     this.env = opts.env ?? process.env;
     this.cwd = opts.cwd ?? process.cwd();
     this.user = opts.user ?? readUserConfig(this.env);
-    this.cfg = opts.config ?? opsdConfig(this.user);
+    this.machineCfg = opts.config ?? opsdConfig(this.user);
+    this.cfg = this.machineCfg;
     this.store = new RunStore(opts.stateDir ?? stateDir(this.env));
     this.now = opts.now ?? Date.now;
     this.state = openState(this.store);
+    this.defsState = new DefsState({
+      state: this.state,
+      now: () => this.now(),
+      warn: (m) => this.emit('warn', m),
+      env: () => this.commandEnv(),
+      gitTimeoutMs: 60_000,
+    });
+    this.cfg = this.withDefs(this.machineCfg, this.defsRoots());
     this.merger = new Merger(this);
     this.scores = new ScoreKeeper(this.state, {
       orientation: (r) => logOrientation(r.log),
@@ -1087,9 +1105,54 @@ export class Supervisor extends EventEmitter {
     this.chat = new Chat(this, this.now);
   }
 
-  /** The swarmupd section of the user config, with defaults; `reloadConfig` replaces it. */
+  /**
+   * The swarmupd section of the user config, with defaults and with the git definitions of the
+   * roots (`swarm.yaml`) under it; `reloadConfig` replaces it.
+   */
   get config(): OpsdConfig {
     return this.cfg;
+  }
+
+  /** The user config's swarmupd section with defaults alone: what Settings shows and edits. */
+  get machineConfig(): OpsdConfig {
+    return this.machineCfg;
+  }
+
+  /** The roots' definitions, what they set in the config and which machine keys overrode them. */
+  defsView(): DefsView {
+    return this.defsState.view();
+  }
+
+  /** Resolves when the definition commit lookups started so far have ended. */
+  defsSettled(): Promise<void> {
+    return this.defsState.settled();
+  }
+
+  /** The roots definitions are read from: every root this machine holds, not mirrors. */
+  private defsRoots(): DefsRoot[] {
+    try {
+      return this.ws()
+        .roots.filter((r) => !r.isMirror)
+        .map((r) => ({ name: r.name, dir: r.dir }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** `machine` with the roots' git definitions merged under it; `machine` itself on a failure. */
+  private withDefs(machine: OpsdConfig, roots: DefsRoot[]): OpsdConfig {
+    try {
+      return this.defsState.apply(machine, roots);
+    } catch (err) {
+      this.emit('warn', `definitions: ${(err as Error).message}`);
+      return machine;
+    }
+  }
+
+  /** Merges the definitions again when one of their files changed; stats only otherwise. */
+  private defsTick(): void {
+    const roots = this.defsRoots();
+    if (this.defsState.changed(roots)) this.cfg = this.withDefs(this.machineCfg, roots);
   }
 
   /**
@@ -1112,7 +1175,8 @@ export class Supervisor extends EventEmitter {
       }
     }
     this.user = user;
-    this.cfg = { ...cfg, port: this.cfg.port, tick_seconds: this.cfg.tick_seconds };
+    this.machineCfg = { ...cfg, port: this.cfg.port, tick_seconds: this.cfg.tick_seconds };
+    this.cfg = this.withDefs(this.machineCfg, this.defsRoots());
     // Turning the repair back on needs a pass before another Codex launch, just like startup.
     if (this.sandboxOwned && this.cfg.repair_stores && !repairWasOn && !this.repairing) {
       this.repairPending = true;
@@ -2554,7 +2618,7 @@ export class Supervisor extends EventEmitter {
   runModelOf(agent: string, def?: AgentDef | null): string | undefined {
     return (
       ownModel(this.config.agents[agent]?.model) ??
-      ownModel(def?.model) ??
+      ownModel(def ? agentRuntimeValues(def, runtimeOf(agent)).model : undefined) ??
       ownModel(this.config.runtimes[runtimeOf(agent)]?.model)
     );
   }
@@ -3554,16 +3618,21 @@ export class Supervisor extends EventEmitter {
     if (req.chat && (req.task || req.parent)) {
       throw new OpsError('a chat turn works on no task', 2);
     }
-    // The agent's model and effort in Settings win over its role file's, which win over the
-    // provider's.
+    // The agent's model and effort in Settings win over its role file's (its `runtimes.<rt>`
+    // entry, then its own), which win over the provider's.
+    const fileValues = def?.runtimes ? agentRuntimeValues(def, runtime) : undefined;
     const runDef =
-      ownModel(agentCfg.model) || agentCfg.effort
+      ownModel(agentCfg.model) || agentCfg.effort || fileValues
         ? ({
             ...(def ?? { id: agent, status: 'active', file: '', body: '' }),
+            ...fileValues,
             ...(ownModel(agentCfg.model) ? { model: agentCfg.model } : {}),
             ...(agentCfg.effort ? { effort: agentCfg.effort } : {}),
           } as AgentDef)
         : def;
+    // The definitions the run starts with, when a task store has a swarm.yaml (W5). The commit
+    // comes from a lookup off the event loop: a run before it ends records the hash alone.
+    const defsStamp = this.defsState.stamp(rootName, agent, localAgentKeys(agent, agentCfg, def));
     const readOnly = !roleLimits(this.config, roleOf(agent)).writes;
     // A run in a data root's checkout makes code branches in worktrees (AO-0135).
     const storeCheckout = this.storeCheckoutOf(ws, cwd) ?? undefined;
@@ -3625,6 +3694,9 @@ export class Supervisor extends EventEmitter {
       workRun && req.prompt === undefined && task && rootName
         ? this.resumeOf(ws, agent, rootName, task, cwd, tokenBudget, rc.args?.length ?? 0, inv)
         : null;
+    // What the run starts with: a resumed session keeps the flags of the run it resumes.
+    const invModel = inv.model;
+    const invEffort = inv.effort;
     if (resumed) inv = resumed.inv;
     // A reviewer that cannot run the checks reads what swarmupd ran for it (AO-0296); the whole
     // output goes to a file in the run's scratch folder.
@@ -3788,8 +3860,13 @@ export class Supervisor extends EventEmitter {
         around,
         resumed: resumed?.session,
         resumed_from: resumed?.from,
+        ...(defsStamp ? { defs: defsStamp, model: invModel, effort: invEffort } : {}),
       };
       this.store.save(record);
+      if (defsStamp) {
+        const stamp = defsStamp;
+        this.safe(() => this.state?.saveRunDefs(id, stamp.root, stamp.hash));
+      }
     } catch (err) {
       // Undo only what this launch did: its own process and its own claim. On Windows the
       // command has not started yet, and without `go` it never does.
@@ -3838,7 +3915,11 @@ export class Supervisor extends EventEmitter {
         ws.recordRun(
           `${rootName}/${task}`,
           'run-start',
-          { run: id, ...(resumed ? { session: resumed.session } : {}) },
+          {
+            run: id,
+            ...(resumed ? { session: resumed.session } : {}),
+            ...(defsStamp ? { defs: shortHash(defsStamp.hash) } : {}),
+          },
           `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
             (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),
@@ -5097,6 +5178,8 @@ export class Supervisor extends EventEmitter {
     await this.reviewChecking?.done;
     // A sync or push under way finishes, so no rebase or commit is cut off halfway.
     await this.syncChain;
+    // A definitions commit lookup writes its snapshot to state.db before it closes.
+    await this.defsState.settled();
     await this.procChain;
     // A worktree under way is finished, so git leaves no half-made one behind.
     await Promise.all([...this.makingWorktrees.values()]);
@@ -5116,6 +5199,8 @@ export class Supervisor extends EventEmitter {
       await this.trackProcs();
       this.watchRuns();
       this.safe(() => this.writePresences());
+      // Before anything reads limits or models, so a changed swarm.yaml applies this tick.
+      this.safe(() => this.defsTick());
       if (this.config.sync) await this.syncRoots();
       // Before the wake plan, so a build swarmupd starts again holds its checkout from this tick.
       await this.merger.mergeTick();
@@ -6961,6 +7046,27 @@ function inside(child: string, parent: string): boolean {
  * and imports the run files kept before it. Null when it cannot be opened: swarmupd then works
  * from its JSON files alone, as before `state.db`.
  */
+/**
+ * Machine agent settings (`swarmupd.agents.<id>.model` and `effort`) that override a value the
+ * agent's file gives, as `agents.<id>.model`, for a run's definitions stamp.
+ */
+function localAgentKeys(
+  agent: string,
+  machine: { model?: string; effort?: string },
+  def: AgentDef | undefined,
+): string[] {
+  if (!def) return [];
+  const file = agentRuntimeValues(def, runtimeOf(agent));
+  const out: string[] = [];
+  if (ownModel(machine.model) && ownModel(file.model) && machine.model !== file.model) {
+    out.push(`agents.${agent}.model`);
+  }
+  if (machine.effort && file.effort && machine.effort !== file.effort) {
+    out.push(`agents.${agent}.effort`);
+  }
+  return out;
+}
+
 function openState(store: RunStore): StateDb | null {
   let db: StateDb;
   try {

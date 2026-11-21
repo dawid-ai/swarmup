@@ -28,6 +28,11 @@ export interface AgentDef {
   files?: string[];
   /** How the agent writes: tone, format, words to use and avoid. */
   style?: string;
+  /**
+   * Model and effort per runtime; the entry of the agent's runtime wins over `model` and
+   * `effort` (W5). See `agentRuntimeValues`.
+   */
+  runtimes?: Record<string, { model?: string; effort?: string } | null>;
   file: string;
   body: string;
 }

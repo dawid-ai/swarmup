@@ -106,7 +106,37 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (scorer, subject, agent, computed_at)
    );
    CREATE INDEX scores_agent ON scores (agent, scorer);`,
+  // Definitions as code (W5): one snapshot per definition hash, and the hash each run started with.
+  `CREATE TABLE definitions (
+     hash TEXT PRIMARY KEY,
+     root TEXT NOT NULL,
+     "commit" TEXT,
+     created_at TEXT NOT NULL,
+     files TEXT NOT NULL
+   );
+   CREATE TABLE run_defs (
+     run TEXT PRIMARY KEY,
+     root TEXT NOT NULL,
+     hash TEXT NOT NULL
+   );
+   CREATE INDEX run_defs_hash ON run_defs (hash);`,
 ];
+
+/** One file of a definition snapshot. */
+export interface DefinitionFile {
+  path: string;
+  sha256: string;
+  text: string;
+}
+
+/** A row of `definitions`: the files behind one definition hash. */
+export interface DefinitionSnapshot {
+  hash: string;
+  root: string;
+  commit: string | null;
+  created_at: string;
+  files: DefinitionFile[];
+}
 
 /**
  * swarmupd's own state on this PC, for every project it runs: `state.db` in the state folder
@@ -289,6 +319,54 @@ export class StateDb {
       }
     }
     return out;
+  }
+
+  // ---- Definitions ----------------------------------------------------------------------------
+
+  /** Keeps the files of a definition hash the first time it is seen; a known hash is left alone. */
+  saveDefinitions(s: DefinitionSnapshot): boolean {
+    return this.use((db) => {
+      const r = db
+        .prepare(
+          `INSERT OR IGNORE INTO definitions (hash, root, "commit", created_at, files)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(s.hash, s.root, s.commit, s.created_at, JSON.stringify(s.files));
+      return Number(r.changes) > 0;
+    });
+  }
+
+  /** The snapshot of `hash`, or undefined. */
+  definitions(hash: string): DefinitionSnapshot | undefined {
+    const row = this.use(
+      (db) =>
+        db.prepare('SELECT * FROM definitions WHERE hash = ?').get(hash) as
+          | { hash: string; root: string; commit: string | null; created_at: string; files: string }
+          | undefined,
+    );
+    return row ? { ...row, files: JSON.parse(row.files) as DefinitionFile[] } : undefined;
+  }
+
+  /** Records the definition hash run `run` started with. */
+  saveRunDefs(run: string, root: string, hash: string): void {
+    this.use((db) =>
+      db
+        .prepare(
+          `INSERT INTO run_defs (run, root, hash) VALUES (?, ?, ?)
+           ON CONFLICT (run) DO UPDATE SET root = excluded.root, hash = excluded.hash`,
+        )
+        .run(run, root, hash),
+    );
+  }
+
+  /** The runs that started with definition hash `hash`. */
+  runsWithDefs(hash: string): string[] {
+    return this.use(
+      (db) =>
+        db.prepare('SELECT run FROM run_defs WHERE hash = ? ORDER BY run').all(hash) as Array<{
+          run: string;
+        }>,
+    ).map((r) => r.run);
   }
 
   // ---- Merge state ------------------------------------------------------------------------------
