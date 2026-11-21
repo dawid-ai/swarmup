@@ -97,3 +97,39 @@ describe('Reports while the report builds', () => {
     expect(closed()).toBe('1');
   });
 });
+
+describe('Reports scores', () => {
+  it('lists each agent with a column per scorer that has a score', async () => {
+    root = createRoot(box);
+    await act(async () => root!.render(createElement(Reports, { nav: nav() })));
+    const line = {
+      level: 'task' as const,
+      better: 'lower' as const,
+      pass: 1,
+      n: 4,
+      passed: 3,
+      judged: 4,
+      worst: [{ subject: 'site/T-0002', value: 3, evidence: [] }],
+    };
+    await answer('/api/report?days=7', {
+      ...report(3),
+      scores: [
+        {
+          agent: 'claude:engineer',
+          scorers: [
+            { ...line, scorer: 'review-rounds', unit: 'rounds', mean: 1.25 },
+            { ...line, scorer: 'stuck-runs', level: 'agent', unit: 'ratio', mean: 0.04, n: 50 },
+          ],
+        },
+      ],
+    });
+    const table = box.querySelector('[data-testid="report-scores"]')!;
+    const heads = [...table.querySelectorAll('th')].map((th) => th.textContent);
+    expect(heads).toEqual(['Agent', 'Review rounds', 'Stuck runs']);
+    const cells = [...table.querySelectorAll('tbody td')].slice(1).map((td) => td.textContent);
+    expect(cells).toEqual(['1.254', '4%50']);
+    expect(table.querySelector('td[title]')?.getAttribute('title')).toBe(
+      'mean over 4 tasks; 3 of 4 pass; worst: site/T-0002 3',
+    );
+  });
+});

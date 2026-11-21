@@ -72,6 +72,10 @@ import {
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import { StateDb } from './state-db.js';
+import { logOrientation } from './orientation.js';
+import { ScoreKeeper } from './score-keeper.js';
+import type { ScoreResult } from './scores.js';
+import { scorerSettings } from './scores.js';
 import { Merger } from './merger.js';
 import type { MergeAttempt, MergeCount, RunRow } from './state-db.js';
 import { isMergeConflictBack, resolutionNote } from './merge-conflict.js';
@@ -893,6 +897,10 @@ export class Supervisor extends EventEmitter {
   readonly state: StateDb | null;
   /** The merge pipeline: approved work into its base (see merger.ts). */
   readonly merger: Merger;
+  /** The scores of tasks, runs and agents, kept in `state.db` (see scores.ts). */
+  readonly scores: ScoreKeeper;
+  /** When the tick last asked for a scores refresh (ms); the first comes a minute after start. */
+  private scoresAt: number;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
   private readonly electronDists = new Set<string>();
   /** @internal Used by the Merger. */
@@ -1049,6 +1057,11 @@ export class Supervisor extends EventEmitter {
     this.now = opts.now ?? Date.now;
     this.state = openState(this.store);
     this.merger = new Merger(this);
+    this.scores = new ScoreKeeper(this.state, {
+      orientation: (r) => logOrientation(r.log),
+      now: this.now,
+    });
+    this.scoresAt = this.now();
     this.listerOpt = opts.procs;
     this.sandboxOwned = opts.sandboxOwned;
     // The API accepts launches before the first timed tick. Hold Codex from construction until
@@ -5033,6 +5046,7 @@ export class Supervisor extends EventEmitter {
         this.tickStates = null;
       }
       this.safe(() => this.notifyTick());
+      this.scoresTick();
       this.emit('tick');
     } finally {
       this.ticks++;
@@ -5104,6 +5118,29 @@ export class Supervisor extends EventEmitter {
   private notifier?: Notifier;
 
   /** Offers new inbox items for the human and failed runs to the webhook, if one is set. */
+  /**
+   * Computes the scores again once a minute at most, off the tick: a refresh does work only when
+   * a task or run changed since the last one, such as a run end, a verdict or a merge.
+   */
+  private scoresTick(): void {
+    if (this.stopping || this.closed || this.now() - this.scoresAt < 60_000) return;
+    this.scoresAt = this.now();
+    this.refreshScores().catch((err: unknown) => {
+      this.emit('warn', `scores: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /** The scores, computed again first when something changed, or always with `force`. */
+  refreshScores(force = false): Promise<ScoreResult[]> {
+    let settings = {};
+    try {
+      settings = scorerSettings(this.user);
+    } catch (err) {
+      this.emit('warn', `${(err as Error).message}; scoring with the defaults`);
+    }
+    return this.scores.refresh(this.ws(), this.runs(), settings, force);
+  }
+
   private notifyTick(): void {
     const cfg = this.config.notify;
     if (!cfg.webhook) return;

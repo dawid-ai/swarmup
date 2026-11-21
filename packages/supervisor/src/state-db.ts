@@ -93,6 +93,19 @@ const MIGRATIONS: string[] = [
      value TEXT NOT NULL,
      PRIMARY KEY (kind, ref)
    );`,
+  // One row per change of a score (scores.ts); `result` NULL: the subject lost the score.
+  `CREATE TABLE scores (
+     scorer TEXT NOT NULL,
+     level TEXT NOT NULL,
+     subject TEXT NOT NULL,
+     agent TEXT NOT NULL,
+     computed_at TEXT NOT NULL,
+     value REAL,
+     pass INTEGER,
+     result TEXT,
+     PRIMARY KEY (scorer, subject, agent, computed_at)
+   );
+   CREATE INDEX scores_agent ON scores (agent, scorer);`,
 ];
 
 /**
@@ -212,6 +225,70 @@ export class StateDb {
       }
       return n;
     });
+  }
+
+  // ---- Scores -----------------------------------------------------------------------------------
+
+  /** Adds score rows in one transaction; a row with `result` null retires the score. */
+  saveScores(
+    rows: Array<{
+      key: { scorer: string; level: string; subject: string; agent: string };
+      result: { value: number; pass?: boolean } | null;
+      computed_at: string;
+    }>,
+  ): void {
+    this.use((db) => {
+      const insert = db.prepare(
+        `INSERT OR REPLACE INTO scores
+           (scorer, level, subject, agent, computed_at, value, pass, result)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      db.exec('BEGIN');
+      try {
+        for (const { key, result, computed_at } of rows) {
+          insert.run(
+            key.scorer,
+            key.level,
+            key.subject,
+            key.agent,
+            computed_at,
+            result ? result.value : null,
+            result?.pass === undefined ? null : result.pass ? 1 : 0,
+            result ? JSON.stringify(result) : null,
+          );
+        }
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+  }
+
+  /** The latest row of each scorer, subject and agent, without retired scores. */
+  latestScores<T = unknown>(): Array<{ result: T; computed_at: string }> {
+    const rows = this.use(
+      (db) =>
+        db
+          .prepare(
+            `SELECT s.result, s.computed_at FROM scores s
+             JOIN (SELECT scorer, subject, agent, max(computed_at) AS at FROM scores
+                   GROUP BY scorer, subject, agent) l
+               ON s.scorer = l.scorer AND s.subject = l.subject AND s.agent = l.agent
+                  AND s.computed_at = l.at
+             WHERE s.result IS NOT NULL`,
+          )
+          .all() as Array<{ result: string; computed_at: string }>,
+    );
+    const out: Array<{ result: T; computed_at: string }> = [];
+    for (const r of rows) {
+      try {
+        out.push({ result: JSON.parse(r.result) as T, computed_at: r.computed_at });
+      } catch {
+        // A row that does not parse is left out.
+      }
+    }
+    return out;
   }
 
   // ---- Merge state ------------------------------------------------------------------------------

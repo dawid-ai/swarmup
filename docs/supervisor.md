@@ -108,6 +108,8 @@ install and never in a project repo; tasks, events, decisions and the KB stay fi
   `conflict`, `check-failed`, `timeout`, `sent-back`, `note`, `again` for one that goes round at a
   later tick, `stopped`). `GET /api/merges` lists them (`?task=<root/id>`, `?limit=`) with the
   count per outcome (`?since=<ISO time>`).
+- **Scores.** Each change of a score is a row of `scores`, keyed by scorer, subject, agent and
+  `computed_at`, so the table holds each score's history. See [Scores](#scores).
 - It needs Node 22.13 or later (`node:sqlite`); the app's Electron has it. When the file cannot be
   opened, swarmupd works from its JSON files alone.
 
@@ -1053,6 +1055,59 @@ Each `POST` answers with the project list after the change; runs cannot make the
 desktop app's page may make every call but `relocate`, whose folder only the main process's folder
 dialog may pick.
 
+## Scores
+
+Scorers grade runs, tasks and agents from what SwarmUp already records: task events and run
+records. Each scorer measures one narrow failure mode and names the definition to change when it
+fails, such as a role file, a task's `done_when` or the merge checks. All of them are
+deterministic; none calls a model.
+
+```bash
+swarmup scores                          # per agent: each scorer's mean, pass rate and worst tasks
+swarmup scores --agent claude:engineer  # one agent, with its 10 worst tasks per scorer
+swarmup scores --task AO-0300           # one task's scores, each with its evidence
+swarmup scores --since 2026-11-01       # tasks and runs from that date; agent scores too
+swarmup scores --refresh                # compute again and keep them in state.db
+```
+
+| Scorer                      | Level | Value                                                                                                                             | Pass by default |
+| --------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `criteria-pass-rate`        | task  | share of criteria marked `pass` in the `criteria` map of the approving verdict; no score without one                              | 100%            |
+| `review-rounds`             | task  | reviewers' `changes` verdicts before the approval                                                                                 | at most 1       |
+| `merge-failures`            | task  | `changes` verdicts of `opsd:merge`: merges that failed and sent the task back                                                     | 0               |
+| `cost-per-merged-task`      | task  | tokens of every run of a merged task up to its merge, review runs included; minutes and runs as extras                            | none            |
+| `human-touches`             | task  | on a done task: agents' asks to a person, and a person's answers, verdicts and comments                                           | 0               |
+| `escalation-correctness`    | task  | per asking agent, 1 when the task's type or a label is on the escalation list (`HUMAN_REVIEW_LABELS`), else 0                     | 100%            |
+| `recommendation-acceptance` | agent | share of the agent's recommendations (`ask --recommend`, review requests) the answer or verdict took (`accepted`)                 | at least 70%    |
+| `stuck-runs`                | agent | share of ended runs that failed: no work event before an unfinished release, a stuck block, a non-zero exit, budget, tokens, lost | at most 10%     |
+| `orientation`               | run   | tool calls of a writing run before its first edit, from its log; the share of tool-result bytes read by then as an extra          | at most 30      |
+
+- A task score counts for the task's author: the last agent to ask for review, else the last to
+  claim it. `escalation-correctness` counts for the agent that asked. A run score counts for the
+  run's agent.
+- Task and run scores fall in a window by the time of their subject: the approval, the merge, the
+  closing event, the last ask or the run's start. Agent scores count the events and runs in the
+  window.
+- `escalation-correctness` cannot tell an ask about a change of direction, which the protocol
+  allows, from a miss; read its evidence before acting on it. Edits made through a shell command
+  do not count as the first edit for `orientation`. Run logs stay `log_days`, so `orientation`
+  covers the runs whose log swarmupd read while it was there.
+- Thresholds and switches live in the user config:
+
+  ```yaml
+  swarmupd:
+    scorers:
+      review-rounds: { pass: 2 } # pass with up to 2 rounds
+      orientation: { enabled: false }
+  ```
+
+swarmupd computes the scores a minute after it starts and then at most once a minute, only when a
+task or run changed, such as a run end, a verdict or a merge. It reads only the events of tasks
+that changed, reads each ended run's log once, and writes a row only for a score whose value
+changed. `swarmup scores` computes them from the files, as `swarmup report` does; `--refresh` asks
+swarmupd to compute and keep them, or writes `state.db` itself when swarmupd is not running.
+`swarmup report` and the desktop **Reports** view show each agent's scores for the report's window.
+
 ## Merging approved work
 
 With `swarmupd.merge.<root name>` set, swarmupd merges a task's work into a base branch once a review
@@ -1432,6 +1487,7 @@ restart or another human-only action, use `swarmup ask`.
 | `POST /api/notify/test`                                      | send a sample message to the notification webhook; the answer never holds the URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `GET /api/machines`                                          | every machine seen in the roots, newest record each, with `alive`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `GET /api/report?days=N`                                     | progress per project and usage per provider and agent over the last N days (1 to 366), decisions and channel posts; `project=P` narrows tasks, answers, runs and decisions to one project, `root=R` to one data root                                                                                                                                                                                                                                                                                                                                                                                     |
+| `GET /api/scores?agent=A&task=R&since=S`                     | the scores swarmupd keeps: per agent, each scorer's mean, pass rate and worst subjects; `agent=A` for one agent, `task=root/ID` adds that task's scores with evidence, `since` (ISO) limits task and run scores; agent scores cover all time. `POST /api/scores/refresh` computes them all again and returns them                                                                                                                                                                                                                                                                                        |
 | `GET /api/activity?q=Q&before=C&limit=N`                     | one page of task events (plus task creation), archived tasks included, and channel posts, newest first: `items`, `next` (pass as `before`), `total`, `actors`, `projects`; `limit` 1 to 500, default 100                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `GET /api/timeline?project=P&root=R&days=N&clip=S&gap=M`     | the replay timeline, archived tasks included: `lanes` per actor, work `spans` (claim to release), review rounds as `reviews`, `waits` (ask to answer), `runs` with tokens, `decisions`, learn `notes`, `created` and `closes`, `totals` for stat cards, and `time`, a map from real to playback time where idle stretches play as `gap` minutes (default 30) and the whole as `clip` seconds; window as for the report (`days`, or `from` and `to`); `root=R` limits it to one data root and `project=P` to one project; `wrapped=1` adds the Wrapped cards from the report of the same root and project |
 | `GET /api/kb?q=WORDS&topic=T`                                | learn notes across roots; every word must match (as `swarmup kb`); no words lists them all                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |

@@ -3,6 +3,8 @@ import { MERGE_ACTOR, OpsError, runtimeOf } from '@swarmup/core';
 import type { LoopsReport, LoopsTask } from './loops.js';
 import { buildLoops, median } from './loops.js';
 import type { RunRecord } from './runs.js';
+import type { AgentScores, ScoreTask } from './scores.js';
+import { computeScores, scorerLineText, scorerSettings, summarizeScores } from './scores.js';
 
 export interface ProjectReport {
   project: string;
@@ -70,6 +72,8 @@ export interface Report {
   answers: AnswersReport;
   /** Reviews per author and reviewer, merged task cost, run stops and human answer time. */
   loops: LoopsReport;
+  /** Per agent, the scores of the tasks and runs in the window (see scores.ts). */
+  scores: AgentScores[];
   totals: { opened: number; closed: number; runs: number; minutes: number; tokens: number };
 }
 
@@ -235,6 +239,7 @@ export function buildReport(
   };
   const answers: AnswerLine[] = [];
   const loopTasks: LoopsTask[] = [];
+  const scoreTasks: ScoreTask[] = [];
   let given = 0;
   // Recommendation statistics count every reply that records `accepted`, including changes
   // verdicts, which are not answers because they unblock nothing.
@@ -253,6 +258,7 @@ export function buildReport(
       // so the report of a past window does not change later.
       let approval: AnswerLine | undefined;
       loopTasks.push({ root: t.root, id: t.meta.id, title: t.meta.title, events });
+      scoreTasks.push({ ...loopTasks.at(-1)!, meta: t.meta, status: t.status });
       for (const e of events) {
         if (e.actor === MERGE_ACTOR && (e.type === 'merge' || e.no_merge)) {
           if (approval && e.freed && inWindow(e.at)) {
@@ -386,6 +392,7 @@ export function buildReport(
         .slice(0, 5),
     },
     loops: buildLoops(loopTasks, scopedRuns, windowRuns, fromIso, toIso),
+    scores: reportScores(ws, scoreTasks, scopedRuns, from, to),
     totals: {
       opened: list.reduce((n, p) => n + p.opened, 0),
       closed: list.reduce((n, p) => n + p.closed, 0),
@@ -438,7 +445,27 @@ export function reportText(r: Report): string {
     }
   }
   lines.push(...loopsLines(r.loops));
+  for (const a of r.scores) {
+    lines.push(`Scores of ${a.agent}: ${a.scorers.map(scorerLineText).join('; ')}.`);
+  }
   return lines.join('\n');
+}
+
+/** The scores of a report's window; a bad `swarmupd.scorers` setting falls back to defaults. */
+function reportScores(
+  ws: Workspace,
+  tasks: ScoreTask[],
+  runs: RunRecord[],
+  from: number,
+  to: number,
+): AgentScores[] {
+  let settings = {};
+  try {
+    settings = scorerSettings(ws.user);
+  } catch {
+    // `swarmup scores` reports the setting's error.
+  }
+  return summarizeScores(computeScores({ tasks, runs }, { settings, from, to }), { settings });
 }
 
 /** The loop figures as report lines; a figure with nothing to count has no line. */
