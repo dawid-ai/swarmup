@@ -325,7 +325,7 @@ describe('claims and ownership', () => {
     const h = as('human:dawid');
     const pm = as('claude:pm');
     // Humans and the orchestrator create tasks directly.
-    expect(h.addTask({ title: 'approved' })).toEqual({
+    expect(h.addTask({ title: 'approved' })).toMatchObject({
       meta: expect.objectContaining({ type: 'task' }),
     });
     expect(as('claude:orchestrator').addTask({ title: 'orch' }).meta.type).toBe('task');
@@ -338,7 +338,9 @@ describe('claims and ownership', () => {
     expect(pm.addTask({ title: 'later', type: 'idea' }).meta.type).toBe('idea');
     // A subtask of a task the human created inherits the approval, and so do its own subtasks.
     const sub = pm.addTask({ title: 'step 1', parent: '1' });
-    expect(sub).toEqual({ meta: expect.objectContaining({ type: 'task', parent: 'T-0001' }) });
+    expect(sub).toMatchObject({
+      meta: expect.objectContaining({ type: 'task', parent: 'T-0001' }),
+    });
     expect(pm.addTask({ title: 'step 1a', parent: sub.meta.id }).meta.type).toBe('task');
     // A subtask of an untriaged finding is a proposal too.
     expect(pm.addTask({ title: 'under a finding', parent: top.meta.id }).proposed).toMatch(

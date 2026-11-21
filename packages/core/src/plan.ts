@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import { parseDoneWhen } from './criteria.js';
 import { assertActor, assertOwner, isHuman, OpsError, runtimeOf } from './ids.js';
 import type { PlanItem, PlanState, Priority } from './model.js';
 import { PLAN_ITEM_TYPES, PLAN_MAX_ITEMS, MILESTONE_TYPE, PRIORITIES } from './model.js';
@@ -83,10 +84,17 @@ function readItem(raw: unknown, n: number): PlanItem {
     const keys = [...new Set(after.map((a) => (a as string).trim()))];
     if (keys.length > 0) item.after = keys;
   }
-  const doneWhen = optional(data, 'done_when', where);
-  if (doneWhen) {
-    if (doneWhen.includes('\n')) bad(`${where}: done_when must be one line`);
-    item.done_when = doneWhen;
+  const rawDoneWhen = data.done_when;
+  if (rawDoneWhen && typeof rawDoneWhen === 'object' && !Array.isArray(rawDoneWhen)) {
+    // One typed criterion, checked as `task.md` checks it.
+    const [entry] = parseDoneWhen([rawDoneWhen]) ?? [];
+    if (entry !== undefined) item.done_when = entry;
+  } else {
+    const doneWhen = optional(data, 'done_when', where);
+    if (doneWhen) {
+      if (doneWhen.includes('\n')) bad(`${where}: done_when must be one line`);
+      item.done_when = doneWhen;
+    }
   }
   const type = optional(data, 'type', where);
   if (type) {
@@ -336,7 +344,8 @@ export function refuseInPlaceEdits(effective: readonly PlanItem[], doc: PlanDoc)
     const was = old.get(item.key);
     if (!was) continue;
     for (const field of FIXED_FIELDS) {
-      if ((was[field] ?? '') === (item[field] ?? '')) continue;
+      // A typed done_when is an object: the same criterion compares equal by its fields.
+      if (JSON.stringify(was[field] ?? '') === JSON.stringify(item[field] ?? '')) continue;
       const how =
         field === 'type' || field === 'priority'
           ? `change it on the task with swarmup ${field === 'type' ? 'retype' : 'priority'}`

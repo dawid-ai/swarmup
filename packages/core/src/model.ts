@@ -1,3 +1,5 @@
+import type { CriteriaResults, Criterion, CriterionLast, DoneWhenEntry } from './criteria.js';
+
 export const STATUSES = [
   'todo',
   'claimed',
@@ -23,7 +25,8 @@ export type Priority = (typeof PRIORITIES)[number];
 /**
  * Event types. The fold acts on the ones that change state; the rest (comment, finding, learn,
  * run-start, run-end, merge) are history. The four plan events carry a milestone's plan
- * (AO-0110). Unknown types from newer versions are kept and ignored.
+ * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
+ * results. Unknown types from newer versions are kept and ignored.
  */
 export const EVENT_TYPES = [
   'claim',
@@ -57,6 +60,8 @@ export const EVENT_TYPES = [
   'plan-approve',
   'plan-amend',
   'plan-reject',
+  'criteria',
+  'criteria-check',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -74,10 +79,11 @@ export interface TaskMeta {
   /** Tasks that must be done before this one can start. */
   blocked_by?: string[];
   /**
-   * What must hold before the task is done (AO-0290): a short list where each line is a command
-   * or an observable behavior someone can check. Tasks filed before the field have none.
+   * What must hold before the task is done (AO-0290): a short list of criteria. A plain string is
+   * a `prose` criterion; an object is a typed one (`command`, `check`, `rubric`, `human`, `map`).
+   * Tasks filed before the field have none. A `criteria` event replaces the list later.
    */
-  done_when?: string[];
+  done_when?: DoneWhenEntry[];
   /** The repeat (`repeats/<name>.md`) that created this task. */
   repeat?: string;
   /** The slot the repeat fired for: local time `YYYY-MM-DDTHH:MM`, or a condition key. */
@@ -126,8 +132,11 @@ export interface PlanItem {
   after?: string[];
   /** `30m`, `2h` or `1d` (8 h). A planning number, never a budget. */
   estimate: string;
-  /** The item's own check; the one line of the task's `done_when`. Defaults to the title. */
-  done_when?: string;
+  /**
+   * The item's own check: the one entry of the task's `done_when`, one line of text or one typed
+   * criterion. Defaults to the title.
+   */
+  done_when?: DoneWhenEntry;
   type?: string;
   priority?: Priority;
   /** Expected reviewer: a concrete actor id. */
@@ -302,6 +311,13 @@ export interface OpsEvent {
   base?: string;
   /** plan-amend: what the new items are. */
   plan_kind?: 'subtask' | 'fix';
+  /** criteria: the task's whole new `done_when` list. */
+  done_when?: DoneWhenEntry[];
+  /**
+   * verdict, criteria-check, merge: results by criterion id. On a merge and on swarmupd's
+   * send-back, the results of the `command` and `check` criteria it ran.
+   */
+  criteria?: CriteriaResults;
   body: string;
 }
 
@@ -395,6 +411,13 @@ export interface TaskState {
   waitsOnPlan: boolean;
   /** The `plan_apply` markers on this task's events: the plan changes that reached it. */
   planApplied: string[];
+  /**
+   * The current criteria, ids settled: `done_when` of `task.md`, or of the latest `criteria`
+   * event. Absent for a task without criteria or results.
+   */
+  criteria?: Criterion[];
+  /** The latest result of each criterion, by id, with the event that recorded it. */
+  criteriaResults?: Record<string, CriterionLast>;
 }
 
 /** What `derive` reads of a task's child for the plan rules. */
