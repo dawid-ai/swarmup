@@ -3,7 +3,7 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
-## v0.3.0-beta.12 (2026-11-21)
+## v0.3.0-beta.13 (2026-11-21)
 
 - **SwarmUp cleans up after itself.** Old scratch folders go after 2 days, run logs and merge logs
   after 14, and swarmupd's log starts a new file past 10 MB. Worktrees of finished tasks whose work is

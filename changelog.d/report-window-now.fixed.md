@@ -1,1 +1,0 @@
-- A report or replay for the last days now includes what happened in its very last moment: an event from the moment the report was asked for was left out.

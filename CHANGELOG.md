@@ -6,7 +6,7 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
-## 0.3.0-beta.12 (2026-11-21)
+## 0.3.0-beta.13 (2026-11-21)
 
 ### Added
 
@@ -39,6 +39,7 @@ them in at release time (see [RELEASING.md](RELEASING.md)).
 - An approved task whose work is a commit in a separate task store repo now gets a "nothing to merge" note instead of a finding that its work is not in the code's main branch, and the tasks waiting on it go on.
 - The Tasks list now shows done and parked tasks when you pick that status, even with **Include closed and archived** off, and a project in the sidebar shows its tasks when they carry another project name.
 - The Board's Done column has a dropdown to show 20, 100, 250 or all done tasks, remembered on this machine, and its header counts every done task instead of only the 20 shown.
+- A report or replay for the last days now includes what happened in its very last moment: an event from the moment the report was asked for was left out.
 
 ## 0.3.0-beta.11 (2026-11-20)
 
