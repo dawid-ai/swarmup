@@ -81,12 +81,23 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
     setViewProject(filter.project);
     return () => setViewProject(undefined);
   }, [filter.project]);
-  const { data, error } = useData<Task[]>(all ? '/api/tasks?all' : '/api/tasks');
+  // Only closed tasks are done or parked, and `/api/tasks` lists open ones: those statuses load
+  // the closed tasks too, and the toggle shows that they are in.
+  const closed = all || CLOSED.has(status);
+  const { data, error } = useData<Task[]>(closed ? '/api/tasks?all' : '/api/tasks');
   const tasks = useMemo(() => data ?? [], [data]);
+  // A sidebar project names a data root, whose tasks may carry another project name
+  // (`project`, `project_aliases` in its config): that filter shows the root's tasks too.
+  const presetRoot = preset?.startsWith('project:') ? preset.slice(8) : undefined;
   const rows = useMemo(() => {
+    const byRoot = presetRoot !== undefined && filter.project === presetRoot;
     const out = tasks.filter(
       (t) =>
-        matchesFilter(t, filter, nav.me) &&
+        matchesFilter(
+          t,
+          byRoot && t.root === presetRoot ? { ...filter, project: undefined } : filter,
+          nav.me,
+        ) &&
         (!status || (status === 'open' ? OPEN.has(t.status) : t.status === status)),
     );
     const updated = (t: Task): number => Date.parse(t.updatedAt) || 0;
@@ -97,7 +108,7 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
       }
       return (updated(x) - updated(y)) * sort.dir;
     });
-  }, [tasks, filter, status, sort, nav.me]);
+  }, [tasks, filter, status, sort, nav.me, presetRoot]);
   const now = Date.now();
   const statusLabel =
     status === 'open' ? 'Open' : (STATUSES.find((st) => st.key === status)?.label ?? status);
@@ -106,7 +117,17 @@ export function List({ nav, preset }: { nav: Nav; preset?: string }) {
       title="Tasks"
       icon={ListTodo}
       subtitle={data ? `${rows.length} of ${tasks.length} tasks` : 'Every task across your roots'}
-      actions={<Toggle checked={all} onChange={setAll} label="Include closed and archived" />}
+      actions={
+        <Toggle
+          checked={closed}
+          onChange={(on) => {
+            setAll(on);
+            // Turning closed tasks off leaves nothing for a done or parked filter to show.
+            if (!on && CLOSED.has(status)) setStatus('');
+          }}
+          label="Include closed and archived"
+        />
+      }
     >
       <div className="px-6 pt-4 pb-3">
         <FilterBar tasks={tasks} filter={filter} onChange={setFilter} view="list">
