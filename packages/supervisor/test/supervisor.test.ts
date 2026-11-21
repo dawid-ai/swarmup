@@ -5294,6 +5294,9 @@ describe('what runs leave in the checkout', () => {
     const start = await git(s.repo, 'rev-parse', 'HEAD');
     const other = temp();
     await git(other, 'init', '-q');
+    writeFileSync(join(other, 'tracked.txt'), 'original\n');
+    writeFileSync(join(other, 'gone.txt'), 'deleted by the run\n');
+    await git(other, 'add', '-A');
     await git(other, 'commit', '-q', '--allow-empty', '-m', 'other');
     // No tick or wait plan ran: swarmupd knows neither checkout's top nor its state.
     const spy = spySyncProcs();
@@ -5308,8 +5311,12 @@ describe('what runs leave in the checkout', () => {
     expect(run).toMatchObject({ task: 'T-0001', base: start });
     expect(elsewhere.cwd).toBe(other);
     expect(spy.calls.map((c) => `${c.command} at ${c.at}`)).toEqual([]);
-    await ended(s.sup, run.id);
-    await ended(s.sup, elsewhere.id);
+    const [completed, completedElsewhere] = await Promise.all([
+      ended(s.sup, run.id),
+      ended(s.sup, elsewhere.id),
+    ]);
+    expect(completed).toMatchObject({ exit: 0, reason: 'exit' });
+    expect(completedElsewhere).toMatchObject({ exit: 0, reason: 'exit' });
   });
 
   it('starts an API run without git on the event loop after the checkout interest expired (AO-0402)', async () => {
