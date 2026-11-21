@@ -47,6 +47,18 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/channels/dev')).toBe(true);
   });
 
+  it('passes the project map calls of the Map view and nothing past them', () => {
+    expect(allowedCall('GET', '/api/map?root=site')).toBe(true);
+    expect(allowedCall('GET', '/api/map/node?root=site&id=core%2Ffold')).toBe(true);
+    expect(allowedCall('GET', '/api/map/search?root=site&file=src%2Fa.ts')).toBe(true);
+    for (const a of ['check', 'index', 'init']) {
+      expect(allowedCall('POST', `/api/map/${a}`)).toBe(true);
+      expect(allowedCall('GET', `/api/map/${a}`)).toBe(false);
+    }
+    expect(allowedCall('POST', '/api/map')).toBe(false);
+    expect(allowedCall('GET', '/api/map/node/more')).toBe(false);
+  });
+
   it('passes the settings, schedules, standup and status-change calls', () => {
     expect(allowedCall('GET', '/api/kb?q=git&topic=windows')).toBe(true);
     expect(allowedCall('POST', '/api/kb')).toBe(false);

@@ -982,6 +982,65 @@ export interface KbNote {
   score: number;
 }
 
+// The project map (W2), as `/api/map` returns it. Mirrors `packages/supervisor/src/map-api.ts`.
+
+export type MapType = 'code' | 'website' | 'campaign';
+
+/** A map node in a list: no body, links resolved to node ids. */
+export interface MapNodeBrief {
+  id: string;
+  /** From the project top, such as `.swarmup/map/core/fold.md`. */
+  file: string;
+  kind: string;
+  summary: string;
+  covers: string[];
+  links: string[];
+  /** Links that name no node. */
+  broken: string[];
+  verified?: string;
+  review_after?: string;
+  /** Body lines. */
+  size: number;
+  problems: string[];
+  /** Search hits only. */
+  score?: number;
+}
+
+export interface MapView {
+  root: string;
+  top: string;
+  dir: string | null;
+  exists: boolean;
+  type: string | null;
+  detected?: MapType;
+  summary: string;
+  kinds: string[];
+  nodes: MapNodeBrief[];
+}
+
+export interface MapNodeView extends MapNodeBrief {
+  body: string;
+  linksTo: MapNodeBrief[];
+  linkedFrom: MapNodeBrief[];
+}
+
+export interface MapProblem {
+  code: string;
+  message: string;
+  node?: string;
+  path?: string;
+}
+
+export interface MapCheck {
+  ok: boolean;
+  hasMap: boolean;
+  errors: MapProblem[];
+  warnings: MapProblem[];
+  base?: { ref: string; commit: string };
+  changed: number;
+  nodes: number;
+}
+
 // The replay timeline, as `GET /api/timeline` returns it. Mirrors `packages/core/src/timeline.ts`.
 
 /** One stretch of time an agent held a task: claim (or start) to the event that let it go. */

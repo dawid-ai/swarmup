@@ -16,6 +16,7 @@ import {
   Inbox as InboxIcon,
   Kanban,
   ListTodo,
+  Map as MapIcon,
   MessageSquare,
   Newspaper,
   Plus,
@@ -69,6 +70,7 @@ import { Findings } from './views/Findings';
 import { Inbox } from './views/Inbox';
 import { Knowledge } from './views/Knowledge';
 import { List } from './views/List';
+import { ProjectMap } from './views/Map';
 import { NewTask } from './views/NewTask';
 import { Replay } from './views/Replay';
 import { Reports } from './views/Reports';
@@ -101,6 +103,7 @@ export type View =
   | 'chat'
   | 'channels'
   | 'knowledge'
+  | 'map'
   | 'search'
   | 'settings';
 
@@ -143,6 +146,7 @@ const GROUPS: Array<{
       ['channels', 'Channels', Hash],
       ['decisions', 'Decisions', Vote],
       ['knowledge', 'Knowledge', BookOpen],
+      ['map', 'Map', MapIcon],
     ],
   },
 ];
@@ -881,6 +885,7 @@ export function App() {
             {view === 'list' && <List key={arg ?? ''} nav={nav} preset={arg} />}
             {view === 'findings' && <Findings nav={nav} />}
             {view === 'knowledge' && <Knowledge key={arg ?? ''} nav={nav} selected={arg} />}
+            {view === 'map' && <ProjectMap key={arg ?? ''} nav={nav} selected={arg} />}
             {view === 'search' && <Search nav={nav} initial={arg} />}
             {view === 'standups' && <Standups nav={nav} />}
             {view === 'activity' && <ActivityView nav={nav} />}
