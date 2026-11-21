@@ -6,6 +6,7 @@
 - `cli` — entry — The swarmup command: one COMMANDS table of subcommands over core and swarmupd, used by agents and people
 - `core` — area — @swarmup/core: the task store library every other package uses; sync file I/O, no daemon state
 - `core/adopt` — module — swarmup adopt, new-project and init; repo survey, project templates and the role templates they copy
+- `core/defs` — module — Definitions as code: swarm.yaml and agent file schemas, validate, hash, merge under the machine config, run stamps
 - `core/fold` — flow — Folds a task's events in ULID order into its state; the state machine, leases, milestones, plans and criteria
 - `core/knowledge` — module — Learn notes (kb/), their reads and prompt matching, and the decision log (decisions/) with its imports
 - `core/map` — module — The project map: parse .swarmup/map/ nodes, check coverage of a change, search, _INDEX.md and prompt block
