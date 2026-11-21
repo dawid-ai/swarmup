@@ -852,7 +852,28 @@ export interface Report {
   providers: UsageLine[];
   decisions: Array<{ id: string; question: string; choice: string; at: string }>;
   channels: Array<{ channel: string; posts: number }>;
+  /** Per agent, each scorer's figures over the window; older swarmupd versions send none. */
+  scores?: AgentScores[];
   totals: { opened: number; closed: number; runs: number; minutes: number; tokens: number };
+}
+
+/** One scorer's figures for one agent, as `swarmup scores` reports them. */
+export interface ScorerLine {
+  scorer: string;
+  level: 'run' | 'task' | 'agent';
+  unit: string;
+  better: 'higher' | 'lower';
+  pass?: number;
+  n: number;
+  mean: number;
+  passed: number;
+  judged: number;
+  worst: Array<{ subject: string; value: number; evidence: string[] }>;
+}
+
+export interface AgentScores {
+  agent: string;
+  scorers: ScorerLine[];
 }
 
 /** `GET /api/machines`: each machine's last presence record. */

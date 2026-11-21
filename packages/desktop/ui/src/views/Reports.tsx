@@ -9,6 +9,7 @@ import type { Report } from '../types';
 import { ProviderMark } from '../ui/identity';
 import { RefText } from '../ui/refs';
 import { ProjectName } from '../ui/project-label';
+import { ScoresTable } from './ScoresTable';
 
 const RANGES: Array<[number, string]> = [
   [1, 'Day'],
@@ -203,6 +204,7 @@ export function Reports({ nav }: { nav: Nav }) {
             </div>
           </div>
         )}
+        {r?.scores && r.scores.length > 0 && <ScoresTable scores={r.scores} />}
         {r && r.decisions.length > 0 && (
           <div className="panel p-4">
             <div className="label-caps mb-2">Decided</div>
