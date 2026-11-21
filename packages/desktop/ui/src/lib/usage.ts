@@ -16,7 +16,7 @@ export function byProvider(a: string, b: string): number {
 /**
  * One provider in the status bar. `warning`: its highest window is at or over the share at which
  * swarmupd pauses its runs. `expired`: a run could not sign in, so a sign-in that worked has run
- * out; `signed-out`: the sign-in check found it signed out. `empty`: no usage reading yet.
+ * out; `signed-out`: the sign-in check found it signed out. `empty`: no current usage window.
  */
 export interface UsageItem {
   provider: string;
@@ -71,14 +71,15 @@ export function usageItems(
           title: `${label}: ${expired ? 'the sign-in expired' : 'signed out'}; no ${label} run starts until it is signed in`,
         };
       }
-      const windows = Object.values(u.windows ?? {});
+      // Match `usagePause`: cached windows stop describing current usage at their reset boundary.
+      const windows = Object.values(u.windows ?? {}).filter((window) => window.resets_at > now);
       if (windows.length === 0) {
-        return { provider, label, state: 'empty', title: `${label}: no usage reading yet` };
+        return { provider, label, state: 'empty', title: `${label}: no current usage window` };
       }
       const top = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
       const at = pause?.runtimes?.[provider]?.pause_at ?? pause?.usage_pause_at ?? DEFAULT_PAUSE_AT;
       const pct = Math.round(top.utilization * 100);
-      const reset = top.resets_at > now ? resetIn(top.resets_at - now) : undefined;
+      const reset = resetIn(top.resets_at - now);
       const warning = top.utilization >= at;
       return {
         provider,
