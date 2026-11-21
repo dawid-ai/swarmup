@@ -36,13 +36,7 @@ import type { WrappedData } from '../replay/scenes/wrapped';
 import { cardFileName, cardTime } from '../replay/scenes/wrapped';
 import type { RootInfo, Settings, Task, Timeline } from '../types';
 import { useProjectLabel } from '../ui/project-label';
-
-const RANGES: Array<[number, string]> = [
-  [1, 'Day'],
-  [7, 'Week'],
-  [30, '30 days'],
-  [90, '90 days'],
-];
+import { RangeButtons, RangeDates, rangeParams, useTimeRange } from '../ui/range';
 
 /** A choice of the **Project** picker: a root of the sidebar, or one project label inside it. */
 export interface ProjectChoice {
@@ -106,11 +100,7 @@ export function timelinePath(opts: {
   /** The scene's extra query, such as `wrapped=1`. */
   query?: string;
 }): string | null {
-  const window = opts.custom
-    ? opts.from
-      ? `from=${q(opts.from)}${opts.to ? `&to=${q(opts.to)}` : ''}`
-      : null
-    : `days=${opts.days}`;
+  const window = rangeParams(opts);
   if (!window) return null;
   const only = `${opts.root ? `&root=${q(opts.root)}` : ''}${opts.project ? `&project=${q(opts.project)}` : ''}`;
   return `/api/timeline?${window}&clip=${opts.clip}${only}${opts.query ? `&${opts.query}` : ''}`;
@@ -293,10 +283,8 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
   // The picked `ProjectChoice` value. A choice that left the list (a removed root) still filters,
   // so the error from swarmupd shows instead of a silent switch to every project.
   const [pickedProject, setPickedProject] = useState('');
-  const [days, setDays] = useState(7);
-  const [custom, setCustom] = useState(false);
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const [range, setRange] = useTimeRange({ days: 7, custom: false, from: '', to: '' });
+  const { custom, from } = range;
   const [clip, setClip] = useState<number>(30);
   const [sceneId, setSceneId] = useState(SCENES[0]!.id);
   const [showProject, setShowProject] = useState(true);
@@ -318,7 +306,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
     projects.find((c) => c.value === pickedProject)?.label ??
     ([root, project].filter(Boolean).map(projectLabel).join(' / ') || 'All projects');
   const overlay: FrameOverlay = { projectName, showProject };
-  const path = timelinePath({ root, project, days, custom, from, to, clip, query: scene.query });
+  const path = timelinePath({ root, project, ...range, clip, query: scene.query });
   const { data: timeline, error } = useData<Timeline>(path);
 
   // Scenes about one thing, such as the review rally's task, offer a picker; the first choice
@@ -513,36 +501,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
               className="w-48"
             />
           </label>
-          <div className="flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Range">
-            {RANGES.map(([d, label]) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => {
-                  setDays(d);
-                  setCustom(false);
-                }}
-                aria-pressed={!custom && days === d}
-                className={cx(
-                  'rounded-md px-2.5 py-1 text-xs transition',
-                  !custom && days === d ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setCustom(true)}
-              aria-pressed={custom}
-              className={cx(
-                'rounded-md px-2.5 py-1 text-xs transition',
-                custom ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
-              )}
-            >
-              Custom
-            </button>
-          </div>
+          <RangeButtons value={range} onChange={setRange} />
         </>
       }
     >
@@ -575,26 +534,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
               />
             </>
           )}
-          {custom && (
-            <>
-              <span className="ml-2 text-fg-3">From</span>
-              <input
-                type="date"
-                aria-label="From"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className="h-[34px] rounded-lg border border-white/10 bg-ink-950/60 px-2 text-fg"
-              />
-              <span className="text-fg-3">to</span>
-              <input
-                type="date"
-                aria-label="To"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className="h-[34px] rounded-lg border border-white/10 bg-ink-950/60 px-2 text-fg"
-              />
-            </>
-          )}
+          <RangeDates value={range} onChange={setRange} />
           <label className="ml-auto flex items-center gap-2 text-xs text-fg-3">
             <input
               type="checkbox"

@@ -753,8 +753,17 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     }
     if (method === 'GET' && area === 'activity') {
       // One page, newest first: `q` filters (words, `agent:`, `task:`, `kind:`; see
-      // parseActivityQuery), `before` is the `next` of the page before.
+      // parseActivityQuery), `before` is the `next` of the page before. `days`, or `from` and
+      // `to`, keep the items of that window, as for the report; without them, every item.
       const limit = Number(q.get('limit') ?? 100);
+      const windowed = q.has('days') || q.has('from') || q.has('to');
+      const w = windowed
+        ? reportWindow(
+            { days: q.get('days'), from: q.get('from'), to: q.get('to') },
+            Date.now(),
+            'activity',
+          )
+        : null;
       return send(
         res,
         200,
@@ -762,6 +771,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           q: (q.get('q') ?? '').slice(0, 500),
           before: q.get('before') || undefined,
           limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 500) : 100,
+          ...(w ? { since: w.from, until: w.to } : {}),
         }),
       );
     }

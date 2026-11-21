@@ -22,11 +22,18 @@ import { Markdown } from '../ui/markdown';
 import { RefText } from '../ui/refs';
 import { Highlight } from '../ui/search';
 import { ProjectName } from '../ui/project-label';
+import { RangeButtons, RangeDates, rangeParams, useTimeRange } from '../ui/range';
+import type { TimeRange } from '../ui/range';
 
 const PAGE = 100;
 
+/** Where the picked range is saved between visits. */
+export const ACTIVITY_RANGE_KEY = 'swarmup.activity.range';
+
+const ALL_TIME: TimeRange = { days: 0, custom: false, from: '', to: '' };
+
 interface Feed extends Loaded {
-  /** The query these items answer. */
+  /** The query and window these items answer, as `q=…&days=…`. */
   query: string;
   total: number;
   actors: string[];
@@ -34,8 +41,9 @@ interface Feed extends Loaded {
 }
 
 /**
- * The feed for `query`: the newest page, fetched again on every refresh signal and merged in
- * front of the older pages loaded with `more`. Typing waits 200 ms before it asks swarmupd.
+ * The feed for `query`, the `q` and window parameters of `/api/activity`: the newest page,
+ * fetched again on every refresh signal and merged in front of the older pages loaded with
+ * `more`. Typing waits 200 ms before it asks swarmupd.
  */
 function useFeed(query: string): {
   feed: Feed | null;
@@ -51,7 +59,7 @@ function useFeed(query: string): {
   const seq = useRef(0);
   const first = useCallback(() => {
     const mine = ++seq.current;
-    api<ActivityPage>('GET', `/api/activity?limit=${PAGE}&q=${q(query)}`).then(
+    api<ActivityPage>('GET', `/api/activity?limit=${PAGE}&${query}`).then(
       (page) => {
         if (mine !== seq.current) return;
         setFeed((prev) => ({
@@ -77,7 +85,7 @@ function useFeed(query: string): {
     const cursor = feed?.query === query ? feed.next : null;
     if (!cursor || loading) return;
     setLoading(true);
-    api<ActivityPage>('GET', `/api/activity?limit=${PAGE}&q=${q(query)}&before=${q(cursor)}`)
+    api<ActivityPage>('GET', `/api/activity?limit=${PAGE}&${query}&before=${q(cursor)}`)
       .then(
         (page) =>
           // A new query or a reset since the request: this page belongs to neither.
@@ -95,17 +103,21 @@ function useFeed(query: string): {
 
 /**
  * Every task event and channel post, archived tasks included, newest first, by day. The search
- * box filters by words and `agent:`, `task:`, `project:`, `kind:` or `type:`; older pages load on
- * request.
+ * box filters by words and `agent:`, `task:`, `project:`, `kind:` or `type:`, and the **Range**
+ * buttons by time; older pages load on request.
  */
 export function Activity({ nav }: { nav: Nav }) {
   const [text, setText] = useState('');
   const [who, setWho] = useState('');
   const [project, setProject] = useState('');
   const [kind, setKind] = useState('');
+  const [range, setRange] = useTimeRange(ALL_TIME, ACTIVITY_RANGE_KEY);
   const query = activityQuery(text, { who, project, kind });
-  const { feed, error, loading, more } = useFeed(query);
-  const current = feed?.query === query;
+  // A custom range without its start date yet leaves the feed unfiltered by time.
+  const timeWindow = rangeParams(range) ?? '';
+  const params = `q=${q(query)}${timeWindow ? `&${timeWindow}` : ''}`;
+  const { feed, error, loading, more } = useFeed(params);
+  const current = feed?.query === params;
   const shown = feed?.items ?? [];
   const words = activityWords(text);
   const days: Array<{ day: string; items: ActivityItem[] }> = [];
@@ -133,18 +145,21 @@ export function Activity({ nav }: { nav: Nav }) {
           : 'Everything agents and people did'
       }
       actions={
-        <div className="relative">
-          <SearchIcon
-            size={14}
-            className="pointer-events-none absolute top-2.5 left-2.5 text-fg-4"
-          />
-          <Input
-            value={text}
-            onChange={setText}
-            placeholder="Words, or agent:codex task:AO-0061 kind:review"
-            className="w-96 pl-8"
-          />
-        </div>
+        <>
+          <div className="relative">
+            <SearchIcon
+              size={14}
+              className="pointer-events-none absolute top-2.5 left-2.5 text-fg-4"
+            />
+            <Input
+              value={text}
+              onChange={setText}
+              placeholder="Words, or agent:codex task:AO-0061 kind:review"
+              className="w-96 pl-8"
+            />
+          </div>
+          <RangeButtons value={range} onChange={setRange} all="All time" />
+        </>
       }
     >
       <div className="flex flex-wrap items-center gap-2 px-6 pt-4 pb-2">
@@ -194,17 +209,20 @@ export function Activity({ nav }: { nav: Nav }) {
             </button>
           ))}
         </div>
+        <RangeDates value={range} onChange={setRange} />
       </div>
       <div className={cx('px-6 pb-6', !current && feed && 'opacity-60')}>
         <ErrorLine error={error} />
         {feed && current && shown.length === 0 && (
-          <Empty icon={History} title={query ? 'Nothing found' : 'Nothing here yet'}>
+          <Empty icon={History} title={query || timeWindow ? 'Nothing found' : 'Nothing here yet'}>
             {query ? (
               <>
                 Every word must match. Try fewer words, or a filter such as{' '}
                 <span className="font-mono">agent:codex</span> or{' '}
                 <span className="font-mono">task:AO-0061</span>.
               </>
+            ) : timeWindow ? (
+              'Nothing happened in this window. Pick a longer range, or All time.'
             ) : (
               'Claims, reviews, comments, runs and channel posts show up here as they happen.'
             )}
