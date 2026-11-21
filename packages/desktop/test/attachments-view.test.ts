@@ -163,7 +163,8 @@ function area(): HTMLTextAreaElement {
 }
 
 function project(): HTMLInputElement {
-  return box.querySelector('input[role="combobox"]')!;
+  // The New task dialog renders in a portal on document.body, outside `box`.
+  return document.body.querySelector('input[role="combobox"]')!;
 }
 
 function pickNextProject(): void {
@@ -219,7 +220,9 @@ describe('New task: images', () => {
   });
 
   it('creates in the new root when the project changes after an upload', async () => {
-    const title = box.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!;
+    const title = document.body.querySelector<HTMLInputElement>(
+      'input[placeholder="Task title"]',
+    )!;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
         title,
@@ -235,7 +238,9 @@ describe('New task: images', () => {
 
     pickNextProject();
     act(() =>
-      [...box.querySelectorAll('button')].find((b) => b.textContent === 'Create task')!.click(),
+      [...document.body.querySelectorAll('button')]
+        .find((b) => b.textContent === 'Create task')!
+        .click(),
     );
     await settle();
     const made = calls.find((c) => c.path === '/api/tasks')!;
