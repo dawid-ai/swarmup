@@ -776,7 +776,9 @@ export function nodeNeighbours(
 
 /** A path from `cwd` (absolute or relative), as a path from the project top. */
 export function pathInProject(top: string, cwd: string, path: string): string {
-  const abs = isAbsolute(path) ? path : resolve(cwd, path);
+  // A Windows-style path names the same file on every platform: `\` is a separator here too.
+  const given = path.replace(/\\/g, '/');
+  const abs = isAbsolute(given) ? given : resolve(cwd, given);
   return relative(top, abs).split(sep).join('/');
 }
 
