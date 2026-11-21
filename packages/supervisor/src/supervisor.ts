@@ -1237,9 +1237,10 @@ export class Supervisor extends EventEmitter {
   /**
    * A fresh workspace (fresh index read) acting as `actor`, or as the user config's `me`. The
    * supervisor's own `SWARMUP_AGENT` is ignored, so API calls never act as whoever started swarmupd.
-   * `helper` marks a helper run's workspace, which may not change task state.
+   * `helper` marks a helper run's workspace, which may not change task state. `force` passes
+   * the checks `--force` passes, and its events say so.
    */
-  ws(actor?: string, run?: string, helper = false): Workspace {
+  ws(actor?: string, run?: string, helper = false, force = false): Workspace {
     const env = { ...this.env };
     deleteEnvVars(env, ['AGENT', 'RUN', 'PARENT_RUN', 'RUN_TOKEN', 'RUN_STATE_DIR']);
     return new Workspace({
@@ -1249,6 +1250,7 @@ export class Supervisor extends EventEmitter {
       actor,
       run,
       helper,
+      ...(force ? { force } : {}),
       now: this.now,
       queueConfirm: (roots) => this.confirmSync(roots),
     });
@@ -5980,6 +5982,19 @@ export class Supervisor extends EventEmitter {
     if (!top) throw new NoDiff(`The code of ${root.name} is in no git checkout on this PC.`);
     const { events } = ws.showEvents(ref);
     return taskDiff({ top, env: this.commandEnv(), events, base: cfg?.base });
+  }
+
+  /**
+   * The folder the app's **Run checks** runs a task's criteria in: the task's linked worktree,
+   * else the root's code checkout. Null when the code is in no git checkout on this PC.
+   */
+  async criteriaDir(ref: string): Promise<string | null> {
+    const ws = this.ws();
+    const wt = this.taskWorktree(ws, ws.view(ref));
+    if (wt) return wt.path;
+    const root = ws.resolve(ref).root;
+    const cfg = this.config.merge[root.name];
+    return cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
   }
 
   private closeState(): void {

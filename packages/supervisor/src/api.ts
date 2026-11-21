@@ -13,6 +13,7 @@ import type {
 } from '@swarmup/core';
 import {
   checkDefinitionText,
+  COMMAND_TIMEOUT_MS,
   parseCriteriaResults,
   parseDoneWhen,
   findAttachment,
@@ -44,6 +45,8 @@ import { pageRuns, RUN_FILTERS } from './runs.js';
 import type { RunFilter, RunRecord } from './runs.js';
 import { liveRunsEndMessage } from './supervisor.js';
 import type { Supervisor } from './supervisor.js';
+import { CommandRunner } from './merge.js';
+import { briefDetail, CriteriaChecks } from './task-criteria.js';
 
 export interface ApiOptions {
   port: number;
@@ -165,6 +168,19 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   sup.on('tick', checkTasks);
 
   const reads = new TurnQueue();
+  // The app's **Run checks**: `swarmup criteria check` in swarmupd, one run per task at a time.
+  const criteriaChecks = new CriteriaChecks({
+    runCommand: async (command, cwd) => {
+      const runner = new CommandRunner(sup.commandEnv());
+      const [r] = await runner.runAll([command], cwd, COMMAND_TIMEOUT_MS);
+      return { ok: r?.ok ?? false, output: r?.output ?? '', why: r?.why };
+    },
+    record: (task, by, results, message) => {
+      const done = sup.ws(by).recordCriteriaCheck(task, results, message);
+      checkTasks();
+      return done.events.at(-1)?.id ?? '';
+    },
+  });
   // Task events the reports read, kept so a report opened again reads only the tasks that changed.
   const reportEvents = new ReportEvents();
   const server = createServer((req, res) => {
@@ -492,7 +508,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         // `root` names the data root the task goes to (AO-0323): its store, code checkout, agents
         // and merge settings then handle it. Without it, the default root, as before.
         const root = requestedRoot(ws, body.root);
-        const { meta, proposed } = ws.addTask(
+        const { meta, proposed, notes } = ws.addTask(
           {
             title: need(body.title, 'title'),
             body: str(body.body),
@@ -511,6 +527,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const task = {
           ...compact(ws.view(`${(root ?? ws.defaultRoot()).name}/${meta.id}`)),
           proposed,
+          // Such as the note on work without a checkable criterion.
+          ...(notes?.length ? { notes } : {}),
         };
         return send(res, 201, warnings.length > 0 ? { ...task, warnings } : task);
       }
@@ -529,13 +547,45 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'GET' && !action) {
         const { body: text, events } = ws.showEvents(ref);
         const v = ws.view(ref);
+        // The goal brief and the children it covers, for the task panel's Brief section.
+        const children = ws
+          .list({ all: true })
+          .filter((c) => c.root === v.root && c.meta.parent === v.meta.id)
+          .map((c) => ({
+            id: c.meta.id,
+            title: c.meta.title,
+            status: c.status,
+            updatedAt: c.updatedAt,
+          }));
         // The criteria and their latest results, for the task panel's "Done when".
         return send(res, 200, {
           task: compact(v),
           body: text,
           events,
           ...(v.criteria ? { criteria: v.criteria, criteriaResults: v.criteriaResults } : {}),
+          ...briefDetail(v.meta.type, events, children),
         });
+      }
+      // **Run checks**: `swarmup criteria check ID` in the task's worktree, in the background.
+      // The app reads the run's progress with a GET until it ends.
+      if (action === 'criteria-check') {
+        const v = ws.view(ref);
+        const task = `${v.root}/${v.meta.id}`;
+        if (method === 'GET') return send(res, 200, { job: criteriaChecks.get(task) });
+        if (method === 'POST') {
+          // It runs commands as swarmupd, outside a run's sandbox.
+          humanOnly('running criteria checks');
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const cwd = await sup.criteriaDir(ref);
+          if (!cwd)
+            throw new HttpError(409, `the code of ${task} is in no git checkout on this PC`);
+          try {
+            const { job } = criteriaChecks.start(task, ws.actor, cwd, v.criteria ?? []);
+            return send(res, 202, { job });
+          } catch (err) {
+            throw new HttpError(409, (err as Error).message);
+          }
+        }
       }
       if (method === 'POST') {
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
@@ -612,8 +662,23 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
               // `criteria`: results by criterion id, as `--criteria-file` takes them.
               const criteria =
                 body.criteria === undefined ? undefined : parseCriteriaResults(body.criteria);
-              return ws.verdict(ref, v, msg, mark, criteria);
+              // `force`: approve with a criterion marked fail, as `--force` does.
+              const by = body.force === true ? sup.ws(ws.actor, undefined, false, true) : ws;
+              return by.verdict(ref, v, msg, mark, criteria);
             }
+            // `swarmup criteria ID --set-file`: the whole new list (`done_when`), or with `add`
+            // the entries to append, as a `criteria` event under the CLI's permission rules.
+            case 'criteria': {
+              const list = body.done_when;
+              const entries = Array.isArray(list) ? list : list === undefined ? [] : [list];
+              return ws.setCriteria(ref, entries, {
+                add: body.add === true,
+                message: msg || undefined,
+              });
+            }
+            // `swarmup brief ID --body-file -`: a new goal brief, which wins over older ones.
+            case 'brief':
+              return ws.brief(ref, msg);
             case 'delegate':
               return ws.delegate(ref, need(body.to, 'to'), {
                 budget: str(body.budget),
@@ -632,6 +697,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           warnings: result.warnings,
           // The record a `decision` in the body wrote, by id.
           decision: result.decision?.id,
+          // Soft checks, such as a verdict that leaves a judged criterion without a result.
+          ...(result.notes?.length ? { notes: result.notes } : {}),
         });
       }
     }

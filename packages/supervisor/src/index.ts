@@ -33,3 +33,4 @@ export * from './signin.js';
 export * from './scores.js';
 export * from './orientation.js';
 export * from './score-keeper.js';
+export * from './task-criteria.js';
