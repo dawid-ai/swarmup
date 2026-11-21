@@ -36,13 +36,7 @@ import type { WrappedData } from '../replay/scenes/wrapped';
 import { cardFileName, cardTime } from '../replay/scenes/wrapped';
 import type { RootInfo, Settings, Task, Timeline } from '../types';
 import { useProjectLabel } from '../ui/project-label';
-
-const RANGES: Array<[number, string]> = [
-  [1, 'Day'],
-  [7, 'Week'],
-  [30, '30 days'],
-  [90, '90 days'],
-];
+import { DateInputs, RangeButtons } from '../ui/range';
 
 /** A choice of the **Project** picker: a root of the sidebar, or one project label inside it. */
 export interface ProjectChoice {
@@ -513,36 +507,15 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
               className="w-48"
             />
           </label>
-          <div className="flex rounded-lg bg-white/5 p-0.5" role="group" aria-label="Range">
-            {RANGES.map(([d, label]) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => {
-                  setDays(d);
-                  setCustom(false);
-                }}
-                aria-pressed={!custom && days === d}
-                className={cx(
-                  'rounded-md px-2.5 py-1 text-xs transition',
-                  !custom && days === d ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setCustom(true)}
-              aria-pressed={custom}
-              className={cx(
-                'rounded-md px-2.5 py-1 text-xs transition',
-                custom ? 'bg-signal/15 text-signal' : 'text-fg-3 hover:text-fg',
-              )}
-            >
-              Custom
-            </button>
-          </div>
+          <RangeButtons
+            days={days}
+            custom={custom}
+            onDays={(d) => {
+              setDays(d);
+              setCustom(false);
+            }}
+            onCustom={() => setCustom(true)}
+          />
         </>
       }
     >
@@ -576,24 +549,7 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
             </>
           )}
           {custom && (
-            <>
-              <span className="ml-2 text-fg-3">From</span>
-              <input
-                type="date"
-                aria-label="From"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className="h-[34px] rounded-lg border border-white/10 bg-ink-950/60 px-2 text-fg"
-              />
-              <span className="text-fg-3">to</span>
-              <input
-                type="date"
-                aria-label="To"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className="h-[34px] rounded-lg border border-white/10 bg-ink-950/60 px-2 text-fg"
-              />
-            </>
+            <DateInputs from={from} to={to} onFrom={setFrom} onTo={setTo} className="ml-2" />
           )}
           <label className="ml-auto flex items-center gap-2 text-xs text-fg-3">
             <input

@@ -119,6 +119,43 @@ describe('pageRuns', () => {
     expect(ended.runs.map((r) => r.id)).toEqual(['04', '03']);
   });
 
+  it('limits the list, counts and stats to a range with start and end (AO-0404)', () => {
+    const ranged = [
+      rec('04', {
+        started_at: '2026-11-10T08:00:00.000Z',
+        status: 'running',
+        reason: undefined,
+        exit: undefined,
+        ended_at: undefined,
+      }),
+      rec('03', { started_at: '2026-11-09T10:00:00.000Z', ended_at: '2026-11-09T11:00:00.000Z' }),
+      rec('02', {
+        started_at: '2026-11-07T23:00:00.000Z',
+        ended_at: '2026-11-08T01:00:00.000Z',
+        exit: 1,
+        tokens: 7,
+      }),
+      rec('01', { started_at: '2026-11-07T09:00:00.000Z', ended_at: '2026-11-07T10:00:00.000Z' }),
+    ];
+    // 02 ran over the start; 03 started after the end; 04 runs now, so it is in any open range.
+    const page = pageRuns(ranged, { limit: 10, start: '2026-11-08T00:00:00.000Z', since });
+    expect(page.runs.map((r) => r.id)).toEqual(['04', '03', '02']);
+    expect(page.counts).toEqual({ all: 3, live: 1, ended: 2, errors: 1 });
+    expect(page.today.runs).toBe(3);
+    expect(page.total).toBe(4);
+    expect(page.live).toBe(1);
+
+    const closed = pageRuns(ranged, {
+      limit: 10,
+      start: '2026-11-08T00:00:00.000Z',
+      end: '2026-11-09T00:00:00.000Z',
+    });
+    expect(closed.runs.map((r) => r.id)).toEqual(['02']);
+    expect(closed.today).toEqual({ runs: 1, tokens: 7, errors: 1 });
+    expect(closed.counts.live).toBe(0);
+    expect(closed.live).toBe(1);
+  });
+
   it('finds the picked run outside the page, by id or its end', () => {
     expect(pageRuns(all, { limit: 1, pick: '01', since }).pick?.id).toBe('01');
     expect(pageRuns([rec('01ABCDEF')], { limit: 1, pick: 'cdef' }).pick?.id).toBe('01ABCDEF');
@@ -183,6 +220,10 @@ describe('GET /api/runs', () => {
     expect((await get('/api/runs?limit=0')).status).toBe(400);
     expect((await get('/api/runs?limit=10&filter=nope')).status).toBe(400);
     expect((await get('/api/runs?limit=10&since=never')).status).toBe(400);
+    expect((await get('/api/runs?limit=10&start=never')).status).toBe(400);
+    expect((await get('/api/runs?limit=10&end=never')).status).toBe(400);
+    const backwards = '&start=2026-11-09T00:00:00Z&end=2026-11-08T00:00:00Z';
+    expect((await get(`/api/runs?limit=10${backwards}`)).status).toBe(400);
   });
 });
 

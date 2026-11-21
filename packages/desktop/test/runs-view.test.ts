@@ -52,8 +52,9 @@ function rec(n: number, patch: Partial<RunRecord> = {}): RunRecord {
     id: id(n),
     agent: 'claude:engineer',
     pid: n,
-    started_at: new Date(Date.now() - (1000 - n) * 60_000).toISOString(),
-    ended_at: new Date(Date.now() - (1000 - n) * 60_000 + 30_000).toISOString(),
+    // Seconds apart and within the hour before noon: every run is in the default range, Day.
+    started_at: new Date(Date.now() - (3000 - n) * 1000).toISOString(),
+    ended_at: new Date(Date.now() - (3000 - n) * 1000 + 500).toISOString(),
     status: 'ended',
     reason: 'exit',
     exit: 0,
@@ -73,6 +74,9 @@ function setRuns(runs: RunRecord[]): void {
 
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  // Noon, local time: the ranges count from local midnight.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(2026, 10, 21, 12, 0, 0));
   net.asked = [];
   net.answer = (path) => {
     const p = new URL(path, 'http://swarmupd').searchParams;
@@ -82,6 +86,8 @@ beforeEach(() => {
       from: p.get('from') ?? undefined,
       filter: (p.get('filter') ?? 'all') as RunFilter,
       since: p.get('since') ?? undefined,
+      start: p.get('start') ?? undefined,
+      end: p.get('end') ?? undefined,
       pick: p.get('pick') ?? undefined,
     });
   };
@@ -93,6 +99,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   box.remove();
+  vi.useRealTimers();
 });
 
 function mount(): void {
@@ -199,5 +206,80 @@ describe('Runs view: paging (AO-0167)', () => {
     expect(rows()).toHaveLength(PAGE);
     expect(net.asked.at(-1)).not.toContain('from=');
     expect(button('Show more')).toBeUndefined();
+  });
+});
+
+/** Sets a date input the way a person does: through React's value setter, then `input`. */
+async function typeDate(label: string, value: string): Promise<void> {
+  const input = box.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  expect(input).not.toBeNull();
+  await act(async () => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    set.call(input, value);
+    input!.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+describe('Runs view: date range (AO-0404)', () => {
+  const hoursAgo = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  it('shows today by default, and a longer range with a preset', async () => {
+    setRuns([
+      rec(1, { started_at: hoursAgo(24 * 10), ended_at: hoursAgo(24 * 10 - 1) }),
+      rec(2, { started_at: hoursAgo(24 * 3), ended_at: hoursAgo(24 * 3 - 1) }),
+      // Started yesterday and still running: it shows in today's range.
+      rec(3, { started_at: hoursAgo(20), ended_at: undefined, status: 'running' }),
+      rec(4),
+    ]);
+    mount();
+    expect(net.asked.at(-1)).toContain(
+      `start=${encodeURIComponent(new Date(2026, 10, 21).toISOString())}`,
+    );
+    expect(tasks()).toEqual(['T-4', 'T-3']);
+    expect(box.textContent).toContain('Runs today');
+
+    await click(button('Week'));
+    expect(button('Week')?.getAttribute('aria-pressed')).toBe('true');
+    expect(net.asked.at(-1)).toContain(
+      `start=${encodeURIComponent(new Date(2026, 10, 15).toISOString())}`,
+    );
+    expect(tasks()).toEqual(['T-4', 'T-3', 'T-2']);
+    expect(box.textContent).toContain('Runs · 7 days');
+
+    await click(button('30 days'));
+    expect(tasks()).toEqual(['T-4', 'T-3', 'T-2', 'T-1']);
+  });
+
+  it('shows the runs between two dates with Custom', async () => {
+    setRuns([
+      rec(1, { started_at: hoursAgo(24 * 10), ended_at: hoursAgo(24 * 10 - 1) }),
+      rec(2, { started_at: hoursAgo(24 * 3), ended_at: hoursAgo(24 * 3 - 1) }),
+      rec(3),
+    ]);
+    mount();
+    await click(button('Custom'));
+    // No From date yet: nothing new is asked, and a line says what to pick.
+    expect(box.textContent).toContain('Pick a From date');
+    await typeDate('From', '2026-11-01');
+    await typeDate('To', '2026-11-18');
+    const path = net.asked.at(-1)!;
+    expect(path).toContain(`start=${encodeURIComponent(new Date(2026, 10, 1).toISOString())}`);
+    // The end of the To day.
+    expect(path).toContain(`end=${encodeURIComponent(new Date(2026, 10, 19).toISOString())}`);
+    expect(tasks()).toEqual(['T-2', 'T-1']);
+    expect(box.textContent).toContain('Runs · range');
+  });
+
+  it('pages on within the range', async () => {
+    setRuns([
+      rec(1, { started_at: hoursAgo(24 * 3), ended_at: hoursAgo(24 * 3 - 1) }),
+      ...Array.from({ length: PAGE + 2 }, (_, i) => rec(i + 2)),
+    ]);
+    mount();
+    await click(button('Show more'));
+    expect(net.asked.find((p) => p.includes('before='))).toContain('start=');
+    // Run 1 is from three days ago, outside Day.
+    expect(rows()).toHaveLength(PAGE + 2);
+    expect(tasks()).not.toContain('T-1');
   });
 });

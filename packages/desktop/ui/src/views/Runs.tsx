@@ -44,6 +44,7 @@ import type { ProcView, RunPage, RunRecord } from '../types';
 import { AgentPicker } from '../ui/pickers';
 import { StatusLoop } from '../ui/statusloop';
 import { ProjectName } from '../ui/project-label';
+import { DateInputs, RangeButtons } from '../ui/range';
 
 type Filter = 'all' | 'live' | 'ended' | 'errors';
 
@@ -187,9 +188,60 @@ export const PAGE = 50;
 /** The most runs one request may ask for (`limit` in `GET /api/runs`). */
 export const HEAD_MAX = 1000;
 
-/** Older rows, past the first page, that **Show more** fetched for one filter. */
+/** The Runs view's range, as ISO times for `start` and `end` in `GET /api/runs`. */
+export interface RunRange {
+  start: string;
+  /** Absent for a preset: the range runs up to now. */
+  end?: string;
+}
+
+/** A `YYYY-MM-DD` date at local midnight, or null when it is not one. */
+function localDay(date: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/**
+ * The range a pick of the **Range** buttons covers: **Day** is today from local midnight, and a
+ * preset of n days the last n calendar days with today. **Custom** runs from the local midnight
+ * of `from` to the end of `to`, or up to now without `to`. Null while **Custom** has no `from` or
+ * ends before it starts.
+ */
+export function runRange(
+  opts: { days: number; custom: boolean; from: string; to: string },
+  now: number,
+): RunRange | null {
+  if (!opts.custom) {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (opts.days - 1));
+    return { start: start.toISOString() };
+  }
+  const start = localDay(opts.from);
+  if (!start) return null;
+  const last = opts.to ? localDay(opts.to) : null;
+  if (!last) return { start: start.toISOString() };
+  const end = new Date(last);
+  end.setDate(end.getDate() + 1);
+  return end > start ? { start: start.toISOString(), end: end.toISOString() } : null;
+}
+
+/** The query of a range, such as `&start=...&end=...`; '' without one. */
+function rangeQuery(r: RunRange | null): string {
+  if (!r) return '';
+  return `&start=${q(r.start)}${r.end ? `&end=${q(r.end)}` : ''}`;
+}
+
+/** What the stat labels add for the range: `today`, `· 7 days`, `· range`. */
+function rangeWord(days: number, custom: boolean): string {
+  if (custom) return '· range';
+  return days === 1 ? 'today' : `· ${days} days`;
+}
+
+/** Older rows, past the first page, that **Show more** fetched for one filter and range. */
 interface Older {
-  filter: Filter;
+  /** The filter and the range query they belong to (`view` in `Runs`). */
+  view: string;
   /** The id of the first page's last row when the first older page came; older rows are below it. */
   from: string;
   runs: RunRecord[];
@@ -199,6 +251,11 @@ interface Older {
 export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const [pick, setPick] = useState<string | undefined>(selected);
   const [filter, setFilter] = useState<Filter>('all');
+  // **Day** by default: the stats keep counting today, and live runs show in every range to now.
+  const [days, setDays] = useState(1);
+  const [custom, setCustom] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
   const [older, setOlder] = useState<Older | null>(null);
   const [loading, setLoading] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
@@ -208,14 +265,20 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const now = useNow(5000);
   const midnight = new Date(now);
   midnight.setHours(0, 0, 0, 0);
-  const tail = older?.filter === filter ? older : null;
+  const range = runRange({ days, custom, from: rangeFrom, to: rangeTo }, now);
+  const ranged = rangeQuery(range);
+  // Rows **Show more** fetched belong to one filter and one range.
+  const view = `${filter}${ranged}`;
+  const tail = older?.view === view ? older : null;
   // Once older rows are on screen, refreshes ask for every run from `tail.from` up, not one page:
   // new runs push rows off the first page, and those rows must not drop out between the two.
   const head = tail ? `limit=${HEAD_MAX}&from=${q(tail.from)}` : `limit=${PAGE}`;
   // `pick` asks swarmupd for the picked run too, so it stays open when the filter or page drops it.
-  const path =
-    `/api/runs?${head}&filter=${filter}&since=${q(midnight.toISOString())}` +
-    (pick ? `&pick=${q(pick)}` : '');
+  // A custom range without a valid start asks nothing, and the last page stays on screen.
+  const path = range
+    ? `/api/runs?${head}&filter=${filter}&since=${q(midnight.toISOString())}${ranged}` +
+      (pick ? `&pick=${q(pick)}` : '')
+    : null;
   const { data, error, reload } = useData<RunPage>(path);
   // A new filter or pick starts a new request; until it answers, the last page stays on screen.
   // `head` records which request the page answered: `useData` keeps the old answer for one render
@@ -223,9 +286,9 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const last = useRef<{ page: RunPage; head: string } | undefined>(undefined);
   if (data && data !== last.current?.page) last.current = { page: data, head };
   const page = last.current?.page;
-  // A **Show more** answer for a filter that is no longer chosen is dropped.
-  const chosen = useRef(filter);
-  chosen.current = filter;
+  // A **Show more** answer for a filter or range that is no longer chosen is dropped.
+  const chosen = useRef(view);
+  chosen.current = view;
   useEffect(() => {
     setPick(selected);
   }, [selected]);
@@ -240,8 +303,8 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
   const edge = capped ? top[top.length - 1]?.id : undefined;
   useEffect(() => {
     if (!edge) return;
-    setOlder((o) => (o?.filter === filter ? { filter, from: edge, runs: [], more: true } : o));
-  }, [edge, filter]);
+    setOlder((o) => (o?.view === view ? { view, from: edge, runs: [], more: true } : o));
+  }, [edge, view]);
   const onTop = new Set(top.map((r) => r.id));
   const shown = tail && !capped ? [...top, ...tail.runs.filter((r) => !onTop.has(r.id))] : top;
   const more = tail && !capped ? tail.more : (page?.more ?? false);
@@ -251,22 +314,32 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
     setOlder(null);
     setMoreError(null);
   };
+  /** Picks a preset range, or **Custom** with `days` null. */
+  const chooseRange = (d: number | null): void => {
+    if (d === null) setCustom(true);
+    else {
+      setDays(d);
+      setCustom(false);
+    }
+    setOlder(null);
+    setMoreError(null);
+  };
 
   /** Fetches the page below the last row on screen and appends it. */
   const showMore = (): void => {
     const end = shown[shown.length - 1];
     if (!end || loading) return;
-    const want = filter;
+    const want = view;
     const at = tail?.from;
     setLoading(true);
-    api<RunPage>('GET', `/api/runs?limit=${PAGE}&filter=${want}&before=${q(end.id)}`)
+    api<RunPage>('GET', `/api/runs?limit=${PAGE}&filter=${filter}${ranged}&before=${q(end.id)}`)
       .then(
         (next) => {
           if (chosen.current !== want) return;
           setOlder((o) => {
             // The boundary moved while this page loaded; its rows would leave a gap.
-            if (o?.filter === want && o.from !== at) return o;
-            const base = o?.filter === want ? o : { filter: want, from: end.id, runs: [] };
+            if (o?.view === want && o.from !== at) return o;
+            const base = o?.view === want ? o : { view: want, from: end.id, runs: [] };
             return { ...base, runs: [...base.runs, ...next.runs], more: next.more };
           });
           setMoreError(null);
@@ -291,7 +364,10 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
     reload();
   };
 
-  const empty = page !== undefined && counts.all === 0 && !fresh;
+  // No run at all, in the range or not; an older swarmupd sends no `total`.
+  const empty = page !== undefined && (page.total ?? counts.all) === 0 && !fresh;
+  const word = rangeWord(days, custom);
+  const liveNow = page?.live ?? counts.live;
 
   return (
     <Section
@@ -300,9 +376,22 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
       subtitle="Agent processes swarmupd started: what is live now and what ran recently"
       actions={
         !empty && (
-          <Button kind="primary" icon={Play} onClick={() => setStarting(true)}>
-            Start a run
-          </Button>
+          <>
+            {custom && (
+              <div className="flex items-center gap-2 text-sm">
+                <DateInputs from={rangeFrom} to={rangeTo} onFrom={setRangeFrom} onTo={setRangeTo} />
+              </div>
+            )}
+            <RangeButtons
+              days={days}
+              custom={custom}
+              onDays={chooseRange}
+              onCustom={() => chooseRange(null)}
+            />
+            <Button kind="primary" icon={Play} onClick={() => setStarting(true)}>
+              Start a run
+            </Button>
+          </>
         )
       }
     >
@@ -331,23 +420,32 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
       ) : (
         <div className="flex h-full min-h-0 flex-col gap-4 p-5">
           <ErrorLine error={error} />
+          {custom && !range && (
+            <div className="text-xs text-fg-3">
+              Pick a From date, and a To date on or after it, to see the runs of that range.
+            </div>
+          )}
           <div className="flex flex-wrap gap-3">
             <Stat
               label="Live now"
               value={
                 <span className="inline-flex items-center gap-2">
-                  {counts.live}
-                  {counts.live > 0 && (
+                  {liveNow}
+                  {liveNow > 0 && (
                     <span className="animate-pulse-dot h-2 w-2 rounded-full bg-ok text-ok" />
                   )}
                 </span>
               }
-              tone={counts.live > 0 ? '#3ddc97' : undefined}
+              tone={liveNow > 0 ? '#3ddc97' : undefined}
             />
-            <Stat label="Runs today" value={today.runs} />
-            <Stat label="Tokens today" value={tokens(today.tokens)} tone="#5ce1e6" />
             <Stat
-              label="Errors today"
+              label={`Runs ${word}`}
+              value={today.runs}
+              hint="Runs that were running at some time in the range."
+            />
+            <Stat label={`Tokens ${word}`} value={tokens(today.tokens)} tone="#5ce1e6" />
+            <Stat
+              label={`Errors ${word}`}
               value={today.errors}
               tone={today.errors > 0 ? '#ff5d6c' : undefined}
               hint="Runs that ended on a non-zero exit, a budget, or a lost process. Kills do not count."
@@ -393,7 +491,7 @@ export function Runs({ nav, selected }: { nav: Nav; selected?: string }) {
               <div className="min-h-0 flex-1 overflow-auto p-1.5">
                 {page && shown.length === 0 && (
                   <div className="px-4 py-10 text-center text-sm text-fg-4">
-                    No {filter === 'errors' ? 'runs with errors' : `${filter} runs`}.
+                    No {filter === 'errors' ? 'runs with errors' : `${filter} runs`} in this range.
                   </div>
                 )}
                 {shown.map((r) => (

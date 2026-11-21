@@ -409,9 +409,19 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (!(RUN_FILTERS as readonly string[]).includes(filter)) {
           throw new HttpError(400, `filter: use one of ${RUN_FILTERS.join(', ')}`);
         }
-        const since = q.get('since') || undefined;
-        if (since !== undefined && Number.isNaN(Date.parse(since))) {
-          throw new HttpError(400, 'since: use an ISO date and time');
+        // `since` starts the today counts; `start` and `end` limit the page to a date range.
+        const time = (name: string): string | undefined => {
+          const v = q.get(name) || undefined;
+          if (v !== undefined && Number.isNaN(Date.parse(v))) {
+            throw new HttpError(400, `${name}: use an ISO date and time`);
+          }
+          return v;
+        };
+        const since = time('since');
+        const start = time('start');
+        const end = time('end');
+        if (start && end && !(Date.parse(start) < Date.parse(end))) {
+          throw new HttpError(400, 'end: the range must end after it starts');
         }
         return send(
           res,
@@ -422,6 +432,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
             from: q.get('from')?.toUpperCase() || undefined,
             filter: filter as RunFilter,
             since,
+            start,
+            end,
             pick: q.get('pick') || undefined,
           }),
         );

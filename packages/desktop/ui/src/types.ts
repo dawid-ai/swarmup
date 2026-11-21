@@ -210,8 +210,13 @@ export type RunFilter = 'all' | 'live' | 'ended' | 'errors';
 export interface RunPage {
   runs: RunRecord[];
   more: boolean;
+  /** Runs in each filter, in the range (`start`, `end`). */
   counts: Record<RunFilter, number>;
+  /** Runs in the range, their tokens and failures; started since `since` without a range. */
   today: { runs: number; tokens: number; errors: number };
+  /** Every run and every live run, in the range or not; absent from an older swarmupd. */
+  total?: number;
+  live?: number;
   pick: RunRecord | null;
 }
 
