@@ -3,6 +3,30 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.15 (2026-11-21)
+
+- **Every task can say what done means.** A task's **Done when** list can now hold checks, not
+  just sentences: a command that must pass, a file or pattern that must exist, a word count, links
+  that must resolve, a rubric a reviewer scores, or a question for a person. swarmupd runs the
+  commands and checks when it merges the work and sends the task back if one fails. Reviewers give
+  a pass or fail for each item, and the task panel shows every item with its last result.
+- **Project map.** A project can keep a map of what each part does and where it lives, as short
+  linked notes in `.swarmup/map/`. Agents get the parts that matter to their task in their
+  instructions, keep the map up to date as they work, and `swarmup map check` flags a change that
+  leaves the map behind. SwarmUp's own code ships with its map.
+- **Agents pick up where they left off.** A task's instructions now include its recent thread and
+  the goal it belongs to, so agents spend less time looking things up. When a reviewer asks for
+  changes, the agent continues its earlier session instead of starting from scratch. Milestones
+  and parent tasks can carry a short goal brief (`swarmup brief`) that the PM keeps current.
+- **Scores.** **Reports** shows how each agent is doing: review rounds, merges that failed, cost
+  per merged task, how often it needed you, and how much it read before its first change.
+  `swarmup scores` lists the same, with the tasks behind each number.
+- **Runs** has a date range like **Activity** and **Replay**, and a custom range now covers whole
+  days in your time zone.
+- **Fixes:** files you attach to a new task land in the right project; Git Bash stops warning
+  "could not find /tmp" after SwarmUp cleans up old scratch folders; the PM can read GitHub and
+  release tags while it plans.
+
 ## v0.3.0-beta.13 (2026-11-21)
 
 - **SwarmUp cleans up after itself.** Old scratch folders go after 2 days, run logs and merge logs

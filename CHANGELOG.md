@@ -6,6 +6,57 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.15 (2026-11-21)
+
+### Fixed
+
+- `swarmup map --file` reads a Windows-style path (`..\docs\guide.md`) the same way on Linux and macOS.
+
+## 0.3.0-beta.14 (2026-11-21)
+
+### Added
+
+- Project map: `swarmup map` finds, shows and checks linked Markdown nodes in `.swarmup/map/` that
+  say what each part of a project is for. Task runs get the root summary and the nodes that match
+  the task in their prompt, and are asked to keep the nodes true; `swarmup map check` can gate
+  merges. See `docs/map.md`.
+- A task run's prompt quotes the task text, its recent thread and its parents, so the agent no
+  longer spends its first tool calls on `swarmup show` for the task, its parent and its milestone.
+- A milestone or parent task can carry a goal brief (`swarmup brief ID --body-file -`; the newest
+  wins). Runs on its children read it in their prompt, and the PM's inbox runs list the briefs
+  whose children closed since they were written.
+- A task that comes back with `changes` resumes the session of the run that did the work, for
+  Claude and for Codex runs in a task worktree (`swarmupd.resume_on_changes`, on by default; up to
+  `resume_max_hours`, 24, after that run). `scripts/orientation.mjs` reports how many tool calls
+  runs make before their first edit.
+- The **Runs** view has the same **Range** buttons as **Replay** in its header: **Day** (the
+  default), **Week**, **30 days**, **90 days** and **Custom** with **From** and **to** dates. The
+  list, the filter counts and the run, token and error stats cover the runs that were running in
+  the range; **Live now** still counts every live run. `GET /api/runs?limit=` takes `start` and
+  `end` ISO times for the range.
+- `swarmup scores` grades agents from what SwarmUp already records: review rounds, merge failures,
+  tokens per merged task, human touches, escalations, recommendations taken, stuck runs and tool
+  calls before the first edit, with the worst tasks per scorer. `swarmup report` and the
+  **Reports** view show each agent's scores for the window, and swarmupd keeps them in `state.db`.
+  Thresholds are set under `swarmupd.scorers` in the user config.
+- `done_when` takes typed criteria besides plain text: `command`, `check` (`file-exists`, `regex`, `word-count`, `links-resolve`, `url-ok`), `rubric`, `human` and `map`, each with an id. `swarmup show` prints them as a table with each one's last result, and the task panel lists them.
+- `swarmup verdict` gives a result per criterion with `--criteria-file`, `--pass ID` and `--fail ID:"note"`; an approval with a failed criterion needs `--force`.
+- `swarmup criteria ID --set-file F | --add C` changes a task's criteria with an event, and `swarmup criteria check ID` runs its `command` and `check` criteria.
+- swarmupd runs a task's `command` and `check` criteria at merge, after the configured checks, and sends the task back when one fails.
+- A root can set `require_checkable_criteria: true` so `swarmup new` refuses work with only prose criteria; without it, `swarmup new` prints a note.
+
+### Fixed
+
+- A **Custom** range in **Replay** and **Activity** runs from local midnight of the **From** day to
+  local midnight after the **to** day. It used to start and end at UTC midnight, shifted by the
+  local time offset. A **to** date before **From** asks nothing and says what to pick.
+- Scratch cleanup keeps the run scratch folder that Git Bash mounts as `/tmp`, and makes it again when an older build removed it. Removing it made every Git Bash on the machine warn "could not find /tmp", and git hooks wrote that warning into stderr.
+- Keep images pasted into a new task with that task's chosen project, including when the project changes before creation.
+- The PM chat can read releases, tags, PRs and CI runs: every chat turn gets read-only
+  `gh release list|view`, `gh pr list|view|checks`, `gh run list|view`, `git tag -l`,
+  `git describe` and `git -C <dir> log|show` on top of its role file's `tools`, so an older role
+  file no longer blocks them. The `claude:pm` template lists the same commands for its other runs.
+
 ## 0.3.0-beta.13 (2026-11-21)
 
 ### Added

@@ -1,1 +1,0 @@
-- Keep images pasted into a new task with that task's chosen project, including when the project changes before creation.

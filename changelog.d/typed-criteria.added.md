@@ -1,5 +1,0 @@
-- `done_when` takes typed criteria besides plain text: `command`, `check` (`file-exists`, `regex`, `word-count`, `links-resolve`, `url-ok`), `rubric`, `human` and `map`, each with an id. `swarmup show` prints them as a table with each one's last result, and the task panel lists them.
-- `swarmup verdict` gives a result per criterion with `--criteria-file`, `--pass ID` and `--fail ID:"note"`; an approval with a failed criterion needs `--force`.
-- `swarmup criteria ID --set-file F | --add C` changes a task's criteria with an event, and `swarmup criteria check ID` runs its `command` and `check` criteria.
-- swarmupd runs a task's `command` and `check` criteria at merge, after the configured checks, and sends the task back when one fails.
-- A root can set `require_checkable_criteria: true` so `swarmup new` refuses work with only prose criteria; without it, `swarmup new` prints a note.

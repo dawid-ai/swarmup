@@ -664,7 +664,8 @@ describe('task worktrees (AO-0168)', () => {
       mkdirSync(d, { recursive: true });
       utimesSync(d, old, old);
     }
-    sup.msysTmp = async () => pinned.toUpperCase();
+    // Windows paths ignore case, so the lookup may spell the folder differently there.
+    sup.msysTmp = async () => (process.platform === 'win32' ? pinned.toUpperCase() : pinned);
     await sup.housekeep();
     expect(existsSync(pinned)).toBe(true);
     expect(existsSync(other)).toBe(false);

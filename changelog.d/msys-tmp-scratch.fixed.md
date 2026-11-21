@@ -1,1 +1,0 @@
-Scratch cleanup keeps the run scratch folder that Git Bash mounts as `/tmp`, and makes it again when an older build removed it. Removing it made every Git Bash on the machine warn "could not find /tmp", and git hooks wrote that warning into stderr.
