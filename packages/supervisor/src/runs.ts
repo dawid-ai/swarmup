@@ -129,10 +129,17 @@ export interface RunPage {
   runs: RunRecord[];
   /** More matching runs follow the last one; ask again with `before` set to its id. */
   more: boolean;
-  /** Runs in each filter, over every run. */
+  /** Runs in each filter, over every run in the range (every run without `start` or `end`). */
   counts: Record<RunFilter, number>;
-  /** Runs started at or after `since`, their tokens, and how many of them failed. */
+  /**
+   * Runs started at or after `since`, their tokens, and how many of them failed. With `start` or
+   * `end`, every run in the range instead.
+   */
   today: { runs: number; tokens: number; errors: number };
+  /** Every run, in the range or not. */
+  total: number;
+  /** Runs running now, in the range or not. */
+  live: number;
   /** The run `pick` names, by id or by the end of its id, wherever it is in the list. */
   pick: RunRecord | null;
 }
@@ -152,8 +159,19 @@ function inFilter(r: RunRecord, filter: RunFilter): boolean {
 }
 
 /**
+ * Whether the run was running at some time in the range from `start` to `end` (ms; either may
+ * be absent): it started before `end` and was still running or ended at or after `start`.
+ */
+export function runInRange(r: RunRecord, start?: number, end?: number): boolean {
+  if (end !== undefined && Date.parse(r.started_at) >= end) return false;
+  if (start === undefined || r.status === 'running' || !r.ended_at) return true;
+  return Date.parse(r.ended_at) >= start;
+}
+
+/**
  * One page of `all`, which is newest first, with the counts the Runs view shows. `since`
- * defaults to the local midnight of today.
+ * defaults to the local midnight of today. `start` and `end` (ISO times) limit the list, the
+ * counts and `today` to the runs in that range (AO-0404).
  */
 export function pageRuns(
   all: RunRecord[],
@@ -163,6 +181,8 @@ export function pageRuns(
     from?: string;
     filter?: RunFilter;
     since?: string;
+    start?: string;
+    end?: string;
     pick?: string;
   },
 ): RunPage {
@@ -170,17 +190,23 @@ export function pageRuns(
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const since = opts.since ? Date.parse(opts.since) : midnight.getTime();
+  const start = opts.start ? Date.parse(opts.start) : undefined;
+  const end = opts.end ? Date.parse(opts.end) : undefined;
+  const ranged = start !== undefined || end !== undefined;
   const counts: Record<RunFilter, number> = { all: 0, live: 0, ended: 0, errors: 0 };
   const today = { runs: 0, tokens: 0, errors: 0 };
   const runs: RunRecord[] = [];
   let more = false;
+  let live = 0;
   for (const r of all) {
+    if (r.status === 'running') live++;
+    if (ranged && !runInRange(r, start, end)) continue;
     const failed = runFailed(r);
     counts.all++;
     if (r.status === 'running') counts.live++;
     if (r.status === 'ended') counts.ended++;
     if (failed) counts.errors++;
-    if (Date.parse(r.started_at) >= since) {
+    if (ranged || Date.parse(r.started_at) >= since) {
       today.runs++;
       today.tokens += r.tokens;
       if (failed) today.errors++;
@@ -195,7 +221,7 @@ export function pageRuns(
   const pick = want
     ? (all.find((r) => r.id === want) ?? all.find((r) => r.id.endsWith(want)) ?? null)
     : null;
-  return { runs, more, counts, today, pick };
+  return { runs, more, counts, today, total: all.length, live, pick };
 }
 
 export class RunStore {
