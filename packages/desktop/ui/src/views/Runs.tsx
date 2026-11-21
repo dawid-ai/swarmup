@@ -45,7 +45,7 @@ import { AgentPicker } from '../ui/pickers';
 import { StatusLoop } from '../ui/statusloop';
 import { ProjectName } from '../ui/project-label';
 import type { TimeRange } from '../ui/range';
-import { RangeButtons, RangeDates, useTimeRange } from '../ui/range';
+import { RangeButtons, RangeDates, customRange, useTimeRange } from '../ui/range';
 
 type Filter = 'all' | 'live' | 'ended' | 'errors';
 
@@ -196,12 +196,6 @@ export interface RunRange {
   end?: string;
 }
 
-/** A `YYYY-MM-DD` date at local midnight, or null when it is not one. */
-function localDay(date: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
-}
-
 /**
  * The range a pick of the **Range** buttons covers: **Day** is today from local midnight, and a
  * preset of n days the last n calendar days with today. **Custom** runs from the local midnight
@@ -215,13 +209,7 @@ export function runRange(opts: TimeRange, now: number): RunRange | null {
     start.setDate(start.getDate() - (opts.days - 1));
     return { start: start.toISOString() };
   }
-  const start = localDay(opts.from);
-  if (!start) return null;
-  const last = opts.to ? localDay(opts.to) : null;
-  if (!last) return { start: start.toISOString() };
-  const end = new Date(last);
-  end.setDate(end.getDate() + 1);
-  return end > start ? { start: start.toISOString(), end: end.toISOString() } : null;
+  return customRange(opts.from, opts.to);
 }
 
 /** The query of a range, such as `&start=...&end=...`; '' without one. */

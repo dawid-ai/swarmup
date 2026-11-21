@@ -143,8 +143,12 @@ it('filters by a custom from and to', async () => {
   setDate('From', day(25));
   setDate('To', day(10));
   await settle();
-  // The to date counts in full: swarmupd gets the day after it.
-  expect(asked.at(-1)).toContain(`from=${day(25)}&to=${day(9)}`);
+  // From the local midnight of From to the local midnight after To: the to date counts in full.
+  const midnight = (date: string, add = 0): string => {
+    const [y, m, d] = date.split('-').map(Number);
+    return encodeURIComponent(new Date(y!, m! - 1, d! + add).toISOString());
+  };
+  expect(asked.at(-1)).toContain(`from=${midnight(day(25))}&to=${midnight(day(10), 1)}`);
   expect(shown()).toEqual(['AO-0003']);
 });
 

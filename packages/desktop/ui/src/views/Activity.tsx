@@ -113,8 +113,10 @@ export function Activity({ nav }: { nav: Nav }) {
   const [kind, setKind] = useState('');
   const [range, setRange] = useTimeRange(ALL_TIME, ACTIVITY_RANGE_KEY);
   const query = activityQuery(text, { who, project, kind });
-  // A custom range without its start date yet leaves the feed unfiltered by time.
-  const timeWindow = rangeParams(range) ?? '';
+  // A custom range without its start date yet, or that ends before it starts, leaves the feed
+  // unfiltered by time.
+  const ranged = rangeParams(range);
+  const timeWindow = ranged ?? '';
   const params = `q=${q(query)}${timeWindow ? `&${timeWindow}` : ''}`;
   const { feed, error, loading, more } = useFeed(params);
   const current = feed?.query === params;
@@ -210,6 +212,9 @@ export function Activity({ nav }: { nav: Nav }) {
           ))}
         </div>
         <RangeDates value={range} onChange={setRange} />
+        {range.custom && range.from && ranged === null && (
+          <span className="text-xs text-fg-4">Pick an end date on or after the start date.</span>
+        )}
       </div>
       <div className={cx('px-6 pb-6', !current && feed && 'opacity-60')}>
         <ErrorLine error={error} />

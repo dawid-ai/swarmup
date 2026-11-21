@@ -568,6 +568,9 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
         {custom && !from && (
           <div className="text-xs text-fg-4">Pick a start date; leave the end empty for now.</div>
         )}
+        {custom && from && !path && (
+          <div className="text-xs text-fg-4">Pick an end date on or after the start date.</div>
+        )}
         {empty && (
           <Empty
             icon={Clapperboard}

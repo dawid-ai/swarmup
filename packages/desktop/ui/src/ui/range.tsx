@@ -19,26 +19,37 @@ export const RANGES: Array<[number, string]> = [
   [90, '90 days'],
 ];
 
-/**
- * The day after `date` (`2026-11-20` gives `2026-11-21`). swarmupd reads a date as its midnight,
- * so a custom range sends the day after its **to** date: the events of that day count too.
- * Anything that is not a plain date goes as it is.
- */
-export function dayAfter(date: string): string {
+/** A `YYYY-MM-DD` date at local midnight, or null when it is not one. */
+function localDay(date: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!m) return date;
-  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1))
-    .toISOString()
-    .slice(0, 10);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/**
+ * A custom range's **From** and **to** dates as ISO times: from the local midnight of `from` to
+ * the local midnight after `to`, so the whole `to` day counts. swarmupd reads a bare date as UTC
+ * midnight, which would shift the range by the local offset. Without `to`, only `start`: the
+ * range runs up to now. Null without a valid `from` or when it ends before it starts.
+ */
+export function customRange(from: string, to: string): { start: string; end?: string } | null {
+  const start = localDay(from);
+  if (!start) return null;
+  const last = to ? localDay(to) : null;
+  if (!last) return { start: start.toISOString() };
+  const end = new Date(last);
+  end.setDate(end.getDate() + 1);
+  return end > start ? { start: start.toISOString(), end: end.toISOString() } : null;
 }
 
 /**
  * The query parameters swarmupd reads a window from, as `/api/report` and `/api/timeline` take
- * them: `days=7`, or `from=…&to=…`. '' for all time; null while a custom window has no start.
+ * them: `days=7`, or `from=…&to=…` as the ISO times of `customRange`. '' for all time; null
+ * while a custom window has no start or ends before it starts.
  */
 export function rangeParams(r: TimeRange): string | null {
   if (r.custom) {
-    return r.from ? `from=${q(r.from)}${r.to ? `&to=${q(dayAfter(r.to))}` : ''}` : null;
+    const c = customRange(r.from, r.to);
+    return c ? `from=${q(c.start)}${c.end ? `&to=${q(c.end)}` : ''}` : null;
   }
   return r.days > 0 ? `days=${r.days}` : '';
 }
