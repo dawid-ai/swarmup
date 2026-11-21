@@ -12,6 +12,7 @@ import {
   READ_ONLY_ROLES,
   runtimeOf,
 } from '@swarmup/core';
+import type { MergeCheck } from './merge-checks.js';
 import type { NotifyConfig } from './notify.js';
 import { checkNotify } from './notify.js';
 
@@ -161,8 +162,11 @@ export interface MergeConfig {
   base: string;
   /** The checkout the base is built in; defaults to the top of the root's git repo. */
   checkout?: string;
-  /** Commands that must pass on the rebased work before the base moves, run in swarmupd's worktree. */
-  checks?: string[];
+  /**
+   * Commands that must pass on the rebased work before the base moves, run in swarmupd's worktree.
+   * An entry `{ run, paths }` runs only when the merge changes a file of `paths` (AO-0382).
+   */
+  checks?: MergeCheck[];
   /** Commands run in `checkout` after the base moved, such as `npm run build`. */
   build?: string[];
   /**
@@ -687,6 +691,30 @@ function checkMerge(raw: unknown): Record<string, MergeConfig> {
     }
     return v as string[];
   };
+  const checks = (v: unknown, name: string): MergeCheck[] | undefined => {
+    if (v === undefined) return undefined;
+    const usage = `swarmupd.merge.${name}: use a list of commands, each a command or { run, paths } with a list of path patterns`;
+    if (!Array.isArray(v)) throw new OpsError(usage, 2);
+    return v.map((c: unknown): MergeCheck => {
+      if (typeof c === 'string' && c.trim()) return c;
+      if (c === null || typeof c !== 'object' || Array.isArray(c)) throw new OpsError(usage, 2);
+      const { run, paths, ...rest } = c as Record<string, unknown>;
+      const extra = Object.keys(rest);
+      if (extra.length > 0) {
+        throw new OpsError(`swarmupd.merge.${name}: unknown key ${extra[0]}; use run and paths`, 2);
+      }
+      if (
+        typeof run !== 'string' ||
+        !run.trim() ||
+        !Array.isArray(paths) ||
+        paths.length === 0 ||
+        paths.some((p) => typeof p !== 'string' || !p.trim() || p.trim() === '!')
+      ) {
+        throw new OpsError(usage, 2);
+      }
+      return { run, paths: paths as string[] };
+    });
+  };
   for (const [root, m] of Object.entries(raw as Record<string, unknown>)) {
     if (m === null || typeof m !== 'object' || Array.isArray(m)) {
       throw new OpsError(`swarmupd.merge.${root}: set base, and checks and build if needed`, 2);
@@ -712,7 +740,7 @@ function checkMerge(raw: unknown): Record<string, MergeConfig> {
     out[root] = {
       base: e.base,
       checkout: e.checkout as string | undefined,
-      checks: commands(e.checks, `${root}.checks`),
+      checks: checks(e.checks, `${root}.checks`),
       build: commands(e.build, `${root}.build`),
       install: commands(e.install, `${root}.install`),
       timeout_minutes: t as number | undefined,

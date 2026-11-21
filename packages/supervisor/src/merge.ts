@@ -1,18 +1,19 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { MergeSource } from '@swarmup/core';
+import type { MergeSource, ReviewText } from '@swarmup/core';
 import {
   PATCH_KEY_ARGS,
   patchKey,
   reviewCommits,
   reviewSources,
+  reviewSourcesOf,
   ROOT_DIR_NAMES,
   samePath,
 } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
 import { killTree } from './proc.js';
-import { withoutScriptEnv } from './runenv.js';
+import { installEnv, withoutScriptEnv } from './runenv.js';
 import { clearStaleIndexLock } from './worktree.js';
 
 export { reviewCommits, reviewSources };
@@ -46,7 +47,8 @@ export function mergeSource(text: string): MergeSource | null {
 
 /**
  * Picks what to merge from a task's review requests, newest first, using `has` to check names
- * against the repo (AO-0153):
+ * against the repo (AO-0153). A request is its text, or its event with the source fields
+ * `swarmup review` records, which come before the text (AO-0384, `reviewSourcesOf`):
  *
  * 1. The newest review's `<commit> on branch <name>`, as it is: a commit missing from the repo
  *    gets a note to the human, not an older commit.
@@ -57,11 +59,11 @@ export function mergeSource(text: string): MergeSource | null {
  * Returns null when no review names a branch or commit the repo has.
  */
 export function pickMergeSource(
-  reviews: string[],
+  reviews: (string | ReviewText)[],
   has: { branch: (name: string) => boolean; commit: (sha: string) => boolean },
 ): MergeSource | null {
-  for (const [i, text] of reviews.entries()) {
-    const s = reviewSources(text);
+  for (const [i, review] of reviews.entries()) {
+    const s = reviewSourcesOf(typeof review === 'string' ? { body: review } : review);
     if (i === 0 && s.named) return s.named;
     if (i > 0 && s.named) {
       if (has.branch(s.named.branch!)) return { branch: s.named.branch };
@@ -453,6 +455,11 @@ export interface CommandResult {
   /** It ran past its timeout and swarmupd stopped it. */
   timedOut?: boolean;
   /**
+   * It timed out after it had printed a failed test (`showsFailedTest`), so the timeout does not
+   * hide a pass: the code failed (AO-0385). Set only with `timedOut`.
+   */
+  failedTest?: boolean;
+  /**
    * Its place, from 0, in the list `CommandRunner.runAll` got. Not its place in the results when
    * an earlier function entry had nothing to run.
    */
@@ -479,6 +486,22 @@ export interface CommandStep {
 
 /** How much of a command's output swarmupd keeps. */
 const OUTPUT_KEEP = 64 * 1024;
+
+/**
+ * Lines a test runner prints for a failed test: vitest's `FAIL  file > name`, `× name`, `❯ file
+ * (5 tests | 1 failed)` and `Tests  1 failed`, and node:test's `not ok 1 - name` and `✖ name`.
+ */
+const FAILED_TEST =
+  /^\s*(?:FAIL\s|[×✗✖]\s|not ok \d|Test(?:s| Files)\s+[1-9]\d* failed\b)|\(\d+ tests? \| [1-9]\d* failed\)/mu;
+
+/** Terminal color codes, which vitest prints when `FORCE_COLOR` is set even into a pipe. */
+// eslint-disable-next-line no-control-regex
+const COLOR_CODE = /\x1b\[[0-9;]*m/g;
+
+/** Whether a command's output shows a failed test (AO-0385). */
+export function showsFailedTest(output: string): boolean {
+  return FAILED_TEST.test(output.replace(COLOR_CODE, ''));
+}
 
 /** How often a running command looks at the wall clock, to notice that the PC slept. */
 const CLOCK_TICK_MS = 1_000;
@@ -784,6 +807,25 @@ export class MergeRepo {
     );
   }
 
+  /**
+   * As {@link changedFiles}, but a renamed file lists both its old and its new path, so moving
+   * code into a path a check skips still counts as changing code (AO-0382).
+   */
+  async touchedFiles(a: string, b: string): Promise<string[]> {
+    return lines(
+      await this.git(this.top, [
+        'diff',
+        '--no-renames',
+        '--name-only',
+        a,
+        b,
+        '--',
+        '.',
+        ...this.excludes,
+      ]),
+    );
+  }
+
   /** Task store files that differ between two commits. */
   async storeFiles(a: string, b: string): Promise<string[]> {
     const code = new Set(await this.changedFiles(a, b));
@@ -1044,7 +1086,9 @@ export class CommandRunner {
    * Runs `commands` in order, in `cwd` unless an entry names its own, and stops at the first that
    * fails. `onStep` hears of each command as it starts, and again with its result once it ends.
    * `env` replaces the runner's environment for these commands: what depends on the folder they
-   * run in, such as its shared Electron (AO-0306).
+   * run in, such as its shared Electron (AO-0306). The first `installs` entries install
+   * dependencies, and run without what would change the dependency types they install
+   * (`installEnv`, AO-0391).
    */
   async runAll(
     commands: CommandEntry[],
@@ -1052,6 +1096,7 @@ export class CommandRunner {
     timeoutMs: number,
     onStep?: (step: CommandStep) => void,
     env: NodeJS.ProcessEnv = this.env,
+    installs = 0,
   ): Promise<CommandResult[]> {
     const out: CommandResult[] = [];
     let count = commands.length;
@@ -1064,7 +1109,12 @@ export class CommandRunner {
       const e = typeof entry === 'string' ? { command: entry, cwd, label: entry } : entry;
       const step = { command: e.label, index: out.length, count };
       onStep?.(step);
-      const ran = await this.run(e.command, e.cwd, timeoutMs, env);
+      const ran = await this.run(
+        e.command,
+        e.cwd,
+        timeoutMs,
+        at < installs ? installEnv(env) : env,
+      );
       const r = { ...ran, command: e.label, entry: at };
       onStep?.({ ...step, result: r });
       out.push(r);
@@ -1108,9 +1158,14 @@ export class CommandRunner {
             detached: process.platform !== 'win32',
           });
       let output = '';
+      // Read before the start of the output is dropped, so an early failure still counts.
+      let failedTest = false;
       const keep = (b: Buffer): void => {
         output += b.toString('utf8');
-        if (output.length > OUTPUT_KEEP * 2) output = output.slice(-OUTPUT_KEEP);
+        if (output.length > OUTPUT_KEEP * 2) {
+          failedTest ||= showsFailedTest(output);
+          output = output.slice(-OUTPUT_KEEP);
+        }
       };
       child.stdout?.on('data', keep);
       child.stderr?.on('data', keep);
@@ -1184,7 +1239,10 @@ export class CommandRunner {
           why: ok ? undefined : (why ?? `exit ${code}`),
         };
         if (interrupted) result.interrupted = true;
-        if (timedOut && !ok) result.timedOut = true;
+        if (timedOut && !ok) {
+          result.timedOut = true;
+          if (failedTest || showsFailedTest(output)) result.failedTest = true;
+        }
         // What the command left behind ends before the next command starts.
         const after = pid === undefined ? undefined : this.watch?.ended(pid);
         void bounded(after, WATCH_STOP_MS * 2).then(() => res(result));

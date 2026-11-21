@@ -234,10 +234,19 @@ export interface OpsEvent {
   reason?: string;
   /** run-end: minutes the run took. */
   minutes?: number;
-  /** merge: the commit the base branch moved to. review: the commit the work is in. */
+  /**
+   * merge: the commit the base branch moved to. review: the HEAD commit of the checkout
+   * `swarmup review` ran in, or the one `--commit` names (AO-0384).
+   */
   commit?: string;
-  /** merge: the branch the work came from. review: the branch that holds the work. */
+  /** merge: the branch the work came from. review: the checkout's branch, or `--branch`. */
   branch?: string;
+  /**
+   * review: whether the checkout it was sent from is the code repo or the task store's own repo
+   * (AO-0384). Store work has nothing to merge. Older events and reviews sent from outside a
+   * checkout have none; the merge reads their prose.
+   */
+  repo?: 'code' | 'store';
   /** merge: the base branch it went into. */
   into?: string;
   /**
@@ -316,6 +325,10 @@ export interface ReviewRequest {
   body: string;
   /** The recommended decision (AO-0065). */
   recommend?: string;
+  /** The source fields `swarmup review` recorded (AO-0384); older requests have none. */
+  commit?: string;
+  branch?: string;
+  repo?: 'code' | 'store';
   /** Set when swarmupd moved the request to a reviewer of the author's provider (AO-0341). */
   fallback?: string;
 }

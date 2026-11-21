@@ -734,12 +734,15 @@ question blocks nothing; it is its own task.
   that started on a clean checkout is let through: swarmupd commits what it leaves on a task branch
   and tells the reviewer (see [the supervisor](supervisor.md)).
 - `--force` lets anyone through and records `forced: true` in the event.
-- `swarmup review` records the work it names. With `--commit SHA --branch NAME`, or when the
-  message names no `<commit> on branch <name>` or PR and the caller's checkout has a branch other
-  than a base (`main`, `master`, `v2`, `develop`, `trunk`) checked out, it adds
-  ``Work: <commit> on branch `<name>` `` as the message's last line and stores `commit` and
-  `branch` on the `review` event. The merge and the review diff read that line, so swarmupd merges
-  exactly the commit that was reviewed, not a branch or commit guessed from the text.
+- `swarmup review` records where the work is as fields of the review event (AO-0384, AO-0396):
+  `commit` and `branch`, and `repo` (`code`, or `store` for a task store's own repo). In a code
+  checkout they come from its HEAD and branch, unless that is a base branch (`main`, `master`,
+  `v2`, `develop`, `trunk`) or a detached HEAD. `--commit SHA --branch NAME` go together and
+  override the checkout; the commit must exist there. When neither the options nor the checkout
+  name the work, a `<commit> on branch <name>` in the message does. When the options or the
+  checkout gave the pair and the message names no work, the message gets
+  ``Work: <commit> on branch `<name>` `` as its last line, which the review diff reads. swarmupd's
+  merge reads the fields before the message, so it merges exactly the commit that was reviewed.
 
 ## Events
 

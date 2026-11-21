@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { afterEach } from 'vitest';
 import { initRoot, Workspace, type UserConfig } from '@swarmup/core';
 import {
+  type MergeCheck,
   type MergeGitTimeout,
   type OpsdSelf,
   type ProcLister,
@@ -197,6 +198,10 @@ if (code.includes('nap') && !existsSync(process.env.MERGE_NAPPED)) {
   console.error('Test timed out in 5000ms');
   process.exit(1);
 }
+if (code.includes('stuck')) {
+  console.log(' FAIL  test/a.test.ts > breaks');
+  while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
+}
 if (code.includes('slow')) while (!existsSync(process.env.MERGE_GO)) await new Promise((r) => setTimeout(r, 50));
 if (code.includes('bad')) { console.error('code says bad'); process.exit(1); }
 if (existsSync('two.txt') && readFileSync('two.txt', 'utf8').includes('bad')) { console.error('two says bad'); process.exit(1); }
@@ -285,6 +290,8 @@ export function mergeSetup(
     since?: string;
     /** `swarmupd.merge` of other roots, by root name. */
     otherMerge?: Record<string, { base: string }>;
+    /** `swarmupd.merge.test.checks`; default `['node check.mjs']`. */
+    checks?: MergeCheck[];
   } = {},
 ) {
   const repo = temp();
@@ -338,7 +345,11 @@ export function mergeSetup(
       runtimes: { fake: { command: process.execPath, args: [runFile] } },
       merge: {
         ...opts.otherMerge,
-        test: { base: 'main', checks: ['node check.mjs'], build: ['node build.mjs'] },
+        test: {
+          base: 'main',
+          checks: opts.checks ?? ['node check.mjs'],
+          build: ['node build.mjs'],
+        },
       },
     },
   });
