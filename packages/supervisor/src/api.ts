@@ -12,7 +12,8 @@ import type {
   Workspace,
 } from '@swarmup/core';
 import {
-  doneWhenLines,
+  parseCriteriaResults,
+  parseDoneWhen,
   findAttachment,
   listDecisionIds,
   MAX_ATTACHMENT_BYTES,
@@ -491,8 +492,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
             priority: (str(body.priority) || undefined) as Priority | undefined,
             project: str(body.project) || undefined,
             parent: str(body.parent) || undefined,
-            // `done_when`: a list of checks, or text with one check per line.
-            doneWhen: doneWhenLines(body.done_when),
+            // `done_when`: a list of criteria (text or typed), or text with one check per line.
+            doneWhen: parseDoneWhen(body.done_when),
           },
           root,
         );
@@ -518,7 +519,14 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'GET' && action === 'plan') return send(res, 200, ws.planShow(ref));
       if (method === 'GET' && !action) {
         const { body: text, events } = ws.showEvents(ref);
-        return send(res, 200, { task: compact(ws.view(ref)), body: text, events });
+        const v = ws.view(ref);
+        // The criteria and their latest results, for the task panel's "Done when".
+        return send(res, 200, {
+          task: compact(v),
+          body: text,
+          events,
+          ...(v.criteria ? { criteria: v.criteria, criteriaResults: v.criteriaResults } : {}),
+        });
       }
       if (method === 'POST') {
         if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
@@ -592,7 +600,10 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
               humanOnly('a verdict');
               const v = need(body.verdict, 'verdict');
               if (v !== 'approve' && v !== 'changes') throw new HttpError(400, 'bad verdict');
-              return ws.verdict(ref, v, msg, mark);
+              // `criteria`: results by criterion id, as `--criteria-file` takes them.
+              const criteria =
+                body.criteria === undefined ? undefined : parseCriteriaResults(body.criteria);
+              return ws.verdict(ref, v, msg, mark, criteria);
             }
             case 'delegate':
               return ws.delegate(ref, need(body.to, 'to'), {

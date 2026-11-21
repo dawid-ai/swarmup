@@ -2,10 +2,12 @@
 // Moved out of supervisor.ts, which keeps a `merger` and delegates its public merge calls here.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { TaskView } from '@swarmup/core';
+import type { CriteriaResults, TaskView } from '@swarmup/core';
 import {
   formatMinutes,
   redactSecrets,
+  runCriteria,
+  RUN_KINDS,
   runtimeOf,
   ulid,
   Workspace,
@@ -877,6 +879,7 @@ export class Merger {
     let checked: string | null = null;
     let checks: CommandResult[] = [];
     let skipped: string[] = [];
+    let criteria: CriteriaResults | undefined;
     let merged: { head: string; onto: string } | null = null;
     let refused = '';
     let waited = false;
@@ -1022,6 +1025,33 @@ export class Merger {
           );
           return;
         }
+        // The task's own `command` and `check` criteria, after the configured checks passed: only
+        // what each criterion names runs, never a whole suite beyond it.
+        const ran = await this.mergeCriteria(
+          ref,
+          repo.worktree,
+          runner,
+          retry ? timeout * 2 : timeout,
+          this.sup.electronEnv(this.sup.commandEnv(), repo.worktree, top),
+        );
+        if (ran === 'stopped') return;
+        if (ran === 'again') return 'again';
+        criteria = ran?.results;
+        if (ran && ran.failed.length > 0) {
+          this.mergeBack(
+            ref,
+            job.what,
+            job.author,
+            `its criteria ${ran.failed.join(', ')} failed on it rebased onto ${cfg.base} (${short(onto)})`,
+            ran.failed
+              .map((id) =>
+                `${id}: ${ran.results[id]!.note ?? ''}\n${ran.results[id]!.evidence ?? ''}`.trim(),
+              )
+              .join('\n\n'),
+            ran.results,
+          );
+          return;
+        }
         checked = r.head;
       }
       // Moving the base changes the checkout: from here until the build is over, it is held.
@@ -1083,11 +1113,17 @@ export class Merger {
         : '') +
       (skipped.length > 0
         ? ` Not run, the work changes none of their paths: ${skipped.map((c) => `\`${c}\``).join(', ')}.`
+        : '') +
+      (criteria && Object.keys(criteria).length > 0
+        ? ` Criteria: ${Object.entries(criteria)
+            .map(([id, c]) => `${id} ${c.result}`)
+            .join(', ')}.`
         : '');
     // Saved before the build, so a swarmupd that stops during it leaves the build to the next one.
     const pending: PendingBuild = {
       ref,
       root: job.root,
+      ...(criteria && Object.keys(criteria).length > 0 ? { criteria } : {}),
       top,
       base: cfg.base,
       branch: src.branch,
@@ -1130,6 +1166,12 @@ export class Merger {
     };
     for (const { ref, job } of items) {
       if (this.sup.stopping) return 'again';
+      // Criteria to run belong to one task: it merges alone, where a failure sends back only it.
+      if (this.runCriteriaOf(ref).length > 0) {
+        this.mergeLine(ref, 'has criteria to run; merges alone after the batch');
+        alone.push({ ref, planned: job, job, approved: '' });
+        continue;
+      }
       const { src } = job;
       // A git that hangs on one task's commit or worktree is that task's: it leaves the batch
       // and merges alone, where a timeout ends the merge and tells the human about it.
@@ -1732,14 +1774,66 @@ export class Merger {
   }
 
   mergeRecord(
-    p: { ref: string; base: string; branch?: string; commit: string },
+    p: { ref: string; base: string; branch?: string; commit: string; criteria?: CriteriaResults },
     text: string,
   ): void {
     const nothing = /nothing to merge/.test(text);
     this.attemptEnd(p.ref, nothing ? 'nothing' : 'merged', firstLines(text), p.commit);
-    this.sup
-      .ws(MERGE_ACTOR)
-      .recordMerge(p.ref, { commit: p.commit, into: p.base, branch: p.branch }, text);
+    this.sup.ws(MERGE_ACTOR).recordMerge(
+      p.ref,
+      {
+        commit: p.commit,
+        into: p.base,
+        branch: p.branch,
+        ...(p.criteria ? { criteria: p.criteria } : {}),
+      },
+      text,
+    );
+  }
+
+  /** The approved task's criteria that the merge runs: its `command` and `check` kinds. */
+  runCriteriaOf(ref: string): NonNullable<TaskView['criteria']> {
+    try {
+      return (this.sup.ws().view(ref).criteria ?? []).filter((c) => RUN_KINDS.has(c.kind));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Runs the approved task's `command` and `check` criteria in swarmupd's worktree, after the
+   * configured checks passed, with the same runner and time limit. Null when it has none;
+   * `stopped` or `again` when swarmupd stopped or the PC slept during a command, as for checks.
+   */
+  async mergeCriteria(
+    ref: string,
+    cwd: string,
+    runner: CommandRunner,
+    timeoutMs: number,
+    env: NodeJS.ProcessEnv,
+  ): Promise<{ results: CriteriaResults; failed: string[] } | 'stopped' | 'again' | null> {
+    const criteria = this.runCriteriaOf(ref);
+    if (criteria.length === 0) return null;
+    this.mergeLine(ref, `runs its criteria: ${criteria.map((c) => c.id).join(', ')}`);
+    let broke: 'stopped' | 'again' | null = null;
+    const results = await runCriteria(criteria, {
+      cwd,
+      runCommand: async (command) => {
+        const [r] = await runner.runAll(
+          [command],
+          cwd,
+          timeoutMs,
+          (s) => this.mergeCommand('check', s),
+          env,
+        );
+        if (r?.why === 'stopped') broke = 'stopped';
+        else if (r?.interrupted) broke ??= 'again';
+        return { ok: r?.ok ?? false, output: redactSecrets(r?.output ?? ''), why: r?.why };
+      },
+    });
+    if (broke) return broke;
+    const failed = Object.keys(results).filter((id) => results[id]!.result === 'fail');
+    return { results, failed };
   }
 
   /**
@@ -1776,8 +1870,16 @@ export class Merger {
     this.sup.ws(MERGE_ACTOR).sendBack(ref, text, author);
   }
 
-  mergeBack(ref: string, what: string, author: string, why: string, output: string): void {
-    this.attemptEnd(ref, /^`[^`]+` failed \(/.test(why) ? 'check-failed' : 'sent-back', why);
+  mergeBack(
+    ref: string,
+    what: string,
+    author: string,
+    why: string,
+    output: string,
+    criteria?: CriteriaResults,
+  ): void {
+    const check = /^`[^`]+` failed \(/.test(why) || criteria !== undefined;
+    this.attemptEnd(ref, check ? 'check-failed' : 'sent-back', why);
     const safe = redactSecrets(output);
     const log = this.mergeLog(ref, safe);
     const head = `swarmupd did not merge ${what}: ${why}.`;
@@ -1789,6 +1891,7 @@ export class Merger {
         ref,
         out ? `${head}\n\n\`\`\`\n${out}\n\`\`\`\n\n${tail}` : `${head} ${tail}`,
         author,
+        criteria,
       );
   }
 

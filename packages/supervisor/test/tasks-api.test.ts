@@ -246,3 +246,45 @@ describe('a milestone plan through the API (AO-0110)', () => {
     expect(agent.status).toBe(409);
   });
 });
+
+// Typed criteria through the API: `done_when` on create, the criteria on the task's detail, and
+// results on a verdict.
+describe('typed criteria through the API', () => {
+  it('creates typed criteria, shows them with their results, and takes results on a verdict', async () => {
+    const { sup, post, call } = await setup();
+    const made = await post({
+      title: 'Write the post',
+      to: 'claude:writer',
+      done_when: ['the intro names the price', { id: 'angle', kind: 'human', ask: 'Clear?' }],
+    });
+    expect(made.status).toBe(201);
+    const bad = await post({ title: 'Bad', done_when: [{ kind: 'vibe' }] });
+    expect(bad.status).toBe(400);
+    const writer = sup.ws('claude:writer');
+    writer.start('SITE-0001', 'draft');
+    writer.review('SITE-0001', 'SITE-0001: draft in `post.md`', 'human:dawid');
+    const refused = await call('POST', '/api/tasks/site%2FSITE-0001/verdict', {
+      as: 'human:dawid',
+      verdict: 'approve',
+      message: 'fine',
+      criteria: { c1: { result: 'fail' } },
+    });
+    expect(refused.status).not.toBe(200);
+    const sent = await call('POST', '/api/tasks/site%2FSITE-0001/verdict', {
+      as: 'human:dawid',
+      verdict: 'changes',
+      message: 'name the price',
+      criteria: { c1: { result: 'fail', note: 'no price' }, angle: 'pass' },
+    });
+    expect(sent.status).toBe(200);
+    const detail = await call('GET', '/api/tasks/site%2FSITE-0001');
+    expect(detail.data.criteria).toEqual([
+      { id: 'c1', kind: 'prose', text: 'the intro names the price' },
+      { id: 'angle', kind: 'human', ask: 'Clear?' },
+    ]);
+    expect(detail.data.criteriaResults).toMatchObject({
+      c1: { result: 'fail', note: 'no price', type: 'verdict' },
+      angle: { result: 'pass' },
+    });
+  });
+});

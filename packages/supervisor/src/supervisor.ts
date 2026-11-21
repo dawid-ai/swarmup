@@ -19,6 +19,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import type {
   AgentDef,
+  CriteriaResults,
+  Criterion,
   OpsEvent,
   Priority,
   Root,
@@ -583,6 +585,8 @@ export interface PendingBuild {
    * the checkout itself.
    */
   install?: string[] | true;
+  /** The results of the task's `command` and `check` criteria, for the merge event. */
+  criteria?: CriteriaResults;
 }
 
 /** A merged task branch whose remote branch swarmupd deletes once the remote's base has the merge. */
@@ -3264,6 +3268,7 @@ export class Supervisor extends EventEmitter {
     let delegation: { budget_minutes?: number; tokens?: number } | null = null;
     let question: QuestionPrompt | undefined;
     let check: MilestoneCheckPrompt | undefined;
+    let criteria: Criterion[] | undefined;
     let taskType: string | undefined;
     const parent = req.parent ? this.live.get(req.parent)?.record : undefined;
     if (req.parent) {
@@ -3295,6 +3300,7 @@ export class Supervisor extends EventEmitter {
       taskType = v.meta.type;
       if (!req.review && v.meta.type === QUESTION_TYPE) question = questionPrompt(ws, ref, v);
       if (!req.review) check = milestoneCheckPrompt(ws, ref, v);
+      criteria = v.criteria;
       if (req.review) {
         if (v.status !== 'needs-review' || !ownerMatches(v.reviewer, agent)) {
           throw new OpsError(`${ref} does not wait for ${agent}'s review`);
@@ -3556,6 +3562,7 @@ export class Supervisor extends EventEmitter {
             scratch: readOnly || req.chat ? undefined : scratch,
             notes,
             decisions,
+            criteria,
           })) +
       (inv.note ?? '') +
       // The releases and tags a Codex PM run cannot read itself (AO-0350).
