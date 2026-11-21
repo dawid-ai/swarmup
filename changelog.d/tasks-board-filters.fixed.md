@@ -1,2 +1,0 @@
-- The Tasks list now shows done and parked tasks when you pick that status, even with **Include closed and archived** off, and a project in the sidebar shows its tasks when they carry another project name.
-- The Board's Done column has a dropdown to show 20, 100, 250 or all done tasks, remembered on this machine, and its header counts every done task instead of only the 20 shown.

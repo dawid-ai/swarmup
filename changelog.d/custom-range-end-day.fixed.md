@@ -1,1 +1,0 @@
-- A custom date range in **Replay** and **Activity** now includes its **to** day: before, the range stopped at the start of that day.

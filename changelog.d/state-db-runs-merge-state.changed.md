@@ -1,1 +1,0 @@
-- swarmupd reads its run records from `state.db` instead of re-reading every run file, and keeps a merge check's one retry after a timeout across a restart or update.

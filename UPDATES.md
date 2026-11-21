@@ -3,6 +3,28 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.12 (2026-11-21)
+
+- **SwarmUp cleans up after itself.** Old scratch folders go after 2 days, run logs and merge logs
+  after 14, and swarmupd's log starts a new file past 10 MB. Worktrees of finished tasks whose work is
+  already merged are removed instead of waiting for a merge that never comes. Cleanup runs in the
+  background, so it never holds up the app.
+- **No more frozen dialogs.** **Create task** and other actions no longer wait while swarmupd
+  cleans up or builds a report, and **New task** keeps its fields still while the task is created.
+  If anything does hold swarmupd for more than 2 seconds, swarmupd's log says what it was.
+- **Tasks:** picking **Done** or **Parked** shows those tasks, and a project link from the sidebar
+  shows its tasks even when the project's name differs from its folder's.
+- **Board:** the **Done** column header has a 20 / 100 / 250 / All choice, and shows the real
+  total.
+- **Activity** has a time range like **Replay**'s, and a custom range now includes its end day in
+  both.
+- **Reports** open in a fraction of a second instead of several, with a progress state while one
+  builds.
+- **Agents** show the full model name.
+- **Merges:** reviews record the exact commit and branch, approved work that only changes the task
+  store closes cleanly, merge checks can be limited to the paths they cover, and a merge check that
+  failed a test goes back at once instead of being retried.
+
 ## v0.3.0-beta.11 (2026-11-20)
 
 - **Slow merge checks no longer bounce work back.** When a merge check times out, swarmupd runs it

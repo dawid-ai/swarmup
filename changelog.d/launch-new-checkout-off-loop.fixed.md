@@ -1,1 +1,0 @@
-- Starting a run from the app in a folder swarmupd has not used yet no longer holds swarmupd while git reads that checkout.

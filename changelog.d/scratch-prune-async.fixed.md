@@ -1,1 +1,0 @@
-- swarmupd no longer freezes for a minute or more while it cleans up old scratch folders it cannot delete (files a Codex sandbox session made): it removes them in the background, warns once about each folder it cannot remove and tries it again a day later. The app's calls, such as **Create task**, no longer wait for it.

@@ -1,1 +1,0 @@
-- An approved task whose work is a commit in a separate task store repo now gets a "nothing to merge" note instead of a finding that its work is not in the code's main branch, and the tasks waiting on it go on.

@@ -1,1 +1,0 @@
-- **New task** holds its fields still while the task is being created, so a change made while swarmupd answers, such as an owner picked during the wait, is not silently left out.

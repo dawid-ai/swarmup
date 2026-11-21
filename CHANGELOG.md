@@ -6,6 +6,40 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.12 (2026-11-21)
+
+### Added
+
+- **Activity** has the same **Range** buttons as **Replay**: All time, Day, Week, 30 days,
+  90 days or a custom from–to. The feed shows only the events in that window, and the app
+  remembers your choice.
+- The **Model** field on an agent card has a row of its own, so long names such as
+  `gpt-5.5-codex-high` show in full.
+- A merge check in `swarmupd.merge.<root>.checks` can name the paths it checks, as
+  `{ run, paths }`. A merge runs it only when the work changes one of those paths, so a task that
+  changes only Markdown, copy or assets skips the code checks. The `merge` event lists the checks
+  it did not run.
+
+### Changed
+
+- swarmupd keeps a run's scratch folder 2 days after the run instead of 7 (`scratch_days`): two weeks of runs had filled 15 GB. It also says in its log when anything held it for more than 2 s, so the app's calls waited, and what it was doing then.
+- swarmupd reads its run records from `state.db` instead of re-reading every run file, and keeps a merge check's one retry after a timeout across a restart or update.
+
+### Fixed
+
+- swarmupd cleans up after itself: run logs, process ledgers and merge logs go after `log_days` (14), swarmupd's log starts a new file past 10 MB at the next start, and the worktree of a closed task whose work is already merged no longer waits for a merge that never comes.
+- A custom date range in **Replay** and **Activity** now includes its **to** day: before, the range stopped at the start of that day.
+- Starting a run from the app in a folder swarmupd has not used yet no longer holds swarmupd while git reads that checkout.
+- Send work back at once when a merge check times out after it printed a failed test, instead of merging it once more and then asking the human to raise the time limit.
+- **New task** holds its fields still while the task is being created, so a change made while swarmupd answers, such as an owner picked during the wait, is not silently left out.
+- Reports open faster: a weekly report reads only the tasks that changed in its window, and opening the same report again reuses what it read. The app no longer freezes while a report builds, and Reports shows that it is building the report until it is ready.
+- `swarmup review` records the HEAD commit, branch and repo of the checkout it runs in on the review, and swarmupd's merge reads them before the review's wording. Approved work no longer misses `main` because the request phrased `<commit> on branch <name>` its own way. `--commit` and `--branch` override the checkout.
+- An approved review sent from the task store's own repo closes with "nothing to merge: store work, synced" instead of a "not in main" finding, and the tasks waiting on it go on.
+- swarmupd no longer freezes for a minute or more while it cleans up old scratch folders it cannot delete (files a Codex sandbox session made): it removes them in the background, warns once about each folder it cannot remove and tries it again a day later. The app's calls, such as **Create task**, no longer wait for it.
+- An approved task whose work is a commit in a separate task store repo now gets a "nothing to merge" note instead of a finding that its work is not in the code's main branch, and the tasks waiting on it go on.
+- The Tasks list now shows done and parked tasks when you pick that status, even with **Include closed and archived** off, and a project in the sidebar shows its tasks when they carry another project name.
+- The Board's Done column has a dropdown to show 20, 100, 250 or all done tasks, remembered on this machine, and its header counts every done task instead of only the 20 shown.
+
 ## 0.3.0-beta.11 (2026-11-20)
 
 ### Added
