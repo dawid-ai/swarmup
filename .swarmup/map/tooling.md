@@ -22,6 +22,7 @@ covers:
   - scripts/setup-hooks.mjs
   - scripts/bench-next.mjs
   - scripts/desktop-smoke.mjs
+  - scripts/orientation.mjs
 links: [leaks, release]
 ---
 
