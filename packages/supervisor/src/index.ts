@@ -1,5 +1,6 @@
 export * from './admin.js';
 export * from './api.js';
+export * from './bench.js';
 export * from './chat.js';
 export * from './config.js';
 export * from './daemon.js';

@@ -2,7 +2,7 @@
 kind: root
 type: code
 summary: SwarmUp engine monorepo; tasks as Markdown files in git, the swarmup CLI, swarmupd and the desktop app
-links: [core, supervisor, cli, desktop, docs, release, tooling]
+links: [core, supervisor, cli, desktop, docs, release, tooling, bench]
 ---
 
 # SwarmUp

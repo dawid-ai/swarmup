@@ -3,7 +3,7 @@ kind: entry
 summary: 'The swarmup command: one COMMANDS table of subcommands over core and swarmupd, used by agents and people'
 covers:
   - packages/cli
-links: [core, supervisor, core/map, core/defs]
+links: [core, supervisor, core/map, core/defs, bench]
 ---
 
 # CLI
@@ -20,9 +20,9 @@ answer, vote, learn, sync, launch runs, and read the project map.
 - `cli.ts` exports `run(argv, io)`: it parses options with `node:util` `parseArgs` against the
   `COMMANDS` table (usage, summary, options, run). Most commands call `Workspace`; daemon,
   runs, logs and launch talk to swarmupd's API.
-- `map-cmd.ts` holds `swarmup map` (see `core/map`) and `defs-cmd.ts` holds `swarmup validate`
-  and `swarmup defs` (see `core/defs`); put new large commands in their own file and register
-  them with one line in `COMMANDS`.
+- `map-cmd.ts` holds `swarmup map` (see `core/map`), `defs-cmd.ts` holds `swarmup validate`
+  and `swarmup defs` (see `core/defs`), and `bench-cmd.ts` holds `swarmup bench` (see `bench`);
+  put new large commands in their own file and register them with one line in `COMMANDS`.
 - `hooks.ts` installs Claude Code hooks that sync at session end; `banner.ts` draws the mark.
 
 ## Invariants

@@ -119,6 +119,7 @@ import { envVar, reviewSources } from '@swarmup/core';
 import type { ReviewSourceFields } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { definitionProblemLines, defsCommand, validateCommand } from './defs-cmd.js';
+import { benchCommand } from './bench-cmd.js';
 import { mapCommand } from './map-cmd.js';
 import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
@@ -2148,6 +2149,7 @@ const COMMANDS: Record<string, Command> = {
   map: mapCommand,
   validate: validateCommand,
   defs: defsCommand,
+  bench: benchCommand,
   kb: {
     usage: 'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale] [--days N]',
     summary:
