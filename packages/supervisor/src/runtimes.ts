@@ -1,5 +1,5 @@
-import type { AgentDef, LogEntry } from '@swarmup/core';
-import { actorSlug, decisionLines, roleOf, runtimeOf } from '@swarmup/core';
+import type { AgentDef, LogEntry, MapPrompt } from '@swarmup/core';
+import { actorSlug, decisionLines, mapPromptLines, roleOf, runtimeOf } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkEffort, checkModel } from './config.js';
 
@@ -398,6 +398,8 @@ export interface PromptInput {
   scratch?: string;
   /** Learn notes whose title or topic matches the task's words (AO-0049), best first. */
   notes?: { ref: string; title: string }[];
+  /** The project map of the run's checkout, when it has one, with the nodes that match the task. */
+  map?: MapPrompt;
   /**
    * The decisions in force for `task` (AO-0109), newest first, from `inForce` in the task's root:
    * what `swarmup decisions --log --task ID` lists. A run without a task has none.
@@ -912,6 +914,9 @@ export function runPrompt(p: PromptInput): string {
       'Learn notes that may apply; read the ones that fit with `swarmup kb --read <ref>`:',
       ...p.notes.map((note) => `- \`${note.ref}\`: ${note.title}`),
     );
+  }
+  if (p.map) {
+    lines.push(...mapPromptLines(p.map, p.review ? 'review' : p.question ? 'read' : 'work'));
   }
   if (p.extra) {
     lines.push('', p.extra.trim());
