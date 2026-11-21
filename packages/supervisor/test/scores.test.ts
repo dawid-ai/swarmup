@@ -14,6 +14,8 @@ import {
   logOrientation,
   reportText,
   ScoreKeeper,
+  scoreHistory,
+  scorerCatalog,
   scorerSettings,
   scoresText,
   StateDb,
@@ -356,6 +358,9 @@ describe('settings and summaries', () => {
     expect(eng!.agent).toBe(ENG);
     const rr = eng!.scorers.find((l) => l.scorer === 'review-rounds')!;
     expect(rr).toMatchObject({ n: 3, mean: 1.33, passed: 2, judged: 3, pass: 1 });
+    // Each line says what it measures and what to change, for the desktop's hints.
+    expect(rr.description).toMatch(/changes verdicts/);
+    expect(rr.lever).toMatch(/role file/);
     expect(rr.worst.map((w) => w.subject)).toEqual(['r/T-2']);
     const stuck = eng!.scorers.find((l) => l.scorer === 'stuck-runs')!;
     expect(stuck).toMatchObject({ level: 'agent', n: 2, mean: 0.5, judged: 1, passed: 0 });
@@ -543,6 +548,103 @@ describe('keeping scores', () => {
   });
 });
 
+describe('score trends', () => {
+  const H = 3_600_000;
+  const at = (ms: number) => new Date(T0 + ms).toISOString();
+  const result = (scorer: string, agent: string, value: number, ms: number, level = 'task') =>
+    ({
+      scorer,
+      level,
+      subject: `r/${scorer}-${ms}`,
+      agent,
+      value,
+      unit: 'rounds',
+      n: 1,
+      evidence: [],
+      at: at(ms),
+    }) as ScoreResult;
+
+  it('buckets task scores by local day and keeps the last agent score of each day', () => {
+    const results = [
+      result('review-rounds', ENG, 2, 1 * H),
+      result('review-rounds', ENG, 0, 5 * H),
+      // 23:30 UTC is the next day an hour east of UTC.
+      result('review-rounds', ENG, 3, 23.5 * H),
+      result('review-rounds', REV, 1, 2 * H),
+      // Outside the window.
+      result('review-rounds', ENG, 9, -2 * H),
+    ];
+    const rows = [
+      // Before the window: opens the trend at its start.
+      { agent: ENG, scorer: 'stuck-runs', computed_at: at(-30 * H), value: 0.5, n: 4 },
+      { agent: ENG, scorer: 'stuck-runs', computed_at: at(3 * H), value: 0.2, n: 5 },
+      { agent: ENG, scorer: 'stuck-runs', computed_at: at(4 * H), value: 0.25, n: 4 },
+      { agent: ENG, scorer: 'stuck-runs', computed_at: at(30 * H), value: 0.1, n: 10 },
+    ];
+    const series = scoreHistory(results, rows, scorerCatalog(), {
+      from: T0,
+      to: T0 + 4 * 24 * H,
+      tz: -60,
+    });
+    expect(series.map((s) => `${s.agent} ${s.scorer}`)).toEqual([
+      `${ENG} review-rounds`,
+      `${ENG} stuck-runs`,
+      `${REV} review-rounds`,
+    ]);
+    const day0 = new Date(T0 - H).toISOString();
+    const day1 = new Date(T0 + 23 * H).toISOString();
+    expect(series[0]!.points).toEqual([
+      { at: day0, value: 1, n: 2 },
+      { at: day1, value: 3, n: 1 },
+    ]);
+    expect(series[0]).toMatchObject({ unit: 'rounds', better: 'lower', pass: 1 });
+    expect(series[1]!.points).toEqual([
+      { at: day0, value: 0.25, n: 4 },
+      { at: day1, value: 0.1, n: 10 },
+    ]);
+    // One agent and one scorer, by the hour for a short window.
+    const one = scoreHistory(results, rows, scorerCatalog(), {
+      from: T0,
+      to: T0 + 24 * H,
+      agent: ENG,
+      scorer: 'review-rounds',
+    });
+    expect(one).toHaveLength(1);
+    expect(one[0]!.points.map((p) => p.at)).toEqual([at(1 * H), at(5 * H), at(23 * H)]);
+  });
+
+  it('reads agent-score rows of a window from state.db, with the last one before it', () => {
+    const db = new StateDb(temp());
+    const save = (agent: string, value: number | null, day: number) => {
+      const key = { scorer: 'stuck-runs', level: 'agent', subject: agent, agent };
+      const res =
+        value === null ? null : { ...key, value, unit: 'ratio', n: 3, evidence: [], at: '' };
+      db.saveScores([{ key, result: res, computed_at: `2026-11-0${day}T00:00:00.000Z` }]);
+    };
+    save(ENG, 0.5, 1);
+    save(ENG, 0.3, 3);
+    save(ENG, 0.2, 5);
+    save(REV, 0.1, 2);
+    save(REV, null, 3);
+    const rows = db.agentScoreHistory({
+      since: '2026-11-02T00:00:00.000Z',
+      until: '2026-11-04T00:00:00.000Z',
+    });
+    expect(rows.map((r) => [r.agent, r.computed_at.slice(0, 10), r.value, r.n])).toEqual([
+      [ENG, '2026-11-01', 0.5, 3],
+      [REV, '2026-11-02', 0.1, 3],
+      [ENG, '2026-11-03', 0.3, 3],
+    ]);
+    expect(
+      db.agentScoreHistory({
+        since: '2026-11-04T00:00:00.000Z',
+        until: '2026-11-09T00:00:00.000Z',
+        agent: REV,
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe('scores in the report and the API', () => {
   it('adds per-agent scores to the report and its text', () => {
     const { as } = store();
@@ -587,9 +689,87 @@ describe('scores in the report and the API', () => {
       'human-touches',
       'review-rounds',
     ]);
+    // The catalog names each scorer's threshold and what to change.
+    expect(got.body.scorers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'review-rounds', pass: 1, lever: expect.any(String) }),
+      ]),
+    );
+    const history = await call('GET', `/api/scores/history?agent=${ENG}&tz=-60`);
+    expect(history.status).toBe(200);
+    expect(history.body.bucket).toBe('day');
+    const series = history.body.series as Array<{
+      agent: string;
+      scorer: string;
+      points: unknown[];
+    }>;
+    expect(series.map((s) => s.scorer).sort()).toEqual(['human-touches', 'review-rounds']);
+    expect(series.every((s) => s.agent === ENG && s.points.length === 1)).toBe(true);
+    expect((await call('GET', '/api/scores/history?since=soon')).status).toBe(400);
+    expect((await call('GET', '/api/scores/history?tz=x')).status).toBe(400);
+    const backwards = 'since=2026-11-09T00:00:00Z&until=2026-11-08T00:00:00Z';
+    expect((await call('GET', `/api/scores/history?${backwards}`)).status).toBe(400);
     const refreshed = await call('POST', '/api/scores/refresh');
     expect((refreshed.body.scores as ScoreResult[]).length).toBe(2);
     expect((await call('GET', '/api/scores?since=soon')).status).toBe(400);
     expect(existsSync(join(state, 'state.db'))).toBe(true);
+  });
+
+  it("serves a task's scores with the orientation of its runs, for the task panel", async () => {
+    const { repo, as } = store();
+    as(REV).verdict('1', 'approve', 'good');
+    const config = join(temp(), 'config.yml');
+    writeFileSync(config, 'me: human:dawid\nswarmupd:\n  sync: false\n');
+    const state = temp();
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      SWARMUP_CONFIG: config,
+      SWARMUP_STATE_DIR: state,
+    };
+    delete env.SWARMUP_AGENT;
+    delete env.SWARMUP_ROOTS;
+    const sup = new Supervisor({ env, cwd: repo, freeMem: () => 64 * 2 ** 30 });
+    sups.push(sup);
+    // A writing run on the task: two reads, then its first edit.
+    const log = join(temp(), 'run.log');
+    const line = (content: unknown[], type = 'assistant') =>
+      JSON.stringify({ type, message: { content } });
+    writeFileSync(
+      log,
+      [
+        line([{ type: 'tool_use', name: 'Read' }]),
+        line([{ type: 'tool_result', content: 'abc' }], 'user'),
+        line([{ type: 'tool_use', name: 'Grep' }]),
+        line([{ type: 'tool_result', content: 'd' }], 'user'),
+        line([{ type: 'tool_use', name: 'Edit' }]),
+      ].join('\n'),
+    );
+    const now = Date.now();
+    sup.store.save(
+      run('01JTASKRUN00000000000000AA', ENG, 0, {
+        task: 'T-0001',
+        root: 'test',
+        log,
+        started_at: new Date(now - 20 * MIN).toISOString(),
+        ended_at: new Date(now - 10 * MIN).toISOString(),
+      }),
+    );
+    const api = await startApi(sup, { port: 0, token: 'scores-token', version: 't', build: '1' });
+    const res = await fetch(`http://127.0.0.1:${api.port}/api/scores?task=test/T-0001`, {
+      headers: { authorization: 'Bearer scores-token' },
+    });
+    const body = (await res.json()) as { results: ScoreResult[]; scorers: unknown[] };
+    expect(body.results.map((r) => r.scorer).sort()).toEqual([
+      'human-touches',
+      'orientation',
+      'review-rounds',
+    ]);
+    expect(body.results.find((r) => r.scorer === 'orientation')).toMatchObject({
+      subject: '01JTASKRUN00000000000000AA',
+      value: 2,
+      pass: true,
+      extra: { share: 1 },
+    });
+    expect(body.scorers.length).toBeGreaterThan(0);
   });
 });

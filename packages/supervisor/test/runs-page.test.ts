@@ -156,6 +156,23 @@ describe('pageRuns', () => {
     expect(closed.live).toBe(1);
   });
 
+  it('narrows the list and counts to resumed runs or one model, and names the models', () => {
+    const runs = [
+      rec('03', { model: 'opus', resumed: 'S1', resumed_from: '01' }),
+      rec('02', { model: 'sonnet', exit: 1 }),
+      rec('01', { model: 'opus' }),
+    ];
+    const resumed = pageRuns(runs, { limit: 10, resumed: true, since });
+    expect(resumed.runs.map((r) => r.id)).toEqual(['03']);
+    expect(resumed.counts.all).toBe(1);
+    expect(resumed.models).toEqual(['opus']);
+    const opus = pageRuns(runs, { limit: 10, model: 'opus', since });
+    expect(opus.runs.map((r) => r.id)).toEqual(['03', '01']);
+    expect(opus.counts).toEqual({ all: 2, live: 0, ended: 2, errors: 0 });
+    // The models of the range, before the model filter, so the picker keeps the others.
+    expect(opus.models).toEqual(['opus', 'sonnet']);
+  });
+
   it('finds the picked run outside the page, by id or its end', () => {
     expect(pageRuns(all, { limit: 1, pick: '01', since }).pick?.id).toBe('01');
     expect(pageRuns([rec('01ABCDEF')], { limit: 1, pick: 'cdef' }).pick?.id).toBe('01ABCDEF');
@@ -213,6 +230,28 @@ describe('GET /api/runs', () => {
 
     const head = (await get('/api/runs?limit=5&from=02')).data as RunPage;
     expect(head.runs.map((r) => r.id)).toEqual(['03', '02']);
+  });
+
+  it('filters by resumed and model, and adds the orientation the score keeper read', async () => {
+    const { sup, get } = await setup();
+    sup.store.save(rec('01', { model: 'opus' }));
+    sup.store.save(rec('02', { model: 'sonnet', resumed: 'S1', resumed_from: '01' }));
+    // The keeper read run 01's log: 4 tool calls, then its first edit.
+    (sup.scores as unknown as { orientations: Map<string, unknown> }).orientations.set('01', {
+      toolCalls: 4,
+      resultBytesBefore: 1,
+      resultBytes: 4,
+      edited: true,
+    });
+    const page = (await get('/api/runs?limit=5')).data as RunPage & {
+      orientation: Record<string, unknown>;
+    };
+    expect(page.models).toEqual(['opus', 'sonnet']);
+    expect(page.orientation).toEqual({ '01': { calls: 4, share: 0.25, edited: true } });
+    const resumed = (await get('/api/runs?limit=5&resumed=1')).data as RunPage;
+    expect(resumed.runs.map((r) => r.id)).toEqual(['02']);
+    const opus = (await get('/api/runs?limit=5&model=opus')).data as RunPage;
+    expect(opus.runs.map((r) => r.id)).toEqual(['01']);
   });
 
   it('refuses a bad limit, filter or since', async () => {

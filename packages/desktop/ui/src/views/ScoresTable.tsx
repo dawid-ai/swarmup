@@ -1,25 +1,14 @@
+import type { Nav } from '../App';
 import { Who, cx } from '../components';
-import { tokens } from '../lib/format';
-import type { AgentScores, ScorerLine } from '../types';
-
-/** The scorers the table shows, with a short column label each. */
-const COLUMNS: Array<[string, string]> = [
-  ['review-rounds', 'Review rounds'],
-  ['merge-failures', 'Merge fails'],
-  ['cost-per-merged-task', 'Tokens / merge'],
-  ['human-touches', 'Human touches'],
-  ['escalation-correctness', 'Escalations'],
-  ['recommendation-acceptance', 'Recs taken'],
-  ['stuck-runs', 'Stuck runs'],
-  ['criteria-pass-rate', 'Criteria'],
-  ['orientation', 'Calls to edit'],
-];
-
-function valueText(l: ScorerLine): string {
-  if (l.unit === 'ratio') return `${Math.round(l.mean * 100)}%`;
-  if (l.unit === 'tokens') return tokens(Math.round(l.mean));
-  return String(l.mean);
-}
+import type { AgentScores, ScoreSeries, ScorerLine } from '../types';
+import {
+  SCORER_LABELS,
+  scoreValue,
+  scorerHint,
+  seriesOf,
+  Sparkline,
+  SubjectLink,
+} from '../ui/score';
 
 /** A cell's tooltip: what it is over, its pass rate and its worst subjects. */
 function cellTitle(l: ScorerLine): string {
@@ -33,11 +22,59 @@ function cellTitle(l: ScorerLine): string {
   return parts.join('; ');
 }
 
-/** Per agent, the scores of the report's window: one column per scorer that has any. */
-export function ScoresTable({ scores }: { scores: AgentScores[] }) {
-  const shown = COLUMNS.filter(([id]) =>
+/** The first line of `scores` with this scorer: the source of its description and lever. */
+function lineOf(scores: AgentScores[], id: string): ScorerLine | undefined {
+  for (const a of scores) {
+    const l = a.scorers.find((x) => x.scorer === id);
+    if (l) return l;
+  }
+  return undefined;
+}
+
+/** A column header's tooltip: what the scorer measures, its threshold and what to change. */
+function headerTitle(l: ScorerLine | undefined): string | undefined {
+  if (!l?.description) return undefined;
+  return scorerHint({ ...l, description: l.description, lever: l.lever ?? '' });
+}
+
+/** Per scorer, the worst task or run subjects across agents, worst first. */
+function worstOf(
+  scores: AgentScores[],
+  id: string,
+): Array<{ subject: string; value: number; agent: string }> {
+  const out: Array<{ subject: string; value: number; agent: string }> = [];
+  let better: 'higher' | 'lower' = 'lower';
+  for (const a of scores) {
+    const l = a.scorers.find((x) => x.scorer === id);
+    if (!l || l.level === 'agent') continue;
+    better = l.better;
+    for (const w of l.worst) out.push({ subject: w.subject, value: w.value, agent: a.agent });
+  }
+  const sign = better === 'lower' ? -1 : 1;
+  return out.sort((a, b) => sign * (a.value - b.value)).slice(0, 5);
+}
+
+/**
+ * Per agent, the scores of the report's window: one column per scorer that has any, each with
+ * its trend over the same window. Below, the worst tasks and runs per scorer, each a link.
+ */
+export function ScoresTable({
+  scores,
+  history,
+  bucket = 'day',
+  nav,
+}: {
+  scores: AgentScores[];
+  history?: ScoreSeries[];
+  bucket?: 'hour' | 'day';
+  nav: Nav;
+}) {
+  const shown = SCORER_LABELS.filter(([id]) =>
     scores.some((a) => a.scorers.some((l) => l.scorer === id)),
   );
+  const worst = shown
+    .map(([id, label]) => ({ id, label, line: lineOf(scores, id), list: worstOf(scores, id) }))
+    .filter((w) => w.list.length > 0);
   return (
     <div className="panel overflow-x-auto" data-testid="report-scores">
       <div className="label-caps border-b border-white/6 px-4 py-2.5">Scores</div>
@@ -46,7 +83,11 @@ export function ScoresTable({ scores }: { scores: AgentScores[] }) {
           <tr>
             <th className="px-4 py-2 font-normal">Agent</th>
             {shown.map(([id, label]) => (
-              <th key={id} className="px-2 py-2 text-right font-normal">
+              <th
+                key={id}
+                title={headerTitle(lineOf(scores, id))}
+                className="cursor-help px-2 py-2 text-right font-normal underline decoration-white/15 decoration-dotted underline-offset-4"
+              >
                 {label}
               </th>
             ))}
@@ -68,17 +109,29 @@ export function ScoresTable({ scores }: { scores: AgentScores[] }) {
                   );
                 }
                 const rate = l.judged > 0 ? l.passed / l.judged : null;
+                const series = seriesOf(history, a.agent, id);
                 return (
-                  <td
-                    key={id}
-                    title={cellTitle(l)}
-                    className={cx(
-                      'px-2 py-2 text-right tabular-nums',
-                      rate === null ? '' : rate >= 0.8 ? 'text-ok' : rate < 0.5 ? 'text-warn' : '',
+                  <td key={id} title={cellTitle(l)} className="px-2 py-2 text-right align-top">
+                    <div
+                      className={cx(
+                        'tabular-nums',
+                        rate === null
+                          ? ''
+                          : rate >= 0.8
+                            ? 'text-ok'
+                            : rate < 0.5
+                              ? 'text-warn'
+                              : '',
+                      )}
+                    >
+                      {scoreValue(l.mean, l.unit)}
+                      <span className="ml-1 text-xs text-fg-4">{l.n}</span>
+                    </div>
+                    {series && series.points.length > 1 && (
+                      <div className="mt-1 flex justify-end">
+                        <Sparkline series={series} bucket={bucket} width={64} height={16} />
+                      </div>
                     )}
-                  >
-                    {valueText(l)}
-                    <span className="ml-1 text-xs text-fg-4">{l.n}</span>
                   </td>
                 );
               })}
@@ -86,6 +139,29 @@ export function ScoresTable({ scores }: { scores: AgentScores[] }) {
           ))}
         </tbody>
       </table>
+      {worst.length > 0 && (
+        <div className="border-t border-white/6 px-4 py-3" data-testid="report-worst">
+          <div className="label-caps mb-2">Worst tasks</div>
+          <div className="grid grid-cols-1 gap-x-6 gap-y-2 lg:grid-cols-2">
+            {worst.map((w) => (
+              <div key={w.id} className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+                <span className="w-28 shrink-0 cursor-help text-fg-3" title={headerTitle(w.line)}>
+                  {w.label}
+                </span>
+                {w.list.map((s) => (
+                  <SubjectLink
+                    key={`${s.agent}-${s.subject}`}
+                    subject={s.subject}
+                    value={scoreValue(s.value, w.line?.unit ?? '')}
+                    title={`${s.subject}: ${scoreValue(s.value, w.line?.unit ?? '')}, by ${s.agent}`}
+                    nav={nav}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

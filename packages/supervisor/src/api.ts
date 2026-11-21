@@ -37,7 +37,8 @@ import {
 import { NoDiff } from './diff.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
-import { scorerSettings, summarizeScores } from './scores.js';
+import { scorerCatalog, scorerSettings, summarizeScores } from './scores.js';
+import { historyBucket } from './score-history.js';
 import { buildWrapped } from './wrapped.js';
 import type { SettingsPatch } from './admin.js';
 import { pageRuns, RUN_FILTERS } from './runs.js';
@@ -428,20 +429,28 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (start && end && !(Date.parse(start) < Date.parse(end))) {
           throw new HttpError(400, 'end: the range must end after it starts');
         }
-        return send(
-          res,
-          200,
-          pageRuns(sup.runs(), {
-            limit,
-            before: q.get('before')?.toUpperCase() || undefined,
-            from: q.get('from')?.toUpperCase() || undefined,
-            filter: filter as RunFilter,
-            since,
-            start,
-            end,
-            pick: q.get('pick') || undefined,
-          }),
-        );
+        const page = pageRuns(sup.runs(), {
+          limit,
+          before: q.get('before')?.toUpperCase() || undefined,
+          from: q.get('from')?.toUpperCase() || undefined,
+          filter: filter as RunFilter,
+          since,
+          start,
+          end,
+          pick: q.get('pick') || undefined,
+          // `resumed=1`: only runs that resumed a session; `model`: only runs of that model.
+          resumed: q.get('resumed') === '1',
+          model: q.get('model') || undefined,
+        });
+        // The orientation the score keeper read from each ended run's log, by run id: a lookup
+        // in memory per run on the page, no log read.
+        const orientation: Record<string, unknown> = {};
+        for (const r of page.pick ? [...page.runs, page.pick] : page.runs) {
+          if (r.status !== 'ended') continue;
+          const o = sup.scores.orientation(r);
+          if (o) orientation[r.id] = o;
+        }
+        return send(res, 200, { ...page, orientation });
       }
       if (method === 'POST' && !id) {
         const agent = need(body.agent, 'agent');
@@ -774,26 +783,74 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'POST' && id === 'refresh') {
         return send(res, 200, { scores: await sup.refreshScores(true) });
       }
-      if (method === 'GET' && !id) {
-        const since = q.get('since') || '';
-        if (since && Number.isNaN(Date.parse(since))) {
-          throw new HttpError(400, 'since: use an ISO date and time');
+      let settings = {};
+      try {
+        settings = scorerSettings(sup.user);
+      } catch {
+        // The tick warns about it.
+      }
+      const time = (name: string): number | undefined => {
+        const v = q.get(name) || '';
+        if (v && Number.isNaN(Date.parse(v))) {
+          throw new HttpError(400, `${name}: use an ISO date and time`);
         }
-        const sinceIso = since ? new Date(Date.parse(since)).toISOString() : '';
+        return v ? Date.parse(v) : undefined;
+      };
+      if (method === 'GET' && !id) {
+        const since = time('since');
+        const sinceIso = since !== undefined ? new Date(since).toISOString() : '';
         const results = (await sup.refreshScores()).filter(
           (r) => r.level === 'agent' || r.at >= sinceIso,
         );
-        let settings = {};
-        try {
-          settings = scorerSettings(sup.user);
-        } catch {
-          // The tick warns about it.
-        }
         const agent = q.get('agent') || undefined;
         const task = q.get('task') || undefined;
+        // A task's own scores, and the run scores (orientation) of its runs.
+        let mine: typeof results = [];
+        if (task) {
+          const slash = task.lastIndexOf('/');
+          const [root, tid] =
+            slash > 0 ? [task.slice(0, slash), task.slice(slash + 1)] : ['', task];
+          const runs = new Set(
+            sup
+              .runs()
+              .filter((r) => r.task === tid && (!root || !r.root || r.root === root))
+              .map((r) => r.id),
+          );
+          mine = results.filter(
+            (r) => r.subject === task || (r.level === 'run' && runs.has(r.subject)),
+          );
+        }
         return send(res, 200, {
           agents: summarizeScores(results, { settings }).filter((a) => !agent || a.agent === agent),
-          ...(task ? { results: results.filter((r) => r.subject === task) } : {}),
+          scorers: scorerCatalog({ settings }),
+          ...(task ? { results: mine } : {}),
+        });
+      }
+      // Each agent's trend per scorer from `since` (default 30 days ago) to `until` (default
+      // now): task and run scores by their subject's time, agent scores from their rows in
+      // state.db. `tz` is the reader's `getTimezoneOffset()`, for local days.
+      if (method === 'GET' && id === 'history') {
+        const to = time('until') ?? Date.now();
+        const from = time('since') ?? to - 30 * 86_400_000;
+        if (!(from < to)) throw new HttpError(400, 'until: the window must end after it starts');
+        const tz = Number(q.get('tz') || 0);
+        if (!Number.isInteger(tz) || Math.abs(tz) > 840) {
+          throw new HttpError(400, 'tz: use minutes from -840 to 840');
+        }
+        await sup.refreshScores();
+        const bucket = historyBucket(from, to);
+        return send(res, 200, {
+          since: new Date(from).toISOString(),
+          until: new Date(to).toISOString(),
+          bucket,
+          series: sup.scores.history(scorerCatalog({ settings }), {
+            from,
+            to,
+            tz,
+            bucket,
+            ...(q.get('agent') ? { agent: q.get('agent')! } : {}),
+            ...(q.get('scorer') ? { scorer: q.get('scorer')! } : {}),
+          }),
         });
       }
     }

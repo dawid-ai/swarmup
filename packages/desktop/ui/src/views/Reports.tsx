@@ -5,10 +5,11 @@ import { q, useData } from '../api';
 import { Empty, ErrorLine, Section, Stat, Who, cx } from '../components';
 import { minutes, tokens } from '../lib/format';
 import { identity } from '../lib/identity';
-import type { Report } from '../types';
+import type { Report, ScoreHistory } from '../types';
 import { ProviderMark } from '../ui/identity';
 import { RefText } from '../ui/refs';
 import { ProjectName } from '../ui/project-label';
+import { historyPath } from '../ui/score';
 import { ScoresTable } from './ScoresTable';
 
 const RANGES: Array<[number, string]> = [
@@ -54,6 +55,11 @@ export function Reports({ nav }: { nav: Nav }) {
   // A new window clears the report, and an answer for an earlier window is dropped (useData).
   const { data, error } = useData<Report>(path);
   const r = data;
+  // The score trends cover the report's own window, so they follow its range.
+  const trends = useData<ScoreHistory>(
+    r?.scores?.length && r.from ? historyPath(r.from, r.to) : null,
+  );
+  const series = Array.isArray(trends.data?.series) ? trends.data.series : undefined;
   const loading = path !== null && !r && !error;
   const maxMin = Math.max(1, ...(r?.providers ?? []).map((p) => p.minutes));
   return (
@@ -204,7 +210,9 @@ export function Reports({ nav }: { nav: Nav }) {
             </div>
           </div>
         )}
-        {r?.scores && r.scores.length > 0 && <ScoresTable scores={r.scores} />}
+        {r?.scores && r.scores.length > 0 && (
+          <ScoresTable scores={r.scores} history={series} bucket={trends.data?.bucket} nav={nav} />
+        )}
         {r && r.decisions.length > 0 && (
           <div className="panel p-4">
             <div className="label-caps mb-2">Decided</div>

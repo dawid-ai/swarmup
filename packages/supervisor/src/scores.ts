@@ -676,6 +676,30 @@ export function computeScores(input: ScoreInput, opts: ScoreOptions = {}): Score
 
 // ---- Summaries ----------------------------------------------------------------------------------
 
+/** What a scorer is, for a reader: what it measures, its threshold and what to change. */
+export interface ScorerInfo {
+  id: string;
+  description: string;
+  level: ScoreLevel;
+  unit: string;
+  better: 'higher' | 'lower';
+  pass?: number;
+  lever: string;
+}
+
+/** The scorers `settings` leaves on, in report order, each with its threshold. */
+export function scorerCatalog(opts: ScoreOptions = {}): ScorerInfo[] {
+  return activeScorers(opts).map(({ s, pass }) => ({
+    id: s.id,
+    description: s.description,
+    level: s.level,
+    unit: s.unit,
+    better: s.better,
+    ...(pass !== undefined ? { pass } : {}),
+    lever: s.lever,
+  }));
+}
+
 /** One scorer's figures for one agent. */
 export interface ScorerLine {
   scorer: string;
@@ -683,6 +707,9 @@ export interface ScorerLine {
   unit: string;
   better: 'higher' | 'lower';
   pass?: number;
+  /** What the scorer measures, and the definition to change when it fails. */
+  description: string;
+  lever: string;
   /** Subjects scored: tasks or runs; for an agent score, what its value is over. */
   n: number;
   /** The mean value over the subjects; the value itself for an agent score. */
@@ -734,6 +761,8 @@ export function summarizeScores(
           unit: s.unit,
           better: s.better,
           ...(pass !== undefined ? { pass } : {}),
+          description: s.description,
+          lever: s.lever,
           n: agentLevel ? list[0]!.n : list.length,
           mean: round(list.reduce((n, r) => n + r.value, 0) / list.length, 2),
           passed: judged.filter((r) => r.pass).length,

@@ -18,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Nav } from '../App';
 import { api, refreshSoon, useData } from '../api';
 import { backlogOf } from '../lib/filters';
@@ -43,10 +43,14 @@ import { identity } from '../lib/identity';
 import { byProvider } from '../lib/usage';
 import type {
   Agent,
+  AgentScores,
   DirectoryItem,
   Machine,
   ProviderUsage,
   RunRecord,
+  ScoreHistory,
+  ScoreSeries,
+  ScoresAnswer,
   Settings,
   Task,
   WaitItem,
@@ -58,6 +62,8 @@ import { Markdown } from '../ui/markdown';
 import { MergeUnderWay } from '../ui/merge';
 import { RefText } from '../ui/refs';
 import { RoleEditor } from '../ui/roles';
+import { historyPath } from '../ui/score';
+import { AgentScoresBlock } from '../ui/score-agent';
 import { ProjectName } from '../ui/project-label';
 
 /** Re-renders every `ms` so elapsed times on live runs keep moving. */
@@ -116,6 +122,15 @@ export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
   const waits = useData<WaitsAnswer>('/api/waits');
   const dir = useData<DirectoryItem[]>('/api/directory');
   const settings = useData<Settings>('/api/settings');
+  const scores = useData<ScoresAnswer>('/api/scores');
+  // The trend covers the last 30 local days; the path stays the same all day.
+  const trendSince = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - 29);
+    return d.toISOString();
+  }, []);
+  const history = useData<ScoreHistory>(historyPath(trendSince));
   const [editing, setEditing] = useState<{ id?: string; runtime?: string; role?: string } | null>(
     null,
   );
@@ -147,9 +162,13 @@ export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
   const runtimes = settings.data?.opsd.runtimes ?? {};
   const now = useNow(10_000);
   const live = runs.data ?? [];
-  // Agents with a live run but no role file still show up.
+  // Agents with a live run or with scores but no role file still show up.
   const ids = [
-    ...new Set([...(agents.data ?? []).map((a) => a.id), ...live.map((r) => r.agent)]),
+    ...new Set([
+      ...(agents.data ?? []).map((a) => a.id),
+      ...live.map((r) => r.agent),
+      ...(scores.data?.agents ?? []).map((a) => a.agent),
+    ]),
   ].sort();
   const groups = new Map<string, string[]>();
   for (const id of ids) {
@@ -334,6 +353,9 @@ export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
                         id={id}
                         runs={live.filter((r) => r.agent === id)}
                         backlog={backlogOf(id, tasks.data ?? [])}
+                        scores={scores.data?.agents?.find((a) => a.agent === id)}
+                        history={history.data?.series}
+                        bucket={history.data?.bucket ?? 'day'}
                         nav={nav}
                         now={now}
                         config={settings.data ? (agentCfg[id] ?? {}) : undefined}
@@ -659,6 +681,10 @@ function AgentCard(props: {
   id: string;
   runs: RunRecord[];
   backlog: Task[];
+  /** Its scores over all time, and each scorer's trend; undefined until they load. */
+  scores?: AgentScores;
+  history?: ScoreSeries[];
+  bucket: 'hour' | 'day';
   nav: Nav;
   now: number;
   /** The agent's `swarmupd.agents.<id>` settings; undefined until Settings loads. */
@@ -858,6 +884,13 @@ function AgentCard(props: {
           {backlog.length > 4 && <span className="text-fg-4">+{backlog.length - 4}</span>}
         </div>
       )}
+
+      <AgentScoresBlock
+        scores={props.scores}
+        history={props.history}
+        bucket={props.bucket}
+        nav={nav}
+      />
 
       {runs.length > 0 && (
         <div className="relative mt-3 flex flex-col gap-2">

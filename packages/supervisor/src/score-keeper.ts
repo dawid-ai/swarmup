@@ -3,7 +3,15 @@ import type { Workspace } from '@swarmup/core';
 import type { OrientationStats } from './orientation.js';
 import { ReportEvents } from './report.js';
 import type { RunRecord } from './runs.js';
-import type { OrientationProvider, ScoreResult, ScoreTask, ScorerSetting } from './scores.js';
+import type { AgentScoreRow, HistoryOptions, ScoreSeries } from './score-history.js';
+import { scoreHistory } from './score-history.js';
+import type {
+  OrientationProvider,
+  ScoreResult,
+  ScoreTask,
+  ScorerInfo,
+  ScorerSetting,
+} from './scores.js';
 import { computeScores } from './scores.js';
 
 /** The tasks of `ws`, archived ones too, with their events, for {@link computeScores}. */
@@ -47,6 +55,24 @@ export interface ScoreDb {
   ): void;
   /** The latest row of each scorer, subject and agent that still has a score. */
   latestScores(): StoredScore[];
+  /** Rows of agent-level scores in a window, with the last one before it. See `StateDb`. */
+  agentScoreHistory?(opts: {
+    since: string;
+    until: string;
+    agent?: string;
+    scorer?: string;
+  }): AgentScoreRow[];
+}
+
+/** A run's orientation for the Runs view: tool calls before its first edit and what it read. */
+export interface RunOrientation {
+  /** Tool calls before the first edit; every tool call of a run with no edit. */
+  calls: number;
+  /** Share of the run's tool-result bytes read before its first edit, 0 to 1. */
+  share: number;
+  edited: boolean;
+  /** Whether `calls` meets the `orientation` threshold; absent for a run with no edit. */
+  pass?: boolean;
 }
 
 const keyOf = (r: Pick<ScoreResult, 'scorer' | 'subject' | 'agent'>): string =>
@@ -90,6 +116,64 @@ export class ScoreKeeper {
   results(): ScoreResult[] {
     this.load();
     return [...this.latest.values()].map((s) => s.result);
+  }
+
+  /**
+   * The orientation of an ended run: its kept score, else the figures read from its log (a run
+   * with no edit has no score). Null when the log was never read or held no tool call.
+   */
+  orientation(run: Pick<RunRecord, 'id' | 'agent'>): RunOrientation | null {
+    this.load();
+    const kept = this.latest.get(
+      keyOf({ scorer: 'orientation', subject: run.id, agent: run.agent }),
+    );
+    if (kept) {
+      const r = kept.result;
+      return {
+        calls: r.value,
+        share: r.extra?.share ?? 0,
+        edited: true,
+        ...(r.pass !== undefined ? { pass: r.pass } : {}),
+      };
+    }
+    const s = this.orientations.get(run.id);
+    if (!s) return null;
+    const share = s.resultBytes
+      ? Math.round((s.resultBytesBefore / s.resultBytes) * 1000) / 1000
+      : 0;
+    return { calls: s.toolCalls, share, edited: s.edited };
+  }
+
+  /**
+   * Each agent's trend per scorer in a window: task and run scores from the kept scores, agent
+   * scores from their rows in `state.db` (only the kept value without one). See `scoreHistory`.
+   */
+  history(scorers: ScorerInfo[], opts: HistoryOptions): ScoreSeries[] {
+    this.load();
+    const results = [...this.latest.values()].map((s) => s.result);
+    let rows: AgentScoreRow[] | null = null;
+    if (this.db?.agentScoreHistory) {
+      try {
+        rows = this.db.agentScoreHistory({
+          since: new Date(opts.from).toISOString(),
+          until: new Date(opts.to).toISOString(),
+          ...(opts.agent ? { agent: opts.agent } : {}),
+          ...(opts.scorer ? { scorer: opts.scorer } : {}),
+        });
+      } catch {
+        // An unreadable table falls back to the kept values.
+      }
+    }
+    rows ??= [...this.latest.values()]
+      .filter((s) => s.result.level === 'agent')
+      .map((s) => ({
+        agent: s.result.agent,
+        scorer: s.result.scorer,
+        computed_at: s.computed_at,
+        value: s.result.value,
+        n: s.result.n,
+      }));
+    return scoreHistory(results, rows, scorers, opts);
   }
 
   private load(): void {

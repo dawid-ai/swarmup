@@ -235,6 +235,34 @@ export interface RunRecord {
   review?: boolean;
   parent?: string;
   chat?: boolean;
+  /** The session this run resumed after a `changes` verdict, and the run it came from (W3). */
+  resumed?: string;
+  resumed_from?: string;
+  /** The definitions, model and effort the run started with (W5 run stamps). */
+  defs?: RunDefs;
+  model?: string;
+  effort?: string;
+}
+
+/** Which definitions a run started with: `RunRecord.defs`. */
+export interface RunDefs {
+  root: string;
+  /** `d:` and a SHA-256. */
+  hash: string;
+  /** The last store commit that changed a definition file, when they are all committed. */
+  commit?: string;
+  dirty?: boolean;
+  /** Machine settings that overrode git for the run, such as `runtimes.claude.model`. */
+  local?: string[];
+}
+
+/** A run's orientation from the score keeper: tool calls before its first edit. */
+export interface RunOrientation {
+  calls: number;
+  /** Share of its tool-result bytes read before the first edit, 0 to 1. */
+  share: number;
+  edited: boolean;
+  pass?: boolean;
 }
 
 export type RunFilter = 'all' | 'live' | 'ended' | 'errors';
@@ -251,6 +279,10 @@ export interface RunPage {
   total?: number;
   live?: number;
   pick: RunRecord | null;
+  /** Models of the runs in the range; absent from an older swarmupd. */
+  models?: string[];
+  /** Orientation of ended runs on the page, by run id; absent from an older swarmupd. */
+  orientation?: Record<string, RunOrientation>;
 }
 
 /** Something a chat turn changed in SwarmUp. */
@@ -902,6 +934,9 @@ export interface ScorerLine {
   unit: string;
   better: 'higher' | 'lower';
   pass?: number;
+  /** What it measures and what to change when it fails; absent from an older swarmupd. */
+  description?: string;
+  lever?: string;
   n: number;
   mean: number;
   passed: number;
@@ -912,6 +947,59 @@ export interface ScorerLine {
 export interface AgentScores {
   agent: string;
   scorers: ScorerLine[];
+}
+
+/** A scorer as `GET /api/scores` describes it in `scorers`. */
+export interface ScorerInfo {
+  id: string;
+  description: string;
+  level: 'run' | 'task' | 'agent';
+  unit: string;
+  better: 'higher' | 'lower';
+  pass?: number;
+  lever: string;
+}
+
+/** One score of one task, run or agent, with its evidence. */
+export interface ScoreResult {
+  scorer: string;
+  level: 'run' | 'task' | 'agent';
+  subject: string;
+  agent: string;
+  value: number;
+  unit: string;
+  pass?: boolean;
+  n: number;
+  evidence: string[];
+  at: string;
+  extra?: Record<string, number>;
+  note?: string;
+}
+
+/** `GET /api/scores`: per agent, the scorers, and with `task=` that task's scores. */
+export interface ScoresAnswer {
+  agents: AgentScores[];
+  /** Absent from an older swarmupd. */
+  scorers?: ScorerInfo[];
+  results?: ScoreResult[];
+}
+
+/** One scorer's trend for one agent: `GET /api/scores/history`. */
+export interface ScoreSeries {
+  agent: string;
+  scorer: string;
+  level: 'run' | 'task' | 'agent';
+  unit: string;
+  better: 'higher' | 'lower';
+  pass?: number;
+  points: Array<{ at: string; value: number; n: number }>;
+}
+
+export interface ScoreHistory {
+  since: string;
+  until: string;
+  bucket: 'hour' | 'day';
+  series: ScoreSeries[];
 }
 
 /** `GET /api/machines`: each machine's last presence record. */

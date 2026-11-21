@@ -28,6 +28,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'search',
     'activity',
     'report',
+    // Scores (W4): per agent and per task, and each agent's trend per scorer.
+    'scores',
+    'scores/history',
     'timeline',
     'machines',
     'doctor',
