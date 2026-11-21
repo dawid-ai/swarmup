@@ -6,7 +6,7 @@
 - `cli` — entry — The swarmup command: one COMMANDS table of subcommands over core and swarmupd, used by agents and people
 - `core` — area — @swarmup/core: the task store library every other package uses; sync file I/O, no daemon state
 - `core/adopt` — module — swarmup adopt, new-project and init; repo survey, project templates and the role templates they copy
-- `core/fold` — flow — Folds a task's events in ULID order into its state; the state machine, leases, milestones and plans
+- `core/fold` — flow — Folds a task's events in ULID order into its state; the state machine, leases, milestones, plans and criteria
 - `core/knowledge` — module — Learn notes (kb/), their reads and prompt matching, and the decision log (decisions/) with its imports
 - `core/map` — module — The project map: parse .swarmup/map/ nodes, check coverage of a change, search, _INDEX.md and prompt block
 - `core/repeats` — module — Repeating tasks; templates in repeats/ that create a task on a schedule or when another task closes
@@ -25,6 +25,6 @@
 - `supervisor/merge` — flow — Merges approved work into the base; rebase, path-scoped checks, batches, fast-forward, build and branch pushes
 - `supervisor/prompts` — module — Runtime invocations and run prompts; work, review, question and check prompts, tools and deny lists
 - `supervisor/runs` — module — A run's process, records, environment, task worktrees, leftovers commits and process ledger
-- `supervisor/stats` — module — swarmup report and wrapped; throughput, loop figures, run costs and the Wrapped card sequence
+- `supervisor/stats` — module — swarmup report, scores and wrapped; throughput, loop figures, run costs, scorers and the Wrapped card sequence
 - `supervisor/wake` — flow — Wake planning, launch and limits; which agent runs which task where, usage pauses, sign-in and stuck runs
 - `tooling` — area — Workspace build, lint, format, typecheck, tests and CI configuration, plus dev scripts

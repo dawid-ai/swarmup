@@ -1,10 +1,11 @@
 ---
 kind: flow
-summary: Folds a task's events in ULID order into its state; the state machine, leases, milestones and plans
+summary: Folds a task's events in ULID order into its state; the state machine, leases, milestones, plans and criteria
 covers:
   - packages/core/src/fold.ts
   - packages/core/src/plan.ts
-links: [store, workspace, /docs]
+  - packages/core/src/criteria.ts
+links: [store, workspace, /supervisor/merge, /docs]
 ---
 
 # Fold
@@ -23,6 +24,9 @@ Computes a task's current state from its event files, the same way on every mach
 - Leases and dependencies need the clock or other tasks, so they apply at read time:
   `claimed(stale)`, `in-progress(stale)`, `todo(unblocked)`.
 - `plan.ts` reads milestone plans (proposal, change, subtask, fix) and the effective plan.
+- `criteria.ts` parses typed `done_when` criteria (a plain string stays `prose`), folds
+  per-criterion results and runs the `command` and `check` kinds for `swarmup criteria check`
+  and the merge.
 
 ## Invariants
 

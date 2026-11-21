@@ -1,10 +1,13 @@
 ---
 kind: module
-summary: swarmup report and wrapped; throughput, loop figures, run costs and the Wrapped card sequence
+summary: swarmup report, scores and wrapped; throughput, loop figures, run costs, scorers and the Wrapped card sequence
 covers:
   - packages/supervisor/src/report.ts
   - packages/supervisor/src/loops.ts
   - packages/supervisor/src/wrapped.ts
+  - packages/supervisor/src/scores.ts
+  - packages/supervisor/src/score-keeper.ts
+  - packages/supervisor/src/orientation.ts
 links: [/core/search, /desktop/replay]
 ---
 
@@ -22,6 +25,9 @@ cards.
   range.
 - `loops.ts` adds loop figures: author and reviewer pairs, cost of a merged task over its runs,
   why runs stopped, how long people took to answer.
+- `scores.ts` holds the deterministic scorers over task events and run records, at run, task
+  and agent level; `score-keeper.ts` reads the tasks and keeps the scores in `state.db`, and
+  `orientation.ts` parses how much a run read before its first edit from its run log.
 - `wrapped.ts` turns the report and the replay timeline of one window into a short card
   sequence.
 
