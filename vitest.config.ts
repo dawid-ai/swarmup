@@ -27,6 +27,10 @@ export default defineConfig({
     // check, for no gain in wall time. So at most 4 workers, and half the cores on smaller machines.
     // `--maxWorkers=N` on the command line still overrides it.
     maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
+    // The slowest file sets the wall time, so keep each git-heavy file under about 8 minutes of
+    // tests: supervisor.test.ts and merge.test.ts each ran 25-28 minutes in merge checks and were
+    // split into supervisor-*.test.ts and merge-*.test.ts (AO-0397).
+    globalSetup: ['./vitest.global-setup.ts'],
     setupFiles: ['./vitest.setup.ts'],
   },
 });
