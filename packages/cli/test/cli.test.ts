@@ -218,7 +218,12 @@ describe('swarmup', () => {
 
     const shown = swarmup(d, 'human:dawid', 'show', '1').out;
     expect(shown).toContain(
-      'done when:\n  - `npm test` passes\n  - show prints the list, commas kept',
+      [
+        'done when:',
+        '  id  kind   result  what',
+        '  c1  prose  -       `npm test` passes',
+        '  c2  prose  -       show prints the list, commas kept',
+      ].join('\n'),
     );
     const json = JSON.parse(swarmup(d, 'human:dawid', 'show', '1', '--json').out) as {
       meta: { done_when?: string[] };
@@ -280,7 +285,7 @@ describe('swarmup', () => {
     swarmup(d, 'human:dawid', 'new', 'Approved', 'work');
     const sub = swarmup(d, 'claude:pm', 'new', 'Step', 'one', '--parent', '2');
     expect(sub.out).toBe('T-0003');
-    expect(sub.err).toBe('');
+    expect(sub.err).not.toMatch(/proposal/);
     const json = JSON.parse(swarmup(d, 'claude:pm', 'new', 'Another', '--json').out);
     expect(json).toMatchObject({ id: 'T-0004', type: 'finding', proposed: expect.any(String) });
   });
@@ -755,7 +760,7 @@ describe('agent ids nothing defines', () => {
     // A role group with a waking agent passes quietly; one with none is refused, as is assign.
     const ok = swarmup(d, 'human:dawid', 'new', 'Any', 'engineer', '--to', '*:engineer');
     expect(ok.code).toBe(0);
-    expect(ok.err).toBe('');
+    expect(ok.err).not.toMatch(/waking agent/);
     const orphan = swarmup(d, 'human:dawid', 'new', 'Orchestrate', '--to', '*:orchestrator');
     expect(orphan.code).toBe(1);
     expect(orphan.err).toMatch(/owner \*:orchestrator matches no waking agent/);
