@@ -31,6 +31,7 @@ What people and agents read to use and change SwarmUp. The website builds its do
 - `docs/protocol.md`: ids, the state machine, commands, permissions, events, sync, decisions.
 - `docs/supervisor.md`: swarmupd runs, prompts, limits, config, chat, merging, pushing, API.
 - `docs/desktop.md`: the app. `docs/map.md`: the project map format and commands.
+  `docs/benchmarks.md`: benchmark sets, hidden tests, `swarmup bench run|compare`.
 - `skills/swarmup/SKILL.md`: the skill agents load to work the queue; `.agents/` and
   `.claude/skills/swarmup` are copies for Codex and Claude Code in this repo.
 - `AGENTS.md`: rules for agents in this repo; `CLAUDE.md` points to it.

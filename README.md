@@ -134,6 +134,8 @@ The commands work the same in PowerShell, Command Prompt and bash.
 [docs/protocol.md](docs/protocol.md); swarmupd is in [docs/supervisor.md](docs/supervisor.md) and the
 app in [docs/desktop.md](docs/desktop.md). The project map, which tells agents what each part of a
 project is for, is in [docs/map.md](docs/map.md).
+Benchmarks, which replay real tasks against an agent configuration and score the results, are in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## How data is stored
 
