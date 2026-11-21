@@ -6,6 +6,12 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.15 (2026-11-21)
+
+### Fixed
+
+- `swarmup map --file` reads a Windows-style path (`..\docs\guide.md`) the same way on Linux and macOS.
+
 ## 0.3.0-beta.14 (2026-11-21)
 
 ### Added

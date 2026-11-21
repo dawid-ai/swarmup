@@ -3,7 +3,7 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
-## v0.3.0-beta.14 (2026-11-21)
+## v0.3.0-beta.15 (2026-11-21)
 
 - **Every task can say what done means.** A task's **Done when** list can now hold checks, not
   just sentences: a command that must pass, a file or pattern that must exist, a word count, links
