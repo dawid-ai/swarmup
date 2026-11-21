@@ -239,9 +239,22 @@ describe('timeline path and allow list', () => {
       '/api/timeline?days=7&clip=30&root=agent%20ops&project=v2',
     );
     expect(timelinePath({ ...base, custom: true })).toBeNull();
+    const local = (y: number, m: number, d: number) =>
+      encodeURIComponent(new Date(y, m - 1, d).toISOString());
+    // A custom window runs from local midnight of From to local midnight after To.
     expect(timelinePath({ ...base, custom: true, from: '2026-11-01', to: '2026-11-03' })).toBe(
-      '/api/timeline?from=2026-11-01&to=2026-11-03&clip=30',
+      `/api/timeline?from=${local(2026, 11, 1)}&to=${local(2026, 11, 4)}&clip=30`,
     );
+    expect(timelinePath({ ...base, custom: true, from: '2026-11-01' })).toBe(
+      `/api/timeline?from=${local(2026, 11, 1)}&clip=30`,
+    );
+    // One day is a whole day; an end before the start asks nothing.
+    expect(timelinePath({ ...base, custom: true, from: '2026-11-03', to: '2026-11-03' })).toBe(
+      `/api/timeline?from=${local(2026, 11, 3)}&to=${local(2026, 11, 4)}&clip=30`,
+    );
+    expect(
+      timelinePath({ ...base, custom: true, from: '2026-11-03', to: '2026-11-02' }),
+    ).toBeNull();
   });
 
   it('lets the page call the timeline route', () => {
@@ -372,6 +385,17 @@ function setRange(input: HTMLInputElement, value: number): void {
   act(() => {
     setter.call(input, String(value));
     input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/** Types a `YYYY-MM-DD` value into the date input with this label. */
+async function typeDate(label: string, value: string): Promise<void> {
+  const input = box.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  expect(input).not.toBeNull();
+  await act(async () => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    set.call(input, value);
+    input!.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
 
@@ -533,6 +557,34 @@ describe('Replay view', () => {
       expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30${query()}`);
     } finally {
       delete window.swarmup;
+    }
+  });
+
+  it('asks for a custom range that includes the whole To day in local time (AO-0405)', async () => {
+    // A pinned clock and a UTC+7 zone, where a bare `to=2026-11-03` would end at 07:00 local
+    // that day and the window would start at 07:00 on From.
+    const tz = process.env.TZ;
+    process.env.TZ = 'Asia/Bangkok';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-21T05:00:00Z'));
+    try {
+      act(() => root!.render(createElement(Replay)));
+      act(() => button('Custom').click());
+      await typeDate('From', '2026-11-01');
+      await typeDate('To', '2026-11-03');
+      expect(paths.at(-1)).toBe(
+        `/api/timeline?from=${encodeURIComponent('2026-10-31T17:00:00.000Z')}` +
+          `&to=${encodeURIComponent('2026-11-03T17:00:00.000Z')}&clip=30${query()}`,
+      );
+      // An end before the start asks nothing and says what to pick.
+      const asked = paths.length;
+      await typeDate('To', '2026-10-30');
+      expect(paths.slice(asked).filter((p) => p.startsWith('/api/timeline'))).toEqual([]);
+      expect(box.textContent).toContain('Pick an end date on or after the start date.');
+    } finally {
+      vi.useRealTimers();
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
     }
   });
 

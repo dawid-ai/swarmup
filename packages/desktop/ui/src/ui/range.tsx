@@ -8,6 +8,27 @@ export const RANGES: Array<[number, string]> = [
   [90, '90 days'],
 ];
 
+/** A `YYYY-MM-DD` date at local midnight, or null when it is not one. */
+function localDay(date: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/**
+ * A custom range's **From** and **to** dates as ISO times: from the local midnight of `from` to
+ * the local midnight after `to`, so the whole `to` day counts. Without `to`, only `start`: the
+ * range runs up to now. Null without a valid `from` or when it ends before it starts.
+ */
+export function customRange(from: string, to: string): { start: string; end?: string } | null {
+  const start = localDay(from);
+  if (!start) return null;
+  const last = to ? localDay(to) : null;
+  if (!last) return { start: start.toISOString() };
+  const end = new Date(last);
+  end.setDate(end.getDate() + 1);
+  return end > start ? { start: start.toISOString(), end: end.toISOString() } : null;
+}
+
 /** The **Range** buttons of a view header: the presets, then **Custom**. */
 export function RangeButtons(props: {
   days: number;

@@ -36,7 +36,7 @@ import type { WrappedData } from '../replay/scenes/wrapped';
 import { cardFileName, cardTime } from '../replay/scenes/wrapped';
 import type { RootInfo, Settings, Task, Timeline } from '../types';
 import { useProjectLabel } from '../ui/project-label';
-import { DateInputs, RangeButtons } from '../ui/range';
+import { DateInputs, RangeButtons, customRange } from '../ui/range';
 
 /** A choice of the **Project** picker: a root of the sidebar, or one project label inside it. */
 export interface ProjectChoice {
@@ -100,11 +100,14 @@ export function timelinePath(opts: {
   /** The scene's extra query, such as `wrapped=1`. */
   query?: string;
 }): string | null {
-  const window = opts.custom
-    ? opts.from
-      ? `from=${q(opts.from)}${opts.to ? `&to=${q(opts.to)}` : ''}`
-      : null
-    : `days=${opts.days}`;
+  // A custom window goes as local-midnight ISO times: a bare date would be UTC midnight to
+  // swarmupd, which drops the To day and shifts the window by the local offset.
+  const range = opts.custom ? customRange(opts.from, opts.to) : null;
+  const window = !opts.custom
+    ? `days=${opts.days}`
+    : range
+      ? `from=${q(range.start)}${range.end ? `&to=${q(range.end)}` : ''}`
+      : null;
   if (!window) return null;
   const only = `${opts.root ? `&root=${q(opts.root)}` : ''}${opts.project ? `&project=${q(opts.project)}` : ''}`;
   return `/api/timeline?${window}&clip=${opts.clip}${only}${opts.query ? `&${opts.query}` : ''}`;
@@ -583,6 +586,9 @@ export function Replay({ record = recordScene, gif = recordGifScene }: ReplayPro
         <ErrorLine error={error} />
         {custom && !from && (
           <div className="text-xs text-fg-4">Pick a start date; leave the end empty for now.</div>
+        )}
+        {custom && from && !path && (
+          <div className="text-xs text-fg-4">Pick an end date on or after the start date.</div>
         )}
         {empty && (
           <Empty
