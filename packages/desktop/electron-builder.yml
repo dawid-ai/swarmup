@@ -24,6 +24,10 @@ extraResources:
     to: path.ps1
   - from: build/shortcuts.ps1
     to: shortcuts.ps1
+  # The core templates (swarm.yaml, roles, people). The bundles in resources/app read them from
+  # `../templates` (TEMPLATES_DIR), that is resources/templates, for Create swarm.yaml and init.
+  - from: ../core/templates
+    to: templates
 win:
   target:
     - nsis
