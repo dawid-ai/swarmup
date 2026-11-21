@@ -15,6 +15,7 @@ import { Checkout, leftoverBranch } from './checkout.js';
 import { StoredMap, StoredSet } from './state-db.js';
 import type { MergeAttempt, MergeCount, MergeOutcome } from './state-db.js';
 import { MERGE_CONFLICT } from './merge-conflict.js';
+import { checksFor } from './merge-checks.js';
 import type { MergeConfig } from './config.js';
 import type { CommandResult, CommandStep, MergeSource } from './merge.js';
 import {
@@ -29,8 +30,8 @@ import {
   opsdCodeChanges,
   pickMergeSource,
   reviewCommits,
-  reviewSources,
 } from './merge.js';
+import { reviewSourcesOf, storeReview, type ReviewText } from '@swarmup/core';
 import { gitError } from './push.js';
 import type { WorktreeEntry } from './worktree.js';
 import { parseWorktreeList, taskIdOfWorktree } from './worktree.js';
@@ -257,7 +258,7 @@ export class Merger {
       const id = v.meta.id;
       const named =
         !before &&
-        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSources(e.body).named);
+        ws.showEvents(ref).events.some((e) => e.type === 'review' && !!reviewSourcesOf(e).named);
       if (named) {
         this.mergeNote(
           ref,
@@ -521,22 +522,29 @@ export class Merger {
       .filter((e) => e.type === 'review');
     const review = reviews[0];
     if (!review) return null;
-    const root = ws.resolve(ref).root;
-    const top = cfg.checkout ? resolve(cfg.checkout) : this.sup.codeTopOf(root);
-    if (!top) return null;
-    const repo = new MergeRepo(top, '', [], this.sup.commandEnv());
+    const { root, id } = ws.resolve(ref);
     // A run may ask for review before it ends, then leave files that its sandbox could not
     // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
     // the review. The approval covers the review plus that note, so it is the source to merge;
     // the branch named by the earlier review lacks the files (AO-0356).
     const committed = committedRunSource(events);
-    const src =
-      committed ??
-      (await this.pickSource(
-        repo,
-        reviews.map((e) => e.body),
-        () => this.mergeHalted(),
-      ));
+    // A review sent from the task store's own repo is store work (AO-0384): `swarmup sync` has
+    // pushed it, and the code repo has nothing of it, so nothing is merged and no finding says
+    // that the work is missing from the base. The tasks blocked on it go on.
+    if (!committed && storeReview(review)) {
+      const storeAt = review.commit ? ` (store commit ${short(review.commit)})` : '';
+      this.mergeNothing(
+        ref,
+        `swarmupd merges nothing for ${id}: nothing to merge: store work, synced. ` +
+          `Its approved review was sent from the task store's repo${storeAt}, which \`swarmup sync\` ` +
+          'pushes. The tasks blocked on it go on.',
+      );
+      return null;
+    }
+    const top = cfg.checkout ? resolve(cfg.checkout) : this.sup.codeTopOf(root);
+    if (!top) return null;
+    const repo = new MergeRepo(top, '', [], this.sup.commandEnv());
+    const src = committed ?? (await this.pickSource(repo, reviews, () => this.mergeHalted()));
     if (!src || src === 'halted') return null;
     const what = src.commit
       ? `${src.commit} on branch ${src.branch}`
@@ -552,6 +560,7 @@ export class Merger {
       human: root.config.human,
       root: root.name,
       review: review.body,
+      named: !!reviewSourcesOf(review).named,
     };
   }
 
@@ -563,7 +572,7 @@ export class Merger {
    */
   async pickSource(
     repo: MergeRepo,
-    texts: string[],
+    texts: (string | ReviewText)[],
     halted: () => boolean,
   ): Promise<MergeSource | null | 'halted'> {
     const commits = new Set<string>();
@@ -853,6 +862,7 @@ export class Merger {
     const timeout = mergeTimeout(cfg);
     let checked: string | null = null;
     let checks: CommandResult[] = [];
+    let skipped: string[] = [];
     let merged: { head: string; onto: string } | null = null;
     let refused = '';
     let waited = false;
@@ -929,9 +939,18 @@ export class Merger {
         // the time (AO-0385). A machine busy with agents' own test runs is what usually slows them.
         const retry = this.mergeTimedOut.has(ref);
         if (retry) this.mergeQuiet = ref;
+        // Only the checks whose paths the work changes run, both sides of a rename (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, r.head));
+        skipped = picked.skipped;
+        if (skipped.length > 0) {
+          this.mergeLine(
+            ref,
+            `skips checks for paths it does not change: ${skipped.map((c) => `\`${c}\``).join(', ')}`,
+          );
+        }
         try {
           checks = await runner.runAll(
-            cfg.checks ?? [],
+            picked.run,
             repo.worktree,
             retry ? timeout * 2 : timeout,
             (s) => this.mergeCommand('check', s),
@@ -952,8 +971,9 @@ export class Merger {
           );
           return 'again';
         }
-        // A check that hangs may be the machine, not the code: merged again once (AO-0172).
-        if (failed?.timedOut && !this.mergeTimedOut.has(ref)) {
+        // A check that hangs may be the machine, not the code: merged again once (AO-0172). One
+        // that printed a failed test before the timeout is the code, so it goes back (AO-0385).
+        if (failed?.timedOut && !failed.failedTest && !this.mergeTimedOut.has(ref)) {
           this.mergeTimedOut.add(ref);
           this.sup.emit(
             'warn',
@@ -963,7 +983,7 @@ export class Merger {
         }
         // Timed out again, with the machine to itself: a slow suite or a busy PC, which the author
         // cannot change, so the work stays approved and the human hears of it (AO-0385).
-        if (failed?.timedOut) {
+        if (failed?.timedOut && !failed.failedTest) {
           this.mergeTimeoutNote(ref, job, failed.command, failed.output, timeout * 2);
           return;
         }
@@ -972,7 +992,7 @@ export class Merger {
             ref,
             job.what,
             job.author,
-            `\`${failed.command}\` failed (${failed.why}) on it rebased onto ${cfg.base} (${short(onto)})`,
+            `\`${failed.command}\` failed (${failed.why}${failed.failedTest ? ', after a failed test' : ''}) on it rebased onto ${cfg.base} (${short(onto)})`,
             failed.output,
           );
           return;
@@ -1033,9 +1053,12 @@ export class Merger {
     const installDirs = lockfileDirs(changed);
     const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
     const passed =
-      checks.length > 0
+      (checks.length > 0
         ? ` Checks passed: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
+        : '') +
+      (skipped.length > 0
+        ? ` Not run, the work changes none of their paths: ${skipped.map((c) => `\`${c}\``).join(', ')}.`
+        : '');
     // Saved before the build, so a swarmupd that stops during it leaves the build to the next one.
     const pending: PendingBuild = {
       ref,
@@ -1227,6 +1250,7 @@ export class Merger {
     const timeout = mergeTimeout(cfg);
     let checked: string | null = null;
     let checks: CommandResult[] = [];
+    let skipped: string[] = [];
     let refused = '';
     let waited = false;
     let merged: { onto: string; head: string; heads: string[] } | null = null;
@@ -1277,8 +1301,18 @@ export class Merger {
           lead,
           `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
         );
+        // Only the checks whose paths a task of the batch changes run, both sides of a rename
+        // (AO-0382).
+        const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, head));
+        skipped = picked.skipped;
+        if (skipped.length > 0) {
+          this.mergeLine(
+            lead,
+            `skips checks for paths the batch does not change: ${skipped.map((c) => `\`${c}\``).join(', ')}`,
+          );
+        }
         checks = await runner.runAll(
-          cfg.checks ?? [],
+          picked.run,
           repo.worktree,
           timeout,
           (s) => this.mergeCommand('check', s),
@@ -1367,9 +1401,12 @@ export class Merger {
     const installDirs = lockfileDirs(changed);
     const opsdCode = isEngineRepo(top) ? opsdCodeChanges(changed) : [];
     const passed =
-      checks.length > 0
+      (checks.length > 0
         ? ` Checks passed once for the batch: ${checks.map((c) => `\`${c.command}\``).join(', ')}.`
-        : '';
+        : '') +
+      (skipped.length > 0
+        ? ` Not run, the batch changes none of their paths: ${skipped.map((c) => `\`${c}\``).join(', ')}.`
+        : '');
     const lastId = ids.at(-1)!;
     const others = (n: number): string => ids.filter((_, i) => i !== n).join(', ');
     const batch = `${cfg.base} moved from ${short(onto)} to ${short(head)} (${changed.length} file(s))`;
@@ -1429,8 +1466,15 @@ export class Merger {
     const steps = cfg.build ?? [];
     const dirs = p.install === true ? ['.'] : (p.install ?? []);
     const install = steps.length > 0 ? installSteps(cfg.install, p.top, dirs) : [];
-    let build = await runner.runAll([...install, ...steps], p.top, timeout, (s) =>
-      this.mergeCommand('build', s),
+    // The installs run without an inherited `NODE_ENV` or dependency-type setting, which would
+    // make the next plain install in the checkout purge `node_modules` (AO-0391).
+    let build = await runner.runAll(
+      [...install, ...steps],
+      p.top,
+      timeout,
+      (s) => this.mergeCommand('build', s),
+      undefined,
+      install.length,
     );
     let installs = install.length;
     // An install step with nothing to do leaves no result (AO-0229), so a result's place in the
@@ -1455,8 +1499,13 @@ export class Merger {
         'warn',
         `merge of ${p.ref}: build \`${broke.command}\` failed (${broke.why}) in ${p.top}; swarmupd installs the dependencies there and builds once more`,
       );
-      build = await runner.runAll([...again, ...steps], p.top, timeout, (s) =>
-        this.mergeCommand('build', s),
+      build = await runner.runAll(
+        [...again, ...steps],
+        p.top,
+        timeout,
+        (s) => this.mergeCommand('build', s),
+        undefined,
+        again.length,
       );
       installs = again.length;
       broke = build.find((c) => !c.ok);
@@ -1572,7 +1621,7 @@ export class Merger {
     source: string,
     onto: string,
   ): Promise<string[]> {
-    if (reviewSources(job.review).named) return [];
+    if (job.named) return [];
     const lacks: string[] = [];
     for (const sha of reviewCommits(job.review)) {
       const commit = await repo.commit(sha);

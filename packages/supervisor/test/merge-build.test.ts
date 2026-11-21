@@ -69,6 +69,62 @@ describe('merging approved work', () => {
     ).toHaveLength(1);
   });
 
+  it('runs no check whose paths a Markdown-only change misses, and says so (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [{ run: 'node check.mjs', paths: ['**', '!**/*.md'] }],
+    });
+    // `code.txt` stays as it is: the work changes a Markdown file only.
+    const commit = s.branch('one\n', { 'docs/guide.md': '# Guide\n' });
+    s.approve(commit);
+    await s.merged();
+
+    const tip = git(s.repo, 'rev-parse', 'main');
+    expect(git(s.repo, 'log', '-1', '--format=%s', tip)).toBe('Change the code');
+    expect(existsSync(join(s.state, 'checks.txt'))).toBe(false);
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge', commit: tip });
+    expect(e.body).not.toContain('Checks passed');
+    expect(e.body).toContain('Not run, the work changes none of their paths: `node check.mjs`.');
+  });
+
+  it('runs a check when the work renames code into a path the check skips (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [{ run: 'node check.mjs', paths: ['**', '!**/*.md'] }],
+    });
+    const wt = join(temp(), 'wt');
+    git(s.repo, 'worktree', 'add', '-q', '-b', 'feature', wt, 'main');
+    mkdirSync(join(wt, 'docs'));
+    // A pure rename: git's rename detection names only `docs/held.md`, which the check skips.
+    git(wt, 'mv', 'held.mjs', 'docs/held.md');
+    git(wt, 'commit', '-qm', 'Move the code');
+    s.approve(git(wt, 'rev-parse', 'HEAD'));
+    await s.merged();
+
+    expect(text(join(s.state, 'checks.txt'))).toBe('x');
+    const e = s.last();
+    expect(e).toMatchObject({ type: 'merge' });
+    expect(e.body).toContain('Checks passed: `node check.mjs`.');
+  });
+
+  it('runs a check whose paths the change reaches (AO-0382)', async () => {
+    const s = mergeSetup({
+      checks: [
+        { run: 'node check.mjs', paths: ['**', '!**/*.md'] },
+        { run: 'node check.mjs --docs', paths: ['**/*.md'] },
+      ],
+    });
+    const commit = s.branch('two\n');
+    s.approve(commit);
+    await s.merged();
+
+    expect(text(join(s.state, 'checks.txt'))).toBe('x');
+    const e = s.last();
+    expect(e.body).toContain('Checks passed: `node check.mjs`.');
+    expect(e.body).toContain(
+      'Not run, the work changes none of their paths: `node check.mjs --docs`.',
+    );
+  });
+
   it("runs the checks without the installed app's swarmupd entry and Electron host flags (AO-0235)", async () => {
     const out = join(temp(), 'env.json');
     // What swarmupd has in its environment when the installed desktop app hosts it.
@@ -617,6 +673,26 @@ describe('merging approved work', () => {
         ? 'shared-electron\nnone\nshared-electron\nnone\n'
         : 'shared-electron\nnone\n',
     );
+  }, 60_000);
+
+  it('runs the install entries without NODE_ENV, and the rest with it (AO-0391)', async () => {
+    const dir = temp();
+    writeFileSync(
+      join(dir, 'env.mjs'),
+      "import { appendFileSync } from 'node:fs';\nappendFileSync('env.txt', process.argv[2] + '=' + (process.env.NODE_ENV ?? 'none') + '\\n');\n",
+    );
+    const base = { ...process.env, NODE_ENV: 'production' };
+    const runner = new CommandRunner(base, { killTree: () => {}, job: false });
+    const results = await runner.runAll(
+      ['node env.mjs install', () => 'node env.mjs repair', 'node env.mjs build'],
+      dir,
+      60_000,
+      undefined,
+      undefined,
+      2,
+    );
+    expect(results.map((r) => r.ok)).toEqual([true, true, true]);
+    expect(text(join(dir, 'env.txt'))).toBe('install=none\nrepair=none\nbuild=production\n');
   }, 60_000);
 
   it('asks a function entry for its command when its turn comes, and skips a null (AO-0229)', async () => {

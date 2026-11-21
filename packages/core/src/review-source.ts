@@ -84,6 +84,38 @@ export function reviewSources(text: string): ReviewSources {
   return named ? { named, loose } : { loose };
 }
 
+/** Which checkout a review request was sent from: the code repo, or the task store's own repo. */
+export type ReviewRepo = 'code' | 'store';
+
+/** A review event as the merge reads it: its text and the source fields `swarmup review` records. */
+export interface ReviewText {
+  body: string;
+  commit?: string;
+  branch?: string;
+  repo?: ReviewRepo;
+}
+
+/** Whether a review event's work is in the task store, so there is no code to merge (AO-0384). */
+export function storeReview(e: ReviewText): boolean {
+  return e.repo === 'store';
+}
+
+/**
+ * What a review event names as the work to merge (AO-0384). `swarmup review` records the HEAD
+ * commit, branch and repo of the checkout it runs in as fields, and those come first: the prose
+ * is the agent's own wording, which the patterns of `reviewSources` miss whenever it phrases the
+ * source its own way (AO-0328 wrote "`98be9579` on store branch `main`"). A review from the task
+ * store names no code at all. Events without the fields, written before AO-0384 or outside a
+ * checkout, fall back to the prose.
+ */
+export function reviewSourcesOf(e: ReviewText): ReviewSources {
+  if (storeReview(e)) return { loose: [] };
+  const prose = reviewSources(e.body);
+  if (!e.commit || !e.branch) return prose;
+  const named = { commit: e.commit.toLowerCase(), branch: e.branch };
+  return { named, loose: prose.loose.filter((b) => b !== named.branch) };
+}
+
 /** A word that says the next one is a commit, with what may stand between the two. */
 const LABEL = /\b(?:commits?|sha|hash|rev|revision)[:=]?\s*[`*_]{0,3}$/i;
 /** What opens code font or bold: an underscore does so only where no word runs into it. */
