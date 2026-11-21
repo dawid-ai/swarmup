@@ -5287,6 +5287,7 @@ describe('what runs leave in the checkout', () => {
   it('starts the first API run in a checkout it has not seen without git on the event loop (AO-0398)', async () => {
     const s = await setupAsync({ mode: 'edit', env: ID });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    // The fake edit run deletes it; without it the run exits 1 and backs off its runtime.
     writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
     await git(s.repo, 'add', '-A');
@@ -5324,6 +5325,7 @@ describe('what runs leave in the checkout', () => {
     let ahead = 0;
     const s = await setupAsync({ mode: 'edit', env: ID, now: () => Date.now() + ahead });
     writeFileSync(join(s.repo, 'tracked.txt'), 'original\n');
+    writeFileSync(join(s.repo, 'gone.txt'), 'deleted by the run\n');
     s.as('human:dawid').newTask({ title: 'Fix the parser', owner: 'fake:engineer' });
     s.as('human:dawid').newTask({ title: 'Next', owner: 'fake:engineer' });
     await git(s.repo, 'add', '-A');
