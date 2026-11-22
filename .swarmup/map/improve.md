@@ -28,6 +28,8 @@ silent edit. Only a person's promote changes a definition file.
   `defsPromote`, `defsReject` and `variants` wrap them with the task events. `defsPromote` checks
   `improvement.requires` (`requiresProblems`) against the benchmark in `proposal.json`, which
   only `opsd:improve` writes (`defsRecordBenchmark`); `--force` overrides and the event says so.
+  Promote keeps each changed file's before and after in `variants/.promoted/<name>.json`, which
+  `defsRollback` (`rollbackPromoted`) puts back.
 - `supervisor/src/improve.ts` `Improver`: `triggerTick` (behind `swarmupd.improve.enabled`, at
   most every `check_hours`) counts each agent's distinct failing task and run scores in
   `max_age_days` and files one `improve` task for the improver; `request` files it on demand from

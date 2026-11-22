@@ -1093,9 +1093,9 @@ retype, park: the id of the recorded decision the event marks; see [Decisions](#
 `session` (run-end: the runtime's session id; run-start: the session the run resumed),
 `defs` (run-start: the short hash of the definitions the run started with, when its task store
 has a `swarm.yaml`; see [docs/definitions.md](definitions.md)), `variant` (run-start: the
-variant of the definitions the run started with; defs-propose, defs-promote, defs-reject: the
-variant proposed, promoted or rejected), `defs_from` and `defs_to` (defs-promote: the short hashes
-before and after; see [Proposals](definitions.md#proposals)), `plan_apply` and `plan_skip` (the markers
+variant of the definitions the run started with; defs-propose, defs-promote, defs-reject,
+defs-rollback: the variant proposed, promoted, rejected or rolled back), `defs_from` and `defs_to`
+(defs-promote, defs-rollback: the short hashes before and after; see [Proposals](definitions.md#proposals)), `plan_apply` and `plan_skip` (the markers
 of a milestone's plan change on one plan item), `done_when` (criteria: the whole new list) and
 `criteria` (verdict, criteria-check, merge: results by criterion id, each
 `{ result: pass|fail|na, score?, evidence?, note? }`), `artifacts` (review: the work the reviewer
@@ -1109,7 +1109,7 @@ milestone `plan-approve`, `plan-amend` and the `plan-reject` of its first propos
 the plan itself from these and from `plan` events, which the `swarmup plan` commands write; see
 [Milestones and plans](#milestones-and-plans)). Other types (`comment`,
 `finding`, `learn`, `run-start`, `run-end`, `merge`, `criteria-check`, `brief`, `defs-propose`,
-`defs-promote`, `defs-reject`, `publish`) are history; the
+`defs-promote`, `defs-reject`, `defs-rollback`, `publish`) are history; the
 fold reads a task's current criteria from `criteria` events and their last results from
 `verdict`, `criteria-check` and `merge` events. Unknown types are kept and
 ignored, so older `swarmup` versions read newer data. swarmupd writes `merge` events, and the `changes`

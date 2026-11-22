@@ -26,8 +26,8 @@ export type Priority = (typeof PRIORITIES)[number];
  * Event types. The fold acts on the ones that change state; the rest (comment, finding, learn,
  * run-start, run-end, merge, brief) are history. The four plan events carry a milestone's plan
  * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
- * results. `defs-propose`, `defs-promote` and `defs-reject` record a change to the definitions
- * proposed as a variant, and what a person did with it (W6). `publish` records that a person
+ * results. `defs-propose`, `defs-promote`, `defs-reject` and `defs-rollback` record a change to the
+ * definitions proposed as a variant, and what a person did with it (W6). `publish` records that a person
  * published the work (W8). Unknown types from newer versions are
  * kept and ignored.
  */
@@ -69,6 +69,7 @@ export const EVENT_TYPES = [
   'defs-propose',
   'defs-promote',
   'defs-reject',
+  'defs-rollback',
   'publish',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -331,10 +332,11 @@ export interface OpsEvent {
   defs?: string;
   /**
    * run-start: the variant of the definitions the run started with (W5). defs-propose,
-   * defs-promote, defs-reject: the variant proposed, promoted or rejected (W6).
+   * defs-promote, defs-reject, defs-rollback: the variant proposed, promoted, rejected or rolled
+   * back (W6).
    */
   variant?: string;
-  /** defs-promote: the short hashes of the store's definitions before and after the promotion. */
+  /** defs-promote, defs-rollback: the short hashes of the store's definitions before and after. */
   defs_from?: string;
   defs_to?: string;
   /**

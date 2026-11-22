@@ -21,10 +21,13 @@ import {
   overlayAgents,
   overlayFrom,
   policyProblems,
+  readPromoted,
   readProposal,
   removeVariant,
   requiresProblems,
+  rollbackPromoted,
   shortHash,
+  writePromoted,
   writeProposal,
   writeVariantFiles,
 } from './defs/index.js';
@@ -4094,13 +4097,88 @@ export class Workspace {
           },
         ]).events;
       }
+      const { files: changed, ...applied } = done;
+      // What `defs rollback` puts back.
+      writePromoted(root.dir, {
+        variant: name,
+        ...(meta?.task ? { task: meta.task } : {}),
+        by: this.requireActor(),
+        at: new Date(this.now()).toISOString(),
+        from: done.from,
+        to: done.to,
+        files: changed,
+      });
       removeVariant(root.dir, name);
       return {
         variant: name,
         root: root.name,
         events,
-        ...done,
+        ...applied,
         ...(meta ? { proposal: meta } : {}),
+      };
+    });
+  }
+
+  /**
+   * `swarmup defs rollback`: a person puts back the definition files the last promote of variant
+   * `name` changed, recorded as a `defs-rollback` event on the proposal's task. A file changed
+   * since the promote needs `force`, since the rollback drops that change.
+   */
+  defsRollback(
+    name: string,
+    message: string,
+    opts: { root?: string; force?: boolean } = {},
+  ): DefsDecisionResult {
+    const actor = this.needPerson('rolls back');
+    if (!message.trim()) throw new OpsError('say why: swarmup defs rollback NAME -m "why"', 2);
+    assertNoSecret(message);
+    checkVariantName(name);
+    const roots = this.roots.filter(
+      (r) => !r.isMirror && (!opts.root || r.name === opts.root) && readPromoted(r.dir, name),
+    );
+    if (roots.length === 0) {
+      throw new OpsError(
+        `no promote of '${name}' is recorded${opts.root ? ` in ${opts.root}` : ''}`,
+        2,
+      );
+    }
+    if (roots.length > 1) {
+      throw new OpsError(
+        `'${name}' was promoted in ${roots.map((r) => r.name).join(' and ')}; pass --root`,
+        2,
+      );
+    }
+    const root = roots[0]!;
+    return root.lock('defs-variants', () => {
+      const done = rollbackPromoted(root.dir, name, { force: opts.force });
+      const at = new Date(this.now()).toISOString();
+      writePromoted(root.dir, { ...done.rec, rolled_back: { by: actor, at } });
+      const files = [...done.written, ...done.removed.map((p) => `${p} (removed)`)];
+      let events: OpsEvent[] = [];
+      if (done.rec.task) {
+        const body = [
+          message.trim(),
+          `Rolled back variant \`${name}\`: ${shortHash(done.from)} -> ${shortHash(done.to)}. ` +
+            `Restored ${files.join(', ') || 'nothing'}.`,
+        ].join('\n\n');
+        events = this.act(done.rec.task, () => [
+          {
+            type: 'defs-rollback',
+            variant: name,
+            defs_from: shortHash(done.from),
+            defs_to: shortHash(done.to),
+            body,
+          },
+        ]).events;
+      }
+      return {
+        variant: name,
+        root: root.name,
+        events,
+        from: done.from,
+        to: done.to,
+        written: done.written,
+        removed: done.removed,
       };
     });
   }

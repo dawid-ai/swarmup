@@ -249,6 +249,11 @@ swarmup defs reject engineer-tests-first -m "Too broad; name the test command in
   so.
 - `defs reject NAME [--root NAME] -m WHY` is for a person only. It records a `defs-reject` event
   with the note on the linked task and removes the folder. The base files don't change.
+- `defs rollback NAME [--root NAME] -m WHY [--force]` is for a person only. It puts back the files
+  the last promote of `NAME` changed, as they were before it, and records a `defs-rollback` event
+  with the note and the hashes on the proposal's task. Promote keeps what it changed in
+  `variants/.promoted/NAME.json`. A file changed after the promote is refused, since the rollback
+  would drop that change, unless you pass `--force`. A promote rolls back once.
 - `defs variants` lists each variant's hash, `proposed` (it has a `proposal.json`) or `draft` (a
   folder made by hand), the linked task, the agents, the files it changes, and **stale** when the
   base moved since the proposal.

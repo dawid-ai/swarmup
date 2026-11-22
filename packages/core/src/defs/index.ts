@@ -55,6 +55,8 @@ export {
 } from './swarm.js';
 export type {
   ImprovementPolicy,
+  PromotedFile,
+  PromotedRecord,
   ProposalBenchmark,
   ProposalMeta,
   VariantFile,
@@ -71,10 +73,14 @@ export {
   listVariants,
   overlayFrom,
   policyProblems,
+  PROMOTED_DIR,
+  readPromoted,
   readProposal,
   removeVariant,
   requiresProblems,
+  rollbackPromoted,
   variantInfo,
+  writePromoted,
   writeProposal,
   writeVariantFiles,
 } from './proposals.js';
