@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
-import type { UserConfig } from '@swarmup/core';
+import type { McpConfig, UserConfig } from '@swarmup/core';
 import {
   checkEffort,
+  checkMcpConfig,
   checkModel,
   daemonSection,
   envVar,
@@ -452,6 +453,8 @@ export interface OpsdConfig {
   bench: BenchConfig;
   judge: JudgeConfig;
   improve: ImproveConfig;
+  /** MCP servers runs may get (W8): `swarmupd.mcp`, with values from `secrets.yml`. */
+  mcp: McpConfig;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -571,6 +574,7 @@ export function opsdConfig(
     bench: checkBench((raw as { bench?: unknown }).bench),
     judge: checkJudge((raw as { judge?: unknown }).judge),
     improve: checkImprove((raw as { improve?: unknown }).improve),
+    mcp: checkMcpConfig((raw as { mcp?: unknown }).mcp),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {

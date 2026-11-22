@@ -27,6 +27,7 @@
 - `release` — flow — Cutting a release; version bump, changelog fragments, UPDATES entry, tag and the release workflow
 - `supervisor` — service — swarmupd: the per-machine service; tick loop, config, state folder, HTTP API, doctor and notifications
 - `supervisor/chat` — service — The desktop Chat with the PM; each message is a read-only Claude run that resumes one session
+- `supervisor/mcp` — flow — MCP servers on roles (W8); server config, secrets.yml, the run grant, the mcp exec proxy and resolve route
 - `supervisor/merge` — flow — Merges approved work into the base; rebase, path-scoped checks, batches, fast-forward, build and branch pushes
 - `supervisor/prompts` — module — Runtime invocations and run prompts; work, review, question and check prompts, run context, resumes, tools, deny lists
 - `supervisor/runs` — module — A run's process, records, environment, task worktrees, leftovers commits and process ledger

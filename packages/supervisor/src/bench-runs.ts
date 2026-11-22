@@ -626,6 +626,14 @@ export class BenchRuns {
 export function benchCli(env: NodeJS.ProcessEnv): string {
   const set = envVar(env, 'BENCH_CLI');
   if (set) return set;
+  return cliEntry(env);
+}
+
+/**
+ * The `swarmup` command's entry file for Node: the installed app's `swarmup.mjs` beside
+ * `swarmupd.mjs`, else the built CLI of this checkout.
+ */
+export function cliEntry(env: NodeJS.ProcessEnv): string {
   const daemon = envVar(env, 'DAEMON_ENTRY');
   if (daemon) return join(dirname(daemon), 'swarmup.mjs');
   const here = fileURLToPath(import.meta.url);

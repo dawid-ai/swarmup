@@ -14,7 +14,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { UserConfig } from '@swarmup/core';
-import { formatProblem, loadDefinitions, userConfigPath, Workspace } from '@swarmup/core';
+import {
+  formatProblem,
+  loadDefinitions,
+  mcpSecretRefs,
+  readSecrets,
+  secretsExposure,
+  secretsPath,
+  userConfigPath,
+  Workspace,
+} from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
 import { opsdConfig } from './config.js';
 import { buildStamp, daemonCall, readDaemon } from './daemon.js';
@@ -516,6 +525,7 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
       set = loadDefinitions(r.dir, {
         machineRuntimes: cfg ? Object.keys(cfg.runtimes) : undefined,
         machineAgents: cfg ? Object.keys(cfg.agents) : undefined,
+        machineMcp: cfg ? Object.keys(cfg.mcp.servers) : undefined,
       });
     } catch (err) {
       add({
@@ -548,6 +558,9 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
         : {}),
     });
   }
+
+  // MCP servers on roles (W8).
+  for (const c of mcpChecks(env, cfg, ws)) add(c);
 
   // User-level skill copies.
   const bundled = opts.skillFile === undefined ? bundledSkillFile() : opts.skillFile;
@@ -654,6 +667,77 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
             detail: `${gb(free)} free`,
           },
     );
+  }
+  return out;
+}
+
+/**
+ * MCP checks (W8): `secrets.yml` readable by others where the system can tell, secrets a server
+ * reads that are not set, and server names role files ask for that this machine does not define.
+ * Never a secret value.
+ */
+export function mcpChecks(
+  env: NodeJS.ProcessEnv,
+  cfg: OpsdConfig | null,
+  ws: Workspace | null,
+  platform: NodeJS.Platform = process.platform,
+): Check[] {
+  const out: Check[] = [];
+  const exposed = secretsExposure(env, platform);
+  if (exposed) {
+    out.push({
+      id: 'mcp:secrets',
+      label: 'MCP secrets',
+      status: 'warn',
+      detail: exposed,
+      fix: `run \`chmod 600 ${secretsPath(env)}\``,
+    });
+  }
+  if (!cfg) return out;
+  let secrets: Record<string, string> = {};
+  try {
+    secrets = readSecrets(env);
+  } catch (err) {
+    out.push({
+      id: 'mcp:secrets',
+      label: 'MCP secrets',
+      status: 'fail',
+      detail: (err as Error).message,
+      fix: 'fix the file by hand, or set the values again in Settings > MCP servers',
+    });
+  }
+  for (const [name, s] of Object.entries(cfg.mcp.servers)) {
+    const unset = mcpSecretRefs(s).filter((k) => secrets[k] === undefined);
+    if (unset.length === 0) continue;
+    out.push({
+      id: `mcp:${name}`,
+      label: `MCP server ${name}`,
+      status: 'warn',
+      detail: `no value for ${unset.join(', ')} in secrets.yml, so runs cannot start it`,
+      fix: 'set the value in Settings > MCP servers',
+    });
+  }
+  let agents: Array<{ id: string; mcp?: string[] }> = [];
+  try {
+    agents = ws?.agents() ?? [];
+  } catch {
+    agents = [];
+  }
+  const asked = new Map<string, string[]>();
+  for (const a of agents) {
+    for (const n of a.mcp ?? []) {
+      if (cfg.mcp.servers[n]) continue;
+      asked.set(n, [...(asked.get(n) ?? []), a.id]);
+    }
+  }
+  for (const [n, ids] of asked) {
+    out.push({
+      id: `mcp-missing:${n}`,
+      label: `MCP server ${n}`,
+      status: 'warn',
+      detail: `${ids.join(', ')} ask for ${n}, which this machine does not define; their runs start without it`,
+      fix: 'add it in Settings > MCP servers, or remove it from the role files',
+    });
   }
   return out;
 }

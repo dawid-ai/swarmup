@@ -405,7 +405,8 @@ fresh.
   `Write` against any data root's `agents/` directory are always denied. A run of a role that does
   not write (`roles.<role>.writes: false`, the default for `qa`, `reviewer` and `orchestrator`)
   gets `Edit`, `Write` and `NotebookEdit` denied as well, even when its role file lists them.
-- Role-file `mcp` fields are preserved metadata; the supervisor does not configure a run from them.
+- A role file's `mcp` names MCP servers its runs may use; a run gets the ones this machine
+  defines and grants it. See [MCP servers](#mcp-servers).
 - Runs inherit swarmupd's environment and act as the human's accounts; task events record which agent
   did what. Codex's sandbox blocks network access and `.git` writes. A runtime's `unset_env` lists
   variables its runs must not see; no default runtime sets one.
@@ -597,6 +598,71 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   `swarmupd.repair_stores: false` to turn the repair off. Temp files older than an hour in
   `.ops/tmp` are left in place and named once in the swarmupd log; set
   `swarmupd.remove_stale_temp: true` to have swarmupd delete them.
+
+### MCP servers
+
+Git names the servers, the machine defines them (W8). A role file lists the MCP servers its runs
+may use in `mcp`; `swarmupd.mcp.servers.<name>` in the user config says how to start each one and
+who may have it, and `secrets.yml` next to the user config holds the values its environment
+reads. **Settings > MCP servers** edits both.
+
+```yaml
+swarmupd:
+  mcp:
+    strict: false # true: every Claude run gets --strict-mcp-config, even with no servers
+    servers:
+      github:
+        command: npx
+        args: [-y, '@modelcontextprotocol/server-github']
+        env:
+          GITHUB_PERSONAL_ACCESS_TOKEN: { secret: GITHUB_PAT } # from secrets.yml
+          GITHUB_TOOLSETS: repos # plain text
+        roots: [swarmup] # granted to runs on tasks of these roots; none: every root
+        agents: [claude:researcher, '*:editor'] # an id, a role, or * for one side; none: all
+        tools: { allow: ['get_*', 'search_*'], deny: [delete_*] } # names or * globs
+      x:
+        command: x-mcp
+        env: { X_TOKEN: { secret: X_TOKEN } }
+        publish: true # for publish adapters only: never granted to a role
+```
+
+```yaml
+# secrets.yml, beside config.yml. Never synced, never in a repo, never returned by the API.
+GITHUB_PAT: github_pat_...
+```
+
+- **The grant.** A run gets the intersection of its role file's `mcp` and the servers the machine
+  defines, minus `publish: true` servers and servers whose `roots` or `agents` leave the run out.
+  A run's root is its task's; a run without a task gets only servers that name no `roots`. The
+  run record keeps the granted names in `mcp`, never a command line or a value of the server.
+- **Missing servers.** A run whose role names a server this machine does not define, or does not
+  grant it, starts without it, and its prompt names each one and why. `swarmup validate` and
+  `swarmup doctor` warn about role `mcp` names the machine does not define; doctor also warns about a secret a server reads that is not set,
+  and about a `secrets.yml` other users can read where the system tells (not on Windows).
+- **The proxy.** A runtime never starts the real server. Each granted server is the command
+  `swarmup mcp exec <name> --run-dir <scratch>` (Node and the CLI's entry file, so no `.cmd` shim
+  is needed). It reads `mcp-token.json` from the run's scratch folder (the run's API token and
+  swarmupd's state folder), fetches the spec from `POST /api/mcp/resolve` with that token, and
+  starts the server with the secret values in the server's environment alone, without the run's
+  token, and with `windowsHide`. It relays stdio, drops the tools the `tools` rules hide from
+  each `tools/list` answer, answers a `tools/call` of such a tool with an error without passing
+  it on, and appends each call to `mcp.log` in the scratch folder: the time, the server, the tool,
+  a SHA-256 of the arguments and whether it was allowed. No argument value is logged.
+- **Claude** runs get `<scratch>/mcp.json` with each granted server as the proxy command,
+  `--mcp-config <scratch>/mcp.json --strict-mcp-config`, and `mcp__<name>` in `--allowedTools`
+  for each server: every tool the proxy lets through is allowed. `--strict-mcp-config` leaves out
+  the servers of your own Claude config for such runs; with `strict: true`, every Claude run gets
+  it.
+- **Codex** runs get `-c mcp_servers.<name>.command=...`, `-c mcp_servers.<name>.args=[...]`
+  and, in the app, `-c mcp_servers.<name>.env={ELECTRON_RUN_AS_NODE='1'}`, with TOML literal
+  strings, which keep Windows backslashes and pass through a `.cmd` runtime (Codex 0.167).
+  `codex exec resume` takes `-c` too, so a resumed run keeps its servers. Codex still loads the
+  servers of your own `~/.codex/config.toml`; `strict` does not change that.
+- Other runtimes get no servers, and their prompt says so. SwarmUp passes no MCP server to the
+  LLM judge of rubric criteria; a Claude judge runs with `--strict-mcp-config` and no config.
+- No secret is an argument, in the run record, in a prompt or in an API answer other than the
+  resolve answer to a granted run. A run still runs as your operating-system user, so this keeps
+  secrets out of what SwarmUp records and shares, not out of reach of a determined run.
 
 ### Processes
 
@@ -1032,6 +1098,10 @@ swarmupd:
     effort: low
     budget_min: 5 # minutes one judgment may take before swarmupd stops it
     at_merge: false # true: judge rubric criteria at merge; spends tokens on every merge that has one
+  mcp: # MCP servers role files may name; values from secrets.yml (see "MCP servers")
+    servers:
+      search:
+        { command: search-mcp, env: { API_KEY: { secret: SEARCH_KEY } }, agents: [researcher] }
 ```
 
 - **Wake:** each tick, swarmupd carries out the wake plan (see "Limits"): one run per review request,
@@ -1622,8 +1692,11 @@ A run token:
 - Acts as the run's agent and run id; swarmupd ignores `as`. A helper run's token cannot change task
   state, like `swarmup` inside the helper.
 - Stops working when the run ends.
-- Cannot change settings, roles, schedules, repeats or root mirroring; test notifications; answer or give
-  verdicts; record a publish; pause, resume or stop swarmupd; or launch runs for another agent.
+- Cannot change settings, roles, schedules, repeats or root mirroring; read or change MCP servers
+  and secrets; test notifications; answer or give verdicts; record a publish; pause, resume or
+  stop swarmupd; or launch runs for another agent.
+- Alone can resolve an MCP server's spec (`POST /api/mcp/resolve`), and only for a server the run
+  was granted; the full token gets 403 there.
 - Can stop only its own run or a direct helper, and can clean up only a direct helper's processes.
   It cannot stop or clean up another run.
 
@@ -1650,6 +1723,12 @@ restart or another human-only action, use `swarmup ask`.
 | `GET /api/tasks`, `GET /api/tasks/:id`                       | tasks (`?all` includes closed and archived), one task with its events                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `GET /api/tasks/:id/artifact?path=P&commit=C`                | one file of the task's work (W8), read off the event loop from the root's code checkout: at `commit`, else at the commit of the newest review that records artifacts, else from the checkout's files. Text comes as `text` with `base` (the file at the merge base with the root's base, `null` text when it is new); an image as a `data` URL (8 MB at most). A path outside the workspace is refused with 400, a missing file or commit is 404                                                                                                                                                         |
 | `POST /api/tasks/:id/published`                              | what `swarmup published` does (W8), for a person only (a run token gets 403): `url`, optional `artifact` (a path in the workspace), `commit` and `message`. Tags the commit (the root's merge base, else `HEAD`) `published/<ID>` off the event loop, writes the `publish` event and runs the post-publish criteria; answers the tag, commit, path, blob, `results` and the `task`                                                                                                                                                                                                                       |
+| `GET /api/mcp`                                               | Settings > MCP servers (W8), for a person only: `strict`, the `servers` with every setting and, for each secret an `env` entry reads, its name and whether it is `set`; the `secrets` names; and per agent whose role file names servers, `asked`, `missing` and `granted` by root. Never a secret value                                                                                                                                                                                                                                                                                                 |
+| `POST /api/mcp/servers`                                      | add a server, or replace the one `previous` names (renaming it): `name` and `server` with the keys of `swarmupd.mcp.servers.<name>`. A person only; answers as `GET /api/mcp`                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `POST /api/mcp/servers/:name/delete`                         | remove a server from the config; its secrets stay in `secrets.yml`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `POST /api/mcp/secrets`                                      | `name` and `value` set or replace one value of `secrets.yml`; `value: null` removes it. A person only; the answer names secrets, never a value                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `POST /api/mcp/strict`                                       | `strict`: true or false                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `POST /api/mcp/resolve`                                      | for a run token only (a person token gets 403): the spec of `name`, a server the run was granted at its start that the machine still grants it (else 403), with `command`, `args`, `env` with secret values filled in, and `tools`. 409 names a secret that is not set. `swarmup mcp exec` calls it                                                                                                                                                                                                                                                                                                      |
 | `GET /api/tasks/:id/diff`                                    | the diff of the commits the task's newest review names, read from the root's code checkout: `source`, `base`, `from`, `to`, `merged`, `commits` and `files` (path, status, counts and each file's hunks). Against where the work left the base branch; after swarmupd merged it, what the base got. Read-only. 404 with the reason when no review names work the repo has                                                                                                                                                                                                                                |
 | `POST /api/tasks`                                            | create a task: `title`, `body`, `to`, `type`, `priority`, `project`, `parent`, `done_when` (a list of checks, or text with one per line); `root` names the data root it goes to (default: the default root), and an unknown name is a 400 that lists the loaded roots                                                                                                                                                                                                                                                                                                                                    |
 | `POST /api/tasks/:id/:action`                                | `comment`, `answer`, `start`, `block`, `review`, `unblock`, `done`, `release`, `reopen`, `park`, `assign`, `priority`, `retype` (`type`; optional `to`, `priority` and `answer` land in the same write), `verdict`, `delegate`                                                                                                                                                                                                                                                                                                                                                                           |

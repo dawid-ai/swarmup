@@ -23,6 +23,7 @@ export * from './kb-reads.js';
 export * from './index-lock.js';
 export * from './lock.js';
 export * from './map.js';
+export * from './mcp.js';
 export * from './model.js';
 export * from './plan.js';
 export * from './repeats.js';

@@ -59,6 +59,8 @@ export interface LoadOptions {
   machineRuntimes?: readonly string[];
   /** Agents this machine's config names, for the check that each role has an agent. */
   machineAgents?: readonly string[];
+  /** MCP servers this machine defines, for the check of role `mcp` names (W8). */
+  machineMcp?: readonly string[];
   /** Read variant `variants/<name>/` on top of the store's definitions (W5). */
   variant?: string;
 }
@@ -88,6 +90,7 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
     Boolean(opts.strict),
     opts.machineRuntimes ?? null,
     opts.machineAgents ?? null,
+    opts.machineMcp ?? null,
   ]);
   const hit = cache.get(key);
   if (hit && hit.fingerprint === fingerprint) return hit;
@@ -141,6 +144,7 @@ function loadVariant(rootDir: string, name: string, opts: LoadOptions): Definiti
     Boolean(opts.strict),
     opts.machineRuntimes ?? null,
     opts.machineAgents ?? null,
+    opts.machineMcp ?? null,
   ]);
   const hit = cache.get(key);
   if (hit && hit.fingerprint === fingerprint) return hit;
@@ -238,6 +242,7 @@ function checkSet(
       texts,
       machineRuntimes: opts.machineRuntimes,
       machineAgents: opts.machineAgents,
+      machineMcp: opts.machineMcp,
       locate,
       fileOf,
     }),

@@ -165,6 +165,7 @@ import type { BriefRefresh, RunContext } from './run-context.js';
 import { briefsToRefresh, runContext } from './run-context.js';
 import type { Invocation, ReviewArtifactsPrompt } from './runtimes.js';
 import { resumeDecision, resumeInvocation, resumePrompt } from './resume.js';
+import { prepareMcpRun } from './mcp-api.js';
 import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
 import type { InstallResult, TaskWorktree, WorktreeEntry } from './worktree.js';
@@ -3799,6 +3800,21 @@ export class Supervisor extends EventEmitter {
       runtimeOf(agent) === 'codex' && !readOnly && !codexFullAccess
         ? codexGitDirsOf(this.gitDirsOf(cwd))
         : [];
+    // The run's own API token: swarmupd acts as this run's agent for it, never as the human.
+    const runToken = randomBytes(24).toString('hex');
+    // The MCP servers its role asks for that this machine grants it (W8), each started through
+    // `swarmup mcp exec`, which reads the token from the scratch folder: no secret is an argument.
+    const mcp = prepareMcpRun({
+      cfg: this.config.mcp,
+      asked: def?.mcp,
+      agent,
+      runtime: runtimeOf(agent),
+      root: rootName,
+      scratch,
+      token: runToken,
+      stateDir: this.store.dir,
+      env: this.env,
+    });
     let inv = invocation(
       rc,
       agent,
@@ -3813,6 +3829,7 @@ export class Supervisor extends EventEmitter {
       gitDirs,
       scratch,
       codexFullAccess,
+      mcp.inv,
     );
     // A task back with `changes` resumes the session of the run that did the work.
     const workRun =
@@ -3895,6 +3912,8 @@ export class Supervisor extends EventEmitter {
             briefs,
           })) +
       (inv.note ?? '') +
+      // MCP servers the role file names that the run does not get, and why (W8).
+      mcp.note +
       // The releases and tags a Codex PM run cannot read itself (AO-0350).
       (needsReleases(agent) ? releasesNote(this.releases) : '') +
       checksNote +
@@ -3913,8 +3932,6 @@ export class Supervisor extends EventEmitter {
     }
     let spawned: Spawned | undefined;
     let record: RunRecord;
-    // The run's own API token: swarmupd acts as this run's agent for it, never as the human.
-    const runToken = randomBytes(24).toString('hex');
     try {
       // Each variable under both prefixes: a `swarmup` built before the rename reads `OPS_*`.
       const own = runEnv(
@@ -3990,6 +4007,7 @@ export class Supervisor extends EventEmitter {
         resumed_from: resumed?.from,
         ...(req.variant ? { variant: req.variant } : {}),
         ...(defsStamp ? { defs: defsStamp, model: invModel, effort: invEffort } : {}),
+        ...(mcp.grant.granted.length > 0 ? { mcp: mcp.grant.granted } : {}),
       };
       this.store.save(record);
       if (defsStamp) {

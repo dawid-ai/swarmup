@@ -97,6 +97,20 @@ done_when:
 `urls_as: 23` counts each link as 23 characters, as X does, so a long repo URL does not push a
 post over 280.
 
+## Tools through MCP
+
+A role file can name MCP servers its runs may use, such as a search or a docs service for
+`claude:researcher`:
+
+```yaml
+mcp: [search]
+```
+
+The server itself is defined on each machine, in **Settings > MCP servers**, with its secrets in
+`secrets.yml` next to the user config. A run gets the servers its role names that the machine
+defines and grants to the project and the agent; a server marked `publish` is never granted to a
+role, so no agent posts on its own. See [MCP servers](supervisor.md#mcp-servers).
+
 See [Done when](protocol.md#done-when) for every check, and [Content work and
 publishing](protocol.md#content-work-and-publishing) for the types, artifacts and the publish
 record.

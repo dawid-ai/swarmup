@@ -128,6 +128,11 @@ export interface RunRecord {
   model?: string;
   /** The reasoning effort the run was started with. */
   effort?: string;
+  /**
+   * The MCP servers the run got (W8): the names only. Each starts through `swarmup mcp exec`,
+   * which fetches its spec from `POST /api/mcp/resolve`; no secret is ever in the record.
+   */
+  mcp?: string[];
   /** The variant of the definitions the run started with (W5); unset for the base. */
   variant?: string;
 }
