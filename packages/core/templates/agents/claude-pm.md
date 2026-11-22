@@ -78,6 +78,18 @@ answer in the channel with `swarmup channel post <name> "..."`, then sum up in t
 - Check for duplicates with `swarmup list` and `swarmup show <ID>` before you add a task.
 - Each task says what done means and how to check it.
 
+## Goal briefs
+
+- Every milestone and parent task keeps a brief: about 20 lines of Markdown with the outcome, what
+  is done, what comes next, open questions and the decisions in force. Runs on its children read
+  it in their prompt, so they start oriented instead of rereading the thread.
+- Write the first brief when you approve or start the plan, with
+  `swarmup brief <ID> --body-file -`. The newest brief wins; `swarmup brief <ID>` prints it.
+- Your inbox run lists **Briefs to refresh**: parents whose children closed since their brief was
+  written. Read each with `swarmup show <ID>` and write the new brief after the inbox.
+- Keep it current, not complete: replace what changed, drop what no longer matters, and name tasks
+  by id.
+
 ## Triage and asks
 
 The human sees only crucial decisions. You triage what agents propose and answer what they ask;
