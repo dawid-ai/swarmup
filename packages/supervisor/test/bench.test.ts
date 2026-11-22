@@ -8,14 +8,20 @@ import { parseBenchSet } from '@swarmup/core';
 import type { AttemptResult, BenchSummary } from '@swarmup/supervisor';
 import {
   benchCommand,
+  benchCostModel,
+  benchPrices,
+  checkBenchPrices,
+  codexConfigModel,
   compareMarkdown,
   compareSummaries,
   evaluateAttempt,
   logMetrics,
   overallOf,
+  priceMetrics,
   runBench,
   scoreAttempt,
   summarizeEntries,
+  summaryMarkdown,
 } from '@swarmup/supervisor';
 
 const dirs: string[] = [];
@@ -527,5 +533,230 @@ describe('summaries', () => {
     const md = compareMarkdown(c);
     expect(md).toContain('| A | 50% → 100% (+50 pts) | 0/1 → 1/1 | $0.20 → $0.30 (+$0.10)');
     expect(md).toContain('| B | 100% → - |');
+  });
+
+  it('marks estimated costs with ~ in the summary and in compare', () => {
+    const est = (a: AttemptResult): AttemptResult => ({
+      ...a,
+      metrics: { ...a.metrics, costEstimated: true },
+    });
+    const a = summary([attempt('A', 1, [0, 0], 0.2, 1000, 1)], 'claude');
+    const b = summary([est(attempt('A', 1, [0, 0], 0.1, 1000, 1))], 'codex');
+    expect(b.entries[0]!.costEstimated).toBe(true);
+    expect(b.overall.costEstimated).toBe(true);
+    expect(summaryMarkdown(b)).toContain('~$0.10 total, ~$0.10 each');
+    const c = compareSummaries(a, b);
+    expect(c.overall.delta).not.toHaveProperty('costEstimated');
+    const md = compareMarkdown(c);
+    expect(md).toContain('| A | 100% → 100% (±0) | - → - | $0.20 → ~$0.10 (-$0.10) |');
+    expect(md).toContain('`~` marks a cost estimated');
+  });
+});
+
+describe('estimated cost', () => {
+  it('checks swarmupd.bench.prices and refuses bad values', () => {
+    expect(checkBenchPrices(undefined)).toEqual({});
+    expect(checkBenchPrices({ m: { input: 1, cached_input: 0.1, output: 4 } })).toEqual({
+      m: { input: 1, cached_input: 0.1, output: 4 },
+    });
+    expect(() => checkBenchPrices([])).toThrow(/use model names/);
+    expect(() => checkBenchPrices({ m: 3 })).toThrow(/prices\.m: use input, cached_input/);
+    expect(() => checkBenchPrices({ m: { input: 1, output: 4 } })).toThrow(
+      /prices\.m\.cached_input: use a number of 0 or more/,
+    );
+    expect(() => checkBenchPrices({ m: { input: -1, cached_input: 0, output: 4 } })).toThrow(
+      /prices\.m\.input/,
+    );
+    expect(() =>
+      checkBenchPrices({ m: { input: 1, cached_input: 0, output: 4, cache: 1 } }),
+    ).toThrow(/unknown key cache/);
+    expect(benchPrices({ 'gpt-5.6-sol': { input: 1, cached_input: 0, output: 2 } })).toMatchObject({
+      'gpt-5.6-sol': { input: 1, cached_input: 0, output: 2 },
+      'gpt-5.6-luna': { input: 0.2, cached_input: 0.02, output: 1.2 },
+    });
+  });
+
+  it('takes the model from --model, the runtime config, then Codex config.toml', () => {
+    const home = scratch('bench-codex-home-');
+    const env = { CODEX_HOME: home };
+    expect(codexConfigModel(env)).toBeUndefined();
+    writeFileSync(
+      join(home, 'config.toml'),
+      '# top\nmodel = "gpt-5.6-terra"\n\n[profiles.fast]\nmodel = "gpt-5.6-luna"\n',
+    );
+    expect(codexConfigModel(env)).toBe('gpt-5.6-terra');
+    expect(benchCostModel('codex', { env })).toBe('gpt-5.6-terra');
+    expect(benchCostModel('codex', { env, runtimes: { codex: { model: 'default' } } })).toBe(
+      'gpt-5.6-terra',
+    );
+    expect(benchCostModel('codex', { env, runtimes: { codex: { model: 'gpt-5.6-sol' } } })).toBe(
+      'gpt-5.6-sol',
+    );
+    expect(
+      benchCostModel('codex', { env, model: 'x-1', runtimes: { codex: { model: 'gpt-5.6-sol' } } }),
+    ).toBe('x-1');
+    expect(benchCostModel('codex', { env, model: '' })).toBe('gpt-5.6-terra');
+    expect(benchCostModel('claude', { env })).toBeUndefined();
+    writeFileSync(join(home, 'config.toml'), "model = 'default'\n");
+    expect(codexConfigModel(env)).toBeUndefined();
+  });
+
+  it('prices a Codex log at the model price, with cached input at its own price', () => {
+    const dir = scratch('bench-log-');
+    const log = join(dir, 'agent.log');
+    writeFileSync(
+      log,
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 100, cached_input_tokens: 60, output_tokens: 5 },
+      }),
+    );
+    const m = logMetrics(log);
+    priceMetrics(m, 'gpt-5.6-sol', benchPrices());
+    // 40 input at $5, 60 cached at $0.50 and 5 output at $30 per million tokens.
+    expect(m.costUsd).toBeCloseTo((40 * 5 + 60 * 0.5 + 5 * 30) / 1e6, 12);
+    expect(m).toMatchObject({ costEstimated: true, priceModel: 'gpt-5.6-sol' });
+    const unknown = logMetrics(log);
+    priceMetrics(unknown, 'gpt-9', benchPrices());
+    expect(unknown).toMatchObject({ costUsd: null, unpriced: true, priceModel: 'gpt-9' });
+    const none = logMetrics(log);
+    priceMetrics(none, undefined, benchPrices());
+    expect(none.unpriced).toBe(true);
+    expect(none.priceModel).toBeUndefined();
+  });
+});
+
+/**
+ * A fake Codex: logs `--json` events. Run N (counted in `counter`) uses N * 200,000 input tokens,
+ * $1 per run at gpt-5.6-sol's input price, and only the first run writes `done.txt`.
+ */
+const fakeCodex = (counter: string): string => `
+const fs = require('fs');
+const counter = ${JSON.stringify(counter)};
+process.stdin.on('data', () => {});
+process.stdin.on('end', () => {
+  const n = fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) + 1 : 1;
+  fs.writeFileSync(counter, String(n));
+  const say = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  if (n === 1) {
+    fs.writeFileSync('done.txt', 'x');
+    say({ type: 'item.completed', item: { type: 'file_change' } });
+  }
+  say({ type: 'turn.completed', usage: { input_tokens: n * 200000, cached_input_tokens: 0, output_tokens: 0 } });
+});
+`;
+
+describe('runBench cost cap and spread', () => {
+  const codexSet = (dir: string) =>
+    parseBenchSet(
+      {
+        id: 'cx',
+        defaults: { agent: 'codex:engineer' },
+        entries: [
+          {
+            id: 'E-1',
+            base: { ref: 'main' },
+            prompt: 'Write done.txt.',
+            done_when: [{ kind: 'check', check: 'file-exists', args: { path: 'done.txt' } }],
+          },
+        ],
+      },
+      join(dir, 'cx.yaml'),
+    );
+
+  it('estimates Codex cost, reports the spread over repeats and stops at the cap', async () => {
+    const { dir: repoDir } = repo();
+    const work = scratch('bench-work-');
+    const agentFile = join(work, 'fake-codex.cjs');
+    writeFileSync(agentFile, fakeCodex(join(work, 'count')));
+    const home = join(work, 'codex-home');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), 'model = "gpt-5.6-sol"\n');
+    const out = join(work, 'out');
+    const logs: string[] = [];
+    const opts = {
+      set: codexSet(work),
+      repo: repoDir,
+      out,
+      repeat: 3,
+      maxUsd: 1.5,
+      env: { ...process.env, CODEX_HOME: home },
+      runtimes: { codex: { command: process.execPath, args: [agentFile] } },
+      log: (l: string) => logs.push(l),
+    };
+    await runBench({ ...opts, dryRun: true });
+    expect(logs.join('\n')).toContain(
+      "cost: estimated from tokens at gpt-5.6-sol's price per million tokens: input $5",
+    );
+    expect(logs.join('\n')).toContain('cost cap: $1.50 of agent and judge cost');
+    logs.length = 0;
+    const summary = (await runBench(opts))!;
+    const r1 = JSON.parse(
+      readFileSync(join(out, 'E-1', '1', 'results.json'), 'utf8'),
+    ) as AttemptResult;
+    expect(r1.metrics).toMatchObject({ costEstimated: true, priceModel: 'gpt-5.6-sol' });
+    expect(r1.metrics.costUsd).toBeCloseTo(1);
+    // Attempt 1 cost $1, under the cap; attempt 2 cost $2 more, so attempt 3 never starts.
+    expect(existsSync(join(out, 'E-1', '3'))).toBe(false);
+    expect(summary.cap).toEqual({ maxUsd: 1.5, spentUsd: 3, hit: true, uncounted: 0 });
+    expect(summary.skipped).toEqual([
+      { entry: 'E-1', attempt: 3, reason: expect.stringContaining('cost cap of $1.50') },
+    ]);
+    const e = summary.entries[0]!;
+    expect(e).toMatchObject({
+      attempts: 2,
+      passRate: 0.5,
+      costEstimated: true,
+      passRateMin: 0,
+      passRateMax: 1,
+    });
+    expect(e.costUsd).toBeCloseTo(1.5);
+    expect(e.passRateSd).toBeCloseTo(Math.SQRT1_2);
+    expect(e.costSdUsd).toBeCloseTo(Math.SQRT1_2);
+    expect(summary.overall).toMatchObject({ costEstimated: true, passRateMin: 0, passRateMax: 1 });
+    expect(summary.overall.passRateSd).toBeCloseTo(Math.SQRT1_2);
+    expect(summary.overall.costSdUsd).toBeCloseTo(Math.SQRT1_2);
+    expect(JSON.parse(readFileSync(join(out, 'status.json'), 'utf8'))).toMatchObject({
+      state: 'done',
+      done: 2,
+      total: 3,
+      skipped: 1,
+    });
+    const md = readFileSync(join(out, 'summary.md'), 'utf8');
+    expect(md).toContain('- Cost cap: $1.50; spent ~$3.00; reached, 1 attempt not started');
+    expect(md).toContain('| E-1 | 2 | 50% | - | 0 | 0 | ~$1.50 |');
+    expect(md).toContain('| E-1 | 2 | 0% | 100% | 71 pts | ~$0.71 |');
+    expect(md).toContain('| **All, by repeat** | 2 | 0% | 100% | 71 pts | ~$0.71 |');
+    expect(md).toContain('- E-1 #3: the cost cap of $1.50 was reached ($3.00 spent)');
+    expect(logs.join('\n')).toContain('cost cap reached: $3.00 of $1.50; 1 attempts not started');
+  });
+
+  it('leaves the cost of a model with no price unknown, and warns once that the cap cannot count it', async () => {
+    const { dir: repoDir } = repo();
+    const work = scratch('bench-work-');
+    const agentFile = join(work, 'fake-codex.cjs');
+    writeFileSync(agentFile, fakeCodex(join(work, 'count')));
+    const logs: string[] = [];
+    const summary = (await runBench({
+      set: codexSet(work),
+      repo: repoDir,
+      out: join(work, 'out'),
+      repeat: 2,
+      maxUsd: 1,
+      model: 'gpt-9',
+      env: { ...process.env, CODEX_HOME: join(work, 'no-home') },
+      runtimes: { codex: { command: process.execPath, args: [agentFile] } },
+      log: (l) => logs.push(l),
+    }))!;
+    expect(summary.entries[0]).toMatchObject({ attempts: 2, costUsd: null, unpriced: ['gpt-9'] });
+    expect(summary.cap).toEqual({ maxUsd: 1, spentUsd: 0, hit: false, uncounted: 2 });
+    expect(summary.skipped).toBeUndefined();
+    expect(logs.filter((l) => l.includes('the cost cap cannot count it'))).toHaveLength(1);
+    expect(logs.filter((l) => l.includes('no price for gpt-9;'))).toHaveLength(1);
+    expect(logs).toContain('cost: no price for gpt-9, so codex attempts will have no cost');
+    const md = summaryMarkdown(summary);
+    expect(md).toContain('| no price (gpt-9) |');
+    expect(md).toContain('- No price for gpt-9:');
+    expect(md).toContain('not reached; 2 attempts with unknown cost not counted');
   });
 });
