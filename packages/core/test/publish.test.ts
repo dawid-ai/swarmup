@@ -11,14 +11,14 @@ import {
   publishTarget,
   workspacePath,
 } from '../src/index.js';
-import type { GitRun, ReviewArtifact } from '../src/index.js';
+import type { GitRunSync, ReviewArtifact } from '../src/index.js';
 import { git, gitRepo, setup } from './helpers.js';
 
 // Publish tasks are a person's (W8), `swarmup published` records a publish, and review events
 // carry artifacts.
 
-function gitRun(dir: string): GitRun {
-  return async (args) =>
+function gitRun(dir: string): GitRunSync {
+  return (args) =>
     execFileSync('git', args, { cwd: dir, encoding: 'utf8', windowsHide: true, stdio: 'pipe' });
 }
 
@@ -114,16 +114,18 @@ describe('publishTarget', () => {
     const repo = gitRepo();
     const first = commitFiles(repo, { 'posts/x.md': 'one' });
     const run = gitRun(repo);
-    const t = await publishTarget(run, 'LC-0010', { path: 'posts/x.md' });
+    const t = await publishTarget(async (a) => run(a), 'LC-0010', { path: 'posts/x.md' });
     expect(t).toMatchObject({ commit: first, path: 'posts/x.md', tag: 'published/LC-0010' });
     expect(t.blob).toBe(git(repo, 'rev-parse', 'HEAD:posts/x.md').trim());
-    expect((await publishTarget(run, 'LC-0010')).tag).toBe('published/LC-0010');
+    expect((await publishTarget(async (a) => run(a), 'LC-0010')).tag).toBe('published/LC-0010');
     commitFiles(repo, { 'posts/x.md': 'two' });
-    expect((await publishTarget(run, 'LC-0010')).tag).toBe('published/LC-0010-2');
-    await expect(publishTarget(run, 'LC-0010', { path: 'posts/none.md' })).rejects.toThrow(
-      /not in/,
-    );
-    await expect(publishTarget(run, 'LC-0010', { path: '../x.md' })).rejects.toThrow(/outside/);
+    expect((await publishTarget(async (a) => run(a), 'LC-0010')).tag).toBe('published/LC-0010-2');
+    await expect(
+      publishTarget(async (a) => run(a), 'LC-0010', { path: 'posts/none.md' }),
+    ).rejects.toThrow(/not in/);
+    await expect(
+      publishTarget(async (a) => run(a), 'LC-0010', { path: '../x.md' }),
+    ).rejects.toThrow(/outside/);
   });
 });
 
@@ -186,12 +188,12 @@ describe('review artifacts', () => {
       },
     );
     expect(named.map((a) => a.kind)).toEqual(['file', 'doc']);
-    await expect(
+    expect(() =>
       namedArtifacts(run, ['posts/missing.md'], { commit: head, toTop: (p) => p }),
-    ).rejects.toThrow(/posts\/missing\.md is not in/);
-    await expect(
+    ).toThrow(/posts\/missing\.md is not in/);
+    expect(() =>
       namedArtifacts(run, ['posts/new.md'], { toTop: (p) => p, exists: () => false }),
-    ).rejects.toThrow(/no such file/);
+    ).toThrow(/no such file/);
   });
 
   it('keep paths inside the workspace and tell kinds apart', () => {

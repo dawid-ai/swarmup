@@ -8,6 +8,12 @@ import type { OpsEvent, ReviewArtifact } from './model.js';
 /** Runs git in the workspace with `args` and resolves to its output; rejects when git fails. */
 export type GitRun = (args: string[]) => Promise<string>;
 
+/**
+ * Runs git in the workspace with `args` and returns its output; throws when git fails. The CLI's
+ * review and publish helpers take it, so `swarmup review` stays synchronous.
+ */
+export type GitRunSync = (args: string[]) => string;
+
 /** Changed paths a review records on its own leaves out: the project map is not the work. */
 const NOT_WORK = /^\.swarmup\//;
 
@@ -67,6 +73,26 @@ export async function blobAt(git: GitRun, commit: string, path: string): Promise
   }
 }
 
+/** {@link blobAt} with git run synchronously. */
+function blobAtSync(git: GitRunSync, commit: string, path: string): string | null {
+  try {
+    const out = git(['rev-parse', '--verify', '-q', `${commit}:${path}`]).trim();
+    return /^[0-9a-f]{40,64}$/i.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** {@link commitOf} with git run synchronously. */
+function commitOfSync(git: GitRunSync, rev: string): string | null {
+  try {
+    const out = git(['rev-parse', '--verify', '-q', `${rev}^{commit}`]).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 /** The full id of `rev` as a commit, or null when there is none. */
 export async function commitOf(git: GitRun, rev: string): Promise<string | null> {
   try {
@@ -82,19 +108,19 @@ export async function commitOf(git: GitRun, rev: string): Promise<string | null>
  * exists, as file and image artifacts with their blobs, minus the project map. Without a base,
  * the files of the commit itself. Deleted files are left out; at most `MAX_CHANGED_ARTIFACTS`.
  */
-export async function changedArtifacts(
-  git: GitRun,
+export function changedArtifacts(
+  git: GitRunSync,
   commit: string,
   bases: string[],
-): Promise<ReviewArtifact[]> {
+): ReviewArtifact[] {
   let names: string[] = [];
   let found = false;
   for (const base of bases) {
-    if (!(await commitOf(git, base))) continue;
+    if (!commitOfSync(git, base)) continue;
     try {
-      const mb = (await git(['merge-base', base, commit])).trim();
+      const mb = git(['merge-base', base, commit]).trim();
       if (!mb) continue;
-      names = (await git(['diff', '--name-only', '--no-renames', '--diff-filter=d', mb, commit]))
+      names = git(['diff', '--name-only', '--no-renames', '--diff-filter=d', mb, commit])
         .split('\n')
         .filter(Boolean);
       found = true;
@@ -105,9 +131,7 @@ export async function changedArtifacts(
   }
   if (!found) {
     try {
-      names = (
-        await git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=d', '-r', commit])
-      )
+      names = git(['diff-tree', '--no-commit-id', '--name-only', '--diff-filter=d', '-r', commit])
         .split('\n')
         .filter(Boolean);
     } catch {
@@ -116,7 +140,7 @@ export async function changedArtifacts(
   }
   const out: ReviewArtifact[] = [];
   for (const ref of names.filter((n) => !NOT_WORK.test(n)).slice(0, MAX_CHANGED_ARTIFACTS)) {
-    const blob = await blobAt(git, commit, ref);
+    const blob = blobAtSync(git, commit, ref);
     if (blob) out.push({ kind: artifactKindOf(ref), ref, blob });
   }
   return out;
@@ -127,11 +151,11 @@ export async function changedArtifacts(
  * in it) with their blobs. Without a commit a path needs `exists` to say it is on disk. `toTop`
  * turns a path as typed (from the folder the command runs in) into one from the workspace top.
  */
-export async function namedArtifacts(
-  git: GitRun,
+export function namedArtifacts(
+  git: GitRunSync,
   refs: string[],
   opts: { commit?: string; toTop: (p: string) => string; exists?: (p: string) => boolean },
-): Promise<ReviewArtifact[]> {
+): ReviewArtifact[] {
   const out: ReviewArtifact[] = [];
   for (const raw of refs) {
     const ref = raw.trim();
@@ -141,7 +165,7 @@ export async function namedArtifacts(
     }
     const path = workspacePath(opts.toTop(ref));
     if (opts.commit) {
-      const blob = await blobAt(git, opts.commit, path);
+      const blob = blobAtSync(git, opts.commit, path);
       if (!blob) {
         throw new OpsError(
           `--artifact ${ref}: ${path} is not in ${opts.commit.slice(0, 10)}; commit it first`,

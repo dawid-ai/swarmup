@@ -20,7 +20,7 @@ import type {
   PlanReport,
   PlanResult,
   PlanRow,
-  GitRun,
+  GitRunSync,
   Priority,
   ProjectPlan,
   RepeatInput,
@@ -413,9 +413,9 @@ function reviewSourceOf(
   };
 }
 
-/** Git in `dir` as core's `GitRun`: the CLI runs it directly. */
-function gitRunIn(dir: string, env: NodeJS.ProcessEnv): GitRun {
-  return async (args) =>
+/** Git in `dir` as core's `GitRunSync`: the CLI runs it directly. */
+function gitRunIn(dir: string, env: NodeJS.ProcessEnv): GitRunSync {
+  return (args) =>
     execFileSync('git', args, {
       cwd: dir,
       env,
@@ -478,11 +478,7 @@ function mergeBases(ctx: Ctx, root: string): string[] {
  * project map. A review of store work, or without a commit, records only what `--artifact`
  * names.
  */
-async function reviewArtifacts(
-  ctx: Ctx,
-  root: string,
-  source: ReviewSourceFields,
-): Promise<ReviewArtifact[]> {
+function reviewArtifacts(ctx: Ctx, root: string, source: ReviewSourceFields): ReviewArtifact[] {
   const named = texts(ctx.opts.artifact);
   const here = gitRead(ctx.io.cwd, ['rev-parse', '--show-toplevel']);
   const code = source.repo === 'code' ? workspaceTopOf(ctx, root) : null;
@@ -608,7 +604,8 @@ async function publishedCommand(ctx: Ctx): Promise<number | void> {
   if (!top)
     throw new OpsError(`the workspace of ${root.name} is in no git checkout here: pass --cwd`, 1);
   const artifact = str(ctx.opts.artifact);
-  const target = await publishTarget(gitRunIn(top, ctx.io.env), id, {
+  const syncGit = gitRunIn(top, ctx.io.env);
+  const target = await publishTarget(async (args) => syncGit(args), id, {
     // Approved work is on the root's merge base; without one, what the workspace has checked out.
     rev: str(ctx.opts.commit) ?? baseOf(ctx, root.name) ?? 'HEAD',
     ...(artifact ? { path: relative(top, resolve(ctx.io.cwd, artifact)) } : {}),
@@ -2106,7 +2103,7 @@ const COMMANDS: Record<string, Command> = {
       artifact: { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
-    run: async (ctx) => {
+    run: (ctx) => {
       const ref = arg(ctx, 0, 'task id');
       const msg = message(ctx, 1, true);
       const refused = uncommittedReview(ctx, ref, msg);
@@ -2120,7 +2117,7 @@ const COMMANDS: Record<string, Command> = {
         { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
       );
       if (note) ctx.io.err(`note: ${note}`);
-      const artifacts = await reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
+      const artifacts = reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
       if (artifacts.length > 0) source.artifacts = artifacts;
       // The pair as the message's last line too, which the review diff reads (AO-0396).
       const body = line ? `${msg.replace(/\s+$/, '')}\n\n${line}\n` : msg;
