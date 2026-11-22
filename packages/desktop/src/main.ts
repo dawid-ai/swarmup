@@ -60,6 +60,7 @@ import {
   installPrompt,
   installSkillsOnce,
   installUpdate as runInstall,
+  lockedDownloadRetry,
   notesText,
   plainNotes,
   scheduleUpdateChecks,
@@ -572,6 +573,9 @@ let update: UpdateState = {
   current: app.getVersion(),
 };
 let autoInstall: Promise<void> | null = null;
+/** Downloads retried for the current version after a file lock, and the pending retry. */
+let lockRetries = 0;
+let lockRetryTimer: NodeJS.Timeout | null = null;
 
 function setUpdate(patch: Partial<UpdateState>): void {
   update = { ...update, ...patch };
@@ -654,9 +658,10 @@ function setupUpdates(): void {
   // Installing stops swarmupd first, so the app decides when (installUpdate), never a plain quit.
   u.autoInstallOnAppQuit = false;
   u.on('checking-for-update', () => setUpdate({ status: 'checking', error: undefined }));
-  u.on('update-not-available', () =>
-    setUpdate({ status: 'none', checkedAt: new Date().toISOString() }),
-  );
+  u.on('update-not-available', () => {
+    lockRetries = 0;
+    setUpdate({ status: 'none', checkedAt: new Date().toISOString() });
+  });
   u.on('update-available', (i) =>
     setUpdate({
       status: 'downloading',
@@ -668,6 +673,7 @@ function setupUpdates(): void {
   );
   u.on('download-progress', (p) => setUpdate({ status: 'downloading', percent: p.percent }));
   u.on('update-downloaded', (i) => {
+    lockRetries = 0;
     setUpdate({ status: 'ready', version: i.version, percent: 100, live: undefined });
     if (Notification.isSupported()) {
       new Notification({
@@ -677,7 +683,23 @@ function setupUpdates(): void {
     }
     startAutoUpdate();
   });
-  u.on('error', (err) => setUpdate({ status: 'error', error: err.message }));
+  u.on('error', (err) => {
+    const delay = lockRetryTimer ? null : lockedDownloadRetry(err.message, lockRetries);
+    if (delay === null) {
+      setUpdate({ status: 'error', error: err.message });
+      return;
+    }
+    lockRetries += 1;
+    setUpdate({
+      status: 'error',
+      error: `${err.message}. Another program, often antivirus, held the downloaded file; SwarmUp downloads it again in ${Math.round(delay / 1000)} seconds.`,
+    });
+    lockRetryTimer = setTimeout(() => {
+      lockRetryTimer = null;
+      void checkUpdate();
+    }, delay);
+    lockRetryTimer.unref();
+  });
   scheduleUpdateChecks(() => void checkUpdate());
   // A downloaded update installs on its own when nothing would be cut off.
   setInterval(() => {

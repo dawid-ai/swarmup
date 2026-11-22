@@ -10,6 +10,9 @@ import {
   installPrompt,
   installSkillsOnce,
   installUpdate,
+  isLockedDownload,
+  LOCKED_DOWNLOAD_RETRY_MS,
+  lockedDownloadRetry,
   notesText,
   plainNotes,
   scheduleUpdateChecks,
@@ -376,5 +379,29 @@ describe('install prompt', () => {
   it('says runs keep going when they outlive swarmupd, and end when they do not', () => {
     expect(installPrompt(1, true)).toMatch(/^1 agent run is live\. .*keep going/);
     expect(installPrompt(2, false)).toMatch(/^2 agent runs are live\. .*end with it/);
+  });
+});
+
+describe('locked download retry', () => {
+  const eperm =
+    "EPERM: operation not permitted, rename 'C:\\Users\\me\\AppData\\Local\\swarmup-updater\\pending\\temp-SwarmUp-Setup.exe' -> 'C:\\Users\\me\\AppData\\Local\\swarmup-updater\\pending\\SwarmUp-Setup.exe'";
+
+  it('treats a lock on the downloaded installer as retryable', () => {
+    expect(isLockedDownload(eperm)).toBe(true);
+    expect(isLockedDownload(eperm.replace('EPERM', 'EACCES'))).toBe(true);
+  });
+
+  it('leaves network, feed and checksum errors alone', () => {
+    expect(isLockedDownload('net::ERR_INTERNET_DISCONNECTED')).toBe(false);
+    expect(isLockedDownload('HttpError: 404 latest.yml')).toBe(false);
+    expect(isLockedDownload('sha512 checksum mismatch, expected abc')).toBe(false);
+    expect(isLockedDownload("EPERM: operation not permitted, open 'C:\\x\\log.txt'")).toBe(false);
+  });
+
+  it('backs off, then gives up for the version', () => {
+    const delays = LOCKED_DOWNLOAD_RETRY_MS.map((_, i) => lockedDownloadRetry(eperm, i));
+    expect(delays).toEqual(LOCKED_DOWNLOAD_RETRY_MS);
+    expect(lockedDownloadRetry(eperm, LOCKED_DOWNLOAD_RETRY_MS.length)).toBeNull();
+    expect(lockedDownloadRetry('HttpError: 404', 0)).toBeNull();
   });
 });
