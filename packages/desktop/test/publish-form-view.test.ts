@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // W8 phase 2 in the task panel and the criteria builder: Mark published on a publish task a
 // person owns, which records the URL through the person-only endpoint, and the builder entries
-// of image-alt, image-size and char-count's urls_as.
+// of image-alt, image-size and char-count's urls_as; phase 3's readability.
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -178,6 +178,22 @@ describe('the builders of the phase 2 checks', () => {
     });
     expect(entryOf(d)).toEqual(size);
     expect(draftProblem({ ...d, args: { ...d.args, height: '' } })).toBe('Height is required');
+  });
+
+  it('round-trips readability, and needs a grade bound', () => {
+    const spec = {
+      id: 'grade',
+      kind: 'check' as const,
+      check: 'readability',
+      args: { path: 'posts/*.md', max_grade: 9, min_grade: 6 },
+    };
+    const d = draftOf(spec, 0);
+    expect(d.args).toEqual({ path: 'posts/*.md', max_grade: '9', min_grade: '6' });
+    expect(entryOf(d)).toEqual(spec);
+    expect(draftProblem({ ...d, args: { path: 'posts/*.md' } })).toBe('Set Max grade or Min grade');
+    expect(draftProblem({ ...d, args: { ...d.args, min_grade: '10' } })).toBe(
+      'Min grade is above Max grade',
+    );
   });
 
   it('round-trips char-count urls_as', () => {

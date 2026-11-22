@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import YAML from 'yaml';
 import { doneWhenLines, OpsError } from './ids.js';
 import type { OpsEvent, TaskMeta } from './model.js';
+import { readability } from './readability.js';
 
 /**
  * What kind of check a criterion is:
@@ -36,6 +37,7 @@ export const CHECK_NAMES = [
   'front-matter',
   'image-alt',
   'image-size',
+  'readability',
 ] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
 
@@ -210,6 +212,26 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
       }
       num('max_kb');
       break;
+    case 'readability': {
+      need('path');
+      for (const f of ['min_grade', 'max_grade']) {
+        const v = args[f];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) {
+          bad(`${where}: args.${f} must be a number`);
+        }
+      }
+      if (args.min_grade === undefined && args.max_grade === undefined) {
+        bad(`${where}: check readability needs args.max_grade or args.min_grade`);
+      }
+      if (
+        typeof args.min_grade === 'number' &&
+        typeof args.max_grade === 'number' &&
+        args.min_grade > args.max_grade
+      ) {
+        bad(`${where}: args.min_grade is above args.max_grade`);
+      }
+      break;
+    }
     case 'contains':
       need('path');
       need('text');
@@ -1181,6 +1203,19 @@ async function checkFile(c: Criterion, path: string, deps: CheckDeps): Promise<F
       return problems.length > 0
         ? { ok: false, what: `${path}: ${problems.join('; ')}` }
         : { ok: true, what: `${path}: ${dim.type} ${dim.width}x${dim.height}, ${kb} KB` };
+    }
+    case 'readability': {
+      const r = readability(readFile(cwd, path));
+      const min = typeof args.min_grade === 'number' ? args.min_grade : undefined;
+      const max = typeof args.max_grade === 'number' ? args.max_grade : undefined;
+      const wants = `wants grade ${rangeText(min, max)}`;
+      if (r.grade === null) return { ok: false, what: `${path}: no prose to score; ${wants}` };
+      const ok = !((min !== undefined && r.grade < min) || (max !== undefined && r.grade > max));
+      const spw = (r.syllables / r.words).toFixed(2);
+      return {
+        ok,
+        what: `${path}: Flesch-Kincaid grade ${r.grade} (${r.words} words, ${r.sentences} sentences, ${spw} syllables per word); ${wants}`,
+      };
     }
     case 'links-resolve': {
       const file = resolve(cwd, path);

@@ -219,6 +219,11 @@ export const CHECKS: Record<string, ArgField[]> = {
     { key: 'height', label: 'Height', type: 'number', required: true, placeholder: '630' },
     { key: 'max_kb', label: 'Max KB', type: 'number', placeholder: '500' },
   ],
+  readability: [
+    pathField('posts/*.md'),
+    { key: 'max_grade', label: 'Max grade', type: 'number', placeholder: '9' },
+    { key: 'min_grade', label: 'Min grade', type: 'number', placeholder: '6' },
+  ],
   'links-resolve': [
     pathField('docs/index.md'),
     { key: 'root', label: 'Root', type: 'text', placeholder: 'docs' },
@@ -700,6 +705,12 @@ export function draftProblem(d: DraftCriterion): string | null {
       }
       if (d.check === 'front-matter' && !d.args.keys?.trim() && !d.args.match?.trim()) {
         return 'Set Keys or Match';
+      }
+      if (d.check === 'readability') {
+        const min = d.args.min_grade?.trim();
+        const max = d.args.max_grade?.trim();
+        if (!min && !max) return 'Set Max grade or Min grade';
+        if (min && max && Number(min) > Number(max)) return 'Min grade is above Max grade';
       }
       return null;
     }

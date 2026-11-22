@@ -251,6 +251,15 @@ Any kind may carry `text` as a description. The built-in checks are:
 - `image-size`: each PNG or JPEG at `path` is exactly `width` by `height` pixels, read from its
   header, and with `max_kb` at most that many kilobytes (1 KB is 1,024 bytes). Any other file
   fails. Social cards are `{ path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }`.
+- `readability`: the prose at `path` scores a Flesch-Kincaid grade level of at most `max_grade`
+  and at least `min_grade` (either or both), with the grade
+  `0.39 * words / sentences + 11.8 * syllables / words - 15.59` rounded to one decimal. Front matter, fenced and inline code, HTML tags, images and
+  link addresses are left out; a link keeps its text. Each paragraph, heading, list item and
+  table row is its own unit, and a sentence ends at `.`, `!` or `?` before a space or the end of
+  the unit. A word is a run of letters (`don't` is one, numbers are none), and syllables come
+  from a fixed rule, not a dictionary (`syllables` in `packages/core/src/readability.ts`), so
+  every machine gets the same grade. A file with no prose fails. Grade 8 to 9 reads as plain
+  English: `{ path: 'posts/*.md', max_grade: 9 }`.
 
 Every `path` takes one path, a list, or globs (`posts/*.md`, `assets/**/*.png`): `*` and `?`
 stay inside one folder and `**` crosses folders. The check runs on every file that matches, and a

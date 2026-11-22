@@ -106,6 +106,10 @@ done_when:
     kind: check
     check: image-size
     args: { path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }
+  - id: plain
+    kind: check
+    check: readability
+    args: { path: 'posts/*.md', max_grade: 9 }
   - id: voice
     kind: rubric
     rubric: rubrics/brand-voice.md
@@ -113,7 +117,8 @@ done_when:
 ```
 
 `urls_as: 23` counts each link as 23 characters, as X does, so a long repo URL does not push a
-post over 280.
+post over 280. `readability` scores each post's Flesch-Kincaid grade level with a pinned
+formula and syllable rule, so the grade is the same on every machine.
 
 ## Tools through MCP
 
