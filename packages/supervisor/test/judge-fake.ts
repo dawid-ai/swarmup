@@ -13,16 +13,27 @@ inputs: [diff, task, repo]
 Judge the change.
 `;
 
-/** Claude's `--output-format json` result with `answer` as its text. */
+/**
+ * Claude's `--output-format json` output with `answer` as its text: the session's messages as one
+ * JSON array, as Claude Code 2.1 prints them, with the small helper model it also calls.
+ */
 export function claudeResult(answer: unknown, cost = 0.0123): string {
-  return `${JSON.stringify({
-    type: 'result',
-    subtype: 'success',
-    is_error: false,
-    result: typeof answer === 'string' ? answer : JSON.stringify(answer),
-    total_cost_usd: cost,
-    modelUsage: { 'claude-sonnet-4-6': { inputTokens: 100 } },
-  })}\n`;
+  return `${JSON.stringify([
+    { type: 'system', subtype: 'init', model: 'claude-sonnet-4-6', tools: [] },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'x' }] } },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: typeof answer === 'string' ? answer : JSON.stringify(answer),
+      total_cost_usd: cost,
+      modelUsage: {
+        'claude-haiku-4-5': { costUSD: cost / 50 },
+        'claude-sonnet-4-6': { costUSD: cost - cost / 50 },
+      },
+    },
+  ])}
+`;
 }
 
 /** A fake runner that answers with `answer(prompt)` and keeps every process it was given. */

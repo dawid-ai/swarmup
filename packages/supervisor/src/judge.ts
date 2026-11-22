@@ -276,35 +276,69 @@ export const defaultJudgeRunner: JudgeRunner = (p) => {
   });
 };
 
+type Json = Record<string, unknown>;
+
+/** Claude's output messages: a JSON array, one object, or one object per line. */
+function claudeEvents(stdout: string): Json[] {
+  const isObject = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v);
+  try {
+    const all = JSON.parse(stdout.trim()) as unknown;
+    if (Array.isArray(all)) return all.filter(isObject);
+    if (isObject(all)) return [all];
+  } catch {
+    // Not one JSON document: read it line by line.
+  }
+  const out: Json[] = [];
+  for (const line of stdout.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{')) continue;
+    try {
+      const v = JSON.parse(t) as unknown;
+      if (isObject(v)) out.push(v);
+    } catch {
+      // Not a message.
+    }
+  }
+  return out;
+}
+
+/**
+ * The model that answered: the session's `init` message names it; else the model that cost the
+ * most in the result's `modelUsage`, since Claude Code also calls a small model for its own needs.
+ */
+function claudeModel(events: Json[], result: Json): string | null {
+  const init = events.find((e) => e.type === 'system' && e.subtype === 'init');
+  if (typeof init?.model === 'string' && init.model) return init.model;
+  const usage = result.modelUsage;
+  if (!usage || typeof usage !== 'object') return null;
+  const cost = (v: unknown): number =>
+    v && typeof v === 'object' && typeof (v as Json).costUSD === 'number'
+      ? ((v as Json).costUSD as number)
+      : 0;
+  const ranked = Object.entries(usage as Json).sort((a, b) => cost(b[1]) - cost(a[1]));
+  return ranked[0]?.[0] ?? null;
+}
+
 /** What a judge's output says: its answer text, its cost when reported, and the model that ran. */
 export function readJudgeOutput(
   runtime: string,
   stdout: string,
 ): { text: string; costUsd: number | null; model: string | null; error?: string } {
   if (runtime === 'claude') {
-    // `--output-format json` prints one result object; look for it among any other lines.
-    for (const line of [stdout, ...stdout.split('\n').reverse()]) {
-      const t = line.trim();
-      if (!t.startsWith('{')) continue;
-      try {
-        const r = JSON.parse(t) as Record<string, unknown>;
-        if (r.type !== 'result') continue;
-        const usage =
-          r.modelUsage && typeof r.modelUsage === 'object' ? Object.keys(r.modelUsage) : [];
-        const text = typeof r.result === 'string' ? r.result : '';
-        return {
-          text,
-          costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : null,
-          model: usage[0] ?? null,
-          ...(r.is_error === true
-            ? { error: text.split('\n')[0] || String(r.subtype ?? 'error') }
-            : {}),
-        };
-      } catch {
-        // Not the result line.
-      }
-    }
-    return { text: stdout, costUsd: null, model: null };
+    // `--output-format json` prints the session's messages as one JSON array (older builds: the
+    // result object alone, or one object per line); the `result` message holds the answer.
+    const events = claudeEvents(stdout);
+    const r = events.filter((e) => e.type === 'result').at(-1);
+    if (!r) return { text: stdout, costUsd: null, model: null };
+    const text = typeof r.result === 'string' ? r.result : '';
+    return {
+      text,
+      costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : null,
+      model: claudeModel(events, r),
+      ...(r.is_error === true
+        ? { error: text.split('\n')[0] || String(r.subtype ?? 'error') }
+        : {}),
+    };
   }
   // Codex `--json`: the last agent message is the answer; it reports tokens, not cost.
   let text = '';

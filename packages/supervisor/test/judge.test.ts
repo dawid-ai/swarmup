@@ -132,6 +132,25 @@ describe('readJudgeOutput', () => {
       costUsd: 0.5,
       model: 'claude-sonnet-4-6',
     });
+    // An older build's single result object: the model that cost the most answered.
+    const single = JSON.stringify({
+      type: 'result',
+      result: 'ok',
+      total_cost_usd: 0.2,
+      modelUsage: { 'claude-haiku-4-5': { costUSD: 0.01 }, 'claude-opus-4-6': { costUSD: 0.19 } },
+    });
+    expect(
+      readJudgeOutput(
+        'claude',
+        `noise
+${single}
+`,
+      ),
+    ).toEqual({
+      text: 'ok',
+      costUsd: 0.2,
+      model: 'claude-opus-4-6',
+    });
     const codex = [
       '{"type":"thread.started"}',
       '{"type":"item.completed","item":{"type":"reasoning","text":"hmm"}}',
