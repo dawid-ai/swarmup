@@ -88,6 +88,12 @@ export interface BenchRunRequest {
   mode: BenchMode;
   reference_dir?: string;
   dry_run?: boolean;
+  /** Put the agent's role file from `root` in each prompt (W5). */
+  role_file?: boolean;
+  /** The variant whose role file goes in each prompt; implies `role_file`. */
+  variant?: string;
+  /** The store the role file comes from: a folder or a root name. */
+  root?: string;
 }
 
 /** A run's plan, from a dry run: what the confirm dialog shows before tokens are spent. */
@@ -132,6 +138,8 @@ export interface BenchRunView {
   current?: string;
   error?: string;
   overall?: SummaryOverall;
+  /** The variant whose role file the prompts carried. */
+  variant?: string;
   /** Started from the app (it has the request), not from the command line. */
   fromApp: boolean;
 }
@@ -344,6 +352,9 @@ export class BenchRuns {
       ...(state === 'running' && status?.current ? { current: status.current } : {}),
       ...(error ? { error } : {}),
       ...(summary ? { overall: summary.overall } : {}),
+      ...((summary?.role?.variant ?? request?.variant)
+        ? { variant: summary?.role?.variant ?? request?.variant }
+        : {}),
       fromApp: request !== undefined,
     };
   }
@@ -375,6 +386,12 @@ export class BenchRuns {
     }
     const when = (r: BenchRunView): string => r.startedAt ?? '';
     return out.sort((a, b) => (when(a) < when(b) ? 1 : when(a) > when(b) ? -1 : 0));
+  }
+
+  /** One run's view, or undefined when no run folder has it. */
+  get(id: string): BenchRunView | undefined {
+    const dir = this.dirOf(id);
+    return dir ? this.view(id, dir) : undefined;
   }
 
   /** One run with every attempt's `results.json`. */
@@ -461,6 +478,9 @@ export class BenchRuns {
     }
     if (req.mode === 'reference' && !req.reference_dir)
       bad('reference_dir: name the patches folder');
+    if (req.mode === 'agent' && (req.role_file || req.variant) && !req.root) {
+      bad('root: name the store the role file is in');
+    }
     const agent =
       req.mode === 'none' ? 'none' : req.mode === 'reference' ? undefined : req.agent || undefined;
     const id = this.newId(set.id);
@@ -532,6 +552,10 @@ export class BenchRuns {
       ...(req.budget_min !== undefined ? ['--budget-min', String(req.budget_min)] : []),
       ...(opts.hiddenDir ? ['--hidden-dir', opts.hiddenDir] : []),
       ...(opts.referenceDir ? ['--reference-dir', opts.referenceDir] : []),
+      ...(req.mode === 'agent' && (req.role_file || req.variant) && req.root
+        ? ['--role-file', '--root', req.root]
+        : []),
+      ...(req.mode === 'agent' && req.variant ? ['--variant', req.variant] : []),
     ];
     const fd = openSync(join(out, 'run.log'), 'a');
     // Inside Electron, execPath is the app: ELECTRON_RUN_AS_NODE makes it a plain Node process.

@@ -109,12 +109,13 @@ export function definitionProblemLines(ws: Workspace, cwd: string): string[] {
 // ---- swarmup validate ----------------------------------------------------------------------------
 
 export const validateCommand = {
-  usage: 'validate [PATH...] [--root NAME] [--strict] [--json] [--write-schemas]',
+  usage: 'validate [PATH...] [--root NAME] [--variant NAME] [--strict] [--json] [--write-schemas]',
   summary:
     'check swarm.yaml and the agent files of each root (or the files and stores PATH names); prints file:line:col: severity: path: message; exit 1 on errors, or on warnings with --strict',
   options: {
     strict: { type: 'boolean' },
     'write-schemas': { type: 'boolean' },
+    variant: { type: 'string' },
   } satisfies NonNullable<ParseArgsConfig['options']>,
   run: (ctx: DefsCtx): number => validate(ctx),
 };
@@ -138,7 +139,8 @@ function validate(ctx: DefsCtx): number {
       }
     }
   } else stores.push(...rootsOf(ctx).map((r) => r.dir));
-  const opts = loadOpts(ctx, strict);
+  const variant = str(ctx.opts.variant);
+  const opts = { ...loadOpts(ctx, strict), ...(variant ? { variant } : {}) };
   const sets: DefinitionSet[] = [];
   for (const dir of stores) {
     const set = loadDefinitions(dir, opts);
@@ -188,11 +190,17 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] | defs reject NAME [--root NAME] -m WHY | defs variants [--root NAME]',
   summary:
-    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), or write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml",
+    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions or reject it (a person), and list the variants",
   options: {
     remove: { type: 'boolean' },
+    dir: { type: 'string' },
+    name: { type: 'string' },
+    scorer: { type: 'string', multiple: true },
+    agent: { type: 'string', multiple: true },
+    message: { type: 'string', short: 'm' },
+    'body-file': { type: 'string' },
   } satisfies NonNullable<ParseArgsConfig['options']>,
   run: (ctx: DefsCtx): number => {
     const [sub, ...rest] = ctx.args;
@@ -205,6 +213,14 @@ export const defsCommand = {
         return defsDiff(ctx, rest[0] ?? 'HEAD');
       case 'import-config':
         return importConfig(ctx);
+      case 'propose':
+        return propose(ctx, rest);
+      case 'promote':
+        return promote(ctx, rest);
+      case 'reject':
+        return reject(ctx, rest);
+      case 'variants':
+        return variants(ctx);
       default:
         throw new OpsError(`usage: swarmup ${defsCommand.usage}`, 2);
     }
@@ -400,5 +416,119 @@ function importConfig(ctx: DefsCtx): number {
     if (empty([key, 'roles'])) d.deleteIn([key, 'roles']);
   });
   ctx.io.out(`removed ${imported.length} key(s) from the user config: ${imported.join(', ')}`);
+  return 0;
+}
+
+// ---- swarmup defs propose | promote | reject | variants (W6) --------------------------------------
+
+const list = (v: unknown): string[] =>
+  (Array.isArray(v) ? v : typeof v === 'string' ? [v] : [])
+    .flatMap((x) => String(x).split(','))
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+function messageOf(ctx: DefsCtx): string {
+  const m = ctx.opts.message;
+  const file = str(ctx.opts['body-file']);
+  if (file) return readFileSync(file === '-' ? 0 : resolve(ctx.io.cwd, file), 'utf8');
+  return Array.isArray(m) ? m.join('\n\n') : (str(m) ?? '');
+}
+
+function propose(ctx: DefsCtx, rest: string[]): number {
+  const id = rest[0];
+  const dir = str(ctx.opts.dir);
+  const name = str(ctx.opts.name);
+  if (!id || rest.length > 1 || !dir || !name) {
+    throw new OpsError('usage: swarmup defs propose ID --dir DIR --name NAME -m "why"', 2);
+  }
+  const res = ctx.ws().defsPropose(id, {
+    dir: resolve(ctx.io.cwd, dir),
+    name,
+    message: messageOf(ctx),
+    scorers: list(ctx.opts.scorer),
+    agents: list(ctx.opts.agent),
+  });
+  if (ctx.opts.json) {
+    ctx.io.out(
+      JSON.stringify(
+        { ...res.proposal, variant: res.variant, root: res.root, dir: res.dir },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  ctx.io.out(
+    `${res.root}/${res.variant}  ${shortHash(res.proposal.hash)}  proposed on ${res.proposal.task} (${res.events[0]?.id ?? ''})`,
+  );
+  ctx.io.out(`  wrote ${relative(ctx.io.cwd, res.dir) || res.dir}`);
+  ctx.io.out(
+    `  a person promotes it with \`swarmup defs promote ${res.variant}\` or rejects it with \`swarmup defs reject ${res.variant} -m "why"\``,
+  );
+  return 0;
+}
+
+function promote(ctx: DefsCtx, rest: string[]): number {
+  const name = rest[0];
+  if (!name || rest.length > 1) throw new OpsError('usage: swarmup defs promote NAME [-m NOTE]', 2);
+  const res = ctx.ws().defsPromote(name, {
+    root: str(ctx.opts.root),
+    message: messageOf(ctx) || undefined,
+  });
+  if (ctx.opts.json) {
+    ctx.io.out(JSON.stringify(res, null, 2));
+    return 0;
+  }
+  ctx.io.out(
+    `${res.root}/${res.variant}: promoted ${shortHash(res.from ?? '')} -> ${shortHash(res.to ?? '')}`,
+  );
+  for (const p of res.written ?? []) ctx.io.out(`  wrote   ${p}`);
+  for (const p of res.removed ?? []) ctx.io.out(`  removed ${p}`);
+  if (res.proposal) ctx.io.out(`  recorded on ${res.proposal.task}`);
+  return 0;
+}
+
+function reject(ctx: DefsCtx, rest: string[]): number {
+  const name = rest[0];
+  if (!name || rest.length > 1) throw new OpsError('usage: swarmup defs reject NAME -m "why"', 2);
+  const res = ctx.ws().defsReject(name, messageOf(ctx), { root: str(ctx.opts.root) });
+  if (ctx.opts.json) {
+    ctx.io.out(JSON.stringify(res, null, 2));
+    return 0;
+  }
+  ctx.io.out(
+    `${res.root}/${res.variant}: rejected${res.proposal ? `, recorded on ${res.proposal.task}` : ''}`,
+  );
+  return 0;
+}
+
+function variants(ctx: DefsCtx): number {
+  const name = str(ctx.opts.root);
+  const all = ctx
+    .ws()
+    .variants()
+    .filter((v) => !name || v.root === name);
+  if (ctx.opts.json) {
+    ctx.io.out(JSON.stringify(all, null, 2));
+    return 0;
+  }
+  if (all.length === 0) {
+    ctx.io.out('no variants');
+    return 0;
+  }
+  for (const v of all) {
+    const state = [
+      v.status,
+      v.stale ? 'stale: the base changed since' : '',
+      v.ok ? '' : `${v.problems.length} problem(s)`,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    ctx.io.out(
+      `${v.root}/${v.name}  ${shortHash(v.hash)}  ${state}  ${v.proposal?.task ?? '-'}  ${v.agents.join(',') || '-'}`,
+    );
+    for (const f of v.files) ctx.io.out(`  ${f.kind.padEnd(8)} ${f.path}`);
+    for (const p of v.problems) ctx.io.out(`  problem: ${p}`);
+  }
   return 0;
 }

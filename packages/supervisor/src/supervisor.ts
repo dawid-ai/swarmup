@@ -30,8 +30,12 @@ import type {
 } from '@swarmup/core';
 import type { SyncResult } from '@swarmup/core';
 import {
+  actorSlug,
   agentRuntimeValues,
   assertActor,
+  loadDefinitions,
+  SCRATCH_WRITER_ROLES,
+  VARIANTS_DIR,
   canClaimType,
   editUserConfig,
   formatMinutes,
@@ -78,6 +82,10 @@ import { DefsState } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
 import { ScoreKeeper } from './score-keeper.js';
+import type { BenchHost } from './bench-runs.js';
+import { BenchRuns } from './bench-runs.js';
+import type { ImproveState } from './improve.js';
+import { Improver } from './improve.js';
 import type { ScoreResult } from './scores.js';
 import { scorerSettings } from './scores.js';
 import { Merger } from './merger.js';
@@ -672,6 +680,11 @@ export interface LaunchRequest {
   parent?: string;
   /** A turn of the desktop chat: the Claude session it starts or resumes. */
   chat?: ChatInvocation;
+  /**
+   * Run with variant `variants/<name>/` of the task's store (W5): swarmupd writes the resolved
+   * role file into the run's scratch folder and points the prompt at it.
+   */
+  variant?: string;
 }
 
 interface LiveRun {
@@ -918,6 +931,12 @@ export class Supervisor extends EventEmitter {
   readonly merger: Merger;
   /** The scores of tasks, runs and agents, kept in `state.db` (see scores.ts). */
   readonly scores: ScoreKeeper;
+  /** Benchmark runs under the state folder, and runs it starts (W7). */
+  readonly bench: BenchRuns;
+  /** The self-improvement loop: improvement tasks and the benchmark gate (W6). */
+  readonly improver: Improver;
+  /** When the tick last ran the improvement loop (ms). */
+  private improveAt = 0;
   /** When the tick last asked for a scores refresh (ms); the first comes a minute after start. */
   private scoresAt: number;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
@@ -1088,6 +1107,22 @@ export class Supervisor extends EventEmitter {
     this.scores = new ScoreKeeper(this.state, {
       orientation: (r) => logOrientation(r.log),
       now: this.now,
+    });
+    this.bench = new BenchRuns(() => this.benchHost());
+    this.improver = new Improver({
+      now: () => this.now(),
+      config: () => this.config.improve,
+      ws: (actor) => this.ws(actor),
+      scores: () => this.scores.results(),
+      runs: () => this.runs(),
+      bench: {
+        start: (req) => this.bench.start(req),
+        run: (id) => this.bench.get(id),
+        compare: (a, b) => this.bench.compare(a, b),
+      },
+      readState: () => this.store.readJson<ImproveState>('improve.json', { gates: {} }),
+      writeState: (s) => this.store.writeJson('improve.json', s),
+      warn: (m) => this.emit('warn', m),
     });
     this.scoresAt = this.now();
     this.listerOpt = opts.procs;
@@ -3440,7 +3475,7 @@ export class Supervisor extends EventEmitter {
     if (!rc) throw new OpsError(noProvider(runtime), 2);
     const id = ulid(this.now());
     const ws = this.ws(agent, id);
-    const def = ws.agent(agent);
+    let def = ws.agent(agent);
     const inactive = roleInactive(def);
     if (inactive) throw new OpsError(inactive);
     const file = resolveCommand(rc.command, this.env);
@@ -3503,6 +3538,38 @@ export class Supervisor extends EventEmitter {
             throw new OpsError(`${ref} is held by live run ${owner}`);
         }
       }
+    }
+    // A run of a variant reads its role file from the variant's definitions: the store's files with
+    // the overlay on top (W5).
+    let variantRole: { text: string; hash: string; root: string } | undefined;
+    if (req.variant !== undefined) {
+      if (req.chat) throw new OpsError('a chat turn runs no variant', 2);
+      const vroot = rootName
+        ? ws.roots.find((r) => r.name === rootName)
+        : ws.roots.find((r) => !r.isMirror);
+      if (!vroot) throw new OpsError('a variant run needs a task store', 2);
+      const set = loadDefinitions(vroot.dir, { variant: req.variant });
+      if (!set.ok) {
+        const first = set.problems.find((p) => p.severity === 'error');
+        throw new OpsError(
+          `variant ${req.variant} does not check` +
+            (first ? `: ${first.path}: ${first.message}` : '') +
+            `; \`swarmup validate --root ${vroot.name} --variant ${req.variant}\` lists the problems`,
+        );
+      }
+      const vdef = set.agents.find((a) => a.id === agent);
+      if (!vdef)
+        throw new OpsError(`variant ${req.variant} of ${vroot.name} has no role file for ${agent}`);
+      const why = roleInactive(vdef);
+      if (why) throw new OpsError(why);
+      const norm = vdef.file.replace(/\\/g, '/');
+      const path = Object.keys(set.texts).find((p) => norm.endsWith(`/${p}`));
+      def = vdef;
+      variantRole = {
+        text: path ? set.texts[path]! : vdef.body,
+        hash: set.hash,
+        root: vroot.name,
+      };
     }
     const project = parent
       ? (parent.project ?? parent.root ?? this.projectOf(ws))
@@ -3628,10 +3695,18 @@ export class Supervisor extends EventEmitter {
     // here instead of the repo, `out/` or the folder above it (AO-0230).
     const scratch = join(this.store.dir, 'scratch', id);
     mkdirSync(scratch, { recursive: true });
+    // The variant's role file as resolved, where the run reads it instead of the store's.
+    let roleFile = def?.file;
+    if (variantRole) {
+      roleFile = join(scratch, `role-${actorSlug(agent)}.md`);
+      writeFileSync(roleFile, variantRole.text);
+    }
     const addDirs = [...ws.roots.map((r) => this.gitTopOf(r.dir) ?? r.dir), scratch].filter(
       (d, i, all) => all.indexOf(d) === i && !inside(d, cwd),
     );
-    const roleDirs = ws.roots.map((r) => join(r.dir, 'agents'));
+    // Runs change definitions only through `swarmup defs propose` (W6): no edits to role files or
+    // variants.
+    const roleDirs = ws.roots.flatMap((r) => [join(r.dir, 'agents'), join(r.dir, VARIANTS_DIR)]);
     if (req.chat && (req.task || req.parent)) {
       throw new OpsError('a chat turn works on no task', 2);
     }
@@ -3649,8 +3724,19 @@ export class Supervisor extends EventEmitter {
         : def;
     // The definitions the run starts with, when a task store has a swarm.yaml (W5). The commit
     // comes from a lookup off the event loop: a run before it ends records the hash alone.
-    const defsStamp = this.defsState.stamp(rootName, agent, localAgentKeys(agent, agentCfg, def));
+    const baseStamp = this.defsState.stamp(rootName, agent, localAgentKeys(agent, agentCfg, def));
+    // A variant run is stamped with the variant's hash: the commit and dirty flag are the base's.
+    const defsStamp = variantRole
+      ? {
+          root: variantRole.root,
+          hash: variantRole.hash,
+          variant: req.variant!,
+          ...(baseStamp?.local ? { local: baseStamp.local } : {}),
+        }
+      : baseStamp;
     const readOnly = !roleLimits(this.config, roleOf(agent)).writes;
+    // A read-only role that drafts in its scratch folder, such as the improver (W6).
+    const scratchWriter = readOnly && SCRATCH_WRITER_ROLES.includes(roleOf(agent));
     // A run in a data root's checkout makes code branches in worktrees (AO-0135).
     const storeCheckout = this.storeCheckoutOf(ws, cwd) ?? undefined;
     // A run that swarmupd starts in the task's worktree is told where it is (AO-0168).
@@ -3767,7 +3853,7 @@ export class Supervisor extends EventEmitter {
         : runPrompt({
             agent,
             task,
-            roleFile: def?.file,
+            roleFile,
             role: def,
             review: req.review,
             question,
@@ -3775,7 +3861,7 @@ export class Supervisor extends EventEmitter {
             extra: req.extra,
             storeCheckout,
             taskWorktree,
-            scratch: readOnly || req.chat ? undefined : scratch,
+            scratch: (readOnly && !scratchWriter) || req.chat ? undefined : scratch,
             notes,
             map,
             decisions,
@@ -3877,6 +3963,7 @@ export class Supervisor extends EventEmitter {
         around,
         resumed: resumed?.session,
         resumed_from: resumed?.from,
+        ...(req.variant ? { variant: req.variant } : {}),
         ...(defsStamp ? { defs: defsStamp, model: invModel, effort: invEffort } : {}),
       };
       this.store.save(record);
@@ -3936,8 +4023,10 @@ export class Supervisor extends EventEmitter {
             run: id,
             ...(resumed ? { session: resumed.session } : {}),
             ...(defsStamp ? { defs: shortHash(defsStamp.hash) } : {}),
+            ...(req.variant ? { variant: req.variant } : {}),
           },
           `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
+            (req.variant ? `, variant ${req.variant}` : '') +
             (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),
       );
@@ -5263,6 +5352,7 @@ export class Supervisor extends EventEmitter {
       }
       this.safe(() => this.notifyTick());
       this.scoresTick();
+      this.safe(() => this.improveTick());
       this.emit('tick');
     } finally {
       this.ticks++;
@@ -5344,6 +5434,38 @@ export class Supervisor extends EventEmitter {
     this.refreshScores().catch((err: unknown) => {
       this.emit('warn', `scores: ${err instanceof Error ? err.message : String(err)}`);
     });
+  }
+
+  /**
+   * The self-improvement loop, once a minute at most: the trigger (itself at most every
+   * `improve.check_hours`, and only when `improve.enabled`) and the benchmark gate.
+   */
+  private improveTick(): void {
+    if (this.stopping || this.closed || this.now() - this.improveAt < 60_000) return;
+    this.improveAt = this.now();
+    for (const t of this.improver.triggerTick()) {
+      this.emit('warn', `improve: filed ${t.id} for ${t.owner}: ${t.title}`);
+    }
+    this.improver.gateTick();
+  }
+
+  /** What the bench runner needs: the state folder, the roots, `swarmupd.bench` and the env. */
+  benchHost(): BenchHost {
+    let roots: Array<{ name: string; dir: string }> = [];
+    try {
+      roots = this.ws()
+        .roots.filter((r) => !r.isMirror)
+        .map((r) => ({ name: r.name, dir: r.dir }));
+    } catch {
+      // No root set up: no root's sets.
+    }
+    return {
+      stateDir: this.store.dir,
+      roots,
+      config: this.config.bench,
+      configPath: this.configPath,
+      env: this.context.env,
+    };
   }
 
   /** The scores, computed again first when something changed, or always with `force`. */

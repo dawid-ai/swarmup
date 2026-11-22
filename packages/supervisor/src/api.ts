@@ -38,7 +38,7 @@ import {
   standup,
 } from './admin.js';
 import type { BenchHost, BenchRunRequest } from './bench-runs.js';
-import { BenchRuns, listBenchSets } from './bench-runs.js';
+import { listBenchSets } from './bench-runs.js';
 import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
@@ -219,14 +219,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   });
   // Task events the reports read, kept so a report opened again reads only the tasks that changed.
   const reportEvents = new ReportEvents();
-  const benchHost = (): BenchHost => ({
-    stateDir: sup.store.dir,
-    roots: benchRoots(sup),
-    config: sup.config.bench,
-    configPath: sup.configPath,
-    env: sup.context.env,
-  });
-  const bench = new BenchRuns(benchHost);
+  const benchHost = (): BenchHost => sup.benchHost();
+  const bench = sup.bench;
   const server = createServer((req, res) => {
     // The app reads some seven paths at once after each run or task event. Answered back to
     // back they held a write that arrived then, such as a chat send at the start or end of a
@@ -526,6 +520,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           budget: str(body.budget),
           tokens: str(body.tokens),
           parent,
+          ...(str(body.variant) ? { variant: str(body.variant) } : {}),
         });
         return send(res, 201, launched);
       }
@@ -780,8 +775,41 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     // Definitions as code (W5): each root's swarm.yaml and agent files, what they set in the
     // config, and the machine keys that won over them.
     if (area === 'defs') {
+      // Proposals (W6): the variants with their diffs and benchmarks; a person promotes or
+      // rejects one, with the functions behind `swarmup defs promote` and `reject`.
+      if (id === 'variants') {
+        if (method === 'GET' && !action) return send(res, 200, sup.improver.proposals());
+        const verb = parts[4];
+        if (method === 'POST' && action && (verb === 'promote' || verb === 'reject')) {
+          humanOnly(
+            verb === 'promote' ? 'promoting a definition change' : 'rejecting a definition change',
+          );
+          const ws = wsAs();
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const rootName = str(body.root) || undefined;
+          const done =
+            verb === 'promote'
+              ? ws.defsPromote(action, { root: rootName, message: str(body.message) || undefined })
+              : ws.defsReject(action, str(body.message) ?? '', { root: rootName });
+          await sup.tick();
+          return send(res, 200, done);
+        }
+      }
       const defs = await defsRoute(sup, method, id, body, humanOnly);
       if (defs !== undefined) return send(res, 200, defs);
+    }
+    // **Propose an improvement** on an agent's failing scorer: the improvement task, now (W6).
+    if (method === 'POST' && area === 'improve' && !id) {
+      humanOnly('filing an improvement task');
+      const ws = wsAs();
+      if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+      try {
+        const meta = sup.improver.request(need(body.agent, 'agent'), ws.actor);
+        return send(res, 201, meta);
+      } catch (err) {
+        if (err instanceof OpsError) throw err;
+        throw new HttpError(409, (err as Error).message);
+      }
     }
     // Benchmarks (W7): sets, runs under the state folder, and runs started from the app.
     if (area === 'bench') {
@@ -1565,25 +1593,22 @@ function benchRequest(body: Json): BenchRunRequest {
     dry_run: body.dry_run === true,
   };
   if (entries?.length) out.entries = entries;
-  for (const k of ['agent', 'model', 'effort', 'hidden_dir', 'reference_dir'] as const) {
+  for (const k of [
+    'agent',
+    'model',
+    'effort',
+    'hidden_dir',
+    'reference_dir',
+    'variant',
+    'root',
+  ] as const) {
     const v = text(k);
     if (v !== undefined) out[k] = v;
   }
+  if (body.role_file === true) out.role_file = true;
   const repeat = number('repeat', true);
   if (repeat !== undefined) out.repeat = repeat;
   const budget = number('budget_min', false);
   if (budget !== undefined) out.budget_min = budget;
   return out;
-}
-
-/** The task stores benchmark sets are read from; none when no root is set up. */
-function benchRoots(sup: Supervisor): Array<{ name: string; dir: string }> {
-  try {
-    return sup
-      .ws()
-      .roots.filter((r) => !r.isMirror)
-      .map((r) => ({ name: r.name, dir: r.dir }));
-  } catch {
-    return [];
-  }
 }

@@ -2027,7 +2027,10 @@ export class Workspace {
   recordRun(
     ref: string,
     type: 'run-start' | 'run-end',
-    fields: Pick<OpsEvent, 'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session' | 'defs'>,
+    fields: Pick<
+      OpsEvent,
+      'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session' | 'defs' | 'variant'
+    >,
     message = '',
   ): ActResult {
     return this.act(ref, () => [{ type, ...fields, body: message }]);

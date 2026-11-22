@@ -227,8 +227,50 @@ export interface BenchSummary {
   finishedAt: string;
   /** The judge of the run's `rubric` criteria, and when it last judged. */
   judge?: { runtime: string; model: string | null; at: string };
+  /**
+   * The role file whose instructions the prompt carried (W5): the definitions' hash and, for a
+   * variant, its name. Runs without `--role-file` or `--variant` use the entry's prompt alone.
+   */
+  role?: BenchRoleInfo;
   entries: EntrySummary[];
   overall: SummaryOverall;
+}
+
+/** What a summary records of the role file a run's prompt carried. */
+export interface BenchRoleInfo {
+  agent: string;
+  /** The store the definitions came from. */
+  root: string;
+  /** The definition hash: the base's, or the variant's (base with its overlay). */
+  defs: string;
+  variant?: string;
+}
+
+/** The role file a bench run puts in each prompt: its instructions, and where they came from. */
+export interface BenchRole extends BenchRoleInfo {
+  /** The role file as resolved: frontmatter and instructions. */
+  text: string;
+  /** Its instructions: the body. */
+  body: string;
+  /** The model and effort the file gives the agent's runtime, when it names them. */
+  model?: string;
+  effort?: string;
+}
+
+/**
+ * The prompt of an attempt with a role file: the role's instructions first, as a run of that
+ * agent reads its role file, then the entry's task.
+ */
+export function rolePrompt(role: Pick<BenchRole, 'agent' | 'body'>, task: string): string {
+  return [
+    `You are ${role.agent}. Your role file's instructions:`,
+    '',
+    role.body.trim(),
+    '',
+    '---',
+    '',
+    task,
+  ].join('\n');
 }
 
 // ---- Agent invocation ---------------------------------------------------------------------------
@@ -790,8 +832,8 @@ export interface CompareRow {
 }
 
 export interface Comparison {
-  a: { set: string; agent: string; model?: string; effort?: string; out: string };
-  b: { set: string; agent: string; model?: string; effort?: string; out: string };
+  a: { set: string; agent: string; model?: string; effort?: string; variant?: string; out: string };
+  b: { set: string; agent: string; model?: string; effort?: string; variant?: string; out: string };
   rows: CompareRow[];
   /** Over the entries both runs have, so the deltas compare like with like. */
   overall: {
@@ -822,6 +864,7 @@ export function compareSummaries(a: BenchSummary, b: BenchSummary): Comparison {
     agent: s.agent,
     ...(s.model ? { model: s.model } : {}),
     ...(s.effort ? { effort: s.effort } : {}),
+    ...(s.role?.variant ? { variant: s.role.variant } : {}),
     out: s.out,
   });
   return {
@@ -847,7 +890,9 @@ function signed(v: number | null, f: (x: number) => string): string {
 /** A comparison as a Markdown table. */
 export function compareMarkdown(c: Comparison): string {
   const who = (x: Comparison['a']): string =>
-    [x.agent, x.model, x.effort].filter(Boolean).join(', ');
+    [x.agent, x.model, x.effort, x.variant ? `variant ${x.variant}` : '']
+      .filter(Boolean)
+      .join(', ');
   const hidden = (e: EntrySummary | null): string =>
     e?.hiddenPass ? `${e.hiddenPass.passed}/${e.hiddenPass.attempts}` : '-';
   const cell = (
@@ -944,6 +989,8 @@ export interface BenchRunOptions {
   runCommand?: CheckDeps['runCommand'];
   /** Judges each attempt's `rubric` criteria after its checks (`--judge`). */
   judge?: BenchJudge;
+  /** Puts this role file's instructions in each prompt (`--role-file`, `--variant`). */
+  role?: BenchRole;
   /** The clock, for tests. */
   now?: () => Date;
 }
@@ -1130,6 +1177,12 @@ export function planLines(plan: ReturnType<typeof planBench>, opts: BenchRunOpti
     );
   }
   if (opts.judge) lines.push(judgeLine(opts.judge, opts.runtimes));
+  if (opts.role) {
+    lines.push(
+      `role file: ${opts.role.agent} from ${opts.role.root}` +
+        `${opts.role.variant ? `, variant ${opts.role.variant}` : ''} (${opts.role.defs.slice(0, 14)})`,
+    );
+  }
   const cmd = plan.attempts.find((a) => a.command)?.command;
   if (cmd)
     lines.push(
@@ -1227,7 +1280,7 @@ export async function runAttempt(
       const outcome = await runAgentProcess(cmd.file, cmd.args, {
         cwd: wt,
         env: benchEnv(opts.env ?? process.env, cmd.unsetEnv),
-        prompt: benchPrompt(a.entry),
+        prompt: opts.role ? rolePrompt(opts.role, benchPrompt(a.entry)) : benchPrompt(a.entry),
         logPath,
         timeoutMs: a.budgetMin * 60_000,
       });
@@ -1324,6 +1377,7 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
     throw new OpsError(`${out} already holds files: pick a new --out`, 2);
   }
   mkdirSync(out, { recursive: true });
+  if (opts.role) writeFileSync(join(out, 'role.md'), opts.role.text);
   const now = opts.now ?? (() => new Date());
   const startedAt = now().toISOString();
   const status: BenchStatus = {
@@ -1390,6 +1444,16 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
               runtime: judged[0]!.judge!.runtime,
               model: judged[0]!.judge!.model,
               at: judged.at(-1)!.judge!.at,
+            },
+          }
+        : {}),
+      ...(opts.role
+        ? {
+            role: {
+              agent: opts.role.agent,
+              root: opts.role.root,
+              defs: opts.role.defs,
+              ...(opts.role.variant ? { variant: opts.role.variant } : {}),
             },
           }
         : {}),
