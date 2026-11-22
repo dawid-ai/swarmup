@@ -2,8 +2,8 @@
 // check runner. A plain string stays a `prose` criterion, so tasks filed before the types read as
 // before.
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import YAML from 'yaml';
 import { doneWhenLines, OpsError } from './ids.js';
 import type { OpsEvent, TaskMeta } from './model.js';
@@ -30,6 +30,10 @@ export const CHECK_NAMES = [
   'word-count',
   'links-resolve',
   'url-ok',
+  'char-count',
+  'contains',
+  'heading-structure',
+  'front-matter',
 ] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
 
@@ -58,7 +62,17 @@ export interface CriterionSpec {
   pass?: number;
   /** human: the question a person answers. */
   ask?: string;
+  /**
+   * `publish`: the criterion holds after the work is published, not at merge. `swarmup published`
+   * runs it (with `{url}` in check arguments read as the published URL); the merge and
+   * `swarmup criteria check` leave it out.
+   */
+  when?: CriterionWhen;
 }
+
+/** When a criterion is checked: by default at merge; `publish` after `swarmup published`. */
+export const CRITERION_WHENS = ['publish'] as const;
+export type CriterionWhen = (typeof CRITERION_WHENS)[number];
 
 /** A criterion with its id settled. */
 export interface Criterion extends CriterionSpec {
@@ -129,6 +143,11 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
       bad(`${where}: args.${field} must be a number`);
     }
   };
+  const bool = (field: string): void => {
+    if (args[field] !== undefined && typeof args[field] !== 'boolean') {
+      bad(`${where}: args.${field} must be true or false`);
+    }
+  };
   switch (name) {
     case 'file-exists':
     case 'links-resolve':
@@ -161,6 +180,57 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
     case 'url-ok':
       need('url');
       break;
+    case 'char-count':
+      need('path');
+      num('min');
+      num('max');
+      if (args.min === undefined && args.max === undefined) {
+        bad(`${where}: check char-count needs args.min or args.max`);
+      }
+      if (args.per !== undefined && !['file', 'block', 'line'].includes(String(args.per))) {
+        bad(`${where}: args.per must be file, block or line`);
+      }
+      if (args.separator !== undefined && typeof args.separator !== 'string') {
+        bad(`${where}: args.separator must be text`);
+      }
+      break;
+    case 'contains':
+      need('path');
+      need('text');
+      if (args.mode !== undefined && args.mode !== 'all' && args.mode !== 'any') {
+        bad(`${where}: args.mode must be all or any`);
+      }
+      bool('expect');
+      bool('case-sensitive');
+      break;
+    case 'heading-structure':
+      need('path');
+      if (args.headings !== undefined) need('headings');
+      bool('single-h1');
+      bool('no-skip');
+      break;
+    case 'front-matter': {
+      need('path');
+      if (args.keys !== undefined) need('keys');
+      const match = args.match;
+      if (match !== undefined) {
+        if (!match || typeof match !== 'object' || Array.isArray(match)) {
+          bad(`${where}: args.match must map keys to patterns`);
+        }
+        for (const [k, pattern] of Object.entries(match as Record<string, unknown>)) {
+          if (typeof pattern !== 'string') bad(`${where}: args.match.${k} must be a pattern`);
+          try {
+            new RegExp(pattern);
+          } catch (err) {
+            bad(`${where}: bad pattern for ${k}: ${(err as Error).message}`);
+          }
+        }
+      }
+      if (args.keys === undefined && match === undefined) {
+        bad(`${where}: check front-matter needs args.keys or args.match`);
+      }
+      break;
+    }
   }
 }
 
@@ -180,6 +250,12 @@ function readSpec(raw: Record<string, unknown>, where: string): CriterionSpec {
   }
   const text = optionalText(raw, 'text', where);
   if (text) spec.text = text;
+  if (raw.when !== undefined && raw.when !== null) {
+    if (!(CRITERION_WHENS as readonly unknown[]).includes(raw.when)) {
+      bad(`${where}: when must be ${CRITERION_WHENS.join(' or ')}`);
+    }
+    spec.when = raw.when as CriterionWhen;
+  }
   switch (spec.kind) {
     case 'prose':
       if (!text) bad(`${where}: a prose criterion needs text`);
@@ -283,6 +359,11 @@ export function criteriaOf(entries: readonly DoneWhenEntry[] | undefined): Crite
 /** What a criterion checks, in one line, for a table or a prompt. */
 export function criterionWhat(c: CriterionSpec | string): string {
   if (typeof c === 'string') return c;
+  const what = kindWhat(c);
+  return c.when === 'publish' ? `${what} (after publish)` : what;
+}
+
+function kindWhat(c: CriterionSpec): string {
   const own = (s: string): string => (c.text ? `${c.text} (${s})` : s);
   switch (c.kind) {
     case 'prose':
@@ -320,7 +401,14 @@ export const TYPE_CRITERIA: Readonly<
   bug: { defaults: [], hint: 'a `command` criterion that reproduces the bug and now passes' },
   feature: { defaults: [], hint: 'a `command` criterion, such as the tests of the feature' },
   docs: { defaults: [], hint: 'a `check` criterion, such as links-resolve or word-count' },
-  content: { defaults: [], hint: 'a `check` criterion, such as word-count, or a `human` question' },
+  content: {
+    defaults: [],
+    hint: 'a `check` criterion, such as char-count, contains or front-matter, or a `rubric`',
+  },
+  publish: {
+    defaults: [],
+    hint: 'a `check` criterion with `when: publish`, such as url-ok on {url}',
+  },
 };
 
 /** The hint for a type, or a general one. */
@@ -501,6 +589,13 @@ export interface CheckDeps {
   runCommand?: (command: string, cwd: string) => Promise<CommandOutcome>;
   /** Runs a `map` criterion; without one, a map criterion is `na`. */
   mapCheck?: (c: Criterion) => Promise<CriterionVerdict>;
+  /**
+   * `publish`: run only the criteria with `when: publish`, as `swarmup published` does. Default:
+   * only the others, as the merge and `swarmup criteria check` do.
+   */
+  phase?: 'merge' | 'publish';
+  /** The published URL, which `{url}` in a check's arguments stands for in the publish phase. */
+  url?: string;
 }
 
 /** How long `url-ok` waits for an answer. */
@@ -598,81 +693,394 @@ async function urlOk(url: string, deps: CheckDeps): Promise<string | null> {
   }
 }
 
-/** Runs one built-in check. */
+/** `{url}` in a criterion's check arguments, read as the published URL. */
+function withUrl(c: Criterion, url: string): Criterion {
+  if (!c.args) return c;
+  const fill = (v: unknown): unknown =>
+    typeof v === 'string' ? v.replaceAll('{url}', url) : Array.isArray(v) ? v.map(fill) : v;
+  return {
+    ...c,
+    args: Object.fromEntries(Object.entries(c.args).map(([k, v]) => [k, fill(v)])),
+  };
+}
+
+/** Folders a path glob never walks into. */
+const GLOB_SKIP = new Set(['.git', 'node_modules']);
+/** The most files a glob walk reads, so a glob over a huge folder stays fast. */
+const GLOB_LIMIT = 20_000;
+
+/** True when a path pattern holds a glob character. */
+function isGlob(pattern: string): boolean {
+  return /[*?[]/.test(pattern);
+}
+
+/**
+ * A path glob as a regular expression over `/`-separated paths from the check's folder: `*` and
+ * `?` stay inside one segment, `**` crosses folders, and `[...]` is a character class.
+ */
+export function globRegExp(pattern: string): RegExp {
+  const src = pattern.replace(/\\/g, '/').replace(/^\.\//, '');
+  let re = '';
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!;
+    if (ch === '*' && src[i + 1] === '*') {
+      i++;
+      if (src[i + 1] === '/') {
+        i++;
+        re += '(?:[^/]*/)*';
+      } else re += '.*';
+    } else if (ch === '*') re += '[^/]*';
+    else if (ch === '?') re += '[^/]';
+    else if (ch === '[') {
+      const close = src.indexOf(']', i + 1);
+      if (close < 0) re += '\\[';
+      else {
+        re += `[${src
+          .slice(i + 1, close)
+          .replace(/^!/, '^')
+          .replace(/\\/g, '\\\\')}]`;
+        i = close;
+      }
+    } else re += ch.replace(/[.+^${}()|\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** The files under `cwd`, as `/`-separated paths from it, bounded by `GLOB_LIMIT`. */
+function walkFiles(cwd: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, rel: string): void => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names.sort()) {
+      if (out.length >= GLOB_LIMIT) return;
+      if (GLOB_SKIP.has(name)) continue;
+      const abs = join(dir, name);
+      const path = rel ? `${rel}/${name}` : name;
+      let st;
+      try {
+        st = statSync(abs);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(abs, path);
+      else if (st.isFile()) out.push(path);
+    }
+  };
+  walk(cwd, '');
+  return out;
+}
+
+/**
+ * The files a check's `path` names: each plain path as given, and every file each glob matches.
+ * `unmatched` holds the globs that match no file, which fail the check.
+ */
+export function expandPaths(cwd: string, spec: unknown): { paths: string[]; unmatched: string[] } {
+  const paths: string[] = [];
+  const unmatched: string[] = [];
+  let files: string[] | undefined;
+  for (const p of strings(spec)) {
+    if (!isGlob(p)) {
+      paths.push(p);
+      continue;
+    }
+    files ??= walkFiles(cwd);
+    const re = globRegExp(p);
+    const hits = files.filter((f) => re.test(f));
+    if (hits.length === 0) unmatched.push(p);
+    paths.push(...hits);
+  }
+  return { paths: [...new Set(paths)], unmatched };
+}
+
+/** One file's outcome of a check: whether it holds, and what was seen. */
+interface FileOutcome {
+  ok: boolean;
+  what: string;
+}
+
+/** Counts code points, so an emoji or an accented letter is one character, as people count. */
+function codePoints(text: string): number {
+  return [...text].length;
+}
+
+/**
+ * The parts `char-count` measures: the whole text, each non-empty line, or each block. Blocks
+ * are split at lines that equal `separator` (trimmed), else at blank lines.
+ */
+export function textParts(text: string, per: string, separator?: string): string[] {
+  const body = text.replace(/\r\n/g, '\n');
+  if (per === 'line')
+    return body
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+  if (per !== 'block') return [body.trim()];
+  const parts: string[] = [];
+  let cur: string[] = [];
+  const flush = (): void => {
+    const t = cur.join('\n').trim();
+    if (t) parts.push(t);
+    cur = [];
+  };
+  for (const line of body.split('\n')) {
+    const at = separator !== undefined ? line.trim() === separator.trim() : line.trim() === '';
+    if (at) flush();
+    else cur.push(line);
+  }
+  flush();
+  return parts;
+}
+
+/** An ATX heading of a Markdown file, outside fenced code. */
+export interface Heading {
+  level: number;
+  text: string;
+  line: number;
+}
+
+export function markdownHeadings(text: string): Heading[] {
+  const out: Heading[] = [];
+  let fence: string | null = null;
+  text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .forEach((line, i) => {
+      const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (!fence) fence = f[1]![0]!;
+        else if (f[1]![0] === fence) fence = null;
+        return;
+      }
+      if (fence) return;
+      const m = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+      if (m) out.push({ level: m[1]!.length, text: m[2]!.trim(), line: i + 1 });
+    });
+  return out;
+}
+
+/** The YAML front matter of a Markdown file: the mapping, or why there is none. */
+function frontMatterOf(text: string): { data: Record<string, unknown> } | { why: string } {
+  const src = text.replace(/\r\n/g, '\n');
+  if (!src.startsWith('---\n')) return { why: 'no front matter' };
+  const end = src.indexOf('\n---', 3);
+  if (end < 0) return { why: 'front matter is not closed with ---' };
+  let data: unknown;
+  try {
+    data = YAML.parse(src.slice(4, end));
+  } catch (err) {
+    return { why: `front matter is not YAML: ${(err as Error).message.split('\n')[0]}` };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { why: 'front matter is not a set of `key: value` fields' };
+  }
+  return { data: data as Record<string, unknown> };
+}
+
+/** A front matter value as text a pattern reads: text as is, anything else as JSON. */
+function valueText(v: unknown): string {
+  return typeof v === 'string'
+    ? v
+    : typeof v === 'number' || typeof v === 'boolean'
+      ? String(v)
+      : JSON.stringify(v);
+}
+
+/** Runs one built-in check on one file at `path`. */
+async function checkFile(c: Criterion, path: string, deps: CheckDeps): Promise<FileOutcome> {
+  const args = c.args ?? {};
+  const cwd = deps.cwd;
+  switch (c.check) {
+    case 'regex': {
+      const re = new RegExp(String(args.pattern), typeof args.flags === 'string' ? args.flags : '');
+      const expect = args.expect !== false;
+      const found = re.test(readFile(cwd, path));
+      return {
+        ok: found === expect,
+        what: `/${String(args.pattern)}/ ${found ? 'matches' : 'does not match'} ${path}`,
+      };
+    }
+    case 'word-count': {
+      const n = withoutFrontMatter(readFile(cwd, path)).split(/\s+/).filter(Boolean).length;
+      const min = typeof args.min === 'number' ? args.min : undefined;
+      const max = typeof args.max === 'number' ? args.max : undefined;
+      return {
+        ok: !((min !== undefined && n < min) || (max !== undefined && n > max)),
+        what: `${path} has ${n} words; wants ${rangeText(min, max)}`,
+      };
+    }
+    case 'char-count': {
+      const per = typeof args.per === 'string' ? args.per : 'file';
+      const sep = typeof args.separator === 'string' ? args.separator : undefined;
+      const min = typeof args.min === 'number' ? args.min : undefined;
+      const max = typeof args.max === 'number' ? args.max : undefined;
+      const parts = textParts(withoutFrontMatter(readFile(cwd, path)), per, sep);
+      const counts = parts.map(codePoints);
+      const off = counts
+        .map((n, i) => ({ n, i }))
+        .filter(({ n }) => (min !== undefined && n < min) || (max !== undefined && n > max));
+      const wants = `wants ${rangeText(min, max)} characters`;
+      if (per === 'file') {
+        return { ok: off.length === 0, what: `${path} has ${counts[0] ?? 0} characters; ${wants}` };
+      }
+      const unit = per === 'line' ? 'line' : 'block';
+      const longest = counts.length > 0 ? Math.max(...counts) : 0;
+      if (off.length === 0) {
+        return {
+          ok: true,
+          what: `${path}: ${counts.length} ${unit}s, the longest ${longest} characters; ${wants}`,
+        };
+      }
+      const list = off
+        .slice(0, 10)
+        .map(({ n, i }) => `${unit} ${i + 1} has ${n}`)
+        .join(', ');
+      const more = off.length > 10 ? ` and ${off.length - 10} more` : '';
+      return {
+        ok: false,
+        what: `${path}: ${off.length} of ${counts.length} ${unit}s out of range (${list}${more}); ${wants}`,
+      };
+    }
+    case 'contains': {
+      const sensitive = args['case-sensitive'] === true;
+      const norm = (t: string): string => (sensitive ? t : t.toLowerCase());
+      const text = norm(withoutFrontMatter(readFile(cwd, path)));
+      const wanted = strings(args.text);
+      const found = wanted.filter((w) => text.includes(norm(w)));
+      const missing = wanted.filter((w) => !found.includes(w));
+      const quote = (l: string[]): string => l.map((w) => `"${w}"`).join(', ');
+      if (args.expect === false) {
+        return found.length === 0
+          ? { ok: true, what: `${path} has none of ${quote(wanted)}` }
+          : { ok: false, what: `${path} has ${quote(found)}` };
+      }
+      const any = args.mode === 'any';
+      const ok = any ? found.length > 0 : missing.length === 0;
+      return ok
+        ? { ok, what: `${path} has ${quote(found)}` }
+        : {
+            ok,
+            what: any ? `${path} has none of ${quote(wanted)}` : `${path} lacks ${quote(missing)}`,
+          };
+    }
+    case 'heading-structure': {
+      const heads = markdownHeadings(withoutFrontMatter(readFile(cwd, path)));
+      const problems: string[] = [];
+      if (args['single-h1'] !== false) {
+        const h1 = heads.filter((h) => h.level === 1).length;
+        if (h1 !== 1) problems.push(`${h1} level-1 headings, wants exactly 1`);
+      }
+      if (args['no-skip'] !== false) {
+        for (let i = 1; i < heads.length; i++) {
+          const prev = heads[i - 1]!;
+          const h = heads[i]!;
+          if (h.level > prev.level + 1) {
+            problems.push(`line ${h.line} "${h.text}" skips from h${prev.level} to h${h.level}`);
+          }
+        }
+      }
+      let at = 0;
+      for (const want of strings(args.headings)) {
+        const m = /^(#{1,6})\s+(.*)$/.exec(want.trim());
+        const level = m ? m[1]!.length : undefined;
+        const text = (m ? m[2]! : want).trim().toLowerCase();
+        const idx = heads.findIndex(
+          (h, i) =>
+            i >= at && h.text.toLowerCase() === text && (level === undefined || h.level === level),
+        );
+        if (idx < 0) problems.push(`no heading "${want.trim()}" in order`);
+        else at = idx + 1;
+      }
+      return problems.length > 0
+        ? { ok: false, what: `${path}: ${problems.join('; ')}` }
+        : { ok: true, what: `${path}: ${heads.length} headings in order` };
+    }
+    case 'front-matter': {
+      const fm = frontMatterOf(readFile(cwd, path));
+      if ('why' in fm) return { ok: false, what: `${path}: ${fm.why}` };
+      const problems: string[] = [];
+      for (const k of strings(args.keys)) {
+        const v = fm.data[k];
+        if (v === undefined || v === null || v === '') problems.push(`no ${k}`);
+      }
+      const match = (args.match ?? {}) as Record<string, string>;
+      for (const [k, pattern] of Object.entries(match)) {
+        const v = fm.data[k];
+        if (v === undefined || v === null) {
+          if (!problems.includes(`no ${k}`)) problems.push(`no ${k}`);
+          continue;
+        }
+        const re = new RegExp(pattern);
+        const values = Array.isArray(v) ? v : [v];
+        const badOne = values.find((x) => !re.test(valueText(x)));
+        if (badOne !== undefined)
+          problems.push(`${k} "${valueText(badOne)}" does not match /${pattern}/`);
+      }
+      return problems.length > 0
+        ? { ok: false, what: `${path}: ${problems.join('; ')}` }
+        : { ok: true, what: `${path}: front matter holds` };
+    }
+    case 'links-resolve': {
+      const file = resolve(cwd, path);
+      const base = dirname(file);
+      const checkUrls = args['url-ok'] === true;
+      const site = typeof args.root === 'string' ? resolve(cwd, args.root) : cwd;
+      const broken: string[] = [];
+      let checked = 0;
+      for (const raw of linkTargets(readFileSync(file, 'utf8'))) {
+        if (SKIP_RE.test(raw)) continue;
+        if (URL_RE.test(raw)) {
+          if (!checkUrls) continue;
+          checked++;
+          const why = await urlOk(raw, deps);
+          if (why) broken.push(why);
+          continue;
+        }
+        if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
+        const target = decodeURI(raw.replace(/[?#].*$/, ''));
+        if (!target) continue;
+        checked++;
+        const at = target.startsWith('/') ? resolve(site, `.${target}`) : resolve(base, target);
+        if (!existsSync(at)) broken.push(raw);
+        else if (statSync(at).isDirectory() && /\.html?$/i.test(file)) {
+          if (!existsSync(resolve(at, 'index.html'))) broken.push(raw);
+        }
+      }
+      if (broken.length > 0) {
+        const more = broken.length > 10 ? ` and ${broken.length - 10} more` : '';
+        return {
+          ok: false,
+          what: `${path}: ${broken.length} of ${checked} links do not resolve: ${broken.slice(0, 10).join(', ')}${more}`,
+        };
+      }
+      return { ok: true, what: `${path}: ${checked} links resolve` };
+    }
+    default:
+      return { ok: false, what: `unknown check '${String(c.check)}'` };
+  }
+}
+
+function rangeText(min: number | undefined, max: number | undefined): string {
+  return [min !== undefined ? `at least ${min}` : '', max !== undefined ? `at most ${max}` : '']
+    .filter(Boolean)
+    .join(' and ');
+}
+
+/**
+ * Runs one built-in check. A check of files runs on every file its `path` names: a glob checks
+ * each file it matches, and a glob that matches none fails, as does a missing file.
+ */
 async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict> {
   const args = c.args ?? {};
   const cwd = deps.cwd;
-  const path = typeof args.path === 'string' ? args.path : '';
   const fail = (evidence: string): CriterionVerdict => ({ result: 'fail', evidence });
   const pass = (evidence: string): CriterionVerdict => ({ result: 'pass', evidence });
   try {
     switch (c.check) {
-      case 'file-exists': {
-        const paths = strings(args.path);
-        const missing = paths.filter((p) => !existsSync(resolve(cwd, p)));
-        return missing.length > 0
-          ? fail(`missing: ${missing.join(', ')}`)
-          : pass(`exists: ${paths.join(', ')}`);
-      }
-      case 'regex': {
-        const re = new RegExp(
-          String(args.pattern),
-          typeof args.flags === 'string' ? args.flags : '',
-        );
-        const expect = args.expect !== false;
-        const found = re.test(readFile(cwd, path));
-        const what = `/${String(args.pattern)}/ ${found ? 'matches' : 'does not match'} ${path}`;
-        return found === expect ? pass(what) : fail(what);
-      }
-      case 'word-count': {
-        const n = withoutFrontMatter(readFile(cwd, path)).split(/\s+/).filter(Boolean).length;
-        const min = typeof args.min === 'number' ? args.min : undefined;
-        const max = typeof args.max === 'number' ? args.max : undefined;
-        const range = [
-          min !== undefined ? `at least ${min}` : '',
-          max !== undefined ? `at most ${max}` : '',
-        ]
-          .filter(Boolean)
-          .join(' and ');
-        const what = `${path} has ${n} words; wants ${range}`;
-        return (min !== undefined && n < min) || (max !== undefined && n > max)
-          ? fail(what)
-          : pass(what);
-      }
-      case 'links-resolve': {
-        const file = resolve(cwd, path);
-        const base = dirname(file);
-        const checkUrls = args['url-ok'] === true;
-        const site = typeof args.root === 'string' ? resolve(cwd, args.root) : cwd;
-        const broken: string[] = [];
-        let checked = 0;
-        for (const raw of linkTargets(readFileSync(file, 'utf8'))) {
-          if (SKIP_RE.test(raw)) continue;
-          if (URL_RE.test(raw)) {
-            if (!checkUrls) continue;
-            checked++;
-            const why = await urlOk(raw, deps);
-            if (why) broken.push(why);
-            continue;
-          }
-          if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
-          const target = decodeURI(raw.replace(/[?#].*$/, ''));
-          if (!target) continue;
-          checked++;
-          const at = target.startsWith('/') ? resolve(site, `.${target}`) : resolve(base, target);
-          if (!existsSync(at)) broken.push(raw);
-          else if (statSync(at).isDirectory() && /\.html?$/i.test(file)) {
-            if (!existsSync(resolve(at, 'index.html'))) broken.push(raw);
-          }
-        }
-        if (broken.length > 0) {
-          const more = broken.length > 10 ? ` and ${broken.length - 10} more` : '';
-          return fail(
-            `${path}: ${broken.length} of ${checked} links do not resolve: ${broken.slice(0, 10).join(', ')}${more}`,
-          );
-        }
-        return pass(`${path}: ${checked} links resolve`);
-      }
       case 'url-ok': {
         const urls = strings(args.url);
         const broken: string[] = [];
@@ -684,14 +1092,51 @@ async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict
           ? fail(broken.join('; '))
           : pass(`${urls.join(', ')} answered 2xx or 3xx`);
       }
-      default:
-        return { result: 'na', note: `unknown check '${String(c.check)}'` };
+      case 'file-exists': {
+        const { paths, unmatched } = expandPaths(cwd, args.path);
+        const missing = [...unmatched, ...paths.filter((p) => !existsSync(resolve(cwd, p)))];
+        return missing.length > 0
+          ? fail(`missing: ${missing.join(', ')}`)
+          : pass(`exists: ${paths.join(', ')}`);
+      }
+      default: {
+        if (!(CHECK_NAMES as readonly string[]).includes(String(c.check))) {
+          return { result: 'na', note: `unknown check '${String(c.check)}'` };
+        }
+        const { paths, unmatched } = expandPaths(cwd, args.path);
+        const seen: FileOutcome[] = unmatched.map((g) => ({
+          ok: false,
+          what: `no file matches ${g}`,
+        }));
+        for (const p of paths) {
+          try {
+            seen.push(await checkFile(c, p, deps));
+          } catch (err) {
+            const what =
+              (err as NodeJS.ErrnoException).code === 'ENOENT'
+                ? `no file ${p}`
+                : `${p}: ${(err as Error).message}`;
+            seen.push({ ok: false, what });
+          }
+        }
+        const ok = seen.length > 0 && seen.every((s) => s.ok);
+        // Failures first, and the start kept: with many files, the evidence names what to fix.
+        const lines = [...seen.filter((s) => !s.ok), ...seen.filter((s) => s.ok)].map(
+          (s) => s.what,
+        );
+        const evidence = head(lines.join('\n'));
+        return ok ? pass(evidence) : fail(evidence);
+      }
     }
   } catch (err) {
-    const msg =
-      (err as NodeJS.ErrnoException).code === 'ENOENT' ? `no file ${path}` : (err as Error).message;
-    return fail(msg);
+    return fail((err as Error).message);
   }
+}
+
+/** The start of a check's evidence, cut at the evidence length. */
+function head(text: string): string {
+  const t = text.trim();
+  return t.length > EVIDENCE_LEN ? `${t.slice(0, EVIDENCE_LEN)}…` : t;
 }
 
 /**
@@ -704,7 +1149,11 @@ export async function runCriteria(
   deps: CheckDeps,
 ): Promise<CriteriaResults> {
   const out: CriteriaResults = {};
-  for (const c of criteria) {
+  const publish = deps.phase === 'publish';
+  for (const raw of criteria) {
+    // Post-publish criteria run only after `swarmup published`, and only then.
+    if ((raw.when === 'publish') !== publish) continue;
+    const c = publish && deps.url ? withUrl(raw, deps.url) : raw;
     if (c.kind === 'command') {
       const run = deps.runCommand ?? ((cmd: string, cwd: string) => defaultRunCommand(cmd, cwd));
       const r = await run(c.run ?? '', deps.cwd);
