@@ -451,10 +451,17 @@ export function parseCriteriaText(text: string, what: string): unknown {
 
 /**
  * One `--done-when` or `--add` value: a typed criterion when it is a YAML mapping in braces
- * (`{id: tests, kind: command, run: pnpm test}`), else the text as given.
+ * (`{id: tests, kind: command, run: pnpm test}`) or a block mapping over several lines whose
+ * keys include `kind`, else the text as given. Without the block form, a script that passed
+ * block YAML got one prose criterion per line.
  */
 export function doneWhenArg(value: string): unknown {
-  return value.trim().startsWith('{') ? parseCriteriaText(value, 'the criterion') : value;
+  const text = value.trim();
+  if (text.startsWith('{')) return parseCriteriaText(value, 'the criterion');
+  if (text.includes('\n') && /^kind\s*:/m.test(text)) {
+    return parseCriteriaText(value, 'the criterion');
+  }
+  return value;
 }
 
 /**

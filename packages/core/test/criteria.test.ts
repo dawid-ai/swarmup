@@ -81,6 +81,18 @@ describe('parseDoneWhen', () => {
     });
     expect(doneWhenArg('npm test: passes')).toBe('npm test: passes');
   });
+
+  it('takes a block YAML mapping with a kind as one typed criterion', () => {
+    expect(doneWhenArg('id: tests\nkind: command\nrun: npm test\n')).toEqual({
+      id: 'tests',
+      kind: 'command',
+      run: 'npm test',
+    });
+    // Two lines of plain text with no kind stay text.
+    expect(doneWhenArg('the page loads\nand shows the price')).toBe(
+      'the page loads\nand shows the price',
+    );
+  });
 });
 
 describe('typed criteria on a task', () => {
