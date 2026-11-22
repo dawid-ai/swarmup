@@ -37,12 +37,25 @@ export interface SwarmRole {
   max_children?: number;
 }
 
-/** The part of `swarm.yaml` phase 1 applies. */
+/** The improvement policy (W6): what a proposal may change, and how many may wait at once. */
+export interface SwarmImprovement {
+  /** The agent that writes proposals, such as `claude:improver`. */
+  agent?: string;
+  /** Globs of overlay paths a proposal may change. */
+  may_change?: string[];
+  /** Globs of overlay paths a proposal never changes; they win over `may_change`. */
+  frozen?: string[];
+  /** Most proposals that wait for a person at once in this store. */
+  max_open_proposals?: number;
+}
+
+/** The part of `swarm.yaml` swarmupd applies. */
 export interface SwarmDefs {
   swarmup_defs: number;
   defaults?: { budget_min?: number; effort?: string; model?: string };
   runtimes?: Record<string, SwarmRuntime>;
   roles?: Record<string, SwarmRole>;
+  improvement?: SwarmImprovement;
 }
 
 export const modelSchema = (doc?: string): Schema =>
@@ -159,7 +172,32 @@ export const SWARM_SCHEMA: Schema = obj(
     checks: later('checks in git come in phase 4, after `swarmup defs trust`'),
     variants: later('variants come in phase 5'),
     experiments: later('experiments come in phase 5'),
-    improvement: later('the improvement loop comes in phase 5'),
+    improvement: obj(
+      {
+        agent: str({
+          pattern: /^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$/,
+          hint: 'use <runtime>:<role>, such as claude:improver',
+          doc: 'The agent that writes proposals. Default `claude:improver`.',
+        }),
+        may_change: list(str(), {
+          doc: "Globs of the paths a proposal's overlay may change. Default `agents/*.md`, `agents/*/*.md` and `workflows/**`.",
+        }),
+        frozen: list(str(), {
+          doc: "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
+        }),
+        max_open_proposals: int({
+          min: 0,
+          doc: 'Most proposals that wait for a person at once in this store. Default 2.',
+        }),
+        requires: any({
+          inactive: 'benchmark requirements come later; swarmupd.improve.benchmark runs the gate',
+        }),
+      },
+      {
+        nullable: true,
+        doc: 'The self-improvement policy (W6): what `swarmup defs propose` may change.',
+      },
+    ),
   },
   {
     required: ['swarmup_defs'],
@@ -212,6 +250,19 @@ export function swarmDefs(value: unknown): SwarmDefs {
       roles[name] = r as SwarmRole;
     }
     out.roles = roles;
+  }
+  if (isRecord(v.improvement)) {
+    const i = v.improvement;
+    const imp: SwarmImprovement = {};
+    if (typeof i.agent === 'string') imp.agent = i.agent;
+    const strings = (x: unknown): string[] | undefined =>
+      Array.isArray(x) ? x.filter((e): e is string => typeof e === 'string') : undefined;
+    const may = strings(i.may_change);
+    if (may) imp.may_change = may;
+    const frozen = strings(i.frozen);
+    if (frozen) imp.frozen = frozen;
+    if (typeof i.max_open_proposals === 'number') imp.max_open_proposals = i.max_open_proposals;
+    out.improvement = imp;
   }
   return out;
 }

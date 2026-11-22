@@ -1,6 +1,8 @@
+import { lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentDef, AgentFileProblem } from '../agents.js';
-import { readAgentFiles } from '../agents.js';
+import { OpsError } from '../ids.js';
+import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
+import { agentFilesFromTexts, readAgentFiles } from '../agents.js';
 import { AGENT_SCHEMA } from './agent.js';
 import type { DefFile } from './hash.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
@@ -9,6 +11,14 @@ import { checkYaml } from './schema.js';
 import type { SwarmDefs } from './swarm.js';
 import { SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
 import { secretProblems, validateDefinitions } from './validate.js';
+import {
+  applyOverlay,
+  checkVariantName,
+  listVariantNames,
+  readOverlay,
+  textFiles,
+  variantDir,
+} from './variants.js';
 
 /** The definitions of one task store, read and checked. */
 export interface DefinitionSet {
@@ -34,6 +44,12 @@ export interface DefinitionSet {
   problems: DefProblem[];
   /** No problem is an error. */
   ok: boolean;
+  /** The variant these definitions are, when a variant was asked for (W5). */
+  variant?: string;
+  /** A variant's overlay files, path to text; `files` and `texts` are the result. */
+  overlay?: Record<string, string>;
+  /** A variant's base hash: the store's own definitions. */
+  baseHash?: string;
 }
 
 export interface LoadOptions {
@@ -43,6 +59,8 @@ export interface LoadOptions {
   machineRuntimes?: readonly string[];
   /** Agents this machine's config names, for the check that each role has an agent. */
   machineAgents?: readonly string[];
+  /** Read variant `variants/<name>/` on top of the store's definitions (W5). */
+  variant?: string;
 }
 
 const cache = new Map<string, DefinitionSet>();
@@ -62,6 +80,7 @@ function frontmatter(text: string): string | null {
  * same as before.
  */
 export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): DefinitionSet {
+  if (opts.variant !== undefined) return loadVariant(rootDir, checkVariantName(opts.variant), opts);
   const listed = listDefFiles(rootDir);
   const fingerprint = fingerprintOf(listed);
   const key = JSON.stringify([
@@ -73,25 +92,111 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
   const hit = cache.get(key);
   if (hit && hit.fingerprint === fingerprint) return hit;
   const { files, texts } = digestFiles(rootDir, listed);
+  const set = checkSet(rootDir, files, texts, readAgentFiles(rootDir), fingerprint, opts);
+  cache.set(key, set);
+  return set;
+}
+
+/** Paths, sizes and change times of the files in a variant folder, for the cache. */
+function overlayFingerprint(dir: string): string {
+  const out: string[] = [];
+  const visit = (rel: string): void => {
+    let names: string[];
+    try {
+      names = readdirSync(rel ? join(dir, rel) : dir);
+    } catch {
+      return;
+    }
+    for (const name of names.sort()) {
+      const path = rel ? `${rel}/${name}` : name;
+      let st;
+      try {
+        st = lstatSync(join(dir, path));
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) visit(path);
+      else out.push(`${path}\0${st.size}\0${st.mtimeMs}`);
+    }
+  };
+  visit('');
+  return out.join('\n');
+}
+
+/**
+ * The definitions of variant `name`: the store's definitions with `variants/<name>/` on top. The
+ * agents are read from the resulting texts; each agent's `file` is its overlay file when the
+ * overlay holds one, else its base file. Throws when the variant folder is missing.
+ */
+function loadVariant(rootDir: string, name: string, opts: LoadOptions): DefinitionSet {
+  const dir = variantDir(rootDir, name);
+  if (!listVariantNames(rootDir).includes(name)) {
+    throw new OpsError(`no variant '${name}' in ${rootDir}`, 2);
+  }
+  const listed = listDefFiles(rootDir);
+  const fingerprint = `${fingerprintOf(listed)}\n--\n${overlayFingerprint(dir)}`;
+  const key = JSON.stringify([
+    rootDir,
+    name,
+    Boolean(opts.strict),
+    opts.machineRuntimes ?? null,
+    opts.machineAgents ?? null,
+  ]);
+  const hit = cache.get(key);
+  if (hit && hit.fingerprint === fingerprint) return hit;
+  const base = digestFiles(rootDir, listed);
+  const overlay = readOverlay(dir);
+  const texts = applyOverlay(base.texts, overlay);
+  const fileOf = (path: string): string =>
+    overlay.has(path) ? join(dir, path) : join(rootDir, path);
+  const set = checkSet(
+    rootDir,
+    textFiles(texts),
+    texts,
+    agentFilesFromTexts(rootDir, texts, fileOf),
+    fingerprint,
+    opts,
+    fileOf,
+  );
+  const out: DefinitionSet = {
+    ...set,
+    variant: name,
+    overlay: Object.fromEntries(overlay),
+    baseHash: definitionHash(base.files),
+  };
+  cache.set(key, out);
+  return out;
+}
+
+/** Checks one set of definition texts: each file against its schema, then across files. */
+function checkSet(
+  rootDir: string,
+  files: DefFile[],
+  texts: Map<string, string>,
+  read: AgentFiles,
+  fingerprint: string,
+  opts: LoadOptions,
+  fileOf: (path: string) => string = (path) => join(rootDir, path),
+): DefinitionSet {
   const problems: DefProblem[] = [];
   const present = texts.has(SWARM_FILE);
   let swarm: SwarmDefs | null = null;
   const locate = new Map<string, Locate>();
   if (present) {
+    const file = fileOf(SWARM_FILE);
     const checked = checkYaml(SWARM_SCHEMA, texts.get(SWARM_FILE)!, {
-      file: join(rootDir, SWARM_FILE),
+      file,
       strict: opts.strict,
     });
     problems.push(...checked.problems);
-    locate.set(join(rootDir, SWARM_FILE), checked.at);
+    locate.set(file, checked.at);
     if (!checked.problems.some((p) => p.severity === 'error')) swarm = swarmDefs(checked.value);
   }
-  const read = readAgentFiles(rootDir);
   const agentValues = new Map<string, unknown>();
   for (const f of files) {
     if (!f.path.startsWith('agents/') || !f.path.endsWith('.md')) continue;
     const name = f.path.slice('agents/'.length);
-    const file = join(rootDir, f.path);
+    const file = fileOf(f.path);
     if (name.includes('/')) {
       problems.push({
         file,
@@ -134,9 +239,10 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
       machineRuntimes: opts.machineRuntimes,
       machineAgents: opts.machineAgents,
       locate,
+      fileOf,
     }),
   );
-  const set: DefinitionSet = {
+  return {
     root: rootDir,
     present,
     swarm,
@@ -149,8 +255,6 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
     problems: sortProblems(problems),
     ok: !problems.some((p) => p.severity === 'error'),
   };
-  cache.set(key, set);
-  return set;
 }
 
 /**

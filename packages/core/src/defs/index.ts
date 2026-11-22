@@ -33,8 +33,44 @@ export {
   JSON_SCHEMA_DIALECT,
   toJsonSchema,
 } from './schema.js';
-export type { SwarmDefs, SwarmImport, SwarmRole, SwarmRuntime } from './swarm.js';
+export type { SwarmDefs, SwarmImport, SwarmImprovement, SwarmRole, SwarmRuntime } from './swarm.js';
 export { DEFS_FORMAT, setSwarmValues, SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
+export type { ImprovementPolicy, ProposalMeta, VariantFile, VariantInfo } from './proposals.js';
+export {
+  ALWAYS_FROZEN_KEYS,
+  applyVariantToBase,
+  DEFAULT_FROZEN,
+  DEFAULT_IMPROVER,
+  DEFAULT_MAX_OPEN_PROPOSALS,
+  DEFAULT_MAY_CHANGE,
+  improvementPolicy,
+  listVariants,
+  overlayFrom,
+  policyProblems,
+  readProposal,
+  removeVariant,
+  variantInfo,
+  writeProposal,
+  writeVariantFiles,
+} from './proposals.js';
+export {
+  applyOverlay,
+  checkVariantName,
+  DELETE_SUFFIX,
+  listVariantNames,
+  mergeAgentText,
+  mergeValues,
+  mergeYamlText,
+  overlayAgents,
+  overlayTargets,
+  PROPOSAL_FILE,
+  readOverlay,
+  splitFrontmatter,
+  textsHash,
+  VARIANT_NAME_RE,
+  variantDir,
+  VARIANTS_DIR,
+} from './variants.js';
 export type { ValidateInput } from './validate.js';
 export { secretProblems, validateDefinitions } from './validate.js';
 export {

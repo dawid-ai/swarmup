@@ -93,7 +93,41 @@
       "description": "Accepted but not active yet: experiments come in phase 5."
     },
     "improvement": {
-      "description": "Accepted but not active yet: the improvement loop comes in phase 5."
+      "description": "The self-improvement policy (W6): what `swarmup defs propose` may change.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "agent": {
+          "description": "The agent that writes proposals. Default `claude:improver`.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$"
+        },
+        "may_change": {
+          "description": "Globs of the paths a proposal's overlay may change. Default `agents/*.md`, `agents/*/*.md` and `workflows/**`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frozen": {
+          "description": "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_open_proposals": {
+          "description": "Most proposals that wait for a person at once in this store. Default 2.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "requires": {
+          "description": "Accepted but not active yet: benchmark requirements come later; swarmupd.improve.benchmark runs the gate."
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": [

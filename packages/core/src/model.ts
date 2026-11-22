@@ -26,7 +26,9 @@ export type Priority = (typeof PRIORITIES)[number];
  * Event types. The fold acts on the ones that change state; the rest (comment, finding, learn,
  * run-start, run-end, merge, brief) are history. The four plan events carry a milestone's plan
  * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
- * results. Unknown types from newer versions are kept and ignored.
+ * results. `defs-propose`, `defs-promote` and `defs-reject` record a change to the definitions
+ * proposed as a variant, and what a person did with it (W6). Unknown types from newer versions are
+ * kept and ignored.
  */
 export const EVENT_TYPES = [
   'claim',
@@ -63,6 +65,9 @@ export const EVENT_TYPES = [
   'criteria',
   'criteria-check',
   'brief',
+  'defs-propose',
+  'defs-promote',
+  'defs-reject',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -254,6 +259,14 @@ export interface OpsEvent {
    * with, when its task store has a `swarm.yaml` (W5).
    */
   defs?: string;
+  /**
+   * run-start: the variant of the definitions the run started with (W5). defs-propose,
+   * defs-promote, defs-reject: the variant proposed, promoted or rejected (W6).
+   */
+  variant?: string;
+  /** defs-promote: the short hashes of the store's definitions before and after the promotion. */
+  defs_from?: string;
+  defs_to?: string;
   /**
    * merge: the commit the base branch moved to. review: the HEAD commit of the checkout
    * `swarmup review` ran in, or the one `--commit` names (AO-0384).
