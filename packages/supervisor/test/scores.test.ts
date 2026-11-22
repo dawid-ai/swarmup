@@ -242,6 +242,43 @@ describe('task scorers', () => {
     const none = task('T-2', [ev(1, 'review', ENG), ev(2, 'verdict', REV, { verdict: 'approve' })]);
     expect(only(computeScores({ tasks: [none], runs: [] }), 'criteria-pass-rate')).toEqual([]);
   });
+
+  it('scores the reviewer on the prose criteria its approval leaves unmarked', () => {
+    const approve = ev(2, 'verdict', REV, { verdict: 'approve' }) as OpsEvent & {
+      criteria: Record<string, { result: string }>;
+    };
+    approve.criteria = { tests: { result: 'pass' }, c3: { result: 'na' } };
+    const t = task('T-1', [ev(1, 'review', ENG), approve]);
+    t.meta.done_when = [
+      { id: 'tests', kind: 'command', run: 'npm test' },
+      'The README explains the flag.',
+      'Old behavior is unchanged.',
+      'The changelog names it.',
+    ];
+    const [r] = only(computeScores({ tasks: [t], runs: [] }), 'verdict-completeness');
+    // c2 and c4 are prose and unmarked; the command criterion isn't the reviewer's to mark.
+    expect(r).toMatchObject({
+      agent: REV,
+      value: 0.333,
+      n: 3,
+      pass: false,
+      note: 'unmarked: c2, c4',
+    });
+    // A person's approval, or a task with no prose criteria, gets no score.
+    const byPerson = task('T-2', [
+      ev(1, 'review', ENG),
+      ev(2, 'verdict', HUMAN, { verdict: 'approve' }),
+    ]);
+    byPerson.meta.done_when = ['Looks right.'];
+    const noProse = task('T-3', [
+      ev(1, 'review', ENG),
+      ev(2, 'verdict', REV, { verdict: 'approve' }),
+    ]);
+    noProse.meta.done_when = [{ id: 'tests', kind: 'command', run: 'npm test' }];
+    expect(
+      only(computeScores({ tasks: [byPerson, noProse], runs: [] }), 'verdict-completeness'),
+    ).toEqual([]);
+  });
 });
 
 describe('agent and run scorers', () => {
