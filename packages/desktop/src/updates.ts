@@ -30,6 +30,27 @@ export function scheduleUpdateChecks(check: () => void): void {
   setInterval(check, UPDATE_CHECK_INTERVAL_MS).unref();
 }
 
+/**
+ * Waits before each new download after a file lock broke one. electron-updater downloads to
+ * `temp-SwarmUp-Setup.exe` and renames it; it retries that rename only on EBUSY, so an antivirus
+ * scan of the fresh exe (EPERM or EACCES on Windows) fails the whole download.
+ */
+export const LOCKED_DOWNLOAD_RETRY_MS = [15_000, 60_000, 5 * 60_000];
+
+/** True when an updater error is a file lock on the downloaded installer, not a network or feed fault. */
+export function isLockedDownload(message: string): boolean {
+  return /\b(EPERM|EACCES|EBUSY)\b/.test(message) && /\brename\b|temp-/i.test(message);
+}
+
+/**
+ * How long to wait before downloading again after `message`, or null when the error isn't a file
+ * lock or the retries for this version are used up. `attempt` counts the retries already made.
+ */
+export function lockedDownloadRetry(message: string, attempt: number): number | null {
+  if (!isLockedDownload(message)) return null;
+  return LOCKED_DOWNLOAD_RETRY_MS[attempt] ?? null;
+}
+
 /** What the Settings card, the banner and the tray show about updates. */
 export interface UpdateState {
   status: UpdateStatus;
