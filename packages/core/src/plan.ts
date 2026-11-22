@@ -1,8 +1,8 @@
 import YAML from 'yaml';
 import { parseDoneWhen } from './criteria.js';
 import { assertActor, assertOwner, isHuman, OpsError, runtimeOf } from './ids.js';
-import type { PlanItem, PlanState, Priority } from './model.js';
-import { PLAN_ITEM_TYPES, PLAN_MAX_ITEMS, MILESTONE_TYPE, PRIORITIES } from './model.js';
+import type { GateSpec, PlanItem, PlanState, Priority } from './model.js';
+import { GATE_TYPE, PLAN_ITEM_TYPES, PLAN_MAX_ITEMS, MILESTONE_TYPE, PRIORITIES } from './model.js';
 
 /** A plan file: the items, and notes for whoever approves it. */
 export interface PlanDoc {
@@ -121,7 +121,34 @@ function readItem(raw: unknown, n: number): PlanItem {
   if (body) item.body = body;
   const serves = optional(data, 'for', where);
   if (serves) item.for = serves;
+  if (data.gate !== undefined && data.gate !== null) item.gate = readGate(data.gate, where);
+  if (item.type === GATE_TYPE && !item.gate) item.gate = { ask: item.title };
+  if (item.gate && item.type !== GATE_TYPE) {
+    bad(`${where}: gate belongs to an item of type gate`);
+  }
   return item;
+}
+
+/** The `gate` of a plan item (W5): `ask`, optional `options` and `on_reject`. */
+function readGate(raw: unknown, where: string): GateSpec {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) bad(`${where}: gate is not a mapping`);
+  const g = raw as Record<string, unknown>;
+  const ask = text(g, 'ask', `${where}'s gate`);
+  const gate: GateSpec = { ask };
+  if (g.options !== undefined && g.options !== null) {
+    if (!Array.isArray(g.options) || g.options.some((o) => typeof o !== 'string' || !o.trim())) {
+      bad(`${where}: gate options must be a list of answers`);
+    }
+    const options = (g.options as string[]).map((o) => o.trim());
+    if (options.length > 0) gate.options = options;
+  }
+  if (g.on_reject !== undefined && g.on_reject !== null) {
+    if (g.on_reject !== 'park' && g.on_reject !== 'revise') {
+      bad(`${where}: gate on_reject must be park or revise`);
+    }
+    gate.on_reject = g.on_reject;
+  }
+  return gate;
 }
 
 function readDoc(data: unknown): PlanDoc {
@@ -196,6 +223,11 @@ export function validatePlan(doc: PlanDoc, kind: PlanKind, plan: PlanState | nul
         bad(`key '${item.key}' was used by an item that is no longer in the plan; pick a new key`);
       }
     }
+    // A gate is a person's decision (W5): an agent never owns or answers one.
+    if (item.type === GATE_TYPE && !isHuman(item.owner)) {
+      bad(`${where}: a gate is owned by a person (human:<name>), not ${item.owner}`);
+    }
+    if (item.type === GATE_TYPE && item.review) bad(`${where}: a gate has no reviewer`);
     for (const a of item.after ?? []) {
       if (a === item.key) bad(`${where} waits for itself`);
       if (!own.has(a) && !(amend && effective.has(a))) bad(`${where}: after names no key '${a}'`);
@@ -331,7 +363,16 @@ export function planChangedKeys(old: readonly PlanItem[], next: readonly PlanIte
 }
 
 /** The fields of a plan item that live in `task.md` and so never change in place. */
-const FIXED_FIELDS = ['title', 'body', 'done_when', 'review', 'type', 'priority', 'for'] as const;
+const FIXED_FIELDS = [
+  'title',
+  'body',
+  'done_when',
+  'review',
+  'type',
+  'priority',
+  'for',
+  'gate',
+] as const;
 
 /**
  * Refuses, with exit 1 and the key and field, a plan in which an existing item's title, body,
@@ -379,7 +420,10 @@ export function planDiffLines(old: readonly PlanItem[], next: readonly PlanItem[
       out.push(`estimate of ${n.key}: ${o.estimate} -> ${n.estimate}`);
     }
     for (const field of FIXED_FIELDS) {
-      if ((o[field] ?? '') !== (n[field] ?? '')) out.push(`${field} of ${n.key} edited`);
+      // Typed criteria and gates are objects: they compare by their fields.
+      if (JSON.stringify(o[field] ?? '') !== JSON.stringify(n[field] ?? '')) {
+        out.push(`${field} of ${n.key} edited`);
+      }
     }
   }
   return out;

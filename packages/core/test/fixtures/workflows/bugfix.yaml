@@ -1,0 +1,33 @@
+# milestone: Fix: login fails with a + in the email
+# done_when: "login fails with a + in the email no longer happens in the merged code, and a test covers it"
+# approval: starter
+notes: From workflow bugfix (bug=login fails with a + in the email, severity=p1).
+items:
+  - key: reproduce
+    title: "Reproduce: login fails with a + in the email"
+    owner: "*:engineer"
+    estimate: 1h
+    type: bug
+    priority: p1
+    done_when: A failing test or written steps reproduce login fails with a + in the email
+    body: Write a failing test that shows the bug, or exact steps when a test cannot.
+  - key: fix
+    title: "Fix: login fails with a + in the email"
+    owner: "*:engineer"
+    estimate: 2h
+    after:
+      - reproduce
+    type: bug
+    priority: p1
+    done_when: The reproducing test passes and the full test suite passes
+    body: "Rework: when a check fails, *:engineer reworks this stage, at most 2
+      round(s); then the milestone asks the PM."
+  - key: verify
+    title: Check the fix for login fails with a + in the email
+    owner: "*:qa"
+    estimate: 30m
+    after:
+      - fix
+    done_when: login fails with a + in the email does not happen when the
+      reproduction runs on the merged code
+    body: Follow the reproduction on the merged code and confirm the bug is gone.

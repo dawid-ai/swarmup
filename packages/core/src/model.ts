@@ -108,6 +108,12 @@ export interface TaskMeta {
   review?: string;
   /** Set when the creator used --force to give a `publish` task an owner that is no person. */
   owner_forced?: boolean;
+  /** A `gate` task (W5): what the person decides, and what a rejection does. */
+  gate?: GateSpec;
+  /** A milestone started from a workflow (W5): the workflow's id, `workflows/<id>.yaml`. */
+  workflow?: string;
+  /** The definition hash of the store when the workflow started (W5). */
+  defs_hash?: string;
   created_by: string;
   created_at: string;
 }
@@ -141,6 +147,29 @@ export const CONTENT_TYPE = 'content';
  */
 export const PUBLISH_TYPE = 'publish';
 
+/**
+ * The type of a human gate in a plan (W5): a person approves with `swarmup done` or rejects with
+ * `swarmup park`, and the items after it wait for the approval through `after`. Only a person
+ * owns, claims or closes one.
+ */
+export const GATE_TYPE = 'gate';
+
+/** What a gate asks, of whom, and what a rejection does (W5). */
+export interface GateSpec {
+  /** The question, such as "Is the brief right?". */
+  ask: string;
+  /** Answers the person may pick from, shown with the question. */
+  options?: string[];
+  /**
+   * `park` (the default): a rejection parks the gate and every item after it. `revise`: the items
+   * the gate waits for reopen, and the gate asks again when they are done.
+   */
+  on_reject?: 'park' | 'revise';
+}
+
+/** The types only a person owns, claims or closes: publishing (W8) and gates (W5). */
+export const PERSON_TYPES: readonly string[] = [PUBLISH_TYPE, GATE_TYPE];
+
 /** The types a plan item's task may have. Not `milestone`: plans do not nest. */
 export const PLAN_ITEM_TYPES: readonly string[] = [
   'task',
@@ -148,6 +177,7 @@ export const PLAN_ITEM_TYPES: readonly string[] = [
   'docs',
   CONTENT_TYPE,
   PUBLISH_TYPE,
+  GATE_TYPE,
 ];
 
 /** One piece of reviewed work a review event names (W8): a file, a URL, an image or a document. */
@@ -188,6 +218,8 @@ export interface PlanItem {
   body?: string;
   /** Amendments: the approved item this one serves. */
   for?: string;
+  /** A `gate` item (W5): the question its person answers. */
+  gate?: GateSpec;
 }
 
 /** Where an item of the effective plan came from: a human approval, or an amendment after it. */

@@ -1,12 +1,13 @@
 /**
- * Definitions as code (W5): `swarm.yaml` and the agent files in a task store, checked against
- * schemas, hashed, and merged under the machine's settings by swarmupd.
+ * Definitions as code (W5): `swarm.yaml`, the agent files and the workflows in a task store,
+ * checked against schemas, hashed, and merged under the machine's settings by swarmupd.
  */
-import { AGENT_SCHEMA } from './agent.js';
+import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { toJsonSchema } from './schema.js';
 import { SWARM_SCHEMA } from './swarm.js';
+import { WORKFLOW_SCHEMA } from './workflow.js';
 
-export { AGENT_SCHEMA, agentRuntimeValues } from './agent.js';
+export { ADDENDUM_SCHEMA, AGENT_SCHEMA, agentRuntimeValues, FOLDER_AGENT_SCHEMA } from './agent.js';
 export type { DefFile } from './hash.js';
 export {
   DEF_FOLDERS,
@@ -33,8 +34,24 @@ export {
   JSON_SCHEMA_DIALECT,
   toJsonSchema,
 } from './schema.js';
-export type { SwarmDefs, SwarmImport, SwarmImprovement, SwarmRole, SwarmRuntime } from './swarm.js';
-export { DEFS_FORMAT, setSwarmValues, SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
+export type {
+  SwarmDefs,
+  SwarmImport,
+  SwarmImprovement,
+  SwarmPolicy,
+  SwarmRole,
+  SwarmRuntime,
+  SwarmTestChanges,
+  SwarmWorkType,
+} from './swarm.js';
+export {
+  DEFS_FORMAT,
+  POLICY_KEYS,
+  setSwarmValues,
+  SWARM_FILE,
+  SWARM_SCHEMA,
+  swarmDefs,
+} from './swarm.js';
 export type { ImprovementPolicy, ProposalMeta, VariantFile, VariantInfo } from './proposals.js';
 export {
   ALWAYS_FROZEN_KEYS,
@@ -71,6 +88,29 @@ export {
   variantDir,
   VARIANTS_DIR,
 } from './variants.js';
+export type { MigrationPlan } from './migrate.js';
+export { agentDifferences, applyMigration, migrationDiff, planMigration } from './migrate.js';
+export type {
+  CompiledWorkflow,
+  CompileOptions,
+  WorkflowDef,
+  WorkflowGate,
+  WorkflowInfo,
+  WorkflowParam,
+  WorkflowStage,
+} from './workflow.js';
+export {
+  checkWorkflowText,
+  compileWorkflow,
+  gateBody,
+  readWorkflow,
+  readWorkflows,
+  WORKFLOW_ID_RE,
+  WORKFLOW_SCHEMA,
+  workflowIdOf,
+  workflowParams,
+  WORKFLOWS_DIR,
+} from './workflow.js';
 export type { ValidateInput } from './validate.js';
 export { secretProblems, validateDefinitions } from './validate.js';
 export {
@@ -101,6 +141,21 @@ export function schemaFiles(): Record<string, string> {
       id: `${SCHEMA_BASE}agent.schema.json`,
       title: 'Agent file frontmatter',
       description: 'The frontmatter of a SwarmUp agent file (`agents/<runtime>-<role>.md`).',
+    }),
+    'agent-folder.schema.json': toJsonSchema(FOLDER_AGENT_SCHEMA, {
+      id: `${SCHEMA_BASE}agent-folder.schema.json`,
+      title: 'Agent folder frontmatter',
+      description: 'The frontmatter of an agent folder file (`agents/<role>/agent.md`).',
+    }),
+    'agent-addendum.schema.json': toJsonSchema(ADDENDUM_SCHEMA, {
+      id: `${SCHEMA_BASE}agent-addendum.schema.json`,
+      title: 'Agent addendum frontmatter',
+      description: 'The frontmatter of a runtime addendum (`agents/<role>/<runtime>.md`).',
+    }),
+    'workflow.schema.json': toJsonSchema(WORKFLOW_SCHEMA, {
+      id: `${SCHEMA_BASE}workflow.schema.json`,
+      title: 'Workflow',
+      description: 'A SwarmUp workflow (`workflows/<id>.yaml`): a repeatable milestone plan.',
     }),
   };
   return Object.fromEntries(

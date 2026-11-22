@@ -8,8 +8,8 @@ export const DEFS_HASH_PREFIX = 'd:';
 
 const HASH_HEADER = 'swarmup-defs/1\n';
 
-/** Folders of a task store whose files, at any depth, are definitions in phase 1. */
-export const DEF_FOLDERS = ['agents'] as const;
+/** Folders of a task store whose files, at any depth, are definitions. */
+export const DEF_FOLDERS = ['agents', 'workflows'] as const;
 
 /** One definition file: its path in the store, with `/`, and its content's digest. */
 export interface DefFile {

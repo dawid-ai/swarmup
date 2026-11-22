@@ -7,6 +7,7 @@ import {
   ArrowUp,
   Check,
   ClipboardCheck,
+  DoorOpen,
   Flag,
   ListChecks,
   PenLine,
@@ -48,6 +49,7 @@ const TYPES: Array<[string, string]> = [
   ['docs', 'docs'],
   ['content', 'content'],
   ['publish', 'publish'],
+  ['gate', 'gate'],
 ];
 const PRIORITIES: Array<[string, string]> = [
   ['', "milestone's"],
@@ -364,9 +366,36 @@ function PlanTable(props: { rows: readonly PlanRow[]; tasks: boolean; nav: Nav; 
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.key} className="border-t border-white/6 align-top" data-plan-row={r.key}>
+          <tr
+            key={r.key}
+            className={cx('border-t border-white/6 align-top', r.type === 'gate' && 'bg-warn/5')}
+            data-plan-row={r.key}
+            data-plan-gate={r.type === 'gate' ? r.key : undefined}
+          >
             <td className="py-1.5 pr-2">
-              <div className="text-sm text-fg">{r.title}</div>
+              <div className="flex items-center gap-1.5 text-sm text-fg">
+                {r.type === 'gate' && (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md bg-warn/15 px-1.5 py-0.5 font-display text-[10px] font-semibold tracking-[0.1em] text-warn uppercase"
+                    title={
+                      r.gate?.on_reject === 'revise'
+                        ? 'A person decides here; a rejection sends the work before it back'
+                        : 'A person decides here; a rejection parks the stages after it'
+                    }
+                  >
+                    <DoorOpen size={11} /> Gate
+                  </span>
+                )}
+                <span>{r.title}</span>
+              </div>
+              {r.type === 'gate' && r.gate && r.gate.ask !== r.title && (
+                <div className="mt-0.5 text-[11px] text-fg-2">{r.gate.ask}</div>
+              )}
+              {r.type === 'gate' && r.gate?.options && (
+                <div className="mt-0.5 text-[11px] text-fg-4">
+                  answers: {r.gate.options.join(', ')}
+                </div>
+              )}
               <div className="mt-0.5 flex flex-wrap gap-x-2 font-mono text-[11px] text-fg-4">
                 <span>{r.key}</span>
                 {r.after.length > 0 && <span>after {r.after.join(', ')}</span>}

@@ -772,6 +772,14 @@ function AgentCard(props: {
               />
               {agent?.file ? status : 'no role file'}
             </Chip>
+            {agent?.folder && (
+              <Chip
+                color="#5aa9ff"
+                title={`agents/${agent.folder.role}/agent.md${agent.folder.addendum ? `, with its own ${who.runtime}.md` : ''}: one role file for every runtime of the role`}
+              >
+                {agent.folder.addendum ? `folder + ${who.runtime}.md` : 'folder'}
+              </Chip>
+            )}
             {agent?.provider === false && (
               <Chip
                 color="#ffb547"

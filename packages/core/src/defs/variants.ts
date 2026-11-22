@@ -241,10 +241,19 @@ export function overlayTargets(overlay: ReadonlyMap<string, string>): string[] {
   ].sort();
 }
 
-/** The agent ids an overlay changes: one per `agents/<runtime>-<role>.md` it holds. */
+/**
+ * The agent ids an overlay changes: one per `agents/<runtime>-<role>.md` it holds, `<runtime>:<role>`
+ * per addendum `agents/<role>/<runtime>.md`, and `*:<role>` per folder `agents/<role>/agent.md`,
+ * which every runtime of the role reads.
+ */
 export function overlayAgents(overlay: ReadonlyMap<string, string>): string[] {
   const out = new Set<string>();
   for (const path of overlayTargets(overlay)) {
+    const f = /^agents\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9]*)\.md$/.exec(path);
+    if (f) {
+      out.add(f[2] === 'agent' ? `*:${f[1]}` : `${f[2]}:${f[1]}`);
+      continue;
+    }
     const m = /^agents\/([^/_][^/]*)\.md$/.exec(path);
     if (!m) continue;
     const head = splitFrontmatter(overlay.get(path) ?? '').yaml;

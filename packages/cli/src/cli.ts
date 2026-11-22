@@ -37,6 +37,10 @@ import {
   reviewWithArtifacts,
   workspacePath,
   workspaceTypes,
+  compileWorkflow,
+  planYaml,
+  readWorkflow,
+  readWorkflows,
   adoptProposal,
   adoptRepo,
   defaultHumanId,
@@ -1324,6 +1328,153 @@ function printAct(ctx: Ctx, res: ActResult): void {
 }
 
 /** The result of a `swarmup plan` write: the milestone, then one line per task it wrote. */
+/** `--param K=V`, repeated, as values by name. */
+function paramArgs(ctx: Ctx): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of texts(ctx.opts.param)) {
+    const at = p.indexOf('=');
+    if (at < 1) usageError(`bad --param '${p}': use --param name=value`);
+    out[p.slice(0, at).trim()] = p.slice(at + 1);
+  }
+  return out;
+}
+
+/** `swarmup workflow list|show|start` (W5). */
+function workflowCommand(ctx: Ctx): number | void {
+  const verb = arg(ctx, 0, 'workflow command (list, show or start)');
+  const ws = ctx.ws();
+  const rootName = str(ctx.opts.root);
+  const roots = ws.roots.filter((r) => !r.isMirror && (!rootName || r.name === rootName));
+  if (rootName && roots.length === 0) usageError(`no root named '${rootName}'`);
+  if (verb === 'list') {
+    const all = roots.flatMap((r) => readWorkflows(r.dir).map((w) => ({ root: r.name, ...w })));
+    if (ctx.opts.json) {
+      ctx.io.out(
+        JSON.stringify(
+          all.map((w) => ({
+            root: w.root,
+            id: w.id,
+            file: w.file,
+            title: w.def?.title,
+            description: w.def?.description,
+            approval: w.def ? (w.def.approval ?? 'proposal') : undefined,
+            params: w.def?.params ?? {},
+            stages: w.def?.stages.length,
+            ok: w.def !== null,
+            problems: w.problems,
+          })),
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    if (all.length === 0) {
+      ctx.io.out(
+        'no workflows: add workflows/<id>.yaml to the store (docs/protocol.md, "Workflows")',
+      );
+      return;
+    }
+    const width = Math.max(...all.map((w) => w.id.length));
+    for (const w of all) {
+      const where = roots.length > 1 ? `${w.root}/` : '';
+      if (!w.def) {
+        ctx.io.out(`${pad(`${where}${w.id}`, width)}  does not check: swarmup validate`);
+        continue;
+      }
+      const params = Object.keys(w.def.params ?? {});
+      ctx.io.out(
+        `${pad(`${where}${w.id}`, width)}  ${pad(w.def.approval ?? 'proposal', 8)}  ${w.def.stages.length} stage(s)` +
+          `${params.length > 0 ? `  params: ${params.join(', ')}` : ''}  ${w.def.title ?? w.def.description ?? ''}`.trimEnd(),
+      );
+    }
+    return;
+  }
+  const id = arg(ctx, 1, 'workflow id');
+  if (verb === 'show') {
+    const root = roots[0] ?? usageError('no data root found');
+    const def = readWorkflow(root.dir, id);
+    const human = root.config.human ?? 'human:you';
+    const given = paramArgs(ctx);
+    // Parameters left out show as <name>, so the plan reads without them.
+    const sample: Record<string, string> = { ...given };
+    for (const [k, p] of Object.entries(def.params ?? {})) {
+      if (sample[k] === undefined && p?.default === undefined)
+        sample[k] = p?.options?.[0] ?? `<${k}>`;
+    }
+    const compiled = compileWorkflow(def, { params: sample, human, title: str(ctx.opts.title) });
+    if (ctx.opts.json) return void ctx.io.out(JSON.stringify({ def, compiled }, null, 2));
+    if (ctx.opts.yaml) return void ctx.io.out(planYaml(compiled.doc).trimEnd());
+    const o = ctx.io.out;
+    o(`${def.id}  ${def.title ?? ''}`.trimEnd());
+    if (def.description) o(def.description);
+    o(`approval: ${compiled.approval}`);
+    for (const [k, p] of Object.entries(def.params ?? {})) {
+      const bits = [
+        p?.required ? 'required' : '',
+        p?.default !== undefined ? `default ${p.default}` : '',
+        p?.options ? `one of ${p.options.join(', ')}` : '',
+      ].filter(Boolean);
+      o(
+        `param ${k}${bits.length > 0 ? ` (${bits.join('; ')})` : ''}${p?.description ? `: ${p.description}` : ''}`,
+      );
+    }
+    o(`milestone: ${compiled.milestone.title}`);
+    o(`done when: ${criterionWhat(compiled.milestone.done_when)}`);
+    const key = Math.max(3, ...compiled.doc.items.map((i) => i.key.length));
+    const owner = Math.max(5, ...compiled.doc.items.map((i) => i.owner.length));
+    o(`${pad('key', key)} ${pad('owner', owner)} ${pad('est', 5)} after  title`);
+    for (const i of compiled.doc.items) {
+      const gate = i.gate ? `  [gate${i.gate.on_reject === 'revise' ? ', revise' : ''}]` : '';
+      o(
+        `${pad(i.key, key)} ${pad(i.owner, owner)} ${pad(i.estimate, 5)} ${pad((i.after ?? []).join(',') || '-', 6)} ${i.title}${gate}`,
+      );
+    }
+    if (compiled.dropped.length > 0) o(`left out by when: ${compiled.dropped.join(', ')}`);
+    return;
+  }
+  if (verb === 'start') {
+    const res = ws.workflowStart(id, {
+      params: paramArgs(ctx),
+      title: str(ctx.opts.title),
+      root: rootName,
+      project: str(ctx.opts.project),
+      message: message(ctx, 2, false),
+    });
+    if (ctx.opts.json) {
+      ctx.io.out(
+        JSON.stringify(
+          {
+            milestone: res.milestone,
+            workflow: res.compiled.id,
+            params: res.compiled.params,
+            approved: Boolean(res.approved),
+            created: res.approved?.created ?? [],
+            warnings: [...(res.proposed.warnings ?? []), ...(res.approved?.warnings ?? [])],
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+    ctx.io.out(res.milestone.id);
+    if (res.approved) {
+      ctx.io.err(
+        `note: ${res.milestone.id} started from workflow ${id}: the plan is approved, ${res.approved.created.length} task(s) created`,
+      );
+      for (const c of res.approved.created) ctx.io.err(`  ${c.id} for '${c.key}'`);
+    } else {
+      ctx.io.err(
+        `note: ${res.milestone.id} started from workflow ${id}: its plan waits for a person: swarmup plan approve ${res.milestone.id}`,
+      );
+    }
+    printWarnings(ctx, [...(res.proposed.warnings ?? []), ...(res.approved?.warnings ?? [])]);
+    return;
+  }
+  usageError(`unknown workflow command '${verb}': use list, show or start`);
+}
+
 function printPlanResult(ctx: Ctx, res: PlanResult): void {
   if (ctx.opts.json) {
     ctx.io.out(
@@ -2371,13 +2522,15 @@ const COMMANDS: Record<string, Command> = {
   },
   plan: {
     usage:
-      'plan propose|show|approve|reject|amend|apply ID [--file PLAN.yml] [--kind subtask|fix|change] [--yaml] [MESSAGE]',
+      'plan propose|show|approve|reject|amend|apply ID [--file PLAN.yml | --workflow W [--param K=V]...] [--kind subtask|fix|change] [--yaml] [MESSAGE]',
     summary:
-      "a milestone's plan: propose it from a YAML file (the milestone's holder), show it, approve it as proposed or as edited in --file or reject it with a note (a person), amend it (--kind subtask or fix adds items at once; --kind change proposes the full revised plan), or apply what an approval left unfinished",
+      "a milestone's plan: propose it from a YAML file or a workflow with its parameters (the milestone's holder), show it, approve it as proposed or as edited in --file or reject it with a note (a person), amend it (--kind subtask or fix adds items at once; --kind change proposes the full revised plan), or apply what an approval left unfinished",
     options: {
       file: { type: 'string' },
       kind: { type: 'string' },
       yaml: { type: 'boolean' },
+      workflow: { type: 'string' },
+      param: { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
@@ -2390,8 +2543,20 @@ const COMMANDS: Record<string, Command> = {
           file ?? usageError(`name the plan file: swarmup plan ${verb} ${id} --file plan.yml`),
         );
       const ws = ctx.ws();
+      const workflow = str(ctx.opts.workflow);
+      if (workflow && verb !== 'propose') usageError('--workflow goes with swarmup plan propose');
+      if (workflow && file) usageError('pass --file or --workflow, not both');
       switch (verb) {
         case 'propose':
+          if (workflow) {
+            return printPlanResult(
+              ctx,
+              ws.planProposeWorkflow(id, workflow, {
+                params: paramArgs(ctx),
+                message: message(ctx, 2, false),
+              }),
+            );
+          }
           return printPlanResult(ctx, ws.planPropose(id, plan(), message(ctx, 2, false)));
         case 'approve':
           return printPlanResult(
@@ -2424,6 +2589,20 @@ const COMMANDS: Record<string, Command> = {
           );
       }
     },
+  },
+  workflow: {
+    usage:
+      'workflow list | workflow show W [--param K=V]... [--yaml] | workflow start W [--param K=V]... [--title T] [--project S] [-m NOTE]',
+    summary:
+      "the store's workflows (workflows/<id>.yaml): list them, show one compiled with its parameters, or start one: a milestone with the workflow's plan, approved at once when a person starts a workflow with approval: starter, else proposed for a person to approve",
+    options: {
+      param: { type: 'string', multiple: true },
+      title: { type: 'string' },
+      project: { type: 'string' },
+      yaml: { type: 'boolean' },
+      ...MESSAGE_OPTIONS,
+    },
+    run: (ctx) => workflowCommand(ctx),
   },
   archive: {
     usage: 'archive [--days N] [--dry-run]',

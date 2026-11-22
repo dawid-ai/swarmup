@@ -34,6 +34,7 @@ import { NoArtifact, readArtifact } from './artifact-api.js';
 import {
   actorSlug,
   agentRuntimeValues,
+  agentText,
   assertActor,
   loadDefinitions,
   SCRATCH_WRITER_ROLES,
@@ -3590,7 +3591,8 @@ export class Supervisor extends EventEmitter {
       const path = Object.keys(set.texts).find((p) => norm.endsWith(`/${p}`));
       def = vdef;
       variantRole = {
-        text: path ? set.texts[path]! : vdef.body,
+        // A folder agent's file is shared by its runtimes: the run reads the agent put together.
+        text: vdef.folder ? agentText(vdef) : path ? set.texts[path]! : vdef.body,
         hash: set.hash,
         root: vroot.name,
       };
@@ -3724,6 +3726,10 @@ export class Supervisor extends EventEmitter {
     if (variantRole) {
       roleFile = join(scratch, `role-${actorSlug(agent)}.md`);
       writeFileSync(roleFile, variantRole.text);
+    } else if (def?.folder?.addendum) {
+      // A folder agent with a runtime addendum (W5): the role and the addendum put together.
+      roleFile = join(scratch, `role-${actorSlug(agent)}.md`);
+      writeFileSync(roleFile, agentText(def));
     }
     const addDirs = [...ws.roots.map((r) => this.gitTopOf(r.dir) ?? r.dir), scratch].filter(
       (d, i, all) => all.indexOf(d) === i && !inside(d, cwd),

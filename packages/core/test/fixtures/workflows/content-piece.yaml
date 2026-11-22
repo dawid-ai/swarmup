@@ -1,0 +1,65 @@
+# milestone: launch post (linkedin)
+# done_when: "launch post is live on linkedin as approved, and recorded with swarmup published"
+# approval: proposal
+notes: From workflow content-piece (piece=launch post, channel=linkedin, slug=draft).
+items:
+  - key: brief
+    title: Write the brief for launch post
+    owner: "*:writer"
+    estimate: 30m
+    type: docs
+    done_when: The brief names the audience, the point, the claims and the call to action
+    body: "Write the brief in the task thread: the audience, the one point the piece
+      makes, the claims it may use from facts/claims.md, the channel's limits,
+      and the call to action."
+  - key: brief-ok
+    title: Is the brief for launch post right?
+    owner: human:dawid
+    estimate: 15m
+    after:
+      - brief
+    type: gate
+    done_when: "A person approved: Is the brief for launch post right?"
+    gate:
+      ask: Is the brief for launch post right?
+      on_reject: revise
+  - key: draft
+    title: Draft launch post for linkedin
+    owner: "*:writer"
+    estimate: 2h
+    after:
+      - brief-ok
+    type: content
+    review: codex:editor
+    done_when:
+      kind: rubric
+      id: voice
+      rubric: rubrics/brand-voice.md
+      pass: 0.7
+    body: >-
+      Write posts/linkedin-draft.md from the approved brief, with front matter
+      channel, status: draft and task. State only claims that facts/claims.md
+      holds. Finish with `swarmup review` and `--artifact
+      posts/linkedin-draft.md`.
+
+
+      Rework: when a check fails, *:writer reworks this stage, at most 2
+      round(s); then the milestone asks the PM.
+  - key: publish
+    title: Publish launch post on linkedin
+    owner: human:dawid
+    estimate: 15m
+    after:
+      - draft
+    type: publish
+    done_when: The piece is live and recorded with swarmup published
+    body: >-
+      Post the approved piece from main yourself, then record it:
+
+
+      ```sh
+
+      swarmup published <ID> --url <where it went live> --artifact
+      posts/linkedin-draft.md
+
+      ```

@@ -1,0 +1,5 @@
+- Agent folders: `agents/<role>/agent.md` defines a role once for every runtime it runs on, and `agents/<role>/<runtime>.md` adds what one runtime does differently (`body: replace` swaps the instructions). Legacy `agents/<runtime>-<role>.md` files keep working and win over a folder for the same id, with a warning from `swarmup validate`.
+- `swarmup defs migrate` prints the folders that would replace your legacy agent files; `--apply` writes them and `--prune` also removes the legacy files. It refuses unless every agent comes out with the same fields, and logs to `migrations.log`.
+- Team policy in `swarm.yaml`: `policy.review_rounds`, `stuck_runs`, `review_backlog`, `review_fallback_hours`, `plan_check_minutes`, `budget_minutes` and `test_changes`, and `defaults.budget_min`. A key your user config sets still wins, even at its default value.
+- An agent file's `writes` now sets its role's `writes`, under the machine's `swarmupd.roles.<role>.writes`.
+- The role editor in the app edits a folder agent's `agent.md` or only its runtime's file, and lists each run setting with where it comes from: this machine, `swarm.yaml` or the role file.

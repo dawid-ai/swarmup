@@ -1,0 +1,126 @@
+# milestone: Launch: v1 launch on 2026-12-15
+# done_when: "Every piece of v1 launch is live as approved, and recorded with swarmup published"
+# approval: proposal
+notes: From workflow campaign-launch (campaign=v1 launch, date=2026-12-15, blog=yes).
+items:
+  - key: brief
+    title: Write the campaign brief for v1 launch
+    owner: "*:writer"
+    estimate: 1h
+    type: docs
+    done_when: The brief names the audience, the message, an angle per channel and
+      the claims
+    body: "Write the brief in the task thread: the audience, the message, the
+      channels with one angle each, the claims from facts/claims.md the pieces
+      may use, and the launch date 2026-12-15."
+  - key: brief-ok
+    title: Is the campaign brief for v1 launch right?
+    owner: human:dawid
+    estimate: 15m
+    after:
+      - brief
+    type: gate
+    done_when: "A person approved: Is the campaign brief for v1 launch right?"
+    gate:
+      ask: Is the campaign brief for v1 launch right?
+      on_reject: revise
+  - key: claims
+    title: Check the claims v1 launch uses
+    owner: "*:researcher"
+    estimate: 1h
+    after:
+      - brief-ok
+    type: docs
+    done_when: Every claim the brief uses has a row in facts/claims.md with a source
+      and a date
+    body: Make sure every claim the brief uses is in facts/claims.md with a source
+      and a checked date.
+  - key: calendar
+    title: Put v1 launch on the calendar
+    owner: "*:writer"
+    estimate: 30m
+    after:
+      - brief-ok
+    type: content
+    done_when: calendar.md has a row per piece of v1 launch, dated up to 2026-12-15
+  - key: x
+    title: Draft the X thread for v1 launch
+    owner: "*:writer"
+    estimate: 1h
+    after:
+      - claims
+      - calendar
+    type: content
+    review: codex:editor
+    done_when:
+      kind: rubric
+      id: voice
+      rubric: rubrics/brand-voice.md
+      pass: 0.7
+    body: Write posts/x-v1 launch.md from the brief. Finish with `swarmup review
+      --artifact`.
+  - key: linkedin
+    title: Draft the LinkedIn post for v1 launch
+    owner: "*:writer"
+    estimate: 1h
+    after:
+      - claims
+      - calendar
+    type: content
+    review: codex:editor
+    done_when:
+      kind: rubric
+      id: voice
+      rubric: rubrics/brand-voice.md
+      pass: 0.7
+    body: Write posts/linkedin-v1 launch.md from the brief. Finish with `swarmup
+      review --artifact`.
+  - key: blog
+    title: Draft the blog post for v1 launch
+    owner: "*:writer"
+    estimate: 3h
+    after:
+      - claims
+      - calendar
+    type: content
+    review: codex:editor
+    done_when:
+      kind: rubric
+      id: voice
+      rubric: rubrics/brand-voice.md
+      pass: 0.7
+    body: Write posts/blog-v1 launch.md from the brief. Finish with `swarmup review
+      --artifact`.
+  - key: go
+    title: Go for the v1 launch launch on 2026-12-15?
+    owner: human:dawid
+    estimate: 15m
+    after:
+      - x
+      - linkedin
+      - blog
+    type: gate
+    done_when: "A person approved: Go for the v1 launch launch on 2026-12-15?"
+    gate:
+      ask: Go for the v1 launch launch on 2026-12-15?
+      options:
+        - go
+        - hold
+  - key: publish
+    title: Publish v1 launch on 2026-12-15
+    owner: human:dawid
+    estimate: 1h
+    after:
+      - go
+    type: publish
+    done_when: Every piece is live and recorded with swarmup published
+    body: >-
+      Post each approved piece from main yourself, then record each one:
+
+
+      ```sh
+
+      swarmup published <ID> --url <where it went live> --artifact
+      posts/<file>.md
+
+      ```

@@ -12,7 +12,12 @@ import {
   editUserConfig,
   formatProblem,
   loadDefinitions,
+  logMigration,
+  migrationDiff,
+  migrationLogDir,
   normalText,
+  planMigration,
+  applyMigration,
   OpsError,
   ROOT_DIR_NAME,
   schemaFiles,
@@ -191,11 +196,13 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] | defs reject NAME [--root NAME] -m WHY | defs variants [--root NAME]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] | defs reject NAME [--root NAME] -m WHY | defs variants [--root NAME]',
   summary:
-    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions or reject it (a person), and list the variants",
+    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions or reject it (a person), and list the variants",
   options: {
     remove: { type: 'boolean' },
+    apply: { type: 'boolean' },
+    prune: { type: 'boolean' },
     dir: { type: 'string' },
     name: { type: 'string' },
     scorer: { type: 'string', multiple: true },
@@ -214,6 +221,8 @@ export const defsCommand = {
         return defsDiff(ctx, rest[0] ?? 'HEAD');
       case 'import-config':
         return importConfig(ctx);
+      case 'migrate':
+        return migrate(ctx);
       case 'propose':
         return propose(ctx, rest);
       case 'promote':
@@ -502,6 +511,64 @@ function reject(ctx: DefsCtx, rest: string[]): number {
     `${res.root}/${res.variant}: rejected${res.proposal ? `, recorded on ${res.proposal.task}` : ''}`,
   );
   return 0;
+}
+
+/**
+ * `swarmup defs migrate`: prints, for each root, the agent folders that would replace its legacy
+ * agent files, as a diff. `--apply` writes them; `--prune` writes them and removes the legacy
+ * files. Each root refuses unless its folders give every agent the same fields; an applied
+ * migration is logged to migrations.log.
+ */
+function migrate(ctx: DefsCtx): number {
+  const prune = Boolean(ctx.opts.prune);
+  const apply = Boolean(ctx.opts.apply) || prune;
+  let code = 0;
+  const report: Array<Record<string, unknown>> = [];
+  for (const root of rootsOf(ctx)) {
+    const plan = planMigration(root.dir);
+    const texts = loadDefinitions(root.dir).texts;
+    const entry: Record<string, unknown> = { ...plan, root: root.name, dir: root.dir };
+    report.push(entry);
+    const say = (line: string): void => {
+      if (!ctx.opts.json) ctx.io.out(line);
+    };
+    if (plan.agents.length === 0 && plan.refused.length === 0) {
+      say(`${root.name}: no legacy agent files to migrate`);
+      for (const s of plan.skipped) say(`  skipped ${s}`);
+      continue;
+    }
+    if (plan.refused.length > 0) {
+      code = 1;
+      say(`${root.name}: the migration refuses; nothing changes:`);
+      for (const r of plan.refused) say(`  ${r}`);
+      continue;
+    }
+    say(
+      `${root.name}: ${plan.agents.length} agent(s) into ${Object.keys(plan.writes).length} file(s): ${plan.agents.join(', ')}`,
+    );
+    for (const s of plan.skipped) say(`  skipped ${s}`);
+    if (!apply) {
+      say(migrationDiff(plan, texts, prune));
+      say(
+        `dry run: \`swarmup defs migrate --root ${root.name} --apply\` writes the folders, --prune also removes the legacy files`,
+      );
+      continue;
+    }
+    const done = applyMigration(plan, { prune });
+    entry.wrote = done.wrote;
+    entry.removed = done.removed;
+    logMigration(
+      migrationLogDir(ctx.io.env),
+      `defs migrate: ${root.name} (${root.dir}): ${plan.agents.join(', ')} into agent folders; ` +
+        `wrote ${done.wrote.join(', ') || 'nothing'}` +
+        (done.removed.length > 0 ? `; removed ${done.removed.join(', ')}` : '; legacy files kept'),
+    );
+    if (done.wrote.length > 0) say(`wrote ${done.wrote.join(', ')}`);
+    if (done.removed.length > 0) say(`removed ${done.removed.join(', ')}`);
+    else say('the legacy files stay and win until `swarmup defs migrate --prune` removes them');
+  }
+  if (ctx.opts.json) ctx.io.out(JSON.stringify(report, null, 2));
+  return code;
 }
 
 function variants(ctx: DefsCtx): number {

@@ -28,6 +28,15 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
   for an LLM judge's results.
 - `defsPropose`, `defsPromote`, `defsReject` and `variants` record definition proposals as
   variants (see `/improve`); promote and reject are for a person only.
+- `workflowStart` and `planProposeWorkflow` compile a store workflow (see `defs`) into a plan
+  proposal; a person's start of a `starter` workflow also approves it. The milestone records
+  `workflow` and `defs_hash`. `addTask` applies `work_types` criteria when none are given.
+- Gates (type `gate`): only a person closes one, `done` approves, and `park` goes to
+  `gateReject`, which parks the items after the gate or, with `on_reject: revise`, reopens the
+  items before it. The inbox lists a ready gate as kind `gate`.
+- `saveRole` writes where an agent lives (`writeAgent` in `agents.ts`): a legacy file, a folder's
+  `agent.md`, or its runtime addendum (`scope: 'runtime'`).
+
 - `review-source.ts` reads where approved work is (commit and branch) from a review event or its
   text, for the merge.
 - `brief.ts` folds the newest `brief` event of a parent task, the goal brief `swarmup brief`

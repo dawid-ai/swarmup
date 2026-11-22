@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=../.schemas/workflow.schema.json
+#
+# A bug fix: reproduce, fix with a test, then QA checks it in the merged code. A person who starts
+# it approves it at once:
+#   swarmup workflow start bugfix --param bug="login fails with a + in the email" --param severity=p1
+title: Bug fix
+description: A bug from a reproduction to a tested fix that QA confirms.
+params:
+  bug:
+    description: The bug, in a few words
+    required: true
+  severity:
+    description: The priority of the fix
+    default: p2
+    options: [p0, p1, p2, p3]
+milestone:
+  title: 'Fix: {{bug}}'
+  done_when: '{{bug}} no longer happens in the merged code, and a test covers it'
+approval: starter
+stages:
+  - key: reproduce
+    title: 'Reproduce: {{bug}}'
+    owner: '*:engineer'
+    estimate: 1h
+    type: bug
+    priority: '{{severity}}'
+    body: Write a failing test that shows the bug, or exact steps when a test cannot.
+    done_when: 'A failing test or written steps reproduce {{bug}}'
+  - key: fix
+    title: 'Fix: {{bug}}'
+    owner: '*:engineer'
+    estimate: 2h
+    type: bug
+    priority: '{{severity}}'
+    after: reproduce
+    done_when: 'The reproducing test passes and the full test suite passes'
+    rework:
+      to: '*:engineer'
+      max: 2
+  - key: verify
+    title: 'Check the fix for {{bug}}'
+    owner: '*:qa'
+    estimate: 30m
+    after: fix
+    body: Follow the reproduction on the merged code and confirm the bug is gone.
+    done_when: '{{bug}} does not happen when the reproduction runs on the merged code'

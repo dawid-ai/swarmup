@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=../.schemas/workflow.schema.json
+#
+# A new feature: a spec a person approves, the build, then the docs. Start it with
+#   swarmup workflow start feature --param feature="export to CSV"
+title: Feature
+description: A feature from a spec a person approves to merged, documented code.
+params:
+  feature:
+    description: What the feature does, in a few words
+    required: true
+  docs:
+    description: Whether the feature needs a docs change
+    default: 'yes'
+    options: ['yes', 'no']
+milestone:
+  title: 'Feature: {{feature}}'
+  done_when: '{{feature}} works end to end in the merged code, with tests'
+approval: proposal
+stages:
+  - key: spec
+    title: 'Write the spec for {{feature}}'
+    owner: '*:engineer'
+    estimate: 1h
+    type: docs
+    body: >-
+      Write a short spec for {{feature}} in the task thread or a docs file: the behavior, the edge
+      cases, what is out of scope, and how to test it. Read the code it touches first.
+    done_when: 'The spec names the behavior, the edge cases and how each one is tested'
+  - key: spec-ok
+    after: spec
+    gate:
+      ask: 'Is the spec for {{feature}} what you want built?'
+      options: [approve, approve with changes noted]
+      on_reject: revise
+  - key: build
+    title: 'Build {{feature}}'
+    owner: '*:engineer'
+    estimate: 4h
+    after: spec-ok
+    body: Build what the approved spec says, with a test for each case it names.
+    done_when: 'Each case in the spec works, with a test for it, and the full test suite passes'
+    rework:
+      to: '*:engineer'
+      max: 2
+  - key: docs
+    title: 'Document {{feature}}'
+    owner: '*:engineer'
+    estimate: 1h
+    type: docs
+    after: build
+    when:
+      param: docs
+      equals: 'yes'
+    done_when: 'The docs describe {{feature}} as built'

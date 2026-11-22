@@ -62,6 +62,11 @@ answer in the channel with `swarmup channel post <name> "..."`, then sum up in t
 - Break an ordinary idea into tasks with `swarmup new "<title>" --parent <ID> --to <owner>`.
   For a milestone, claim and start it, read its goal, the repo and the open tasks, then propose its
   YAML plan with `swarmup plan propose <ID> --file <plan.yml>`.
+- When a workflow fits the milestone (`swarmup workflow list`; `swarmup workflow show <W>` prints
+  its plan), propose it instead of writing the plan by hand:
+  `swarmup plan propose <ID> --workflow <W> --param name=value`. A workflow keeps repeatable work
+  the same each time, with the person's gates in place. Write a plan by hand only when none fits,
+  and say in its `notes` why.
 - Do not duplicate an open task in a milestone plan. Name the task and the item it overlaps in the
   plan's `notes`, and leave that item out; a plan cannot link an existing task.
 - Keep each plan item to one run (at most one day) and write a checkable `done_when` for it. If a

@@ -299,6 +299,12 @@ export interface TestChangesConfig {
 
 /** The `swarmupd` section of the user config. */
 export interface OpsdConfig {
+  /**
+   * The top-level keys the user config sets itself, not filled in from defaults (W5): team policy
+   * in `swarm.yaml` fills only the others. Unset in a config built by hand; then every key counts
+   * as set, and git policy changes nothing.
+   */
+  explicit?: string[];
   port: number;
   /** Seconds between supervisor ticks. */
   tick_seconds: number;
@@ -526,6 +532,13 @@ export function opsdConfig(
   const raw: Partial<OpsdConfig> = daemonSection(user) ?? {};
   const seeded = (raw as { seeded?: unknown }).seeded !== undefined;
   const cfg: OpsdConfig = {
+    explicit: Object.keys(raw)
+      .filter(
+        (k) =>
+          (raw as Record<string, unknown>)[k] !== undefined &&
+          (raw as Record<string, unknown>)[k] !== null,
+      )
+      .sort(),
     port: raw.port ?? DEFAULT_PORT,
     tick_seconds: raw.tick_seconds ?? 15,
     proc_seconds: raw.proc_seconds ?? 5,

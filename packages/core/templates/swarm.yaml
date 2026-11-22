@@ -12,8 +12,10 @@
 swarmup_defs: 1
 
 # Fallbacks for every runtime that sets no model or effort, here or on the machine.
+# budget_min is the run budget in minutes for agents that set none; it wins over policy.budget_minutes.
 # defaults:
 #   effort: medium
+#   budget_min: 60
 
 # Model and effort per runtime: the git half of `swarmupd.runtimes.<rt>`.
 runtimes:
@@ -37,5 +39,21 @@ roles:
     writes: false
     per_project: 3
 
+# Team policy: the git half of top-level `swarmupd` keys. A key set in a user config wins there.
+# policy:
+#   review_rounds: 3
+#   stuck_runs: 3
+#   review_backlog: 3
+#   plan_check_minutes: 30
+#   budget_minutes: 180
+#   test_changes: {tests: ['test/**'], checks: ['.github/**']}
+
+# Kinds of work: the first entry that matches a new task gives it default criteria when
+# `swarmup new` names none, and names the workflow (workflows/<id>.yaml) that fits.
+# work_types:
+#   - types: [bug]
+#     workflow: bugfix
+#     done_when: ['A test reproduces the bug and passes with the fix']
+
 # Accepted but not active yet; they come in later phases:
-# policy, work_types, scoring, checks, variants, experiments, improvement.
+# scoring, checks, variants, experiments.

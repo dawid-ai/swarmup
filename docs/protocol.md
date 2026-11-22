@@ -426,8 +426,9 @@ items:
 
 Each item needs a lowercase, never-reused `key`, a `title`, an `owner` and an `estimate` (`30m`,
 `2h`, `1d`, where a day is 8 hours). `after` names keys whose tasks must close first.
-`done_when` defaults to the title; it is one line of text or one typed criterion. `type` may be `task` (the default), `bug` or `docs`; plans do
-not nest milestones. `priority` defaults to the milestone's priority. `review` is one concrete
+`done_when` defaults to the title; it is one line of text or one typed criterion. `type` may be
+`task` (the default), `bug`, `docs`, `content`, `publish` or `gate` (see [Gates](#gates)); plans
+do not nest milestones. `priority` defaults to the milestone's priority. `review` is one concrete
 actor and must be on another provider than a concrete agent owner. `body` supplies more task
 detail. An item in a `subtask` amendment also needs `for`, naming the approved item it serves;
 `for` is optional for a `fix` amendment and is not allowed in a proposal. A plan holds at most
@@ -438,6 +439,7 @@ detail. An item in a `subtask` amendment also needs `for`, naming the approved i
 | Command                                                         | Effect                                                                                                                                                                                                                                                   |
 | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `swarmup plan propose ID --file PLAN.yml [MESSAGE]`             | The milestone's holder stores the first full plan and sends it to the human for approval. There must be no approved or pending plan.                                                                                                                     |
+| `swarmup plan propose ID --workflow W [--param K=V]...`         | The same, with the plan compiled from the store's workflow `W` (see [Workflows](#workflows)). Always a proposal; the plan event's note names the workflow and the definition hash.                                                                       |
 | `swarmup plan show ID`                                          | Shows the effective items, their tasks, states, owners, dependencies, estimates and time spent; it also shows a pending proposal, failed checks and incomplete application. `--yaml` prints the effective YAML to revise and `--json` prints the report. |
 | `swarmup plan approve ID [--file EDITED.yml] [MESSAGE]`         | A human approves the pending plan, optionally after editing it, and applies it. On the first approval it creates the child tasks and gives the milestone to `*:qa`. A later approval replaces the effective item set.                                    |
 | `swarmup plan reject ID "NOTE"`                                 | A human rejects the pending proposal and returns the first proposal to its planner. A rejected change proposal leaves the milestone blocked on its effective plan.                                                                                       |
@@ -501,6 +503,37 @@ failure uses a `fix` amendment with one task per gap. After two fix rounds, anot
 `swarmup ask ID` with the earlier evidence and the options to change `done_when`, add work or park
 the milestone.
 
+### Gates
+
+A plan item of type `gate` is a person's decision inside the plan: the items after it wait for it
+through `after`, as for any item.
+
+```yaml
+- key: brief-ok
+  title: Brief approval
+  owner: human:dawid
+  estimate: 15m
+  type: gate
+  after: [brief]
+  gate:
+    ask: Is the brief right?
+    options: [yes, yes with notes] # optional answers, shown with the question
+    on_reject: revise # or park, the default
+```
+
+- A gate is owned by a person (`human:<name>`) and has no reviewer; `validatePlan` refuses
+  anything else. Without `gate`, its title is the question. Its task's `task.md` carries `gate`,
+  and its body shows the question and how to answer.
+- When the items before it are done, the gate is in the person's inbox (kind `gate`).
+- The person approves with `swarmup done ID "answer"`. The items after the gate start.
+- The person rejects with `swarmup park ID "why"`, and a note is required. With
+  `on_reject: park`, the gate is parked, then every open item of the plan that waits on it,
+  directly or through another, and the milestone when none of its plan is left open. With
+  `on_reject: revise`, the items the gate waits for reopen with the note, the gate stays open, and
+  it is back in the inbox when they are done again.
+- No agent claims, owns or closes a gate, and no run closes one: only a person outside any run
+  answers it. `--force` on a claim is recorded, as for a publish task.
+
 ### Goal briefs
 
 A milestone, or any task with children, can carry a living brief: a short Markdown text with the
@@ -518,6 +551,85 @@ swarmup brief AO-0120                            # prints the current one; exit 
   [Run context](supervisor.md#run-context-in-the-prompt)).
 - The PM keeps briefs current: its inbox runs list the open milestones, and the open parents
   that have a brief, whose children closed after their brief was written.
+
+## Workflows
+
+A workflow is a repeatable milestone plan, kept in the task store as `workflows/<id>.yaml` and
+covered by the [definition hash](definitions.md#where-they-live). It compiles to a plan that goes
+through the plan path above unchanged.
+
+```yaml
+title: Content piece
+description: One post from a brief you approve to a draft the editor reviews; you publish it.
+params:
+  piece: { description: What the piece is, required: true }
+  channel: { required: true, options: [blog, x, linkedin] }
+  slug: { default: draft }
+milestone:
+  title: '{{piece}} ({{channel}})'
+  done_when: '{{piece}} is live on {{channel}} as approved'
+approval: proposal # or starter
+criteria: # default done_when per task type, for stages that set none
+  content: { id: voice, kind: rubric, rubric: rubrics/brand-voice.md, pass: 0.7 }
+stages:
+  - { key: brief, title: 'Brief for {{piece}}', owner: '*:writer', estimate: 30m, type: docs }
+  - key: brief-ok
+    after: brief
+    gate: { ask: 'Is the brief for {{piece}} right?', on_reject: revise }
+  - key: draft
+    title: 'Draft {{piece}}'
+    owner: '*:writer'
+    review: codex:editor
+    estimate: 2h
+    type: content
+    after: brief-ok
+    rework: { to: '*:writer', max: 2 }
+  - key: blog-extra
+    title: 'Blog images for {{piece}}'
+    owner: '*:designer'
+    estimate: 1h
+    after: draft
+    when: { param: channel, equals: blog }
+  - {
+      key: publish,
+      title: 'Publish {{piece}}',
+      type: publish,
+      owner: '{{human}}',
+      estimate: 15m,
+      after: draft,
+    }
+```
+
+- **Parameters.** `{{name}}` in any text takes the parameter's value; there are no expressions.
+  `{{human}}` is the store's person. A start refuses a missing `required` parameter, one the
+  workflow does not declare, and a value outside `options`.
+- **Stages** map one to one onto plan items: `key`, `title`, `owner`, `estimate`, `after`,
+  `review`, `type`, `priority`, `body` and `done_when`, plus:
+  - `gate: { ask, to, options, on_reject }`: a [gate](#gates) item owned by `to`, default the
+    store's person, with estimate `15m` unless the stage sets one.
+  - `when: { param, equals }`: the stage is left out unless the parameter has the value (or one of
+    a list). A stage that waited on it waits on what it waited on.
+  - `rework: { to, max }`: advice for QA fix rounds, added to the task body.
+- **Criteria.** A stage without `done_when` takes `criteria.<type>`, then its title; a gate
+  takes `A person approved: <question>`.
+- **Approval.** `approval: starter` means a person who starts the workflow approves its plan:
+  the start creates the tasks. An agent's start, and `swarmup plan propose --workflow`, are always
+  proposals that wait for a person. `approval: proposal`, the default, always waits.
+- **Records.** The milestone's `task.md` records `workflow: <id>` and `defs_hash`, the store's
+  definition hash at the start.
+
+| Command                                                                         | Effect                                                                                                                                                               |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swarmup workflow list`                                                         | Lists each root's workflows with their approval, stage count and parameters, and the ones that do not check.                                                         |
+| `swarmup workflow show W [--param K=V]... [--yaml]`                             | Prints the workflow compiled with the parameters given (others show as `<name>`): the milestone, each item with its owner and gates, and the stages `when` left out. |
+| `swarmup workflow start W [--param K=V]... [--title T] [--project S] [-m NOTE]` | Creates the milestone and proposes the plan; a person's start of a `starter` workflow approves it at once. Prints the milestone id.                                  |
+| `swarmup plan propose ID --workflow W [--param K=V]...`                         | Proposes the workflow as the first plan of a milestone you hold.                                                                                                     |
+
+`swarmup validate` checks each workflow against its schema and compiles it once with each
+parameter's default, first option or `example`, so a broken stage shows before anyone starts it.
+`new-project` templates come with starter workflows: `feature` and `bugfix` for code,
+`content-piece` for content, and `content-piece` and `campaign-launch` for a campaign. Copy
+others from `packages/core/templates/workflows/`.
 
 ## Decisions
 

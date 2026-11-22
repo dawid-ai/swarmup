@@ -23,7 +23,9 @@ Computes a task's current state from its event files, the same way on every mach
   `in-progress`, `needs-review`, `blocked`, `done`, `parked`.
 - Leases and dependencies need the clock or other tasks, so they apply at read time:
   `claimed(stale)`, `in-progress(stale)`, `todo(unblocked)`.
-- `plan.ts` reads milestone plans (proposal, change, subtask, fix) and the effective plan.
+- `plan.ts` reads milestone plans (proposal, change, subtask, fix) and the effective plan. An
+  item of type `gate` carries `gate` (`ask`, `options`, `on_reject`) and is owned by a person.
+
 - `criteria.ts` parses typed `done_when` criteria (a plain string stays `prose`), folds
   per-criterion results (with `by: judge` from a judge's `criteria-check` event) and runs the
   `command` and `check` kinds for `swarmup criteria check` and the merge. Every file check takes

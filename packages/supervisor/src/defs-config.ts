@@ -4,6 +4,8 @@
  * machine key that overrode a git value is recorded.
  */
 import type { SwarmDefs } from '@swarmup/core';
+import { POLICY_KEYS } from '@swarmup/core';
+
 import type { OpsdConfig, RoleConfig, RuntimeConfig } from './config.js';
 
 /** The `swarm.yaml` of one root, for {@link withDefinitions}. */
@@ -11,6 +13,11 @@ export interface DefsSource {
   /** The root's name. */
   root: string;
   swarm: SwarmDefs;
+  /**
+   * `writes` per role from the root's agent files (W5): it wins over the role's `writes` in
+   * `swarm.yaml`, and a machine value wins over both.
+   */
+  roleWrites?: Record<string, boolean>;
 }
 
 /** A machine value that won over a git value for the same key. */
@@ -70,11 +77,21 @@ const ROLE_KEYS = [
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /**
+ * True when the machine sets top-level key `k` itself. A config built without `explicit` (by
+ * hand, in tests) counts every key as set, so git policy never changes it.
+ */
+const machineSets = (cfg: OpsdConfig, k: string): boolean =>
+  cfg.explicit === undefined || cfg.explicit.includes(k);
+
+/**
  * Merges git `roles` and `runtimes.<rt>.{model, effort}` (then `defaults.{model, effort}`) under
- * the machine values of `cfg`. `sources` come in root order: for a key two roots set, the first
- * one wins and the pair is named in `conflicts`. Git never adds a runtime: commands are
- * machine-only, so a runtime this machine lacks is skipped. Without sources, `cfg` comes back
- * as it is.
+ * the machine values of `cfg`, and the team policy (W5 phase 2): `policy.*` under the top-level
+ * keys the machine does not set itself (`cfg.explicit`), with `defaults.budget_min` before
+ * `policy.budget_minutes`, and `policy.test_changes` of each root under
+ * `test_changes.<root>`. An agent file's `writes` wins over its role's in `swarm.yaml`.
+ * `sources` come in root order: for a key two roots set, the first one wins and the pair is
+ * named in `conflicts`. Git never adds a runtime: commands are machine-only, so a runtime this
+ * machine lacks is skipped. Without sources, `cfg` comes back as it is.
  */
 export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[]): DefsMerge {
   const applied: DefsMerge['applied'] = [];
@@ -98,16 +115,25 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
       if (!c.roots.includes(root)) c.roots.push(root);
     } else conflicts.push({ key, roots: [had.root, root] });
   };
-  for (const { root, swarm } of sources) {
+  for (const source of sources) {
+    const { root, swarm } = source;
     for (const [rt, r] of Object.entries(swarm.runtimes ?? {})) {
       put(`runtimes.${rt}.model`, r.model, root);
       put(`runtimes.${rt}.effort`, r.effort, root);
     }
     put('defaults.model', swarm.defaults?.model, root);
     put('defaults.effort', swarm.defaults?.effort, root);
-    for (const [role, r] of Object.entries(swarm.roles ?? {})) {
-      for (const k of ROLE_KEYS) put(`roles.${role}.${k}`, r[k], root);
+    for (const [role, w] of Object.entries(source.roleWrites ?? {})) {
+      put(`roles.${role}.writes`, w, root);
     }
+    for (const [role, r] of Object.entries(swarm.roles ?? {})) {
+      for (const k of ROLE_KEYS) {
+        if (k === 'writes' && source.roleWrites?.[role] !== undefined) continue;
+        put(`roles.${role}.${k}`, r[k], root);
+      }
+    }
+    put('defaults.budget_min', swarm.defaults?.budget_min, root);
+    for (const k of POLICY_KEYS) put(`policy.${k}`, swarm.policy?.[k], root);
   }
 
   const runtimes: Record<string, RuntimeConfig> = {};
@@ -155,10 +181,51 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
     }
     roles[role] = next;
   }
+  // Team policy: a top-level key the machine leaves unset takes the git value.
+  const policy: Partial<Record<(typeof POLICY_KEYS)[number], number>> = {};
+  // The first root that sets a key wins; in one root, `defaults.budget_min` beats
+  // `policy.budget_minutes`.
+  const rootOrder = new Map(sources.map((s, i) => [s.root, i]));
+  const earlier = (a: { root: string }, b: { root: string }): boolean =>
+    (rootOrder.get(a.root) ?? Infinity) <= (rootOrder.get(b.root) ?? Infinity);
+  for (const k of POLICY_KEYS) {
+    const pol = git.get(`policy.${k}`);
+    const def = k === 'budget_minutes' ? git.get('defaults.budget_min') : undefined;
+    const g = def && (!pol || earlier(def, pol)) ? def : pol;
+    if (!g) continue;
+    if (machineSets(cfg, k)) {
+      if (!same(cfg[k], g.value))
+        overrides.push({ key: k, machine: cfg[k], git: g.value, root: g.root });
+      values.push({ key: k, value: cfg[k], source: 'machine', git: g.value, root: g.root });
+      continue;
+    }
+    policy[k] = g.value as number;
+    applied.push({ key: k, root: g.root });
+    values.push({ key: k, value: g.value, source: 'git', git: g.value, root: g.root });
+  }
+  // `policy.test_changes` is the root's own: it goes under `test_changes.<root>`.
+  const testChanges = { ...cfg.test_changes };
+  for (const { root, swarm } of sources) {
+    const g = swarm.policy?.test_changes;
+    if (g === undefined) continue;
+    const key = `test_changes.${root}`;
+    const machine = cfg.test_changes[root];
+    if (machine !== undefined) {
+      if (!same(machine, g)) overrides.push({ key, machine, git: g, root });
+      values.push({ key, value: machine, source: 'machine', git: g, root });
+      continue;
+    }
+    testChanges[root] = g;
+    applied.push({ key, root });
+    values.push({ key, value: g, source: 'git', git: g, root });
+  }
+
   // Git keys of runtimes this machine lacks, and defaults no runtime took: set, but in no effect.
   const seen = new Set(values.map((v) => v.key));
   for (const [key, g] of git) {
-    if (key.startsWith('roles.') || seen.has(key)) continue;
+    if (key.startsWith('roles.') || key.startsWith('policy.') || seen.has(key)) continue;
+    // `defaults.budget_min` is the budget's git value, listed as `budget_minutes`.
+    if (key === 'defaults.budget_min') continue;
     const [area, name, k] = key.split('.');
     const used =
       area === 'defaults'
@@ -166,8 +233,28 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
         : Object.hasOwn(cfg.runtimes, name!) && k !== undefined;
     if (!used) values.push({ key, value: g.value, source: 'unused', git: g.value, root: g.root });
   }
+  // Of `defaults.budget_min` and `policy.budget_minutes`, the one that lost: set, but in no effect.
+  const polBudget = git.get('policy.budget_minutes');
+  const defBudget = git.get('defaults.budget_min');
+  if (polBudget && defBudget) {
+    const lostDefault = !earlier(defBudget, polBudget);
+    const unusedBudget = lostDefault ? defBudget : polBudget;
+    values.push({
+      key: lostDefault ? 'defaults.budget_min' : 'policy.budget_minutes',
+      value: unusedBudget.value,
+      source: 'unused',
+      git: unusedBudget.value,
+      root: unusedBudget.root,
+    });
+  }
   values.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  return { config: { ...cfg, runtimes, roles }, applied, overrides, conflicts, values };
+  return {
+    config: { ...cfg, ...policy, runtimes, roles, test_changes: testChanges },
+    applied,
+    overrides,
+    conflicts,
+    values,
+  };
 }
 
 /**

@@ -32,6 +32,8 @@ import {
 } from 'lucide-react';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { Nav } from '../App';
+import { GateActions } from '../ui/gate';
+
 import { api, q, refreshSoon, useData } from '../api';
 import {
   Button,
@@ -474,6 +476,25 @@ export function TaskPanel({
           {open && panel === 'delegate' && t && (
             <DelegateForm id={id} t={t} nav={nav} onDone={() => setPanel(null)} />
           )}
+          {/* A gate of a workflow's plan (W5): your decision closes or rejects it, once the
+              stages it waits for are done. */}
+          {open &&
+            t?.type === 'gate' &&
+            t.owner === nav.me &&
+            (t.status !== 'blocked' || t.unblocked) && (
+              <div className="panel mt-4 p-3" data-gate-panel>
+                <h3 className="label-caps mb-2">Your decision</h3>
+                <GateActions
+                  task={id}
+                  gate={t.gate ?? { ask: t.title }}
+                  me={nav.me}
+                  onDone={() => {
+                    reload();
+                    refreshSoon();
+                  }}
+                />
+              </div>
+            )}
           {publishable && panel === 'publish' && (
             <PublishForm
               id={id}

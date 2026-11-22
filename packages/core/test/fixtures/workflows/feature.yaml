@@ -1,0 +1,50 @@
+# milestone: Feature: export to CSV
+# done_when: "export to CSV works end to end in the merged code, with tests"
+# approval: proposal
+notes: From workflow feature (feature=export to CSV, docs=yes).
+items:
+  - key: spec
+    title: Write the spec for export to CSV
+    owner: "*:engineer"
+    estimate: 1h
+    type: docs
+    done_when: The spec names the behavior, the edge cases and how each one is tested
+    body: "Write a short spec for export to CSV in the task thread or a docs file:
+      the behavior, the edge cases, what is out of scope, and how to test it.
+      Read the code it touches first."
+  - key: spec-ok
+    title: Is the spec for export to CSV what you want built?
+    owner: human:dawid
+    estimate: 15m
+    after:
+      - spec
+    type: gate
+    done_when: "A person approved: Is the spec for export to CSV what you want built?"
+    gate:
+      ask: Is the spec for export to CSV what you want built?
+      options:
+        - approve
+        - approve with changes noted
+      on_reject: revise
+  - key: build
+    title: Build export to CSV
+    owner: "*:engineer"
+    estimate: 4h
+    after:
+      - spec-ok
+    done_when: Each case in the spec works, with a test for it, and the full test
+      suite passes
+    body: >-
+      Build what the approved spec says, with a test for each case it names.
+
+
+      Rework: when a check fails, *:engineer reworks this stage, at most 2
+      round(s); then the milestone asks the PM.
+  - key: docs
+    title: Document export to CSV
+    owner: "*:engineer"
+    estimate: 1h
+    after:
+      - build
+    type: docs
+    done_when: The docs describe export to CSV as built

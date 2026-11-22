@@ -54,7 +54,6 @@ describe('schema language', () => {
       'swarm.yaml:9:18: error: roles.engineer.per_project: use a whole number of at least 0; got -1',
       "swarm.yaml:10:25: error: roles.engineer.providers[1]: name a runtime such as claude; got 'Codex'",
       'swarm.yaml:11:13: error: roles.engineer.writes: use true or false; got text',
-      'swarm.yaml:12:1: warning: policy: accepted but not active yet: team policy moves into git in phase 2',
     ]);
   });
 
@@ -228,7 +227,7 @@ describe('loadDefinitions', () => {
     expect(set.swarm).not.toBeNull();
   });
 
-  it('keeps only the phase 1 values of swarm.yaml', () => {
+  it('keeps only the values of swarm.yaml that apply', () => {
     const root = initRoot(tempDir(), { name: 't' });
     writeFileSync(
       join(root, 'swarm.yaml'),
@@ -240,6 +239,7 @@ describe('loadDefinitions', () => {
         'roles:',
         '  reviewer: {providers: [codex, claude], per_project: 2}',
         'policy: {stuck_runs: 2}',
+        'scoring: {sample: 1}',
         '',
       ].join('\n'),
     );
@@ -247,7 +247,8 @@ describe('loadDefinitions', () => {
     expect(set.ok).toBe(true);
     expect(set.swarm).toEqual({
       swarmup_defs: 1,
-      defaults: { model: 'opus' },
+      defaults: { model: 'opus', budget_min: 30 },
+      policy: { stuck_runs: 2 },
       runtimes: { codex: { model: 'gpt-5-codex', effort: 'high' } },
       roles: { reviewer: { providers: ['codex', 'claude'], per_project: 2 } },
     });
@@ -292,7 +293,6 @@ describe('loadDefinitions', () => {
       expect.arrayContaining([
         'error: id: claude:engineer is defined in 2 files; keep one',
         'error: (top): this line looks like a GitHub token; keep secrets in the user config',
-        'warning: (top): agent folders (agents/<role>/agent.md) are read from phase 2 on; this file is not used yet',
         'warning: roles.engineer.providers: this machine has no runtime cursor; add it in Settings > Providers, or this machine skips it',
         'warning: roles.ghost: no agent has the role ghost',
       ]),
