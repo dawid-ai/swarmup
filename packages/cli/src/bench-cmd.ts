@@ -16,6 +16,7 @@ import {
 } from '@swarmup/core';
 import type { BenchJudge, BenchRole, RuntimeConfig } from '@swarmup/supervisor';
 import {
+  checkBenchPrices,
   checkJudge,
   checkModel,
   compareMarkdown,
@@ -80,6 +81,16 @@ function benchJudge(ctx: BenchCtx): BenchJudge {
 }
 
 /**
+ * The prices of `swarmupd.bench.prices` in the user config, over the built-in ones, for the cost
+ * of attempts whose log reports tokens but no cost. Refuses a bad table with exit 2.
+ */
+function benchPricesOf(ctx: BenchCtx): ReturnType<typeof checkBenchPrices> {
+  const bench = (daemonSection(readUserConfig(ctx.io.env)) ?? {}).bench;
+  if (!bench || typeof bench !== 'object' || Array.isArray(bench)) return {};
+  return checkBenchPrices((bench as { prices?: unknown }).prices);
+}
+
+/**
  * The store `--root` names: a folder (a store, or one that holds `.swarmup/`), else a root of the
  * workspace by name.
  */
@@ -138,9 +149,9 @@ function benchRole(ctx: BenchCtx): BenchRole | undefined {
 /** `swarmup bench`: replay a benchmark set against an agent and compare two runs. */
 export const benchCommand = {
   usage:
-    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--role-file --root ROOT] [--variant NAME --root ROOT] [--repeat N] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json]',
+    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--role-file --root ROOT] [--variant NAME --root ROOT] [--repeat N] [--max-usd X] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json]',
   summary:
-    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --role-file puts the agent's role file from --root (a store folder or root name) in each prompt and takes its model and effort, --variant does the same with a variant's overlay on top; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json",
+    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --role-file puts the agent's role file from --root (a store folder or root name) in each prompt and takes its model and effort, --variant does the same with a variant's overlay on top; --max-usd stops starting attempts once their agent and judge cost, Codex estimates from tokens included, reaches X; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json",
   options: {
     repo: { type: 'string' },
     entries: { type: 'string', multiple: true },
@@ -148,6 +159,7 @@ export const benchCommand = {
     model: { type: 'string' },
     effort: { type: 'string' },
     repeat: { type: 'string' },
+    'max-usd': { type: 'string' },
     'budget-min': { type: 'string' },
     'hidden-dir': { type: 'string' },
     'reference-dir': { type: 'string' },
@@ -187,6 +199,8 @@ async function runBenchCmd(ctx: BenchCtx): Promise<number> {
   const out = at(ctx.opts.out) ?? defaultOut(ctx.io.env, set.id);
   const repeat = positive(ctx.opts.repeat, '--repeat', true);
   const budgetMin = positive(ctx.opts['budget-min'], '--budget-min', false);
+  const maxUsd = positive(ctx.opts['max-usd'], '--max-usd', false);
+  const prices = benchPricesOf(ctx);
   const role = benchRole(ctx);
   const model = str(ctx.opts.model) ?? role?.model;
   const effort = str(ctx.opts.effort) ?? role?.effort;
@@ -201,6 +215,8 @@ async function runBenchCmd(ctx: BenchCtx): Promise<number> {
     ...(role ? { role } : {}),
     ...(repeat !== undefined ? { repeat } : {}),
     ...(budgetMin !== undefined ? { budgetMin } : {}),
+    ...(maxUsd !== undefined ? { maxUsd } : {}),
+    ...(Object.keys(prices).length > 0 ? { prices } : {}),
     ...(at(ctx.opts['hidden-dir']) ? { hiddenDir: at(ctx.opts['hidden-dir']) } : {}),
     ...(at(ctx.opts['reference-dir']) ? { referenceDir: at(ctx.opts['reference-dir']) } : {}),
     dryRun: Boolean(ctx.opts['dry-run']),

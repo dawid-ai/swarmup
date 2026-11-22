@@ -51,7 +51,8 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
   `/api/workflows` lists and starts workflows, and `/api/roles/:id` gives a folder agent's
   `layers` and each agent's run `settings` with their source;
 
-  `swarmupd.bench` names extra benchmark sets and results folders. `/api/defs/variants` and
+  `swarmupd.bench` names extra benchmark sets and results folders, and model prices for estimated
+  bench costs (`checkBenchPrices`). `/api/defs/variants` and
   `/api/improve` serve the proposals and improvement tasks; `swarmupd.improve` (`checkImprove`)
   configures the loop (see `/improve`).
 

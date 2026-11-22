@@ -36,7 +36,8 @@ What people and agents read to use and change SwarmUp. The website builds its do
 - `docs/supervisor.md` ("Self-improvement"): the improvement trigger, the improver, the benchmark
   gate and `swarmupd.improve`; `docs/desktop.md` has the **Proposals** list.
 - `docs/benchmarks.md`: benchmark sets, hidden tests, `swarmup bench run|judge|compare`, judging
-  rubric criteria, and role files and variants in the prompt.
+  rubric criteria, role files and variants in the prompt, estimated Codex cost, the spread over
+  repeats and the `--max-usd` cap.
 - `docs/protocol.md` ("Rubric files") is the rubric format and how the judge scores; the judge's
   settings and its merge hook are in `docs/supervisor.md`.
 - `skills/swarmup/SKILL.md`: the skill agents load to work the queue; `.agents/` and

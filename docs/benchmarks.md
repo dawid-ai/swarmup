@@ -12,7 +12,8 @@ under test and the set file.
 > **Cost:** a run with a real agent spends tokens for every entry and every repeat, up to the
 > budget of each attempt. Start with `--dry-run`, then two or three entries and one repeat. The
 > `--agent none` and `--reference-dir` modes run no agent and cost nothing. `--judge` and
-> `swarmup bench judge` spend tokens for each `rubric` criterion of each attempt.
+> `swarmup bench judge` spend tokens for each `rubric` criterion of each attempt. `--max-usd X`
+> stops starting attempts once the run has cost `X`.
 
 ## Set file format
 
@@ -90,7 +91,8 @@ swarmup bench run benchmarks/demo.yaml --repo ../app --entries BUG-12,DOC-3 --ag
 | `--entries ID,ID`         | Runs these entries only, in this order.                                                                                                             |
 | `--agent RUNTIME:ROLE`    | Overrides the set's agents. `claude` and `codex` runtimes run; `none` runs no agent.                                                                |
 | `--model M`, `--effort E` | The model and reasoning effort, passed as `--model`/`--effort` (Claude) or `-m`/`-c model_reasoning_effort=` (Codex).                               |
-| `--repeat N`              | Attempts per entry, over the set's `repeat`.                                                                                                        |
+| `--repeat N`              | Attempts per entry, over the set's `repeat`. With more than one, the summary adds the spread over attempts; see [Results](#results).                |
+| `--max-usd X`             | Starts no attempt once the attempts so far cost `X` dollars or more; see [Cost cap](#cost-cap).                                                     |
 | `--budget-min N`          | Minutes an attempt's agent may run, over the set's `budget` (default 30).                                                                           |
 | `--hidden-dir DIR`        | The hidden tests' folder, over the set's `hidden_dir`.                                                                                              |
 | `--reference-dir DIR`     | Applies `DIR/<entry>.patch` instead of running an agent; see the following section.                                                                 |
@@ -113,6 +115,55 @@ The agent runs non-interactively with the prompt on stdin:
 The runner ignores the machine's `swarmupd.runtimes` settings, so two machines run the same
 command line. When the budget runs out, it stops the agent and every process under it, and
 records the attempt as timed out. Attempts run one at a time.
+
+### Cost of Codex runs
+
+Claude's log reports each run's cost (`total_cost_usd`). Codex's reports tokens only, so the
+runner estimates the cost: the run's input, cached input and output tokens times the model's price
+per million tokens. Codex's `input_tokens` include its `cached_input_tokens`; the runner prices
+the cached part at the cached input price and the rest at the input price. The model is the first
+of:
+
+1. `--model`, or the model the role file gives the agent's runtime.
+2. The `model` of the runtime config, for a caller that passes one (the command line does not).
+3. The top-level `model = "..."` in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
+
+A model of `default`, or an empty one, counts as unset. The built-in prices, in USD per million
+tokens, are OpenAI list prices as of 2026-11-22, from public reports that disagree:
+
+| Model           | `input` | `cached_input` | `output` |
+| --------------- | ------- | -------------- | -------- |
+| `gpt-5.6-sol`   | 5       | 0.5            | 30       |
+| `gpt-5.6-terra` | 2       | 0.2            | 12       |
+| `gpt-5.6-luna`  | 0.2     | 0.02           | 1.2      |
+
+Set your own prices, or prices for other models, in your user config. An entry replaces the
+built-in price of that model; all three numbers are required:
+
+```yaml
+swarmupd:
+  bench:
+    prices:
+      gpt-5.6-sol: { input: 5, cached_input: 0.5, output: 30 }
+```
+
+An estimated cost has `costEstimated: true` in its metrics, with the model as `priceModel`, and
+shows with a `~` prefix in `summary.md` and `bench compare`. When the model is unknown or has no
+price, the cost stays empty, the metrics have `unpriced: true`, and `summary.md` names the model
+that has no price. `--dry-run` prints the model and price a Codex run would use. A Claude run that ends
+before its `result` message, such as one that ran out of budget, has tokens and no cost too; it is
+priced the same way, and has no cost unless its model has a price.
+
+### Cost cap
+
+`--max-usd X` checks the cost before each attempt: once the attempts that ran cost `X` or more,
+agent cost (estimates included) plus judge cost with `--judge`, no further attempt starts. The
+attempt under way when the cap is reached finishes. The attempts left over go into `summary.json`
+as `skipped`, each with the entry, the attempt number and the reason, and `summary.md` lists them
+under **Not started**. `summary.json` records `cap`: `maxUsd`, `spentUsd`, `hit`, and
+`uncounted`, the attempts whose cost is unknown. The cap cannot count those, so the runner warns
+once when the first one finishes. `status.json` counts the skipped attempts as `skipped`.
+`--dry-run` prints the cap.
 
 ### Calibrate without spending tokens
 
@@ -172,8 +223,9 @@ Each attempt records:
   attempt cost (`judge.costUsd`).
 - **Run:** the command line, exit code, wall time, and whether the budget ran out.
 - **Metrics:** cost and tokens when the log reports them (Claude's `result` message has
-  `total_cost_usd` and `usage`; Codex reports tokens, no cost), turns, tool calls, and tool calls
-  before the first edit, read the way `swarmup scores` reads orientation.
+  `total_cost_usd` and `usage`; Codex reports tokens, no cost, so its cost is an estimate, see
+  [Cost of Codex runs](#cost-of-codex-runs)), turns, tool calls, and tool calls before the first
+  edit, read the way `swarmup scores` reads orientation.
 - **Diff:** files changed, insertions and deletions against the base, from `git diff --shortstat`
   after every change is staged, so new files count. The runner stages the worktree's changes
   before it checks the criteria, so `git diff {{base}}` in a command sees new files too.
@@ -184,6 +236,13 @@ rubric results over all attempts, the mean cost, what judging cost in all, and t
 tool calls before the first edit. The last row covers the run: the pass rate weighs every entry
 the same, and the other figures count attempts. A run with judged rubric criteria has a pass
 rate over more criteria than the same run without, so compare judged runs with judged runs.
+
+With more than one attempt per entry, `summary.md` adds a **Spread over attempts** table and
+`summary.json` adds, per entry, `passRateMin`, `passRateMax`, `passRateSd` (the sample standard
+deviation of the attempts' pass rates) and `costSdUsd` (the same for their cost). The overall row
+and `overall` give the spread over repeats: repeat N's pass rate is the mean over the entries'
+attempt N, and its cost is the mean cost of those attempts. A large standard deviation means one
+run's pass rate says little; add repeats before you compare.
 
 ## Judge rubric criteria
 
@@ -256,4 +315,4 @@ swarmup bench compare a/summary.json b/summary.json --json
 figure, B's, and B minus A for the pass rate, hidden pass, cost, time and tool calls before the
 first edit. The overall row covers only the entries both runs have, so the deltas compare like
 with like. With one repeat, an entry's pass rate moves in large steps; use `--repeat 3` or more
-before you read a small delta as a real change.
+before you read a small delta as a real change. A `~` marks an estimated cost.

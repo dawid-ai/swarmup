@@ -44,6 +44,8 @@ import {
   runCriteria,
   runtimeOf,
 } from '@swarmup/core';
+import type { ModelPrice } from './bench-cost.js';
+import { benchCostModel, benchPrices, estimateCostUsd } from './bench-cost.js';
 import type { JudgeConfig, RuntimeConfig } from './config.js';
 import { DEFAULT_RUNTIMES } from './config.js';
 import type { JudgeRunner } from './judge.js';
@@ -115,8 +117,17 @@ export interface BenchTokens {
 }
 
 export interface AttemptMetrics {
-  /** What the run's log reports: Claude's `total_cost_usd`; Codex reports none. */
+  /**
+   * What the run's log reports: Claude's `total_cost_usd`. Codex reports none; its cost is then an
+   * estimate from the tokens (`costEstimated`) when the model has a price.
+   */
   costUsd: number | null;
+  /** `costUsd` is an estimate: the log's tokens at the model's price per million tokens. */
+  costEstimated?: boolean;
+  /** The model the tokens were priced at, or found no price for. */
+  priceModel?: string;
+  /** The log reports tokens but no cost, and the model is unknown or has no price. */
+  unpriced?: boolean;
   tokens: BenchTokens | null;
   turns: number | null;
   toolCalls: number | null;
@@ -190,10 +201,20 @@ export interface EntrySummary {
   judgeCostUsd?: number | null;
   /** Mean per attempt. */
   costUsd: number | null;
+  /** Some attempt's cost is an estimate from its tokens. */
+  costEstimated?: boolean;
+  /** Models with no price whose attempts reported tokens but no cost; `unknown model` for none. */
+  unpriced?: string[];
   wallMs: number | null;
   toolCallsBeforeEdit: number | null;
   timedOut: number;
   errors: number;
+  /** With more than one attempt: the lowest, highest and sample standard deviation of pass rates. */
+  passRateMin?: number | null;
+  passRateMax?: number | null;
+  passRateSd?: number | null;
+  /** With more than one attempt: the sample standard deviation of the attempts' cost. */
+  costSdUsd?: number | null;
 }
 
 export interface SummaryOverall {
@@ -210,6 +231,37 @@ export interface SummaryOverall {
   judged?: number | null;
   /** What judging cost in all, apart from `costUsd`, the agents' cost. */
   judgeCostUsd?: number | null;
+  /** Some attempt's cost is an estimate from its tokens. */
+  costEstimated?: boolean;
+  /**
+   * With more than one repeat, the spread over repeats: repeat N's pass rate is the mean over the
+   * entries' attempt N, its cost the mean cost of those attempts.
+   */
+  passRateMin?: number | null;
+  passRateMax?: number | null;
+  passRateSd?: number | null;
+  costSdUsd?: number | null;
+}
+
+/** The figures of `SummaryOverall` that are numbers, which `bench compare` subtracts. */
+export type OverallFigure = Exclude<keyof SummaryOverall, 'costEstimated'>;
+
+/** `--max-usd`: the cap, what the attempts cost, and whether it stopped the run. */
+export interface BenchCap {
+  maxUsd: number;
+  /** Agent cost, estimates included, plus judge cost, over the attempts that ran. */
+  spentUsd: number;
+  /** `spentUsd` reached `maxUsd`. */
+  hit: boolean;
+  /** Attempts whose cost is unknown, which the cap could not count. */
+  uncounted: number;
+}
+
+/** An attempt of the plan that never started. */
+export interface BenchSkipped {
+  entry: string;
+  attempt: number;
+  reason: string;
 }
 
 /** A run's `summary.json`. */
@@ -234,6 +286,10 @@ export interface BenchSummary {
   role?: BenchRoleInfo;
   entries: EntrySummary[];
   overall: SummaryOverall;
+  /** Set with `--max-usd`. */
+  cap?: BenchCap;
+  /** Attempts the cost cap kept from starting. */
+  skipped?: BenchSkipped[];
 }
 
 /** What a summary records of the role file a run's prompt carried. */
@@ -716,12 +772,39 @@ function sum(values: Array<number | null | undefined>): number | null {
   return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
 }
 
+/** The sample standard deviation, or null with fewer than two values. */
+function sd(values: Array<number | null | undefined>): number | null {
+  const v = values.filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
+  if (v.length < 2) return null;
+  const m = v.reduce((a, b) => a + b, 0) / v.length;
+  return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / (v.length - 1));
+}
+
+/** The spread of pass rates and costs over attempts or repeats. */
+function spreadOf(
+  passRates: Array<number | null>,
+  costs: Array<number | null>,
+): Pick<EntrySummary, 'passRateMin' | 'passRateMax' | 'passRateSd' | 'costSdUsd'> {
+  const rates = passRates.filter((x): x is number => x !== null);
+  return {
+    passRateMin: rates.length > 0 ? Math.min(...rates) : null,
+    passRateMax: rates.length > 0 ? Math.max(...rates) : null,
+    passRateSd: sd(rates),
+    costSdUsd: sd(costs),
+  };
+}
+
 /** Per-entry figures of a run's attempts, in the order entries first appear. */
 export function summarizeEntries(attempts: readonly AttemptResult[]): EntrySummary[] {
   const byEntry = new Map<string, AttemptResult[]>();
   for (const a of attempts) byEntry.set(a.entry, [...(byEntry.get(a.entry) ?? []), a]);
   return [...byEntry].map(([entry, list]) => {
     const withHidden = list.filter((a) => a.score.hidden.total > 0);
+    const unpriced = [
+      ...new Set(
+        list.filter((a) => a.metrics.unpriced).map((a) => a.metrics.priceModel ?? 'unknown model'),
+      ),
+    ];
     return {
       entry,
       attempts: list.length,
@@ -738,16 +821,45 @@ export function summarizeEntries(attempts: readonly AttemptResult[]): EntrySumma
       judged: list.reduce((n, a) => n + (a.score.judged ?? 0), 0),
       judgeCostUsd: sum(list.map((a) => a.judge?.costUsd)),
       costUsd: mean(list.map((a) => a.metrics.costUsd)),
+      ...(list.some((a) => a.metrics.costEstimated) ? { costEstimated: true } : {}),
+      ...(unpriced.length > 0 ? { unpriced } : {}),
       wallMs: mean(list.map((a) => a.run.wallMs)),
       toolCallsBeforeEdit: mean(list.map((a) => a.metrics.toolCallsBeforeEdit)),
       timedOut: list.filter((a) => a.run.timedOut).length,
       errors: list.filter((a) => a.run.error).length,
+      ...(list.length > 1
+        ? spreadOf(
+            list.map((a) => a.score.passRate),
+            list.map((a) => a.metrics.costUsd),
+          )
+        : {}),
     };
   });
 }
 
-/** Figures over entries: pass rate weighs each entry the same; the rest count attempts. */
-export function overallOf(entries: readonly EntrySummary[]): SummaryOverall {
+/**
+ * The spread over repeats: repeat N's pass rate is the mean over the entries' attempt N, its cost
+ * the mean cost of those attempts. Empty with fewer than two repeats.
+ */
+function repeatSpread(attempts: readonly AttemptResult[]): Partial<SummaryOverall> {
+  const byRepeat = new Map<number, AttemptResult[]>();
+  for (const a of attempts) byRepeat.set(a.attempt, [...(byRepeat.get(a.attempt) ?? []), a]);
+  if (byRepeat.size < 2) return {};
+  const repeats = [...byRepeat.values()];
+  return spreadOf(
+    repeats.map((list) => mean(list.map((a) => a.score.passRate))),
+    repeats.map((list) => mean(list.map((a) => a.metrics.costUsd))),
+  );
+}
+
+/**
+ * Figures over entries: pass rate weighs each entry the same; the rest count attempts. With the
+ * attempts too, adds the spread over repeats.
+ */
+export function overallOf(
+  entries: readonly EntrySummary[],
+  results?: readonly AttemptResult[],
+): SummaryOverall {
   const attempts = entries.reduce((n, e) => n + e.attempts, 0);
   const hidden = entries.filter((e) => e.hiddenPass);
   const hiddenAttempts = hidden.reduce((n, e) => n + e.hiddenPass!.attempts, 0);
@@ -770,12 +882,22 @@ export function overallOf(entries: readonly EntrySummary[]): SummaryOverall {
     toolCallsBeforeEdit: weighted((e) => e.toolCallsBeforeEdit),
     judged: entries.reduce((n, e) => n + (e.judged ?? 0), 0),
     judgeCostUsd: sum(entries.map((e) => e.judgeCostUsd)),
+    ...(entries.some((e) => e.costEstimated) ? { costEstimated: true } : {}),
+    ...(results ? repeatSpread(results) : {}),
   };
 }
 
 const pct = (v: number | null): string => (v === null ? '-' : `${Math.round(v * 100)}%`);
 const usd = (v: number | null): string => (v === null ? '-' : `$${v.toFixed(2)}`);
 const num = (v: number | null): string => (v === null ? '-' : String(Math.round(v * 10) / 10));
+const pts = (v: number | null | undefined): string =>
+  v === null || v === undefined ? '-' : `${Math.round(v * 100)} pts`;
+
+/** A cost: `~` before an estimate, and the models with no price when there is none. */
+function costCell(v: number | null, estimated?: boolean, unpriced?: string[]): string {
+  if (v === null) return unpriced?.length ? `no price (${unpriced.join(', ')})` : '-';
+  return `${estimated ? '~' : ''}${usd(v)}`;
+}
 
 function dur(ms: number | null): string {
   if (ms === null) return '-';
@@ -795,6 +917,8 @@ export function summaryMarkdown(s: BenchSummary): string {
     ...(s.judge
       ? [`- Judge: ${[s.judge.runtime, s.judge.model].filter(Boolean).join(', ')}; ${s.judge.at}`]
       : []),
+    ...(s.cap ? [capLine(s.cap, s.overall.costEstimated, s.skipped?.length ?? 0)] : []),
+    ...unpricedLines(s.entries),
     '',
     '| Entry | Attempts | Pass rate | Hidden pass | Pending | Judged | Cost | Judge cost | Time | Tools before edit |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
@@ -809,20 +933,80 @@ export function summaryMarkdown(s: BenchSummary): string {
     lines.push(
       `| ${e.entry}${flags ? ` (${flags})` : ''} | ${e.attempts} | ${pct(e.passRate)} | ${
         e.hiddenPass ? `${e.hiddenPass.passed}/${e.hiddenPass.attempts}` : '-'
-      } | ${e.pending} | ${e.judged ?? 0} | ${usd(e.costUsd)} | ${usd(e.judgeCostUsd ?? null)} | ${dur(e.wallMs)} | ${num(e.toolCallsBeforeEdit)} |`,
+      } | ${e.pending} | ${e.judged ?? 0} | ${costCell(e.costUsd, e.costEstimated, e.unpriced)} | ${usd(e.judgeCostUsd ?? null)} | ${dur(e.wallMs)} | ${num(e.toolCallsBeforeEdit)} |`,
     );
   }
   const o = s.overall;
   lines.push(
-    `| **All** | ${o.attempts} | ${pct(o.passRate)} | ${pct(o.hiddenPassRate)} | | ${o.judged ?? 0} | ${usd(o.costUsd)} total, ${usd(o.costPerAttempt)} each | ${usd(o.judgeCostUsd ?? null)} | ${dur(o.wallMs)} | ${num(o.toolCallsBeforeEdit)} |`,
+    `| **All** | ${o.attempts} | ${pct(o.passRate)} | ${pct(o.hiddenPassRate)} | | ${o.judged ?? 0} | ${costCell(o.costUsd, o.costEstimated)} total, ${costCell(o.costPerAttempt, o.costEstimated)} each | ${usd(o.judgeCostUsd ?? null)} | ${dur(o.wallMs)} | ${num(o.toolCallsBeforeEdit)} |`,
     '',
     'Pass rate counts `command` and `check` criteria, hidden ones included, and the `rubric`',
     'criteria a judge scored. Pending criteria (prose, human, and rubric not judged yet) wait for',
     'a judge or a person. Judged counts rubric results over all attempts, and judge cost is their',
     'total. Cost, time and tools before the first edit are means per attempt.',
+    ...(o.costEstimated
+      ? [
+          "`~` marks a cost estimated from the log's tokens at the model's price per million tokens",
+          '(built-in list prices, or `swarmupd.bench.prices`).',
+        ]
+      : []),
     '',
   );
+  const spread = s.entries.filter((e) => e.passRateSd !== undefined);
+  if (spread.length > 0) {
+    lines.push(
+      '## Spread over attempts',
+      '',
+      '| Entry | Attempts | Pass rate min | Pass rate max | Pass rate SD | Cost SD |',
+      '| --- | --- | --- | --- | --- | --- |',
+    );
+    for (const e of spread) {
+      lines.push(
+        `| ${e.entry} | ${e.attempts} | ${pct(e.passRateMin ?? null)} | ${pct(e.passRateMax ?? null)} | ${pts(e.passRateSd)} | ${costCell(e.costSdUsd ?? null, e.costEstimated)} |`,
+      );
+    }
+    if (o.passRateSd !== undefined) {
+      lines.push(
+        `| **All, by repeat** | ${o.attempts} | ${pct(o.passRateMin ?? null)} | ${pct(o.passRateMax ?? null)} | ${pts(o.passRateSd)} | ${costCell(o.costSdUsd ?? null, o.costEstimated)} |`,
+      );
+    }
+    lines.push(
+      '',
+      'SD is the sample standard deviation over attempts. The All row is over repeats: repeat N',
+      "has the mean pass rate and the mean cost of the entries' attempt N.",
+      '',
+    );
+  }
+  if (s.skipped?.length) {
+    lines.push(
+      '## Not started',
+      '',
+      ...s.skipped.map((k) => `- ${k.entry} #${k.attempt}: ${k.reason}`),
+      '',
+    );
+  }
   return lines.join('\n');
+}
+
+/** The summary's line about `--max-usd`. */
+function capLine(cap: BenchCap, estimated: boolean | undefined, skipped: number): string {
+  const state = cap.hit
+    ? `reached${skipped > 0 ? `, ${skipped} attempt${skipped === 1 ? '' : 's'} not started` : ''}`
+    : 'not reached';
+  const uncounted =
+    cap.uncounted > 0
+      ? `; ${cap.uncounted} attempt${cap.uncounted === 1 ? '' : 's'} with unknown cost not counted`
+      : '';
+  return `- Cost cap: ${usd(cap.maxUsd)}; spent ${costCell(cap.spentUsd, estimated)}; ${state}${uncounted}`;
+}
+
+/** Lines naming the models that had no price, so their attempts have no cost. */
+function unpricedLines(entries: readonly EntrySummary[]): string[] {
+  const models = [...new Set(entries.flatMap((e) => e.unpriced ?? []))];
+  if (models.length === 0) return [];
+  return [
+    `- No price for ${models.join(', ')}: attempts that reported tokens without a cost have none; add the model under \`swarmupd.bench.prices\`.`,
+  ];
 }
 
 export interface CompareRow {
@@ -839,7 +1023,7 @@ export interface Comparison {
   overall: {
     a: SummaryOverall;
     b: SummaryOverall;
-    delta: Record<keyof SummaryOverall, number | null>;
+    delta: Partial<Record<OverallFigure, number | null>>;
   };
 }
 
@@ -858,7 +1042,9 @@ export function compareSummaries(a: BenchSummary, b: BenchSummary): Comparison {
   const both = rows.filter((r) => r.a && r.b);
   const oa = overallOf(both.map((r) => r.a!));
   const ob = overallOf(both.map((r) => r.b!));
-  const keys = Object.keys(oa) as Array<keyof SummaryOverall>;
+  const keys = (Object.keys(oa) as Array<keyof SummaryOverall>).filter(
+    (k): k is OverallFigure => k !== 'costEstimated',
+  );
   const head = (s: BenchSummary) => ({
     set: s.set,
     agent: s.agent,
@@ -876,7 +1062,7 @@ export function compareSummaries(a: BenchSummary, b: BenchSummary): Comparison {
       b: ob,
       delta: Object.fromEntries(
         keys.map((k) => [k, delta(oa[k] ?? null, ob[k] ?? null)]),
-      ) as Record<keyof SummaryOverall, number | null>,
+      ) as Partial<Record<OverallFigure, number | null>>,
     },
   };
 }
@@ -902,6 +1088,13 @@ export function compareMarkdown(c: Comparison): string {
     fd: (x: number) => string,
   ): string => `${f(a)} → ${f(b)}${signed(delta(a, b), fd)}`;
   const pp = (x: number): string => `${Math.round(x * 100)} pts`;
+  const cost = (
+    a: number | null,
+    b: number | null,
+    ea: boolean | undefined,
+    eb: boolean | undefined,
+  ): string =>
+    `${costCell(a, ea)} → ${costCell(b, eb)}${signed(delta(a, b), (x) => `$${x.toFixed(2)}`)}`;
   const lines = [
     `# Compare ${c.a.set}: A ${who(c.a)} → B ${who(c.b)}`,
     '',
@@ -910,11 +1103,11 @@ export function compareMarkdown(c: Comparison): string {
   ];
   for (const r of c.rows) {
     lines.push(
-      `| ${r.entry} | ${cell(r.a?.passRate ?? null, r.b?.passRate ?? null, pct, pp)} | ${hidden(r.a)} → ${hidden(r.b)} | ${cell(
+      `| ${r.entry} | ${cell(r.a?.passRate ?? null, r.b?.passRate ?? null, pct, pp)} | ${hidden(r.a)} → ${hidden(r.b)} | ${cost(
         r.a?.costUsd ?? null,
         r.b?.costUsd ?? null,
-        usd,
-        (x) => `$${x.toFixed(2)}`,
+        r.a?.costEstimated,
+        r.b?.costEstimated,
       )} | ${cell(r.a?.wallMs ?? null, r.b?.wallMs ?? null, dur, (x) => dur(x))} | ${cell(
         r.a?.toolCallsBeforeEdit ?? null,
         r.b?.toolCallsBeforeEdit ?? null,
@@ -930,7 +1123,7 @@ export function compareMarkdown(c: Comparison): string {
       b.hiddenPassRate,
       pct,
       pp,
-    )} | ${cell(a.costPerAttempt, b.costPerAttempt, usd, (x) => `$${x.toFixed(2)}`)} | ${cell(
+    )} | ${cost(a.costPerAttempt, b.costPerAttempt, a.costEstimated, b.costEstimated)} | ${cell(
       a.wallMs,
       b.wallMs,
       dur,
@@ -939,6 +1132,9 @@ export function compareMarkdown(c: Comparison): string {
     '',
     'Cost, time and tools before edit are means per attempt; the overall row covers the entries',
     'both runs have.',
+    ...(c.rows.some((r) => r.a?.costEstimated || r.b?.costEstimated)
+      ? ["`~` marks a cost estimated from the log's tokens at the model's price."]
+      : []),
     '',
   );
   return lines.join('\n');
@@ -989,6 +1185,13 @@ export interface BenchRunOptions {
   runCommand?: CheckDeps['runCommand'];
   /** Judges each attempt's `rubric` criteria after its checks (`--judge`). */
   judge?: BenchJudge;
+  /**
+   * `--max-usd`: no attempt starts once the attempts so far cost this much, agent cost (estimates
+   * included) and judge cost together.
+   */
+  maxUsd?: number;
+  /** Prices by model over the built-in ones (`swarmupd.bench.prices`), for estimated costs. */
+  prices?: Record<string, ModelPrice>;
   /** Puts this role file's instructions in each prompt (`--role-file`, `--variant`). */
   role?: BenchRole;
   /** The clock, for tests. */
@@ -1177,6 +1380,23 @@ export function planLines(plan: ReturnType<typeof planBench>, opts: BenchRunOpti
     );
   }
   if (opts.judge) lines.push(judgeLine(opts.judge, opts.runtimes));
+  for (const runtime of new Set(
+    plan.attempts.filter((a) => a.mode === 'agent').map((a) => runtimeOf(a.agent)),
+  )) {
+    if (runtime !== 'codex') continue;
+    const model = benchCostModel(runtime, opts);
+    const price = model ? benchPrices(opts.prices)[model] : undefined;
+    lines.push(
+      price
+        ? `cost: estimated from tokens at ${model}'s price per million tokens: input $${price.input}, cached input $${price.cached_input}, output $${price.output}`
+        : `cost: no price for ${model ?? 'an unknown model'}, so ${runtime} attempts will have no cost`,
+    );
+  }
+  if (opts.maxUsd !== undefined) {
+    lines.push(
+      `cost cap: ${usd(opts.maxUsd)} of agent and judge cost, estimates included; no attempt starts once it is reached`,
+    );
+  }
   if (opts.role) {
     lines.push(
       `role file: ${opts.role.agent} from ${opts.role.root}` +
@@ -1213,6 +1433,36 @@ function removeWorktree(repo: string, wt: string, log: (line: string) => void): 
       log(`could not remove the worktree ${wt}: ${(err as Error).message.split('\n')[0]}`);
     }
   }
+}
+
+/**
+ * Estimates the cost of a run whose log reports tokens but no cost: the tokens at `model`'s price.
+ * Without a model or a price, marks the metrics `unpriced` and leaves the cost null.
+ */
+export function priceMetrics(
+  m: AttemptMetrics,
+  model: string | undefined,
+  prices: Record<string, ModelPrice>,
+): void {
+  if (m.costUsd !== null || !m.tokens) return;
+  if (model) m.priceModel = model;
+  const price = model ? prices[model] : undefined;
+  if (!price) {
+    m.unpriced = true;
+    return;
+  }
+  m.costUsd = estimateCostUsd(m.tokens, price);
+  m.costEstimated = true;
+}
+
+/** What an attempt cost, agent and judge, and whether some of it is unknown. */
+function attemptCost(r: AttemptResult): { usd: number; unknown: boolean } {
+  return {
+    usd: (r.metrics.costUsd ?? 0) + (r.judge?.costUsd ?? 0),
+    unknown:
+      (r.mode === 'agent' && r.metrics.costUsd === null) ||
+      (r.judge !== undefined && r.judge.costUsd === null),
+  };
 }
 
 /** Runs one planned attempt and writes its `results.json`. */
@@ -1286,6 +1536,11 @@ export async function runAttempt(
       });
       result.run = { ...result.run, ...outcome };
       result.metrics = logMetrics(logPath);
+      priceMetrics(
+        result.metrics,
+        benchCostModel(runtimeOf(a.agent), opts),
+        benchPrices(opts.prices),
+      );
     } else if (a.mode === 'reference' && a.patch) {
       const t0 = Date.now();
       try {
@@ -1336,6 +1591,8 @@ export interface BenchStatus {
   /** Attempts finished, of `total`. */
   done: number;
   total: number;
+  /** Attempts the cost cap kept from starting. */
+  skipped?: number;
   /** The attempt under way, such as `TB-02 #1`. */
   current?: string;
   /** The runner's process id. */
@@ -1398,8 +1655,24 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
   };
   report({});
   const results: AttemptResult[] = [];
+  const cap = opts.maxUsd;
+  let spent = 0;
+  let uncounted = 0;
+  const skipped: BenchSkipped[] = [];
+  const unpricedSeen = new Set<string>();
   try {
-    for (const a of plan.attempts) {
+    for (const [i, a] of plan.attempts.entries()) {
+      if (cap !== undefined && spent >= cap) {
+        const reason = `the cost cap of ${usd(cap)} was reached (${usd(spent)} spent)`;
+        for (const k of plan.attempts.slice(i)) {
+          skipped.push({ entry: k.entry.id, attempt: k.attempt, reason });
+        }
+        opts.log(
+          `cost cap reached: ${usd(spent)} of ${usd(cap)}; ${skipped.length} attempts not started`,
+        );
+        report({ skipped: skipped.length });
+        break;
+      }
       opts.log(
         `${a.entry.id} #${a.attempt}: ${a.mode === 'agent' ? `running ${a.agent}` : a.mode}`,
       );
@@ -1412,6 +1685,25 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
       });
       results.push(r);
       report({ done: results.length });
+      const cost = attemptCost(r);
+      spent += cost.usd;
+      if (cost.unknown) {
+        if (cap !== undefined && uncounted === 0) {
+          opts.log(
+            `${a.entry.id} #${a.attempt}: its cost is unknown, so the cost cap cannot count it (warned once)`,
+          );
+        }
+        uncounted++;
+      }
+      if (r.metrics.unpriced) {
+        const model = r.metrics.priceModel ?? 'unknown model';
+        if (!unpricedSeen.has(model)) {
+          unpricedSeen.add(model);
+          opts.log(
+            `${a.entry.id} #${a.attempt}: no price for ${model}; add it under swarmupd.bench.prices to estimate its cost`,
+          );
+        }
+      }
       const fails = r.criteria.filter((c) => c.result === 'fail').map((c) => c.id);
       opts.log(
         `${a.entry.id} #${a.attempt}: ${r.score.passed}/${r.score.checkable} checkable pass` +
@@ -1458,7 +1750,11 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
           }
         : {}),
       entries,
-      overall: overallOf(entries),
+      overall: overallOf(entries, results),
+      ...(cap !== undefined
+        ? { cap: { maxUsd: cap, spentUsd: spent, hit: spent >= cap, uncounted } }
+        : {}),
+      ...(skipped.length > 0 ? { skipped } : {}),
     };
     writeFileSync(join(out, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
     writeFileSync(join(out, 'summary.md'), summaryMarkdown(summary));
@@ -1734,7 +2030,7 @@ export async function judgeBenchRun(opts: BenchJudgeRunOptions): Promise<BenchSu
         }
       : {}),
     entries,
-    overall: overallOf(entries),
+    overall: overallOf(entries, results),
   };
   writeFileSync(join(out, 'summary.json'), `${JSON.stringify(next, null, 2)}\n`);
   writeFileSync(join(out, 'summary.md'), summaryMarkdown(next));
