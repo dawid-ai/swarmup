@@ -313,4 +313,16 @@ describe('swarmupd.bench', () => {
     expect(() => cfg({ set: ['a.yaml'] })).toThrow(/unknown key set/);
     expect(() => cfg({ sets: [1] })).toThrow(/bench.sets: use a list of paths/);
   });
+
+  it('takes prices by model and refuses a bad price', () => {
+    const cfg = (bench: unknown) => opsdConfig({ swarmupd: { bench } } as never).bench;
+    expect(cfg({ prices: { 'gpt-x': { input: 1, cached_input: 0.1, output: 8 } } })).toEqual({
+      sets: [],
+      results: [],
+      prices: { 'gpt-x': { input: 1, cached_input: 0.1, output: 8 } },
+    });
+    expect(() => cfg({ prices: { 'gpt-x': { input: '1', cached_input: 0, output: 8 } } })).toThrow(
+      /swarmupd\.bench\.prices\.gpt-x\.input: use a number of 0 or more/,
+    );
+  });
 });

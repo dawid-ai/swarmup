@@ -15,6 +15,8 @@ import {
   READ_ONLY_ROLES,
   runtimeOf,
 } from '@swarmup/core';
+import type { ModelPrice } from './bench-cost.js';
+import { checkBenchPrices } from './bench-cost.js';
 import type { MergeCheck } from './merge-checks.js';
 import type { NotifyConfig } from './notify.js';
 import { checkNotify } from './notify.js';
@@ -211,6 +213,8 @@ export interface BenchConfig {
   sets: string[];
   /** Folders whose subfolders are bench runs (each with a `summary.json` or `status.json`). */
   results: string[];
+  /** USD per million tokens by model, over the built-in prices, for costs estimated from tokens. */
+  prices?: Record<string, ModelPrice>;
 }
 
 /**
@@ -749,11 +753,11 @@ function checkChat(c: ChatConfig): void {
 function checkBench(raw: unknown): BenchConfig {
   if (raw === undefined || raw === null) return { sets: [], results: [] };
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new OpsError('swarmupd.bench: use sets and results, each a list of paths', 2);
+    throw new OpsError('swarmupd.bench: use sets and results, each a list of paths, and prices', 2);
   }
-  const extra = Object.keys(raw).filter((k) => k !== 'sets' && k !== 'results');
+  const extra = Object.keys(raw).filter((k) => !['sets', 'results', 'prices'].includes(k));
   if (extra.length > 0) {
-    throw new OpsError(`swarmupd.bench: unknown key ${extra[0]}; use sets and results`, 2);
+    throw new OpsError(`swarmupd.bench: unknown key ${extra[0]}; use sets, results and prices`, 2);
   }
   const paths = (v: unknown, name: string): string[] => {
     if (v === undefined || v === null) return [];
@@ -763,8 +767,13 @@ function checkBench(raw: unknown): BenchConfig {
     }
     return list as string[];
   };
-  const b = raw as { sets?: unknown; results?: unknown };
-  return { sets: paths(b.sets, 'sets'), results: paths(b.results, 'results') };
+  const b = raw as { sets?: unknown; results?: unknown; prices?: unknown };
+  const prices = checkBenchPrices(b.prices);
+  return {
+    sets: paths(b.sets, 'sets'),
+    results: paths(b.results, 'results'),
+    ...(Object.keys(prices).length > 0 ? { prices } : {}),
+  };
 }
 
 const JUDGE_KEYS = ['runtime', 'model', 'effort', 'budget_min', 'at_merge'];
