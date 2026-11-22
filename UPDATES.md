@@ -3,6 +3,25 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.19 (2026-11-22)
+
+- **Workflows you can repeat.** Start a feature, a bug fix, a content piece or a campaign launch
+  from **New task > Start a workflow**. A workflow lays out the stages, who does each one and
+  what "done" means, so the same kind of work runs the same way every time. Projects can add
+  their own workflows.
+- **Gates for your decisions.** A workflow can stop and ask you something, such as "Is the spec
+  right?", once the work before it is done. Answer in the Inbox under **Gates**: **Approve**
+  starts the next stages, and **Reject** parks them or sends the work back with your note. No
+  agent can answer a gate for you.
+- **One definition per agent role.** A role is now defined once for every agent that runs it,
+  with only the differences per agent. `swarmup defs migrate` moves existing role files over and
+  checks that nothing changes.
+- **Team rules in the project.** Review rounds, time budgets and similar limits can live in the
+  project's `swarm.yaml`, so every machine uses the same ones. Settings you make on this PC still
+  win.
+- **Updates survive antivirus.** When antivirus holds the downloaded update, SwarmUp downloads it
+  again a few times instead of stopping with an error.
+
 ## v0.3.0-beta.18 (2026-11-22)
 
 - **Not just code.** Start a campaign or a blog with **New project** and the `campaign` or

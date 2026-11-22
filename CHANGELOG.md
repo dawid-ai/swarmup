@@ -6,6 +6,26 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.19 (2026-11-22)
+
+### Added
+
+- Agent folders: `agents/<role>/agent.md` defines a role once for every runtime it runs on, and `agents/<role>/<runtime>.md` adds what one runtime does differently (`body: replace` swaps the instructions). Legacy `agents/<runtime>-<role>.md` files keep working and win over a folder for the same id, with a warning from `swarmup validate`.
+- `swarmup defs migrate` prints the folders that would replace your legacy agent files; `--apply` writes them and `--prune` also removes the legacy files. It refuses unless every agent comes out with the same fields, and logs to `migrations.log`.
+- Team policy in `swarm.yaml`: `policy.review_rounds`, `stuck_runs`, `review_backlog`, `review_fallback_hours`, `plan_check_minutes`, `budget_minutes` and `test_changes`, and `defaults.budget_min`. A key your user config sets still wins, even at its default value.
+- An agent file's `writes` now sets its role's `writes`, under the machine's `swarmupd.roles.<role>.writes`.
+- The role editor in the app edits a folder agent's `agent.md` or only its runtime's file, and lists each run setting with where it comes from: this machine, `swarm.yaml` or the role file.
+- Workflows: `workflows/<id>.yaml` in the task store is a repeatable milestone plan with parameters (`{{name}}`), stages, `when` conditions, default criteria per type and human gates. `swarmup workflow list|show|start` and `swarmup plan propose ID --workflow W --param k=v` use them; a person's start of a workflow with `approval: starter` approves it at once.
+- Gates: a plan item of type `gate` waits for a person, who approves it with `swarmup done` or rejects it with `swarmup park` (parking the stages after it, or with `on_reject: revise` reopening the work before it). The app shows gates in the Inbox under **Gates** with **Approve** and **Reject**, and in a milestone's plan.
+- Starter workflows `feature`, `bugfix`, `content-piece` and `campaign-launch` ship as templates; `new-project` copies the ones that fit its template, and **New task** in the app has **Start a workflow**.
+- `work_types` in `swarm.yaml` give a task filed without `--done-when` its default criteria, and name the workflow that fits.
+
+### Fixed
+
+- The app downloads an update again, after 15 seconds, 1 minute and 5 minutes, when antivirus or
+  another program locks the downloaded installer. Before, the update stopped with an `EPERM` error
+  until you checked again in **Settings > Updates**.
+
 ## 0.3.0-beta.18 (2026-11-22)
 
 ### Added
