@@ -65,7 +65,7 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `review ID MSG [--to ID \| --human]`                                      | `needs-review`. Without `--to`, the reviewer is the root's `human` for `--human` or a task whose type or label is in the escalation list (`release`, `publish`, `money`, `billing`, `payment`, `account`, `accounts`, `credentials`, `client`, `delete-data`, `irreversible`); else the delegation's expected reviewer; else the reviewer the task's plan item names (`review` in `task.md`, set from a milestone's plan); else a reviewer agent of another provider than the author (`codex:reviewer` for Claude work); else the root's `human`. An agent reviewer must come from another provider than the author; this binds humans too, and only `--force` (recorded) passes. A request that names the same commit as the `changes` verdicts before it, with no new commit since, goes to the root's `human` instead of an agent reviewer, with those verdicts quoted; `--force` (recorded) keeps the agent. |
 | `verdict ID approve\|changes MSG [--criteria-file F] [--pass/--fail ID]`  | The reviewer closes the task or sends it back. `--criteria-file` (YAML or JSON, `-` for stdin), `--pass ID`, `--fail ID:"note"` and `--na ID` give a result per criterion; see [Done when](#done-when).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `criteria ID [--set-file F \| --add C]`, `criteria check ID [--cwd DIR]`  | Prints the task's criteria and their last results, replaces or extends them with a `criteria` event, or runs its `command` and `check` criteria and records the results.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `criteria ID [--set-file F \| --add C]`, `criteria check ID [--cwd DIR]`  | Prints the task's criteria and their last results, replaces or extends them with a `criteria` event, or runs its `command` and `check` criteria and records the results. `criteria judge ID [--cwd DIR] [--base REF]` has an LLM judge score its `rubric` criteria and records them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `done ID [MSG]`                                                           | Closes the task. On a `question`, MSG is the answer and goes to the asker's inbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `handoff ID TO MSG`                                                       | New owner; back to `todo`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `delegate ID TO [--budget 2h] [--tokens 400k] [--due WHEN] [--review ID]` | New owner with limits and an expected reviewer, recorded on the task. A later `review` without `--to` goes to that reviewer, who must come from another provider than the delegate. It comes before the reviewer a plan item names (`review` in `task.md`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -201,7 +201,7 @@ done_when:
     check: links-resolve
     args: { path: content/post.md }
   - id: voice
-    kind: rubric # a model judges it against the rubric; stored and shown for now
+    kind: rubric # an LLM judge scores it against the rubric file
     rubric: rubrics/brand-voice.md
     pass: 0.8
   - id: angle
@@ -216,7 +216,7 @@ done_when:
 | `prose`   | `text` (or a plain string) | The reviewer, by reading the work.                                          |
 | `command` | `run`                      | swarmupd at merge, and `swarmup criteria check`.                            |
 | `check`   | `check`, `args`            | swarmupd at merge, and `swarmup criteria check`.                            |
-| `rubric`  | `rubric`, `pass` (0 to 1)  | The reviewer, with a `score`; a model runner comes later.                   |
+| `rubric`  | `rubric`, `pass` (0 to 1)  | An LLM judge (`swarmup criteria judge`, the merge); else the reviewer.      |
 | `human`   | `ask`                      | The reviewer, by reading the work.                                          |
 | `map`     | none                       | `swarmup criteria check` when the build has `swarmup map check`; else `na`. |
 
@@ -245,10 +245,19 @@ Any kind may carry `text` as a description. The built-in checks are:
 - **Run the checks** with `swarmup criteria check ID [--cwd DIR]`: it runs the `command` and
   `check` criteria in the folder, prints each result, and records them in a `criteria-check`
   event unless `--no-record`. It exits 1 when one fails.
+- **Judge the rubric criteria** with `swarmup criteria judge ID [--cwd DIR] [--base REF]`: an LLM
+  judge scores each `rubric` criterion against the diff of `--cwd` (default: here) from its merge
+  base with `--base` (default: the root's `swarmupd.merge.<root>.base`, else `main`), prints each
+  result and its cost, and records those that gave a score in a `criteria-check` event with
+  `by: judge`, unless `--no-record`. It exits 1 when one fails or gives no score. It spends
+  tokens; see [Rubric files](#rubric-files).
 - **At merge**, after the configured checks pass, swarmupd runs the task's `command` and `check`
   criteria in its worktree with the same time limit. A failure sends the task back as a `changes`
   verdict from `opsd:merge` with the results; a pass records them on the `merge` event. Only what
   each criterion names runs. A task with such criteria merges alone, outside a batch.
+- **With `swarmupd.judge.at_merge: true`**, swarmupd also judges the `rubric` criteria at merge,
+  after the `command` and `check` criteria pass, and sends the task back when one scores below
+  its `pass` ([docs/supervisor.md](supervisor.md#merging-approved-work)).
 - **Write lines an agent can check**: a command, a file, a test, a screenshot, a URL that
   responds. "Users like it" is the goal, not the check; it belongs in the body.
 - **Read it** with `swarmup show ID`, which prints a table under `done when:` after the body: id,
@@ -275,6 +284,56 @@ Any kind may carry `text` as a description. The built-in checks are:
   their output next time. The reviewer checks each line against that evidence.
 
 The milestone design (AO-0110) uses the same field for a milestone's check.
+
+### Rubric files
+
+A `rubric` criterion names a rubric file and the score that passes (`pass`, 0 to 1, default
+0.7). The file is YAML frontmatter and a Markdown body:
+
+```markdown
+---
+id: code-quality
+scale: { min: 0, max: 4 }
+criteria:
+  - id: readability
+    weight: 0.25
+    describe: Names, function size, and control flow make the change easy to follow.
+  - id: tests
+    weight: 0.2
+    describe: New or changed behavior has focused tests.
+inputs: [diff, task, repo]
+---
+
+# Code quality
+
+How to score, the anchors for each score, and a worked example.
+```
+
+- **`scale`:** the range of every criterion's score; `max` is above `min`.
+- **`criteria`:** distinct ids, each with a positive `weight` (default 1) and what it measures in
+  `describe`. Weights are normalized to sum to 1.
+- **`inputs`:** what the judge sees besides the rubric. `diff` is the change as a git diff, cut
+  at 60,000 characters with a note. `task` is the task's title and body. `repo` is the files the
+  diff touches, as they are after it. `files` is the files that globs match, from a `files: [...]`
+  key or an `inputs` entry `{ files: [...] }`. Files are cut at 20,000 characters each and 60,000
+  together. Default: `diff` and `task`.
+- **The body** holds the judge's instructions and anchors, as written.
+
+The judge is one non-interactive model call per criterion with everything in the prompt and no
+tools, so it cannot read anything else and never learns which agent or model did the work. It
+answers with JSON, `{ "scores": { "<id>": <number in the scale> }, "total": <number>, "reasons":
+"<short>" }`. swarmupd checks every score against the scale and works the weighted total out
+itself; the model's `total` is ignored. The score is that total normalized to 0..1, and it
+passes at or above `pass`. The result records the score, the reasons as its `note`, and the
+per-criterion scores, model and cost as its `evidence`. A judgment that gives no score records
+nothing (`criteria judge`) or `na` with why (the merge).
+
+A task's rubric path is read from its code repo at the merge base, so work on the branch cannot
+change the rubric it is judged by, then from the task store's folder. An absolute path is read as
+it is. The judge's runtime, model, effort and time budget come from `swarmupd.judge` in the user
+config (default Claude, `sonnet`, effort `low`, 5 minutes); see
+[docs/supervisor.md](supervisor.md#config). A Claude judge runs `claude -p --output-format json`
+with `--tools ""`, `--strict-mcp-config` and a short system prompt, in an empty folder.
 
 ## Milestones and plans
 

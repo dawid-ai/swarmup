@@ -25,8 +25,9 @@ Computes a task's current state from its event files, the same way on every mach
   `claimed(stale)`, `in-progress(stale)`, `todo(unblocked)`.
 - `plan.ts` reads milestone plans (proposal, change, subtask, fix) and the effective plan.
 - `criteria.ts` parses typed `done_when` criteria (a plain string stays `prose`), folds
-  per-criterion results and runs the `command` and `check` kinds for `swarmup criteria check`
-  and the merge.
+  per-criterion results (with `by: judge` from a judge's `criteria-check` event) and runs the
+  `command` and `check` kinds for `swarmup criteria check` and the merge. The `rubric` kind is
+  judged by `rubric.ts` and the supervisor's `judge.ts` (see `/judge`).
 
 ## Invariants
 

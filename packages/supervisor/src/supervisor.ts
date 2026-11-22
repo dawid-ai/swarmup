@@ -179,6 +179,7 @@ import { gitAsync } from './git.js';
 import { gitIn, NoDiff, reviewRange, taskDiff } from './diff.js';
 import { readTestChanges, testChangesNote } from './test-changes.js';
 import { readReleases, RELEASES_TTL_MS, type ReleaseSnapshot, releasesNote } from './releases.js';
+import type { JudgeRunner } from './judge.js';
 import type { TaskDiff } from './diff.js';
 import type { SignInAnswer } from './signin.js';
 import { taskMapPrompt } from './map-prompt.js';
@@ -308,6 +309,8 @@ export interface SupervisorOptions {
   sandboxOwned?: SandboxLister;
   /** Reads the releases and tags of a code checkout (AO-0350); defaults to `readReleases`. */
   readReleases?: (top: string) => Promise<ReleaseSnapshot>;
+  /** Runs the LLM judge's process (`judge.ts`); defaults to `defaultJudgeRunner`. Tests replace it. */
+  judgeRunner?: JudgeRunner;
 }
 
 /** Kill rounds for what an ended run left behind before swarmupd gives up and warns. */
@@ -907,6 +910,8 @@ export class Supervisor extends EventEmitter {
   readonly self?: OpsdSelf;
   /** @internal Used by the Merger. */
   readonly mergeGitTimeoutMs?: MergeGitTimeout;
+  /** Runs the LLM judge's process, when a test replaced it. */
+  readonly judgeRunner?: JudgeRunner;
   /** swarmupd's own state on this PC, for every project: `state.db` in the state folder. */
   readonly state: StateDb | null;
   /** The merge pipeline: approved work into its base (see merger.ts). */
@@ -1098,6 +1103,7 @@ export class Supervisor extends EventEmitter {
     this.version = opts.version;
     this.self = opts.self;
     this.mergeGitTimeoutMs = opts.mergeGitTimeoutMs;
+    this.judgeRunner = opts.judgeRunner;
     this.runsOutlive = opts.runsOutlive ?? RUNS_OUTLIVE_OPSD;
     this.usage = this.store.readJson<UsageState>('usage.json', {});
     this.signIn = this.store.readJson<Record<string, SignInState>>(SIGN_IN_FILE, {});

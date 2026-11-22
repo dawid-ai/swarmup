@@ -20,6 +20,7 @@
 - `desktop/replay` — component — Replay; animated scenes of a root's timeline, with GIF, MP4 and still exports
 - `desktop/ui` — component — The React renderer (Vite, Tailwind); views, shared UI pieces and lib helpers over swarmupd's API
 - `docs` — area — User and contributor docs, the agent skill copies, and the README media and promo pipeline
+- `judge` — flow — The LLM judge of rubric criteria: rubric files, the blind no-tools prompt, the JSON answer, and where it runs
 - `leaks` — module — Secret scanning; one pattern set for the event write path, the leak check script and the pre-commit hook
 - `release` — flow — Cutting a release; version bump, changelog fragments, UPDATES entry, tag and the release workflow
 - `supervisor` — service — swarmupd: the per-machine service; tick loop, config, state folder, HTTP API, doctor and notifications

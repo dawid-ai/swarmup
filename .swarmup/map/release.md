@@ -33,5 +33,6 @@ installer, and installed apps update from the GitHub Release.
 ## Invariants
 
 - User-visible changes add a fragment `changelog.d/<slug>.<added|changed|fixed|removed>.md`
-  instead of editing `CHANGELOG.md`, so branches never conflict on it.
+  instead of editing `CHANGELOG.md`, so branches never conflict on it. One fragment may hold
+  several bullets for one feature.
 - The workflow refuses a tag whose version, changelog heading or UPDATES entry is missing.

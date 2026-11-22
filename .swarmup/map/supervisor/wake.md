@@ -34,7 +34,9 @@ their budget.
   `/core/defs`). Each tick re-merges when a definition file changed, before limits are read.
 - A run's model and effort: Settings, then the role file's `runtimes.<rt>`, then its own
   values, then the provider's. With a `swarm.yaml`, `run-start` records the `defs` hash.
-- `mapTopOf` finds a root's map folder; `criteriaDir` is where **Run checks** runs criteria.
+- `mapTopOf` finds a root's map folder; `criteriaDir` is where **Run checks** runs criteria
+  and **Judge** reads the task's tree. The `judgeRunner` option replaces the LLM judge's process
+  in tests.
 
 ## Invariants
 

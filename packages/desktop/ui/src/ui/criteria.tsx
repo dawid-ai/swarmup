@@ -10,6 +10,7 @@ import {
   CircleMinus,
   CircleX,
   FlaskConical,
+  Gavel,
   Loader2,
   MapIcon,
   Plus,
@@ -62,7 +63,8 @@ export const KINDS: Record<
     icon: Scale,
     label: 'Rubric',
     color: '#b18cff',
-    judge: 'The reviewer scores the work against the rubric file',
+    judge:
+      'An LLM judge scores the work against the rubric file (Judge, or the merge where turned on); else the reviewer gives a score',
   },
   human: {
     icon: UserRound,
@@ -274,7 +276,7 @@ export function ResultDetail({
 }: {
   r: CriterionVerdict;
   /** The event that recorded it, for the last result of a criterion. */
-  who?: Pick<CriterionLast, 'actor' | 'at' | 'type'>;
+  who?: Pick<CriterionLast, 'actor' | 'at' | 'type' | 'by'>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -291,7 +293,9 @@ export function ResultDetail({
               by <Who id={who.actor} size="xs" plain />
             </span>
             <span title={new Date(who.at).toLocaleString()}>{ago(who.at)}</span>
-            <span className="text-fg-4">· {EVENT_NAME[who.type] ?? who.type}</span>
+            <span className="text-fg-4">
+              · {who.by === 'judge' ? 'Judge' : (EVENT_NAME[who.type] ?? who.type)}
+            </span>
           </>
         )}
       </div>
@@ -315,16 +319,21 @@ export function ResultDetail({
 export function CriteriaList({
   criteria,
   results,
-  job,
+  job: checkJob,
+  judge,
 }: {
   criteria: Criterion[];
   results?: Record<string, CriterionLast>;
   job?: CriteriaCheckJob | null;
+  /** The **Judge** run under way or last ended, for the rubric criteria. */
+  judge?: CriteriaCheckJob | null;
 }) {
-  const running = job && !job.endedAt ? job : null;
   return (
     <ul data-criteria className="flex flex-col gap-2 text-sm">
       {criteria.map((c) => {
+        const judged = Boolean(judge?.ids.includes(c.id));
+        const job = judged ? judge : checkJob;
+        const running = job && !job.endedAt ? job : null;
         const last = results?.[c.id];
         // A result of the run under way, or of one that ended after this read.
         const live = job?.results[c.id];
@@ -353,7 +362,12 @@ export function CriteriaList({
               ) : fresh ? (
                 <ResultDetail
                   r={fresh}
-                  who={{ actor: job!.by, at: job!.startedAt, type: 'criteria-check' }}
+                  who={{
+                    actor: job!.by,
+                    at: job!.startedAt,
+                    type: 'criteria-check',
+                    ...(judged ? { by: 'judge' } : {}),
+                  }}
                 />
               ) : last ? (
                 <ResultDetail r={last} who={last} />
@@ -868,6 +882,8 @@ const POLL_MS = 1000;
 export function useCriteriaCheck(
   task: string,
   onEnded: () => void,
+  /** `criteria-judge` reads and starts the task's **Judge** instead. */
+  action: 'criteria-check' | 'criteria-judge' = 'criteria-check',
 ): {
   job: CriteriaCheckJob | null;
   running: boolean;
@@ -880,7 +896,7 @@ export function useCriteriaCheck(
   const ended = useRef(onEnded);
   ended.current = onEnded;
   const live = useRef(true);
-  const path = `/api/tasks/${q(task)}/criteria-check`;
+  const path = `/api/tasks/${q(task)}/${action}`;
   const watch = useCallback(
     (j: CriteriaCheckJob | null, wasRunning: boolean): void => {
       if (!live.current) return;
@@ -960,6 +976,57 @@ export function RunChecksButton({
       )}
       {job?.error && <ErrorLine error={job.error} />}
       <ErrorLine error={check.error} />
+    </div>
+  );
+}
+
+/**
+ * The **Judge** button, next to **Run checks**: an LLM judge scores the rubric criteria against
+ * the task branch's diff, as `swarmup criteria judge` does. It spends tokens.
+ */
+export function JudgeButton({
+  judge,
+  me,
+  count,
+}: {
+  judge: ReturnType<typeof useCriteriaCheck>;
+  me: string | null;
+  /** How many rubric criteria the task has. */
+  count: number;
+}) {
+  const { job, running } = judge;
+  const done = job ? job.ids.filter((id) => job.results[id]).length : 0;
+  const failed = job ? job.ids.filter((id) => job.results[id]?.result === 'fail').length : 0;
+  const cost = typeof job?.costUsd === 'number' ? ` · $${job.costUsd.toFixed(4)}` : '';
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        icon={running ? Loader2 : Gavel}
+        disabled={running || count === 0}
+        title={
+          count === 0
+            ? 'This task has no rubric criteria'
+            : 'An LLM judge scores the rubric criteria against the task branch, as swarmup criteria judge does; it spends tokens'
+        }
+        onClick={() => judge.start(me)}
+      >
+        {running ? 'Judging' : 'Judge'}
+      </Button>
+      {job && (
+        <span data-judge-progress className="text-xs text-fg-3">
+          {running
+            ? `${done} of ${job.ids.length} judged`
+            : job.error
+              ? null
+              : failed > 0
+                ? `${failed} of ${job.ids.length} below the pass mark${cost}`
+                : `${job.ids.length} passed${cost}`}
+          {job.endedAt && !job.error && <span className="text-fg-4"> · {ago(job.endedAt)}</span>}
+        </span>
+      )}
+      {job?.error && <ErrorLine error={job.error} />}
+      <ErrorLine error={judge.error} />
     </div>
   );
 }

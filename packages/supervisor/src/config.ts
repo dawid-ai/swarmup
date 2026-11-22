@@ -212,6 +212,37 @@ export interface BenchConfig {
   results: string[];
 }
 
+/**
+ * The LLM judge of `rubric` criteria (W7, `swarmupd.judge`): which runtime and model score the
+ * work, how hard it thinks, how long one judgment may take, and whether swarmupd judges at merge.
+ */
+export interface JudgeConfig {
+  /** `claude` or `codex`. Default `claude`. */
+  runtime: string;
+  /** The model; default `sonnet` for Claude, the runtime's own `model` for Codex. */
+  model?: string;
+  /** Reasoning effort; default `low`. */
+  effort: string;
+  /** Minutes one judgment may take before swarmupd stops it; default 5. */
+  budget_min: number;
+  /**
+   * Judge a task's `rubric` criteria at merge, after its `command` and `check` criteria pass; a
+   * score below `pass` sends the task back. Off unless set to true: each judgment spends tokens.
+   */
+  at_merge: boolean;
+}
+
+/** The judge when `swarmupd.judge` leaves a key out. */
+export const DEFAULT_JUDGE: JudgeConfig = {
+  runtime: 'claude',
+  effort: 'low',
+  budget_min: 5,
+  at_merge: false,
+};
+
+/** The model a Claude judge uses when `swarmupd.judge.model` is unset. */
+export const DEFAULT_JUDGE_CLAUDE_MODEL = 'sonnet';
+
 export interface TestChangesConfig {
   /** Test files. */
   tests?: string[];
@@ -373,6 +404,7 @@ export interface OpsdConfig {
   /** Hours after a run ended that its session may still be resumed. */
   resume_max_hours: number;
   bench: BenchConfig;
+  judge: JudgeConfig;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -490,6 +522,7 @@ export function opsdConfig(
     resume_on_changes: raw.resume_on_changes ?? true,
     resume_max_hours: raw.resume_max_hours ?? 24,
     bench: checkBench((raw as { bench?: unknown }).bench),
+    judge: checkJudge((raw as { judge?: unknown }).judge),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -680,6 +713,52 @@ function checkBench(raw: unknown): BenchConfig {
   };
   const b = raw as { sets?: unknown; results?: unknown };
   return { sets: paths(b.sets, 'sets'), results: paths(b.results, 'results') };
+}
+
+const JUDGE_KEYS = ['runtime', 'model', 'effort', 'budget_min', 'at_merge'];
+
+/**
+ * `swarmupd.judge`, checked, with {@link DEFAULT_JUDGE} for what it leaves out. Refuses an unknown
+ * key, a runtime other than `claude` or `codex`, a bad model or effort, and a budget outside 1 to
+ * 60 minutes, with exit 2.
+ */
+export function checkJudge(raw: unknown): JudgeConfig {
+  if (raw === undefined || raw === null) return { ...DEFAULT_JUDGE };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError(`swarmupd.judge: use ${JUDGE_KEYS.join(', ')}`, 2);
+  }
+  const extra = Object.keys(raw).filter((k) => !JUDGE_KEYS.includes(k));
+  if (extra.length > 0) {
+    throw new OpsError(`swarmupd.judge: unknown key ${extra[0]}; use ${JUDGE_KEYS.join(', ')}`, 2);
+  }
+  const j = raw as Record<string, unknown>;
+  const out: JudgeConfig = { ...DEFAULT_JUDGE };
+  if (j.runtime !== undefined && j.runtime !== null) {
+    if (j.runtime !== 'claude' && j.runtime !== 'codex') {
+      throw new OpsError('swarmupd.judge.runtime: use claude or codex', 2);
+    }
+    out.runtime = j.runtime;
+  }
+  if (j.model !== undefined && j.model !== null && j.model !== '') {
+    out.model = checkModel(j.model, 'swarmupd.judge.model');
+  }
+  if (j.effort !== undefined && j.effort !== null && j.effort !== '') {
+    out.effort = checkEffort(j.effort, 'swarmupd.judge.effort');
+  }
+  if (j.budget_min !== undefined && j.budget_min !== null) {
+    const b = j.budget_min;
+    if (typeof b !== 'number' || !Number.isFinite(b) || b <= 0 || b > 60) {
+      throw new OpsError('swarmupd.judge.budget_min: use minutes from 1 to 60', 2);
+    }
+    out.budget_min = b;
+  }
+  if (j.at_merge !== undefined && j.at_merge !== null) {
+    if (typeof j.at_merge !== 'boolean') {
+      throw new OpsError('swarmupd.judge.at_merge: use true or false', 2);
+    }
+    out.at_merge = j.at_merge;
+  }
+  return out;
 }
 
 function checkPushBranches(raw: unknown): Record<string, boolean> {

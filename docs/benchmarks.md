@@ -11,7 +11,8 @@ under test and the set file.
 
 > **Cost:** a run with a real agent spends tokens for every entry and every repeat, up to the
 > budget of each attempt. Start with `--dry-run`, then two or three entries and one repeat. The
-> `--agent none` and `--reference-dir` modes run no agent and cost nothing.
+> `--agent none` and `--reference-dir` modes run no agent and cost nothing. `--judge` and
+> `swarmup bench judge` spend tokens for each `rubric` criterion of each attempt.
 
 ## Set file format
 
@@ -95,6 +96,8 @@ swarmup bench run benchmarks/demo.yaml --repo ../app --entries BUG-12,DOC-3 --ag
 | `--reference-dir DIR`     | Applies `DIR/<entry>.patch` instead of running an agent; see the following section.                                                                 |
 | `--out DIR`               | Where results go; it must be new or empty and outside the repo. Default: `swarmup-bench/<set>-<UTC time>` in `$SWARMUP_SCRATCH` or the temp folder. |
 | `--keep`                  | Keeps each attempt's worktree; by default it is removed after its diff is saved.                                                                    |
+| `--judge`                 | Judges each attempt's `rubric` criteria after its checks, with the judge of `swarmupd.judge`; see the following sections. Spends tokens.            |
+| `--judge-model M`         | The judge's model, over `swarmupd.judge.model`.                                                                                                     |
 | `--dry-run`               | Prints the plan and the agent's command line, and changes nothing.                                                                                  |
 | `--json`                  | Prints `summary.json` instead of the table.                                                                                                         |
 
@@ -141,8 +144,12 @@ The out folder holds one folder per attempt and the run's summary:
 Each attempt records:
 
 - **Criteria:** `pass`, `fail` or `na` for `command` and `check` criteria, hidden ones included,
-  with the end of the output as evidence. Prose, `rubric` and `human` criteria are `pending`: a
-  judge scores them later. A `map` criterion is `na`.
+  with the end of the output as evidence. A `rubric` criterion is `pending` until a judge scores
+  it (`--judge` or `swarmup bench judge`); then it is `pass` or `fail` with its `score` (0 to 1),
+  the judge's reasons as its note, and the per-criterion scores, model and cost as its evidence.
+  Prose and `human` criteria stay `pending`. A `map` criterion is `na`.
+- **Judge:** with a judged rubric criterion, the judge's runtime and model and what judging the
+  attempt cost (`judge.costUsd`).
 - **Run:** the command line, exit code, wall time, and whether the budget ran out.
 - **Metrics:** cost and tokens when the log reports them (Claude's `result` message has
   `total_cost_usd` and `usage`; Codex reports tokens, no cost), turns, tool calls, and tool calls
@@ -151,10 +158,41 @@ Each attempt records:
   after every change is staged, so new files count. The runner stages the worktree's changes
   before it checks the criteria, so `git diff {{base}}` in a command sees new files too.
 
-`summary.md` has one row per entry: attempts, the mean pass rate of checkable criteria, attempts
-whose hidden criteria all passed, pending criteria, and the mean cost, time and tool calls before
-the first edit. The last row covers the run: the pass rate weighs every entry the same, and the
-other figures count attempts.
+`summary.md` has one row per entry: attempts, the mean pass rate of checkable criteria (judged
+`rubric` criteria count), attempts whose hidden criteria all passed, pending criteria, judged
+rubric results over all attempts, the mean cost, what judging cost in all, and the mean time and
+tool calls before the first edit. The last row covers the run: the pass rate weighs every entry
+the same, and the other figures count attempts. A run with judged rubric criteria has a pass
+rate over more criteria than the same run without, so compare judged runs with judged runs.
+
+## Judge rubric criteria
+
+A `rubric` criterion names a rubric file and a `pass` score; an LLM judge scores the attempt
+against it. The file format, what the judge sees and how the score is worked out are in
+[docs/protocol.md](protocol.md#rubric-files).
+
+```sh
+swarmup bench run benchmarks/demo.yaml --repo ../app --reference-dir refs --judge
+swarmup bench judge <out>                  # judge a finished run's pending rubric criteria
+swarmup bench judge <out> --again          # judge every rubric criterion again
+swarmup bench judge <out> --set demo.yaml  # a run from before summary.json named its set
+```
+
+- **When:** `--judge` judges each attempt right after its checks, while its worktree is still
+  there. `swarmup bench judge` judges a finished run afterwards: it reads the set from the
+  `setFile` its `summary.json` names (or `--set`), writes each `results.json` and the summary
+  again, and prints the new table. An attempt whose worktree is gone gets a temporary worktree
+  at its base with its `diff.patch` applied, when a rubric asks for the `repo` or `files` input.
+- **What it sees:** the entry's prompt as the task, the attempt's `diff.patch`, and the files of
+  the attempt's tree the rubric asks for. It never sees which agent or model did the work.
+- **Where the rubric comes from:** a path relative to the set file, else the file at the entry's
+  base commit in the repo under test, never the attempt's worktree, which the agent may change.
+- **A failed judgment** (a timeout, a signed-out runtime, an answer it cannot read) leaves the
+  criterion `pending` with why in its note, so a later `swarmup bench judge` tries again.
+- **Calibrate the judge** like the harness: a reference patch should score high and the unchanged
+  base (`--agent none`) low. If both score alike, the rubric's anchors need work.
+- **The judge's settings** are `swarmupd.judge` in the user config ([docs/supervisor.md](supervisor.md#config)):
+  runtime, model, effort and a time budget per judgment.
 
 ## Run from the app
 

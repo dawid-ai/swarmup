@@ -126,6 +126,8 @@ export interface CriteriaCheckJob {
   results: Record<string, CriterionVerdict>;
   error?: string;
   event?: string;
+  /** A judge run (`criteria-judge`): what the judgments cost, when the runtime reports it. */
+  costUsd?: number | null;
 }
 
 /** A typed `done_when` entry (mirrors `CriterionSpec` in `packages/core/src/criteria.ts`). */
@@ -154,6 +156,8 @@ export interface CriterionLast {
   actor: string;
   at: string;
   type: string;
+  /** `judge` when an LLM judge recorded it. */
+  by?: string;
 }
 
 export interface Question {
@@ -1565,6 +1569,8 @@ export interface BenchAttempt {
     hidden?: boolean;
     what: string;
     result: 'pass' | 'fail' | 'na' | 'pending';
+    /** A judged rubric criterion: its score as 0 to 1. */
+    score?: number;
     evidence?: string;
     note?: string;
   }>;

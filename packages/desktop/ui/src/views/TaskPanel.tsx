@@ -78,6 +78,7 @@ import {
   ForceApprove,
   notesOf,
   RUN_KINDS,
+  JudgeButton,
   RunChecksButton,
   useCriteriaCheck,
   verdictCriteria,
@@ -173,6 +174,7 @@ export function TaskPanel({
   const criteria = data?.criteria ?? [];
   const [editCriteria, setEditCriteria] = useState(false);
   const check = useCriteriaCheck(id, reload);
+  const judge = useCriteriaCheck(id, reload, 'criteria-judge');
   // A review with criteria gives a result per criterion: the form replaces the plain buttons.
   const reviewForm = reviewsMe && criteria.length > 0;
   // A milestone, a parent, or a task that has a brief anyway.
@@ -494,14 +496,24 @@ export function TaskPanel({
                     criteria={criteria}
                     results={data?.criteriaResults}
                     job={check.job}
+                    judge={judge.job}
                   />
-                  {criteria.some((c) => RUN_KINDS.has(c.kind)) && (
-                    <div className="mt-2">
-                      <RunChecksButton
-                        check={check}
-                        me={nav.me}
-                        count={criteria.filter((c) => RUN_KINDS.has(c.kind)).length}
-                      />
+                  {criteria.some((c) => RUN_KINDS.has(c.kind) || c.kind === 'rubric') && (
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      {criteria.some((c) => RUN_KINDS.has(c.kind)) && (
+                        <RunChecksButton
+                          check={check}
+                          me={nav.me}
+                          count={criteria.filter((c) => RUN_KINDS.has(c.kind)).length}
+                        />
+                      )}
+                      {criteria.some((c) => c.kind === 'rubric') && (
+                        <JudgeButton
+                          judge={judge}
+                          me={nav.me}
+                          count={criteria.filter((c) => c.kind === 'rubric').length}
+                        />
+                      )}
                     </div>
                   )}
                 </>

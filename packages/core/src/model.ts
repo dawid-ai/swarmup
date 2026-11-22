@@ -329,6 +329,8 @@ export interface OpsEvent {
    * send-back, the results of the `command` and `check` criteria it ran.
    */
   criteria?: CriteriaResults;
+  /** criteria-check: `judge` when an LLM judge scored the `rubric` criteria it records (W7). */
+  by?: string;
   body: string;
 }
 

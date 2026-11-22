@@ -19,7 +19,8 @@ whoever acts.
 
 ## How it works
 
-- `src/index.ts` re-exports every module; consumers import from `@swarmup/core` only.
+- `src/index.ts` re-exports every module, `rubric.ts` included (see `/judge`); consumers import
+  from `@swarmup/core` only.
 - `Workspace` (`workspace.ts`) is the facade most callers use: it finds the roots, resolves task
   refs, checks permissions and appends events.
 - State is never stored: it is folded from events every time (see `fold`), with a cache in

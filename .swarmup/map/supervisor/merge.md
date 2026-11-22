@@ -9,7 +9,7 @@ covers:
   - packages/supervisor/src/push.ts
   - packages/supervisor/src/diff.ts
   - packages/supervisor/src/git.ts
-links: [wake, runs, /core/map]
+links: [wake, runs, /core/map, /judge]
 ---
 
 # Merging approved work
@@ -26,6 +26,9 @@ With `swarmupd.merge.<root>` set, swarmupd merges a task's work once a review ap
   fast-forwards the base where it is checked out.
 - `merge-checks.ts`: `checks` entries are commands, or `{ run, paths }` that run only when the
   merge changes one of `paths`. A failed batch splits in halves until the breaking task is found.
+- After the checks, the task's `command` and `check` criteria run; with
+  `swarmupd.judge.at_merge`, `mergeJudge` then judges its `rubric` criteria (see `/judge`). A
+  failure of either sends the task back; a task with such criteria merges alone.
 - After the base moves: `install` when a lockfile changed, then `build`.
 - `push.ts` pushes task branches with new commits; `diff.ts` serves a task's diff to the app.
 
