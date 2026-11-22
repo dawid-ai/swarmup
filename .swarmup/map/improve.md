@@ -25,13 +25,17 @@ silent edit. Only a person's promote changes a definition file.
   the base texts and hashes the result; `proposals.ts` holds the improvement policy
   (`may_change`, `frozen`, always-frozen agent keys), `proposal.json`, the variant listing with
   each file's before and after, and the write onto the base files. `Workspace.defsPropose`,
-  `defsPromote`, `defsReject` and `variants` wrap them with the task events.
+  `defsPromote`, `defsReject` and `variants` wrap them with the task events. `defsPromote` checks
+  `improvement.requires` (`requiresProblems`) against the benchmark in `proposal.json`, which
+  only `opsd:improve` writes (`defsRecordBenchmark`); `--force` overrides and the event says so.
+  Promote keeps each changed file's before and after in `variants/.promoted/<name>.json`, which
+  `defsRollback` (`rollbackPromoted`) puts back.
 - `supervisor/src/improve.ts` `Improver`: `triggerTick` (behind `swarmupd.improve.enabled`, at
   most every `check_hours`) counts each agent's distinct failing task and run scores in
   `max_age_days` and files one `improve` task for the improver; `request` files it on demand from
   the app; `gateTick` starts a base and a variant bench run per new proposal through `BenchRuns`
   when `swarmupd.improve.benchmark` is set, and comments the `compareMarkdown` table and verdict
-  on the task when both end. State (`checkedAt`, gates by `root/variant@hash`) is `improve.json`
+  on the task when both end, recording the result in the proposal (`record`). State (`checkedAt`, gates by `root/variant@hash`) is `improve.json`
   in the state folder. `proposals()` backs `GET /api/defs/variants` with line diffs.
 - The improver template (`claude-improver.md`) is a read-only role (`READ_ONLY_ROLES`) whose
   Claude runs may edit only in their scratch folder (`SCRATCH_WRITER_ROLES`, `invocation`).

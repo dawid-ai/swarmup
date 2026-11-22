@@ -484,17 +484,24 @@ describe('merging approved work', () => {
 
   it('merges again, keeping the timeout retry, when a check times out as the PC wakes (AO-0170)', async () => {
     // As the AO-0165 merge: the PC sleeps during a check that hangs, and its timeout ends it on
-    // wake. 0.05 min is 3 s.
-    let slept = 0;
-    const s = mergeSetup({ timeoutMinutes: 0.05, now: () => Date.now() + slept });
+    // wake. 0.05 min is 3 s. The clock jumps an hour from 500 ms into the check step, after the
+    // command read its start time and before its timeout: under the full suite Node can take
+    // longer than the 3 s to start the check, so waiting for the check's own output raced the
+    // timeout (AO-0170 flake).
+    let checksAt: number | null = null;
+    const held: { sup?: { mergeStatus(): { step?: string } | null } } = {};
+    const now = (): number => {
+      const t = Date.now();
+      if (checksAt === null && held.sup?.mergeStatus()?.step === 'checks') checksAt = t;
+      return checksAt !== null && t - checksAt >= 500 ? t + 60 * 60_000 : t;
+    };
+    const s = mergeSetup({ timeoutMinutes: 0.05, now });
+    held.sup = s.sup;
     const warns: string[] = [];
     s.sup.on('warn', (m: string) => warns.push(m));
     const before = git(s.repo, 'rev-parse', 'main');
     s.approve(s.branch('slow\n'));
     await s.sup.tick();
-    // The rebase before the check can take over 10 s under the full suite.
-    await until(() => existsSync(join(s.state, 'checks.txt')), 30_000);
-    slept = 60 * 60_000;
     await s.sup.mergeSettled();
     expect(git(s.repo, 'rev-parse', 'main')).toBe(before);
     expect(s.last()).toMatchObject({ type: 'verdict', verdict: 'approve' });

@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type { ActivityItem, ActivityOptions, ActivityPage } from './activity.js';
-import type { CompiledWorkflow, ProposalMeta, SwarmWorkType, VariantInfo } from './defs/index.js';
+import type {
+  CompiledWorkflow,
+  ProposalBenchmark,
+  ProposalMeta,
+  SwarmWorkType,
+  VariantInfo,
+} from './defs/index.js';
 import {
   applyVariantToBase,
   checkVariantName,
@@ -15,13 +21,18 @@ import {
   overlayAgents,
   overlayFrom,
   policyProblems,
+  readPromoted,
   readProposal,
   removeVariant,
+  requiresProblems,
+  rollbackPromoted,
   shortHash,
+  writePromoted,
   writeProposal,
   writeVariantFiles,
 } from './defs/index.js';
 import { activityPage } from './activity.js';
+import { likelyDuplicate } from './similar.js';
 import type {
   AgentDef,
   AgentFileProblem,
@@ -159,6 +170,7 @@ import type {
 } from './model.js';
 import {
   ARTIFACT_KINDS,
+  ASK_REASONS,
   MERGE_ACTOR,
   MILESTONE_TYPE,
   OPEN_STATUSES,
@@ -603,6 +615,15 @@ function refuseAgentGate(v: TaskView, ctx: ActCtx, run: string | null, verb: str
   throw new OpsError(
     `${v.meta.id} is a gate: only a person can ${verb} it, outside any run; ${run ? `run ${run}` : ctx.actor} cannot`,
   );
+}
+
+/** swarmupd's improvement loop, the only actor that records a proposal's benchmark (W6). */
+export const IMPROVE_BENCH_ACTOR = 'opsd:improve';
+
+/** A pass-rate change as points, such as `+5 pts`; `-` when unknown. */
+function deltaPts(x: number | null | undefined): string {
+  if (x === null || x === undefined) return '-';
+  return `${x > 0 ? '+' : ''}${Math.round(x * 1000) / 10} pts`;
 }
 
 function privileged(actor: string | undefined): boolean {
@@ -2756,9 +2777,13 @@ export class Workspace {
     question: string,
     to?: string,
     recommend?: string,
-    opts: { human?: boolean } = {},
+    opts: { human?: boolean; reason?: string } = {},
   ): ActResult {
     const rec = recommendText(recommend);
+    const reason = opts.reason?.trim();
+    if (reason && !(ASK_REASONS as readonly string[]).includes(reason)) {
+      throw new OpsError(`bad reason '${reason}': use ${ASK_REASONS.join(', ')}`, 2);
+    }
     let routed: string | undefined;
     const res = this.act(ref, (v, ctx) => {
       ctx.requireOpen('ask on');
@@ -2788,7 +2813,15 @@ export class Workspace {
             'add --recommend "the option you would pick"',
         );
       }
-      return [{ type: 'ask', to: target, body: question, ...(rec ? { recommend: rec } : {}) }];
+      return [
+        {
+          type: 'ask',
+          to: target,
+          body: question,
+          ...(rec ? { recommend: rec } : {}),
+          ...(reason ? { reason } : {}),
+        },
+      ];
     });
     // With no addressee the question still waits for a person.
     const target = res.events.find((e) => e.type === 'ask')?.to;
@@ -4028,12 +4061,30 @@ export class Workspace {
    * records a `defs-promote` event with the hashes before and after on the linked task, and
    * removes the variant's folder.
    */
-  defsPromote(name: string, opts: { root?: string; message?: string } = {}): DefsDecisionResult {
+  defsPromote(
+    name: string,
+    opts: { root?: string; message?: string; force?: boolean } = {},
+  ): DefsDecisionResult {
     this.needPerson('promotes');
     if (opts.message) assertNoSecret(opts.message);
     const root = this.variantRoot(name, opts.root);
     return root.lock('defs-variants', () => {
       const meta = readProposal(root.dir, name);
+      // `improvement.requires` (W6): the benchmark a proposal must pass first, unless --force.
+      const unmet = meta
+        ? requiresProblems(
+            improvementPolicy(loadDefinitions(root.dir).swarm),
+            meta,
+            loadDefinitions(root.dir, { variant: name }).hash,
+          )
+        : [];
+      if (unmet.length > 0 && !opts.force) {
+        throw new OpsError(
+          `${name} does not meet improvement.requires:\n- ${unmet.join('\n- ')}\n` +
+            'promote it anyway with --force, which the task records',
+          1,
+        );
+      }
       const done = applyVariantToBase(root.dir, name);
       const files = [...done.written, ...done.removed.map((p) => `${p} (removed)`)];
       let events: OpsEvent[] = [];
@@ -4042,6 +4093,11 @@ export class Workspace {
           opts.message?.trim(),
           `Promoted variant \`${name}\`: ${shortHash(done.from)} -> ${shortHash(done.to)}. ` +
             `Changed ${files.join(', ') || 'nothing'}.`,
+          unmet.length > 0
+            ? `Promoted with --force over improvement.requires: ${unmet.join('; ')}.`
+            : meta?.benchmark?.state === 'done'
+              ? `Benchmark: ${meta.benchmark.verdict ?? 'done'}, pass rate ${deltaPts(meta.benchmark.pass_delta)}.`
+              : '',
         ]
           .filter(Boolean)
           .join('\n\n');
@@ -4055,13 +4111,88 @@ export class Workspace {
           },
         ]).events;
       }
+      const { files: changed, ...applied } = done;
+      // What `defs rollback` puts back.
+      writePromoted(root.dir, {
+        variant: name,
+        ...(meta?.task ? { task: meta.task } : {}),
+        by: this.requireActor(),
+        at: new Date(this.now()).toISOString(),
+        from: done.from,
+        to: done.to,
+        files: changed,
+      });
       removeVariant(root.dir, name);
       return {
         variant: name,
         root: root.name,
         events,
-        ...done,
+        ...applied,
         ...(meta ? { proposal: meta } : {}),
+      };
+    });
+  }
+
+  /**
+   * `swarmup defs rollback`: a person puts back the definition files the last promote of variant
+   * `name` changed, recorded as a `defs-rollback` event on the proposal's task. A file changed
+   * since the promote needs `force`, since the rollback drops that change.
+   */
+  defsRollback(
+    name: string,
+    message: string,
+    opts: { root?: string; force?: boolean } = {},
+  ): DefsDecisionResult {
+    const actor = this.needPerson('rolls back');
+    if (!message.trim()) throw new OpsError('say why: swarmup defs rollback NAME -m "why"', 2);
+    assertNoSecret(message);
+    checkVariantName(name);
+    const roots = this.roots.filter(
+      (r) => !r.isMirror && (!opts.root || r.name === opts.root) && readPromoted(r.dir, name),
+    );
+    if (roots.length === 0) {
+      throw new OpsError(
+        `no promote of '${name}' is recorded${opts.root ? ` in ${opts.root}` : ''}`,
+        2,
+      );
+    }
+    if (roots.length > 1) {
+      throw new OpsError(
+        `'${name}' was promoted in ${roots.map((r) => r.name).join(' and ')}; pass --root`,
+        2,
+      );
+    }
+    const root = roots[0]!;
+    return root.lock('defs-variants', () => {
+      const done = rollbackPromoted(root.dir, name, { force: opts.force });
+      const at = new Date(this.now()).toISOString();
+      writePromoted(root.dir, { ...done.rec, rolled_back: { by: actor, at } });
+      const files = [...done.written, ...done.removed.map((p) => `${p} (removed)`)];
+      let events: OpsEvent[] = [];
+      if (done.rec.task) {
+        const body = [
+          message.trim(),
+          `Rolled back variant \`${name}\`: ${shortHash(done.from)} -> ${shortHash(done.to)}. ` +
+            `Restored ${files.join(', ') || 'nothing'}.`,
+        ].join('\n\n');
+        events = this.act(done.rec.task, () => [
+          {
+            type: 'defs-rollback',
+            variant: name,
+            defs_from: shortHash(done.from),
+            defs_to: shortHash(done.to),
+            body,
+          },
+        ]).events;
+      }
+      return {
+        variant: name,
+        root: root.name,
+        events,
+        from: done.from,
+        to: done.to,
+        written: done.written,
+        removed: done.removed,
       };
     });
   }
@@ -4085,6 +4216,26 @@ export class Workspace {
       }
       removeVariant(root.dir, name);
       return { variant: name, root: root.name, events, ...(meta ? { proposal: meta } : {}) };
+    });
+  }
+
+  /**
+   * swarmupd records the benchmark it ran of proposal `name` in its `proposal.json`, where
+   * `defs promote` checks it against `improvement.requires`. Only swarmupd's improvement loop
+   * (`opsd:improve`) records one: runs can't write `variants/`, and a person decides with promote.
+   * False when the proposal is gone.
+   */
+  defsRecordBenchmark(name: string, rootName: string, bench: ProposalBenchmark): boolean {
+    const actor = this.requireActor();
+    if (actor !== IMPROVE_BENCH_ACTOR) {
+      throw new OpsError(`only swarmupd records a proposal's benchmark; ${actor} cannot`);
+    }
+    const root = this.variantRoot(name, rootName);
+    return root.lock('defs-variants', () => {
+      const meta = readProposal(root.dir, name);
+      if (!meta) return false;
+      writeProposal(root.dir, name, { ...meta, benchmark: bench });
+      return true;
     });
   }
 
@@ -4270,20 +4421,56 @@ export class Workspace {
 
   // ---- Findings and the KB -------------------------------------------------------------------
 
-  /** Files a finding as a new task of type `finding`; with `task`, links it from that task. */
-  finding(input: NewTaskInput & { task?: string }): { meta: TaskMeta; linked?: OpsEvent } {
+  /**
+   * Files a finding as a new task of type `finding`; with `task`, links it from that task. A task
+   * of the root with a near-identical title, open or closed, is named in the body as a possible
+   * duplicate for whoever triages it (`similar`); the finding is filed either way.
+   */
+  finding(input: NewTaskInput & { task?: string }): {
+    meta: TaskMeta;
+    linked?: OpsEvent;
+    similar?: string[];
+  } {
     const from = input.task ? this.resolve(input.task) : undefined;
     // A linked finding lives in its source task's root, so the plain id in the link is unique,
     // and belongs to its project, so swarmupd counts work on both against one project.
     const project =
       input.project?.trim() ||
       (from ? this.projectOfTask(`${from.root.name}/${from.id}`) : undefined);
-    const meta = this.newTask({ ...input, type: 'finding', project }, from?.root);
-    if (!from) return { meta };
+    const root = from?.root ?? this.defaultRoot();
+    const similar = this.similarTasks(root, input.title);
+    const body = similar.length
+      ? [
+          input.body?.trim(),
+          `Possible duplicate of ${similar.join('; ')}. Park this one as a duplicate if it is the same work.`,
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : input.body;
+    const meta = this.newTask({ ...input, body, type: 'finding', project }, from?.root);
+    const found = similar.length ? { similar } : {};
+    if (!from) return { meta, ...found };
     const res = this.act(`${from.root.name}/${from.id}`, () => [
       { type: 'finding', ref: meta.id, body: meta.title },
     ]);
-    return { meta, linked: res.events[0] };
+    return { meta, linked: res.events[0], ...found };
+  }
+
+  /** Up to 3 tasks of `root` whose title likely names the same work, as `ID (status) "title"`. */
+  private similarTasks(root: Root, title: string): string[] {
+    const out: string[] = [];
+    for (const id of root.listTaskIds()) {
+      let other: string;
+      try {
+        other = root.readTask(id).meta.title;
+      } catch {
+        continue;
+      }
+      if (!likelyDuplicate(title, other)) continue;
+      out.push(`${id} (${root.foldTask(id).status}) "${other}"`);
+      if (out.length === 3) break;
+    }
+    return out;
   }
 
   /** Writes a learn note to `kb/<topic>/<slug>.md`; with `task`, adds a learn event to it. */

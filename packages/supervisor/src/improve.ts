@@ -3,7 +3,7 @@
 // variant, before a person promotes or rejects them. Nothing here changes a definition file: only
 // a person's `swarmup defs promote` does.
 import type { TaskMeta, VariantInfo, Workspace } from '@swarmup/core';
-import { isHuman, OPEN_STATUSES, shortHash } from '@swarmup/core';
+import { IMPROVE_BENCH_ACTOR, isHuman, OPEN_STATUSES, shortHash } from '@swarmup/core';
 import type { BenchRunRequest, BenchRunView } from './bench-runs.js';
 import type { Comparison, SummaryOverall } from './bench.js';
 import { compareMarkdown } from './bench.js';
@@ -14,7 +14,7 @@ import type { ScoreResult } from './scores.js';
 import { scorerCatalog } from './scores.js';
 
 /** The actor swarmupd files improvement tasks and benchmark results as. */
-export const IMPROVE_ACTOR = 'opsd:improve';
+export const IMPROVE_ACTOR = IMPROVE_BENCH_ACTOR;
 
 /** The label of an improvement task. */
 export const IMPROVE_LABEL = 'improve';
@@ -384,6 +384,7 @@ export class Improver {
           .filter((r) => r.state === 'failed')
           .map((r) => `${r.id}: ${r.error ?? 'failed'}`)
           .join('; ');
+        this.record(ws, gate);
         this.comment(
           ws,
           gate,
@@ -394,6 +395,7 @@ export class Improver {
       try {
         const c = this.host.bench.compare(gate.base, gate.run);
         Object.assign(gate, { state: 'done' }, benchVerdict(c));
+        this.record(ws, gate);
         const pts = (x: number | null | undefined): string =>
           x === null || x === undefined ? '-' : `${x > 0 ? '+' : ''}${Math.round(x * 100)} pts`;
         this.comment(
@@ -411,6 +413,25 @@ export class Improver {
       }
     }
     if (changed) this.host.writeState(state);
+  }
+
+  /** Writes a finished benchmark into the proposal, where `defs promote` checks `requires`. */
+  private record(ws: Workspace, gate: GateState): void {
+    try {
+      ws.defsRecordBenchmark(gate.variant, gate.root, {
+        hash: gate.hash,
+        state: gate.state === 'done' ? 'done' : 'failed',
+        ...(gate.verdict ? { verdict: gate.verdict } : {}),
+        ...(gate.delta ? { pass_delta: gate.delta.passRate ?? null } : {}),
+        ...(gate.delta ? { hidden_delta: gate.delta.hiddenPassRate ?? null } : {}),
+        ...(gate.base ? { base_run: gate.base } : {}),
+        ...(gate.run ? { run: gate.run } : {}),
+        ...(gate.error ? { error: gate.error } : {}),
+        at: gate.finishedAt ?? new Date(this.host.now()).toISOString(),
+      });
+    } catch {
+      // The proposal may be gone (promoted or rejected meanwhile); the task comment still lands.
+    }
   }
 
   private comment(ws: Workspace, gate: GateState, text: string): void {

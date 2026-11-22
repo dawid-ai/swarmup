@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadDefinitions, shortHash } from '@swarmup/core';
+import { loadDefinitions, readProposal, shortHash } from '@swarmup/core';
 import type { Workspace } from '@swarmup/core';
 import type {
   BenchRunRequest,
@@ -382,6 +382,15 @@ describe('improvement trigger', () => {
       run: 'run-2',
     });
     expect(gate.delta?.passRate).toBeCloseTo(0.5);
+    // The result goes into the proposal, where `defs promote` checks improvement.requires.
+    expect(readProposal(w.store, 'tests-first')?.benchmark).toMatchObject({
+      hash: gate.hash,
+      state: 'done',
+      verdict: 'better',
+      base_run: 'run-1',
+      run: 'run-2',
+    });
+    expect(readProposal(w.store, 'tests-first')?.benchmark?.pass_delta).toBeCloseTo(0.5);
     const comment = w
       .as('human:dawid')
       .showEvents(task)

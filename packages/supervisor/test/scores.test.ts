@@ -215,6 +215,18 @@ describe('task scorers', () => {
     ).toBe(1);
   });
 
+  it('counts an ask with a reason only a person can answer as right, off the list too', () => {
+    const t = task('T-4', [
+      ev(1, 'ask', ENG, { to: HUMAN, reason: 'access' }),
+      ev(2, 'ask', ENG, { to: HUMAN, reason: 'curious' }),
+      ev(3, 'ask', ENG, { to: HUMAN }),
+      ev(4, 'ask', ENG, { to: HUMAN, reason: 'direction' }),
+    ]);
+    const [r] = only(computeScores({ tasks: [t], runs: [] }), 'escalation-correctness');
+    expect(r).toMatchObject({ value: 0.5, pass: false, n: 4 });
+    expect(r!.note).toMatch(/^2 ask\(s\) to a person off the escalation list, with no --reason/);
+  });
+
   it('reads the criteria of the approving verdict, and gives no score without them', () => {
     const approve = ev(2, 'verdict', REV, { verdict: 'approve' }) as OpsEvent & {
       criteria: Record<string, { result: string }>;

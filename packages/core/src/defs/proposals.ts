@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
 import { matchGlobs } from '../rubric.js';
-import { definitionHash, digestFiles, listDefFiles } from './hash.js';
+import { definitionHash, digestFiles, listDefFiles, normalText } from './hash.js';
 import type { DefinitionSet } from './load.js';
 import { loadDefinitions } from './load.js';
 import type { SwarmDefs } from './swarm.js';
@@ -67,6 +67,8 @@ export interface ImprovementPolicy {
   may_change: string[];
   frozen: string[];
   max_open_proposals: number;
+  /** `improvement.requires`, with its defaults: no benchmark needed, and no worse than the base. */
+  requires: { benchmark: boolean; min_delta: number };
 }
 
 /** The improvement policy of a store's `swarm.yaml`, with the defaults for what it leaves out. */
@@ -77,6 +79,10 @@ export function improvementPolicy(swarm: SwarmDefs | null | undefined): Improvem
     may_change: i.may_change ?? [...DEFAULT_MAY_CHANGE],
     frozen: i.frozen ?? [...DEFAULT_FROZEN],
     max_open_proposals: i.max_open_proposals ?? DEFAULT_MAX_OPEN_PROPOSALS,
+    requires: {
+      benchmark: i.requires?.benchmark ?? false,
+      min_delta: i.requires?.min_delta ?? 0,
+    },
   };
 }
 
@@ -148,6 +154,51 @@ export interface ProposalMeta {
   hash: string;
   /** The `defs-propose` event on the task. */
   event?: string;
+  /** The benchmark swarmupd ran of this variant, base against variant (`improvement.requires`). */
+  benchmark?: ProposalBenchmark;
+}
+
+/** A finished benchmark of a proposal, as swarmupd records it in `proposal.json`. */
+export interface ProposalBenchmark {
+  /** The variant hash the benchmark ran; a later change to the variant makes it stale. */
+  hash: string;
+  state: 'done' | 'failed';
+  verdict?: 'better' | 'worse' | 'same';
+  /** Variant minus base, overall: pass rate and hidden pass rate, from -1 to 1. */
+  pass_delta?: number | null;
+  hidden_delta?: number | null;
+  /** The bench run ids of the base and the variant. */
+  base_run?: string;
+  run?: string;
+  error?: string;
+  at: string;
+}
+
+/**
+ * Why `requires` refuses to promote a proposal, one line per problem; empty when it may be
+ * promoted. `hash` is the variant's hash now.
+ */
+export function requiresProblems(
+  policy: Pick<ImprovementPolicy, 'requires'>,
+  meta: ProposalMeta | undefined,
+  hash: string,
+): string[] {
+  const req = policy.requires;
+  if (!req.benchmark) return [];
+  const b = meta?.benchmark;
+  if (!b) return ['improvement.requires a benchmark, and this proposal has none yet'];
+  if (b.hash !== hash) {
+    return ['the variant changed after its benchmark ran; it needs a new benchmark'];
+  }
+  if (b.state !== 'done') return [`its benchmark failed: ${b.error ?? 'no result'}`];
+  const delta = b.pass_delta ?? 0;
+  if (delta < req.min_delta - 1e-9) {
+    const pts = (x: number): string => `${x > 0 ? '+' : ''}${Math.round(x * 1000) / 10} pts`;
+    return [
+      `its pass rate moved ${pts(delta)}; improvement.requires at least ${pts(req.min_delta)}`,
+    ];
+  }
+  return [];
 }
 
 /** Reads a variant's `proposal.json`; undefined when it has none or it does not read. */
@@ -287,7 +338,14 @@ export function removeVariant(rootDir: string, name: string): void {
 export function applyVariantToBase(
   rootDir: string,
   name: string,
-): { from: string; to: string; written: string[]; removed: string[] } {
+): {
+  from: string;
+  to: string;
+  written: string[];
+  removed: string[];
+  /** Each changed path's text before and after; null where the file did not or does not exist. */
+  files: Record<string, PromotedFile>;
+} {
   const set = loadDefinitions(rootDir, { variant: name });
   if (!set.ok) {
     const first = set.problems.find((p) => p.severity === 'error');
@@ -298,9 +356,12 @@ export function applyVariantToBase(
   const overlay = readOverlay(variantDir(rootDir, name));
   const written: string[] = [];
   const removed: string[] = [];
+  const files: Record<string, PromotedFile> = {};
   for (const path of overlayTargets(overlay)) {
     const file = join(rootDir, path);
     const text = set.texts[path];
+    const before = currentText(rootDir, path);
+    files[path] = { before, after: text ?? null };
     if (text === undefined) {
       if (existsSync(file)) {
         unlinkSync(file);
@@ -314,7 +375,104 @@ export function applyVariantToBase(
   }
   // The hash of the base files as they are now on disk.
   const to = definitionHash(digestFiles(rootDir, listDefFiles(rootDir)).files);
-  return { from: set.baseHash ?? '', to, written, removed };
+  return { from: set.baseHash ?? '', to, written, removed, files };
+}
+
+/** A store file's text as hashed (no BOM, LF line ends), or null when it isn't there. */
+function currentText(rootDir: string, path: string): string | null {
+  try {
+    return normalText(readFileSync(join(rootDir, path)));
+  } catch {
+    return null;
+  }
+}
+
+/** Where promotes are recorded for `defs rollback`: a dot folder no variant name matches. */
+export const PROMOTED_DIR = '.promoted';
+
+/** One file a promote changed. */
+export interface PromotedFile {
+  before: string | null;
+  after: string | null;
+}
+
+/** What `defs promote` wrote, kept in `variants/.promoted/<name>.json` for `defs rollback`. */
+export interface PromotedRecord {
+  variant: string;
+  task?: string;
+  by: string;
+  at: string;
+  /** The definition hashes before and after the promote. */
+  from: string;
+  to: string;
+  files: Record<string, PromotedFile>;
+  /** Set once a person rolled it back. */
+  rolled_back?: { by: string; at: string };
+}
+
+function promotedFile(rootDir: string, name: string): string {
+  return join(rootDir, VARIANTS_DIR, PROMOTED_DIR, `${checkVariantName(name)}.json`);
+}
+
+/** The record of the last promote of variant `name`, or undefined. */
+export function readPromoted(rootDir: string, name: string): PromotedRecord | undefined {
+  try {
+    const v = JSON.parse(readFileSync(promotedFile(rootDir, name), 'utf8')) as PromotedRecord;
+    return v && typeof v.files === 'object' && v.files ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writePromoted(rootDir: string, rec: PromotedRecord): void {
+  const file = promotedFile(rootDir, rec.variant);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(rec, null, 2)}\n`);
+}
+
+/**
+ * Puts back the files the last promote of `name` changed. Refuses when there is no record, when it
+ * was rolled back already, and, unless `force`, when a file changed since the promote, since the
+ * rollback would drop that change. Returns what it wrote and removed, and the hashes.
+ */
+export function rollbackPromoted(
+  rootDir: string,
+  name: string,
+  opts: { force?: boolean } = {},
+): { rec: PromotedRecord; from: string; to: string; written: string[]; removed: string[] } {
+  const rec = readPromoted(rootDir, name);
+  if (!rec) throw new OpsError(`no promote of '${name}' is recorded in this store`, 1);
+  if (rec.rolled_back) {
+    throw new OpsError(`'${name}' was rolled back already, by ${rec.rolled_back.by}`, 1);
+  }
+  const changed = Object.entries(rec.files)
+    .filter(([path, f]) => currentText(rootDir, path) !== f.after)
+    .map(([path]) => path);
+  if (changed.length > 0 && !opts.force) {
+    throw new OpsError(
+      `${changed.join(', ')} changed after the promote; a rollback would drop that change. ` +
+        'Roll back anyway with --force',
+      1,
+    );
+  }
+  const from = definitionHash(digestFiles(rootDir, listDefFiles(rootDir)).files);
+  const written: string[] = [];
+  const removed: string[] = [];
+  for (const [path, f] of Object.entries(rec.files)) {
+    const file = join(rootDir, path);
+    if (f.before === null) {
+      if (existsSync(file)) {
+        unlinkSync(file);
+        removed.push(path);
+      }
+      continue;
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, f.before);
+    written.push(path);
+  }
+  const to = definitionHash(digestFiles(rootDir, listDefFiles(rootDir)).files);
+  return { rec, from, to, written, removed };
 }
 
 /** The overlay in folder `dir`, checked: files only, and at least one. */

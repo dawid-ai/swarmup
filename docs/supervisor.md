@@ -1237,17 +1237,17 @@ swarmup scores --since 2026-11-01       # tasks and runs from that date; agent s
 swarmup scores --refresh                # compute again and keep them in state.db
 ```
 
-| Scorer                      | Level | Value                                                                                                                             | Pass by default |
-| --------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `criteria-pass-rate`        | task  | share of criteria marked `pass` in the `criteria` map of the approving verdict; no score without one                              | 100%            |
-| `review-rounds`             | task  | reviewers' `changes` verdicts before the approval                                                                                 | at most 1       |
-| `merge-failures`            | task  | `changes` verdicts of `opsd:merge`: merges that failed and sent the task back                                                     | 0               |
-| `cost-per-merged-task`      | task  | tokens of every run of a merged task up to its merge, review runs included; minutes and runs as extras                            | none            |
-| `human-touches`             | task  | on a done task: agents' asks to a person, and a person's answers, verdicts and comments                                           | 0               |
-| `escalation-correctness`    | task  | per asking agent, 1 when the task's type or a label is on the escalation list (`HUMAN_REVIEW_LABELS`), else 0                     | 100%            |
-| `recommendation-acceptance` | agent | share of the agent's recommendations (`ask --recommend`, review requests) the answer or verdict took (`accepted`)                 | at least 70%    |
-| `stuck-runs`                | agent | share of ended runs that failed: no work event before an unfinished release, a stuck block, a non-zero exit, budget, tokens, lost | at most 10%     |
-| `orientation`               | run   | tool calls of a writing run before its first edit, from its log; the share of tool-result bytes read by then as an extra          | at most 30      |
+| Scorer                      | Level | Value                                                                                                                                                          | Pass by default |
+| --------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `criteria-pass-rate`        | task  | share of criteria marked `pass` in the `criteria` map of the approving verdict; no score without one                                                           | 100%            |
+| `review-rounds`             | task  | reviewers' `changes` verdicts before the approval                                                                                                              | at most 1       |
+| `merge-failures`            | task  | `changes` verdicts of `opsd:merge`: merges that failed and sent the task back                                                                                  | 0               |
+| `cost-per-merged-task`      | task  | tokens of every run of a merged task up to its merge, review runs included; minutes and runs as extras                                                         | none            |
+| `human-touches`             | task  | on a done task: agents' asks to a person, and a person's answers, verdicts and comments                                                                        | 0               |
+| `escalation-correctness`    | task  | per asking agent, the share of its asks to a person on a task whose type or label is on the escalation list (`HUMAN_REVIEW_LABELS`), or with an `ask --reason` | 100%            |
+| `recommendation-acceptance` | agent | share of the agent's recommendations (`ask --recommend`, review requests) the answer or verdict took (`accepted`)                                              | at least 70%    |
+| `stuck-runs`                | agent | share of ended runs that failed: no work event before an unfinished release, a stuck block, a non-zero exit, budget, tokens, lost                              | at most 10%     |
+| `orientation`               | run   | tool calls of a writing run before its first edit, from its log; the share of tool-result bytes read by then as an extra                                       | at most 30      |
 
 - A task score counts for the task's author: the last agent to ask for review, else the last to
   claim it. `escalation-correctness` counts for the agent that asked. A run score counts for the
@@ -1255,8 +1255,8 @@ swarmup scores --refresh                # compute again and keep them in state.d
 - Task and run scores fall in a window by the time of their subject: the approval, the merge, the
   closing event, the last ask or the run's start. Agent scores count the events and runs in the
   window.
-- `escalation-correctness` cannot tell an ask about a change of direction, which the protocol
-  allows, from a miss; read its evidence before acting on it. Edits made through a shell command
+- `escalation-correctness` counts an ask to a person off the escalation list as right only when
+  it names why with `--reason` (`direction`, `access`, `irreversible` or `external`). Edits made through a shell command
   do not count as the first edit for `orientation`. Run logs stay `log_days`, so `orientation`
   covers the runs whose log swarmupd read while it was there.
 - Thresholds and switches live in the user config:
@@ -1314,8 +1314,10 @@ has four steps, and only the last one changes a definition file:
    proposal, as the app's **Run benchmark** does: the base and the variant, each with the agent's
    role file in the prompt (`--role-file`, `--variant`). When both end, it comments the
    `bench compare` table on the proposal's task with a verdict: **better**, **worse** or **same**,
-   on the pass rate, then the hidden pass rate. The gate is off without `benchmark`: it spends
-   tokens.
+   on the pass rate, then the hidden pass rate, and records the result in the proposal's
+   `proposal.json`, where `defs promote` checks
+   [`improvement.requires`](definitions.md#improvement-policy). The gate is off without
+   `benchmark`: it spends tokens.
 4. **Decision.** A person promotes the proposal (`swarmup defs promote`, or **Promote** in the
    app) or rejects it with a note.
 

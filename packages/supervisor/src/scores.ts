@@ -4,7 +4,14 @@
 // names the definition to change when it fails (`lever`). `swarmup scores`, `swarmup report`,
 // `GET /api/scores` and swarmupd's `state.db` read them from here.
 import type { OpsEvent, TaskMeta, UserConfig } from '@swarmup/core';
-import { daemonSection, isHuman, MERGE_ACTOR, needsHumanReview, OpsError } from '@swarmup/core';
+import {
+  ASK_REASONS,
+  daemonSection,
+  isHuman,
+  MERGE_ACTOR,
+  needsHumanReview,
+  OpsError,
+} from '@swarmup/core';
 import type { OrientationStats } from './orientation.js';
 import type { RunRecord } from './runs.js';
 import { stuckRun } from './stuck.js';
@@ -367,12 +374,13 @@ const humanTouches: Scorer = {
 const escalationCorrectness: Scorer = {
   id: 'escalation-correctness',
   description:
-    "share of an agent's asks to a person on tasks whose type or labels are on the escalation list",
+    "share of an agent's asks to a person on tasks whose type or labels are on the escalation list, or with a --reason only a person can answer",
   level: 'task',
   unit: 'ratio',
   better: 'higher',
   pass: 1,
-  lever: 'the escalation list (HUMAN_REVIEW_LABELS), the task labels and the asking role file',
+  lever:
+    'the escalation list (HUMAN_REVIEW_LABELS), the task labels, ask --reason and the asking role file',
   score(ctx, pass) {
     const out: ScoreResult[] = [];
     for (const t of ctx.tasks) {
@@ -385,9 +393,13 @@ const escalationCorrectness: Scorer = {
         byAsker.set(e.actor, list);
       }
       for (const [agent, asks] of byAsker) {
-        // Without a task in the escalation list every ask to a person is a miss. An ask about a
-        // change of direction is allowed too, but nothing in the event tells it apart.
-        const value = escalates ? 1 : 0;
+        // On a task in the escalation list every ask to a person is right. Elsewhere an ask is right
+        // when it names a reason only a person can answer (`ask --reason`), and a miss without one.
+        const right = escalates
+          ? asks.length
+          : asks.filter((e) => (ASK_REASONS as readonly string[]).includes(e.reason ?? '')).length;
+        const value = right / asks.length;
+        const misses = asks.length - right;
         out.push({
           scorer: this.id,
           level: 'task',
@@ -399,9 +411,9 @@ const escalationCorrectness: Scorer = {
           n: asks.length,
           evidence: asks.map((e) => e.id),
           at: asks.at(-1)!.at,
-          ...(escalates
-            ? {}
-            : { note: `${asks.length} ask(s) to a person off the escalation list` }),
+          ...(misses > 0
+            ? { note: `${misses} ask(s) to a person off the escalation list, with no --reason` }
+            : {}),
         });
       }
     }

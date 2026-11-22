@@ -5,6 +5,7 @@ import {
   applyOverlay,
   clearDefinitionsCache,
   hashTexts,
+  IMPROVE_BENCH_ACTOR,
   improvementPolicy,
   loadDefinitions,
   mergeAgentText,
@@ -12,6 +13,7 @@ import {
   mergeYamlText,
   overlayAgents,
   policyProblems,
+  requiresProblems,
   textsHash,
   variantInfo,
 } from '../src/index.js';
@@ -221,6 +223,7 @@ describe('improvement policy', () => {
       may_change: ['agents/*.md', 'swarm.yaml'],
       frozen: [],
       max_open_proposals: 1,
+      requires: { benchmark: false, min_delta: 0 },
     });
   });
 });
@@ -323,6 +326,81 @@ describe('defs propose, promote and reject', () => {
     expect(e.defs_from).toBe(before.slice(0, 14));
     clearDefinitionsCache();
     expect(e.defs_to).toBe(loadDefinitions(w.rootDir).hash.slice(0, 14));
+  });
+
+  it('holds a promote to improvement.requires until a recorded benchmark passes', () => {
+    const w = world();
+    put(
+      w.rootDir,
+      'swarm.yaml',
+      'swarmup_defs: 1\nimprovement:\n  requires: {benchmark: true, min_delta: 0.05}\n',
+    );
+    w.improver.defsPropose(w.task, { dir: w.overlay('a'), name: 'tests-first', message: 'x' });
+    clearDefinitionsCache();
+    const hash = loadDefinitions(w.rootDir, { variant: 'tests-first' }).hash;
+    expect(() => w.dawid.defsPromote('tests-first')).toThrow(/has none yet/);
+    // Only swarmupd's improvement loop records a benchmark.
+    const bench = { hash, state: 'done' as const, at: '2026-11-22T20:00:00Z' };
+    expect(() => w.dawid.defsRecordBenchmark('tests-first', 'test', bench)).toThrow(
+      /only swarmupd records/,
+    );
+    const loop = w.as(IMPROVE_BENCH_ACTOR);
+    loop.defsRecordBenchmark('tests-first', 'test', { ...bench, hash: 'd:old' });
+    expect(() => w.dawid.defsPromote('tests-first')).toThrow(/changed after its benchmark/);
+    loop.defsRecordBenchmark('tests-first', 'test', {
+      ...bench,
+      verdict: 'better',
+      pass_delta: 0.02,
+    });
+    expect(() => w.dawid.defsPromote('tests-first')).toThrow(/\+2 pts.*at least \+5 pts/);
+    loop.defsRecordBenchmark('tests-first', 'test', {
+      ...bench,
+      verdict: 'better',
+      pass_delta: 0.1,
+    });
+    const done = w.dawid.defsPromote('tests-first');
+    expect(done.events[0]!.body).toContain('Benchmark: better, pass rate +10 pts.');
+  });
+
+  it('lets a person promote over improvement.requires with --force, and records it', () => {
+    const w = world();
+    put(w.rootDir, 'swarm.yaml', 'swarmup_defs: 1\nimprovement:\n  requires: {benchmark: true}\n');
+    w.improver.defsPropose(w.task, { dir: w.overlay('a'), name: 'tests-first', message: 'x' });
+    clearDefinitionsCache();
+    const done = w.dawid.defsPromote('tests-first', { force: true });
+    expect(done.events[0]!.body).toContain('Promoted with --force over improvement.requires');
+    expect(requiresProblems(improvementPolicy(null), undefined, 'd:x')).toEqual([]);
+  });
+
+  it('rolls a promote back for a person: the base text returns and the task records it', () => {
+    const w = world();
+    put(w.rootDir, 'workflows/extra.yaml', 'stages: []\n');
+    const overlay = w.overlay('a');
+    put(overlay, 'workflows/extra.yaml.delete', '');
+    w.improver.defsPropose(w.task, { dir: overlay, name: 'tests-first', message: 'x' });
+    clearDefinitionsCache();
+    const before = loadDefinitions(w.rootDir).hash;
+    w.dawid.defsPromote('tests-first');
+    expect(existsSync(join(w.rootDir, 'workflows', 'extra.yaml'))).toBe(false);
+    expect(() => w.improver.defsRollback('tests-first', 'bad')).toThrow(/only a person rolls back/);
+    expect(() => w.dawid.defsRollback('tests-first', ' ')).toThrow(/say why/);
+    // A change made after the promote needs --force: the rollback would drop it.
+    const file = join(w.rootDir, 'agents', 'claude-engineer.md');
+    const promoted = readFileSync(file, 'utf8');
+    writeFileSync(file, `${promoted}Edited by hand.\n`);
+    expect(() => w.dawid.defsRollback('tests-first', 'worse')).toThrow(
+      /agents\/claude-engineer\.md changed after the promote/,
+    );
+    writeFileSync(file, promoted);
+    const done = w.dawid.defsRollback('tests-first', 'Review rounds went up.');
+    expect(done.written).toEqual(['agents/claude-engineer.md', 'workflows/extra.yaml']);
+    expect(readFileSync(file, 'utf8')).toBe(ENGINEER);
+    clearDefinitionsCache();
+    expect(loadDefinitions(w.rootDir).hash).toBe(before);
+    expect(done.events[0]).toMatchObject({ type: 'defs-rollback', variant: 'tests-first' });
+    expect(done.events[0]!.body).toContain('Review rounds went up.');
+    expect(() => w.dawid.defsRollback('tests-first', 'again')).toThrow(/rolled back already/);
+    expect(w.dawid.variants()).toEqual([]);
   });
 
   it('lets only a person reject: a defs-reject event, the folder goes, the base stays', () => {

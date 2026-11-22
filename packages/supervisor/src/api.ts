@@ -855,7 +855,11 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           const rootName = str(body.root) || undefined;
           const done =
             verb === 'promote'
-              ? ws.defsPromote(action, { root: rootName, message: str(body.message) || undefined })
+              ? ws.defsPromote(action, {
+                  root: rootName,
+                  message: str(body.message) || undefined,
+                  force: body.force === true,
+                })
               : ws.defsReject(action, str(body.message) ?? '', { root: rootName });
           await sup.tick();
           return send(res, 200, done);

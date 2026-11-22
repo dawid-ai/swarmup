@@ -340,6 +340,11 @@ Pass the recommendation on every `ask` as `--recommend "the option you would pic
 on its own line, so the person can accept it as-is; an `ask` to a person without one prints a
 warning.
 
+Ask the person directly (`--human`) only for what the PM can't decide, and say which with
+`--reason`: `direction` (a change of goal, scope or priority), `access` (an account, credential,
+permission or payment only the person has), `irreversible` (deleting data, publishing, releasing)
+or `external` (an answer from someone outside). Everything else goes to the PM.
+
 Never write "see the comment of 2026-11-03" or "as discussed above". Write "AO-0014: pick the
 hosting region (codex:engineer's comment, 2026-11-03: EU is cheaper, US is closer to the API). I
 recommend EU." The app links task ids, so the person opens it with one click. `swarmup` prints a
