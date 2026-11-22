@@ -1,4 +1,4 @@
-import { Check, ChevronDown, FolderPlus, SquarePen } from 'lucide-react';
+import { Check, ChevronDown, FolderPlus, SquarePen, Workflow } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, refreshSoon } from '../api';
 import { Button, ErrorLine, Field, Modal, PriorityIcon, toast, useAction, cx } from '../components';
@@ -12,6 +12,7 @@ import type { Due } from '../ui/pickers';
 import { AgentPicker, DuePicker, dueToApi, MentionArea, Popover } from '../ui/pickers';
 import { useProjectLabel } from '../ui/project-label';
 import { openAddProject } from './AddProject';
+import { StartWorkflow } from '../ui/workflow';
 
 const TYPES: Array<[string, string]> = [
   ['task', 'Task'],
@@ -175,6 +176,7 @@ export function NewTask({
   /** Opens the project list with this text typed, for the screenshot run. */
   search?: string;
 }) {
+  const [fromWorkflow, setFromWorkflow] = useState(false);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [owner, setOwner] = useState<string[]>([]);
@@ -254,6 +256,10 @@ export function NewTask({
       },
     );
   };
+  // A repeatable milestone from the project's workflows (W5) replaces the form.
+  if (fromWorkflow) {
+    return <StartWorkflow me={me} onClose={onClose} onStarted={onCreated} />;
+  }
   return (
     <Modal
       title="New task"
@@ -400,6 +406,14 @@ export function NewTask({
           <span className="mr-auto text-xs text-fg-4">
             Ctrl+Enter in the description creates it
           </span>
+          <Button
+            kind="ghost"
+            icon={Workflow}
+            title="Start a milestone from one of the project's workflows"
+            onClick={() => setFromWorkflow(true)}
+          >
+            Start a workflow
+          </Button>
           <Button kind="ghost" onClick={onClose}>
             Cancel
           </Button>

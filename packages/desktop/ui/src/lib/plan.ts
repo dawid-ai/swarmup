@@ -2,7 +2,7 @@
 // plan, and the texts the inbox, the task panel and the board show. Pure functions, so they are
 // tested without a browser. The plan's rules (keys, owners, reviewers, cycles, the 25-item limit)
 // live in core alone: the app sends the rows and shows what swarmupd refuses.
-import type { CriterionSpec, OpsEvent, PlanProgress, PlanRow, Task } from '../types';
+import type { CriterionSpec, GateSpec, OpsEvent, PlanProgress, PlanRow, Task } from '../types';
 
 /** Minutes as a plan's estimate sum reads: `45 min`, `6 h`, `1 h 30 min`. Same form as core's. */
 export function minutesText(minutes: number): string {
@@ -47,6 +47,8 @@ export interface EditRow {
   for?: string;
   /** A typed `done_when` criterion, kept as proposed while `done_when` stays empty. */
   typedDoneWhen?: CriterionSpec;
+  /** A gate item's question (W5), kept as proposed: edit mode has no field for it. */
+  gate?: GateSpec;
   /**
    * The task the item already has. Its title, `done_when`, reviewer, type and priority live in
    * the task's file and never change in place, so those fields are read-only; **Replace item**
@@ -73,6 +75,7 @@ export function editRows(items: readonly PlanRow[]): EditRow[] {
     priority: i.priority ?? '',
     ...(i.body ? { body: i.body } : {}),
     ...(i.for ? { for: i.for } : {}),
+    ...(i.gate ? { gate: i.gate } : {}),
     ...(i.task ? { task: i.task } : {}),
   }));
 }
@@ -110,6 +113,7 @@ export interface PlanItemOut {
   priority?: string;
   body?: string;
   for?: string;
+  gate?: GateSpec;
 }
 
 /** The rows as the plan `plan-approve` takes: what a plan file holds, in the rows' order. */
@@ -132,6 +136,7 @@ export function planOf(
       if (v) item[f] = v;
     }
     if (!item.done_when && r.typedDoneWhen) item.done_when = r.typedDoneWhen;
+    if (r.gate && item.type === 'gate') item.gate = r.gate;
     return item;
   });
   return { ...(notes?.trim() ? { notes: notes.trim() } : {}), items };

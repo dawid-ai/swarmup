@@ -5,6 +5,7 @@ import {
   Check,
   CheckCheck,
   CircleCheckBig,
+  DoorOpen,
   GitBranch,
   GitCommitHorizontal,
   GitPullRequest,
@@ -50,6 +51,7 @@ import { MentionArea } from '../ui/pickers';
 import { RefText } from '../ui/refs';
 import { StatusLoop } from '../ui/statusloop';
 import { TriageActions } from '../ui/triage';
+import { GateActions } from '../ui/gate';
 
 interface Group {
   key: string;
@@ -91,6 +93,14 @@ const GROUPS: Group[] = [
     kinds: ['triage'],
     icon: Radar,
     color: '#ff8a5c',
+  },
+  {
+    key: 'gate',
+    title: 'Gates',
+    hint: 'A workflow waits for your decision: Approve starts the stages after the gate; Reject parks them or sends the work back.',
+    kinds: ['gate'],
+    icon: DoorOpen,
+    color: '#ffd166',
   },
   {
     key: 'plan',
@@ -146,6 +156,7 @@ const KIND_LABEL: Record<InboxItem['kind'], string> = {
   message: 'Message',
   owned: 'Assigned',
   stranded: 'No agent',
+  gate: 'Gate',
 };
 
 export function Inbox({
@@ -608,6 +619,22 @@ function Item({ it, g, nav, delay }: { it: InboxItem; g: Group; nav: Nav; delay:
         {it.kind === 'owned' ? (
           <div className="mt-1.5">
             <StatusTag status={it.summary} />
+          </div>
+        ) : it.kind === 'gate' ? (
+          <div className="mt-2">
+            {it.milestone && (
+              <div className="mb-1.5 text-xs text-fg-4">
+                in{' '}
+                <button
+                  type="button"
+                  className="font-mono text-signal hover:underline"
+                  onClick={() => nav.openTask(it.milestone!)}
+                >
+                  {it.milestone}
+                </button>
+              </div>
+            )}
+            <GateActions task={it.task} gate={it.gate ?? { ask: it.summary }} me={nav.me} />
           </div>
         ) : plan ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs" data-plan-item>

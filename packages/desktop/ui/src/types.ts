@@ -39,6 +39,10 @@ export interface Task {
   checkpoint: { summary: string; next?: string; at: string } | null;
   delegation?: Delegation;
   updatedAt: string;
+  /** A gate (W5): what its person decides. */
+  gate?: GateSpec;
+  /** A milestone started from a workflow (W5): the workflow's id. */
+  workflow?: string;
 }
 
 export interface OpsEvent {
@@ -202,9 +206,25 @@ export interface Question {
   detail?: string;
 }
 
+/** What a gate asks, and what a rejection does (W5; mirrors `GateSpec` in core). */
+export interface GateSpec {
+  ask: string;
+  options?: string[];
+  on_reject?: 'park' | 'revise';
+}
+
 export interface InboxItem {
   kind:
-    'message' | 'ask' | 'review' | 'owned' | 'mention' | 'vote' | 'decide' | 'stranded' | 'triage';
+    | 'message'
+    | 'ask'
+    | 'review'
+    | 'owned'
+    | 'mention'
+    | 'vote'
+    | 'decide'
+    | 'stranded'
+    | 'triage'
+    | 'gate';
   task: string;
   root: string;
   title: string;
@@ -235,6 +255,10 @@ export interface InboxItem {
    * count and estimate sum in minutes, and whether it revises an approved plan.
    */
   plan?: { event: string; items: number; minutes: number; change: boolean };
+  /** gate (W5): a plan's gate waiting for your decision; Approve is done, Reject is park. */
+  gate?: GateSpec;
+  /** gate: the milestone it belongs to. */
+  milestone?: string;
 }
 
 /** One item of a milestone's plan (mirrors `PlanRow` in `packages/core/src/workspace.ts`). */
@@ -252,6 +276,8 @@ export interface PlanRow {
   type?: string;
   priority?: Task['priority'];
   body?: string;
+  /** A gate item (W5): what its person decides. */
+  gate?: GateSpec;
   /** The item's task, once created, with its current status and owner and its runs' minutes. */
   task?: string;
   status?: Status;
@@ -543,6 +569,8 @@ export interface Agent {
   effort?: string;
   /** Path of its role file; agents only the swarmupd config names have none. */
   file?: string;
+  /** An agent of an agent folder `agents/<role>/` (W5), and its runtime addendum if any. */
+  folder?: { role: string; addendum?: string };
   /** swarmupd starts runs for it when it has work. */
   wake?: boolean;
   live: string | null;
@@ -583,6 +611,22 @@ export interface DirectoryItem {
   paused?: boolean;
 }
 
+/** One file of an agent folder (W5): its frontmatter fields and its body. */
+export interface RoleLayer {
+  file: string;
+  data: Record<string, unknown>;
+  instructions: string;
+}
+
+/** A run setting of a role and where it comes from, for the role editor (W5). */
+export interface RoleSetting {
+  key: string;
+  value: unknown;
+  from: 'machine' | 'swarm.yaml' | 'role';
+  /** The git value a machine value overrides. */
+  over?: unknown;
+}
+
 /** A role file as the role editor reads and writes it. */
 export interface RoleFile {
   id: string;
@@ -597,6 +641,34 @@ export interface RoleFile {
   can_claim?: string[];
   tools?: string[];
   root?: string | null;
+  /** An agent of an agent folder (W5): how it was put together. */
+  folder?: {
+    role: string;
+    providersFrom: 'agent' | 'swarm-role' | 'swarm-runtimes' | 'default';
+    addendum?: string;
+    bodyMode?: 'append' | 'replace';
+  };
+  providers?: string[];
+  /** A folder agent's two files: the role's agent.md and its runtime addendum. */
+  layers?: { role: RoleLayer; runtime: RoleLayer | null };
+  /** Its run settings and where each comes from. */
+  settings?: RoleSetting[];
+}
+
+/** One workflow of a root (`GET /api/workflows`, W5). */
+export interface WorkflowInfo {
+  root: string;
+  id: string;
+  title?: string;
+  description?: string;
+  approval?: 'proposal' | 'starter';
+  params: Record<
+    string,
+    { description?: string; required?: boolean; default?: string; options?: string[] } | null
+  >;
+  stages: number;
+  ok: boolean;
+  problems: string[];
 }
 
 export interface Decision {

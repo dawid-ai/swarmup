@@ -57,6 +57,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `bench/runs/${SEG}/attempt`,
     // Settings > MCP servers (W8): servers, secret names and each agent's servers.
     'mcp',
+    // Workflows (W5): each root's workflows, for the start dialog.
+    'workflows',
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
@@ -99,6 +101,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // Settings > MCP servers (W8). Not resolve: that is for runs, and holds secret values.
     'mcp/(servers|secrets|strict)',
     `mcp/servers/${SEG}/delete`,
+    // A person starts a workflow (W5): a milestone with the workflow's plan.
+    'workflows/start',
   ].map((p) => new RegExp(`^/api/${p}$`)),
 };
 

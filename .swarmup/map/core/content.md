@@ -22,6 +22,10 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
   `PROJECT_TEMPLATES`: `AGENTS.md`, `brand/voice.md`, `facts/claims.md`, three 0-4 rubrics,
   `calendar.md`, `posts/`, `assets/`, map nodes, `workspace_types`, merge checks and
   test-change paths, and first tasks with typed criteria (the draft names `codex:editor`).
+  `campaign` copies the starter workflows `content-piece` and `campaign-launch` into the store,
+  `content` copies `content-piece`: brief, a gate the person decides, a draft the editor reviews,
+  and a publish task owned by the person (see `/core/defs`).
+
 - `artifacts.ts`: review artifacts (`namedArtifacts`, `changedArtifacts` minus
   `.swarmup/map/`), `workspacePath` (refuses paths outside the workspace) and `publishTarget`
   (tags `published/<ID>`, then `-2` and up). Git comes in as a `GitRun`, so the CLI runs it

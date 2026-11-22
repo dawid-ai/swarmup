@@ -66,21 +66,27 @@ export function RoleEditor({
   const [budget, setBudget] = useState('');
   const [claims, setClaims] = useState('');
   const [wake, setWake] = useState(false);
+  /** A folder agent (W5): edit the role's agent.md, or this runtime's addendum. */
+  const [scope, setScope] = useState<'role' | 'runtime'>('role');
   const act = useAction();
+  const folder = existing.data?.folder;
 
   useEffect(() => {
     const r = existing.data;
     if (!r) return;
-    setName(r.name ?? '');
-    setDescription(r.description ?? '');
-    setActive(r.status === 'active');
-    setInstructions(r.instructions ?? '');
-    setKb(r.kb ?? []);
-    setFiles((r.files ?? []).join('\n'));
-    setStyle(r.style ?? '');
-    setBudget(r.budget_min === undefined ? '' : String(r.budget_min));
-    setClaims((r.can_claim ?? []).join(', '));
-  }, [existing.data]);
+    // A folder agent edits one of its two files; a legacy role file is the agent as it reads.
+    const layer = r.layers ? (scope === 'runtime' ? r.layers.runtime : r.layers.role) : null;
+    const d = (r.layers ? (layer?.data ?? {}) : r) as Partial<RoleFile>;
+    setName(d.name ?? '');
+    setDescription(d.description ?? '');
+    setActive((d.status ?? r.status) === 'active');
+    setInstructions(r.layers ? (layer?.instructions ?? '') : (r.instructions ?? ''));
+    setKb(d.kb ?? []);
+    setFiles((d.files ?? []).join('\n'));
+    setStyle(d.style ?? '');
+    setBudget(d.budget_min === undefined ? '' : String(d.budget_min));
+    setClaims((d.can_claim ?? []).join(', '));
+  }, [existing.data, scope]);
   useEffect(() => {
     if (id && settings.data) setWake(settings.data.opsd.agents[id]?.wake ?? false);
   }, [id, settings.data]);
@@ -101,6 +107,7 @@ export function RoleEditor({
         as: me,
         create: creating,
         root: creating ? root || undefined : undefined,
+        ...(folder ? { scope } : {}),
         role: {
           id: fullId,
           name: name.trim() || null,
@@ -124,6 +131,14 @@ export function RoleEditor({
     });
 
   const who = identity(fullId);
+  const slug = (fullId || 'runtime:role').replace(':', '-');
+  const runtimeOf = fullId.slice(0, fullId.indexOf(':'));
+  const roleOf = fullId.slice(fullId.indexOf(':') + 1);
+  const savedAs = folder
+    ? scope === 'runtime'
+      ? `agents/${folder.role}/${runtimeOf}.md`
+      : `agents/${folder.role}/agent.md`
+    : `agents/${slug}.md`;
   return (
     <Modal
       title={creating ? 'Create role' : `Edit ${id}`}
@@ -135,12 +150,105 @@ export function RoleEditor({
         <p className="text-xs leading-relaxed text-fg-3">
           A role file tells an agent who it is and how to work. swarmupd points every run of{' '}
           <span className="font-mono">{fullId || 'runtime:role'}</span> at it, with the knowledge
-          below. Saved as{' '}
-          <span className="font-mono text-fg-2">
-            agents/{(fullId || 'runtime:role').replace(':', '-')}.md
-          </span>{' '}
-          in the data root, so it syncs with the tasks.
+          below. Saved as <span className="font-mono text-fg-2">{savedAs}</span> in the data root,
+          so it syncs with the tasks.
         </p>
+        {folder && (
+          <div className="flex flex-col gap-2" data-role-scope>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="label-caps mr-1">Edit</span>
+              {(
+                [
+                  [
+                    'role',
+                    `The ${roleOf} role`,
+                    `agent.md: every runtime of the role reads it (${(existing.data?.providers ?? []).join(', ')})`,
+                  ],
+                  [
+                    'runtime',
+                    `Only ${runtimeOf}`,
+                    `${runtimeOf}.md: overrides for ${fullId} alone`,
+                  ],
+                ] as const
+              ).map(([value, label, hint]) => (
+                <button
+                  key={value}
+                  type="button"
+                  title={hint}
+                  aria-pressed={scope === value}
+                  data-scope={value}
+                  onClick={() => setScope(value)}
+                  className={cx(
+                    'rounded-md px-2 py-1 text-xs transition',
+                    scope === value
+                      ? 'bg-signal/20 text-signal'
+                      : 'bg-white/6 text-fg-3 hover:bg-white/10 hover:text-fg',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-fg-4">
+              {scope === 'runtime'
+                ? `Empty fields take the role's value from agent.md. The instructions here come ${
+                    folder.bodyMode === 'replace'
+                      ? "instead of the role's (body: replace)"
+                      : "after the role's"
+                  }.`
+                : `Every runtime of the role reads these values, unless its own file overrides them. Its runtimes come from ${
+                    folder.providersFrom === 'agent'
+                      ? 'providers in agent.md'
+                      : folder.providersFrom === 'swarm-role'
+                        ? `roles.${roleOf}.providers in swarm.yaml`
+                        : folder.providersFrom === 'swarm-runtimes'
+                          ? 'the runtimes in swarm.yaml'
+                          : 'the default providers'
+                  }.`}
+            </p>
+          </div>
+        )}
+        {existing.data?.settings && existing.data.settings.length > 0 && (
+          <div className="rounded-lg border border-white/8 p-2.5" data-role-settings>
+            <div className="label-caps mb-1.5">Run settings and where they come from</div>
+            <div className="flex flex-col gap-1">
+              {existing.data.settings.map((s) => (
+                <div
+                  key={s.key}
+                  className="flex flex-wrap items-center gap-2 text-xs"
+                  data-setting={s.key}
+                >
+                  <span className="font-mono text-fg-3">{s.key}</span>
+                  <span className="font-mono text-fg">{JSON.stringify(s.value)}</span>
+                  <span
+                    data-from={s.from}
+                    className={cx(
+                      'rounded-md px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase',
+                      s.from === 'machine'
+                        ? 'bg-warn/15 text-warn'
+                        : s.from === 'swarm.yaml'
+                          ? 'bg-info/15 text-info'
+                          : 'bg-white/8 text-fg-3',
+                    )}
+                  >
+                    {s.from === 'machine'
+                      ? 'this machine'
+                      : s.from === 'swarm.yaml'
+                        ? 'swarm.yaml'
+                        : 'role file'}
+                  </span>
+                  {s.over !== undefined && (
+                    <span className="text-fg-4">over {JSON.stringify(s.over)} from git</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-fg-4">
+              A value set on this machine (Settings) wins over swarm.yaml and the role file.
+            </p>
+          </div>
+        )}
+
         <ErrorLine error={existing.error ?? settings.error} />
 
         {creating ? (

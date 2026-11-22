@@ -38,8 +38,13 @@ What the person sees: one React app with a view per area.
   at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel;
-  `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`);
+  `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`); `ui/gate.tsx` is
+  a gate's **Approve** and **Reject** (Inbox **Gates**, the task panel), `ui/workflow.tsx` the
+  **Start a workflow** dialog that **New task** opens, and `ui/roles.tsx` edits a folder agent's
+  `agent.md` or runtime addendum with each setting's source (see `/core/defs`);
+
   `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history, map).
+
 - `assets/brand/` holds the tiles and status icons.
 
 ## Invariants

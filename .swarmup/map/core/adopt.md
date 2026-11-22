@@ -29,6 +29,9 @@ Starts a data root for a repo: survey it, propose roles and first tasks, create 
   holds the owner template; `templates/swarm.yaml` is the commented starter that
   **Create swarm.yaml** writes (see `defs`). `init.ts` exports the folder as `TEMPLATES_DIR`;
   the installer ships it as `resources/templates`.
+- `templates/workflows/*.yaml` are the starter workflows (`feature`, `bugfix`, `content-piece`,
+  `campaign-launch`); a template's `workflows` list names the ones `initRoot` copies into the
+  store's `workflows/`.
 
 ## Invariants
 

@@ -42,8 +42,26 @@ own worktrees and branches.
 
 ## The workflow
 
+The store comes with the `content-piece` workflow (`.swarmup/workflows/content-piece.yaml`), and a
+campaign also with `campaign-launch`. Start a piece with it, from the command line or with
+**New task**, **Start a workflow** in the app:
+
+```sh
+swarmup workflow start content-piece --param piece="launch post" --param channel=linkedin
+```
+
+It proposes a milestone with four stages for you to approve: the writer's brief, a gate where you
+approve the brief (a rejection sends it back for revision), the draft reviewed by `codex:editor`
+against the brand-voice rubric, and the publish task, which is yours. `swarmup workflow show
+content-piece` prints the plan first. The PM picks the workflow when it plans such a milestone
+(`swarmup plan propose ID --workflow content-piece`). See [Workflows](protocol.md#workflows).
+
+The stages, by hand or from the workflow:
+
 1. **Brief.** You file or approve the work, with criteria that a check, a rubric or a person
-   can answer.
+   can answer. In the workflow, the gate after the brief is in your **Inbox** under **Gates**:
+   **Approve** starts the draft; **Send back** reopens the brief with your note.
+
 2. **Draft.** The writer drafts on a branch and asks for review with `--artifact` for each piece.
 3. **Review.** The editor reads each artifact at the reviewed commit (`swarmup artifact ID N`)
    and gives a result per criterion. The merge runs the checks and, with
