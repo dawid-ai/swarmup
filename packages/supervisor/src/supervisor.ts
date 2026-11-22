@@ -28,7 +28,9 @@ import type {
   TaskView,
   UserConfig,
 } from '@swarmup/core';
-import type { SyncResult } from '@swarmup/core';
+import type { PublishTarget, SyncResult } from '@swarmup/core';
+import type { TaskArtifact } from './artifact-api.js';
+import { NoArtifact, readArtifact } from './artifact-api.js';
 import {
   actorSlug,
   agentRuntimeValues,
@@ -75,6 +77,8 @@ import {
   execOffThread,
   OPEN_STATUSES,
   MERGE_ACTOR,
+  workspaceTypes,
+  publishTarget,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
@@ -159,13 +163,12 @@ import {
 import type { ReviewChecks } from './review-checks.js';
 import type { BriefRefresh, RunContext } from './run-context.js';
 import { briefsToRefresh, runContext } from './run-context.js';
-import type { Invocation } from './runtimes.js';
+import type { Invocation, ReviewArtifactsPrompt } from './runtimes.js';
 import { resumeDecision, resumeInvocation, resumePrompt } from './resume.js';
 import { needsReviewChecks, reviewChecksLog, reviewChecksNote } from './review-checks.js';
 import { UsageMeter } from './usage.js';
 import type { InstallResult, TaskWorktree, WorktreeEntry } from './worktree.js';
 import {
-  CODE_TASK_TYPES,
   clearStaleIndexLock,
   deleteWorktree,
   installWorktreeSync,
@@ -273,6 +276,25 @@ export const PAUSED =
   'swarmupd is paused: resume it in Settings, from the tray icon or with `swarmup daemon resume`';
 
 /** Why no run starts on a provider the config does not list, such as one removed in Settings. */
+/** The artifacts and commit of a task's latest review request, for the review prompt (W8). */
+export function reviewArtifactsOf(ws: Workspace, ref: string): ReviewArtifactsPrompt | undefined {
+  const review = [...ws.showEvents(ref).events].reverse().find((e) => e.type === 'review');
+  if (!review?.artifacts?.length) return undefined;
+  return { ...(review.commit ? { commit: review.commit } : {}), items: review.artifacts };
+}
+
+/**
+ * The folders of a task store that no run may edit: role files and variants (W6), which change
+ * only through `swarmup defs propose`, and rubrics, workflows and triggers (W8), the yardsticks a
+ * run is judged by and what starts runs.
+ */
+export const RUN_DENIED_STORE_DIRS = ['agents', VARIANTS_DIR, 'rubrics', 'workflows', 'triggers'];
+
+/** The folders under the store `dir` that a run may not edit. */
+export function runDeniedDirs(dir: string): string[] {
+  return RUN_DENIED_STORE_DIRS.map((d) => join(dir, d));
+}
+
 export function noProvider(provider: string): string {
   return `no provider '${provider}' in Settings > Providers: add it back, or hand the work to an agent of another provider`;
 }
@@ -1733,7 +1755,8 @@ export class Supervisor extends EventEmitter {
   /**
    * The worktree a task run of `agent` works in instead of the store checkout (AO-0168), or null
    * when the run starts where it did before. With `task_worktrees` on, a run gets one when it
-   * works on a code task ({@link CODE_TASK_TYPES}) for a role that writes, has no folder of its
+   * works on a task of its root's `workspace_types` (`workspaceTypes`: by default task, bug and
+   * feature; a content root adds docs and content) for a role that writes, has no folder of its
    * own in Settings, and would otherwise start in a data root's checkout. Every such run would
    * share that checkout, and the one-writer-per-checkout rule of `blocker` would let only one
    * engineer work at a time; each in its own `out/wt-<ID>`, they work side by side. A worktree
@@ -1749,11 +1772,11 @@ export class Supervisor extends EventEmitter {
     type: string | undefined,
   ): TaskWorktree | null {
     if (!this.config.task_worktrees) return null;
-    if (!rootName || !id || !type || !CODE_TASK_TYPES.has(type)) return null;
+    if (!rootName || !id || !type) return null;
+    const root = ws.roots.find((r) => r.name === rootName);
+    if (!root || root.isMirror || !workspaceTypes(root).has(type)) return null;
     if (!roleLimits(this.config, roleOf(agent)).writes) return null;
     if (this.config.agents[agent]?.cwd) return null;
-    const root = ws.roots.find((r) => r.name === rootName);
-    if (!root || root.isMirror) return null;
     const store = this.storeCheckoutOf(ws, this.checkoutOf(ws, agent, rootName));
     if (!store) return null;
     const path = taskWorktreePath(store.top, id);
@@ -3705,8 +3728,9 @@ export class Supervisor extends EventEmitter {
       (d, i, all) => all.indexOf(d) === i && !inside(d, cwd),
     );
     // Runs change definitions only through `swarmup defs propose` (W6): no edits to role files or
-    // variants.
-    const roleDirs = ws.roots.flatMap((r) => [join(r.dir, 'agents'), join(r.dir, VARIANTS_DIR)]);
+    // variants. Nor to the store's rubrics, workflows and triggers (W8): a run must not change the
+    // yardstick its work is judged by, or what starts runs.
+    const roleDirs = ws.roots.flatMap((r) => runDeniedDirs(r.dir));
     if (req.chat && (req.task || req.parent)) {
       throw new OpsError('a chat turn works on no task', 2);
     }
@@ -3866,6 +3890,7 @@ export class Supervisor extends EventEmitter {
             map,
             decisions,
             criteria,
+            ...(req.review && ref ? { artifacts: reviewArtifactsOf(ws, ref) } : {}),
             context,
             briefs,
           })) +
@@ -6119,6 +6144,52 @@ export class Supervisor extends EventEmitter {
     if (!top) throw new NoDiff(`The code of ${root.name} is in no git checkout on this PC.`);
     const { events } = ws.showEvents(ref);
     return taskDiff({ top, env: this.commandEnv(), events, base: cfg?.base });
+  }
+
+  /** One file of a task's review at the reviewed commit, for the **Work** section (W8). */
+  async taskArtifact(ref: string, path: string, commit?: string): Promise<TaskArtifact> {
+    const ws = this.ws();
+    const root = ws.resolve(ref).root;
+    const cfg = this.config.merge[root.name];
+    const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+    if (!top) throw new NoArtifact(`The work of ${root.name} is in no git checkout on this PC.`);
+    return readArtifact({
+      top,
+      env: this.commandEnv(),
+      events: ws.showEvents(ref).events,
+      path,
+      ...(commit ? { commit } : {}),
+      bases: [...new Set([...(cfg?.base ? [cfg.base] : []), 'main', 'master'])],
+    });
+  }
+
+  /**
+   * Records that `actor`, a person, published a task's work (W8): tags the workspace commit (the
+   * root's merge base, else HEAD, or `input.commit`) `published/<ID>` off the event loop, writes
+   * the `publish` event, then runs the task's post-publish criteria.
+   */
+  async recordPublished(
+    ref: string,
+    actor: string,
+    input: { url: string; artifact?: string; commit?: string; message?: string },
+  ): Promise<PublishTarget & { url: string; results: CriteriaResults; view: TaskView }> {
+    const ws = this.ws(actor);
+    const { root, id } = ws.resolve(ref);
+    const cfg = this.config.merge[root.name];
+    const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+    if (!top) throw new OpsError(`the workspace of ${root.name} is in no git checkout on this PC`);
+    const env = this.commandEnv();
+    const target = await publishTarget(
+      (args) => gitAsync(top, args, { env, timeoutMs: 60_000 }),
+      id,
+      {
+        rev: input.commit ?? cfg?.base ?? 'HEAD',
+        ...(input.artifact ? { path: input.artifact } : {}),
+      },
+    );
+    const res = ws.published(ref, { url: input.url, ...target, message: input.message });
+    const results = await ws.publishChecks(ref, input.url, { cwd: top });
+    return { ...target, url: input.url, results, view: res.view };
   }
 
   /**

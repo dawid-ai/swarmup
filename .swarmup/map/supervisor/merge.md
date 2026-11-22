@@ -36,6 +36,7 @@ With `swarmupd.merge.<root>` set, swarmupd merges a task's work once a review ap
 
 - A branch that changes task store files is sent back; `.swarmup/map/` counts as code.
 - Only verdicts after swarmupd first saw the root's merge setting count.
+- A `publish` task has nothing to merge: a `no_merge` comment, and nothing waits on it.
 
 ## Gotchas
 

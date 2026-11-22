@@ -278,18 +278,32 @@ const RESULT_RE =
 /**
  * Soft check for a review request on a task with `done_when` (AO-0290): the request should name
  * the commands that were run and what they printed, so the reviewer can check each line without
- * taking "tests pass" on trust. Returns notes to print; never refuses.
+ * taking "tests pass" on trust. A task with no `command` criterion (`opts.commands` false), such
+ * as copy or a post (W8), owes the reviewer the work itself instead: the note asks for artifacts
+ * when the request records none (`opts.artifacts`). Returns notes to print; never refuses.
  */
-export function evidenceNotes(message: string, doneWhen: string[] | undefined): string[] {
+export function evidenceNotes(
+  message: string,
+  doneWhen: string[] | undefined,
+  opts?: { commands: boolean; artifacts: number },
+): string[] {
   if (!doneWhen || doneWhen.length === 0) return [];
+  const n = doneWhen.length;
+  const lines = `${n} done-when line${n === 1 ? '' : 's'}`;
+  if (opts && !opts.commands) {
+    if (opts.artifacts > 0) return [];
+    return [
+      `the task has ${lines} and no command to run, and the request names no artifact: ` +
+        'pass --artifact PATH or --artifact URL for each piece of work, so the reviewer reads it',
+    ];
+  }
   const missing = [
     namesCommand(message) ? null : 'no command (in code font, such as `npm test`)',
     RESULT_RE.test(message) ? null : 'no result (what each command printed, or what you saw)',
   ].filter(Boolean);
   if (missing.length === 0) return [];
-  const n = doneWhen.length;
   return [
-    `the task has ${n} done-when line${n === 1 ? '' : 's'} and the request names ${missing.join(' and ')}: ` +
+    `the task has ${lines} and the request names ${missing.join(' and ')}: ` +
       'say which commands you ran and their output, so the reviewer can check each line',
   ];
 }

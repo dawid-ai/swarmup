@@ -29,7 +29,8 @@ Turns a launch into a command line and a prompt for Claude Code, Codex or any co
   block, then the work, review, question or milestone-check lines with the task's criteria, the
   run context, decisions in force, and the rules for supervised runs. `chatPrompt` is the chat turn's prompt.
 - Review prompts: the reviewer judges the work against the task and its "Done when", runs no
-  tests, and gets `test-changes.ts`'s list of changed tests and check configuration.
+  tests, and gets `test-changes.ts`'s list of changed tests and check configuration, and the
+  review's artifacts with `git show <commit>:<path>` for each file.
 - `run-context.ts` inlines what a run would otherwise fetch first: the task text, its recent
   thread and its parents with their briefs; for a PM's inbox run, the briefs behind their
   closed children (`briefsToRefresh`, through `task-criteria.ts`'s `closedSinceBrief`).

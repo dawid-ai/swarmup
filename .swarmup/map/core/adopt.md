@@ -21,7 +21,9 @@ Starts a data root for a repo: survey it, propose roles and first tasks, create 
   `unittest` get `python -m unittest` when no pytest config is found.
 - `adoptPlan` proposes roles that fit the stack; `applyPlan` writes the root, role files and
   tasks. `swarmup adopt --store DIR` keeps the store apart from the repo.
-- `PROJECT_TEMPLATES` (`web-app`, `library`, `docs-site`, ...) back `swarmup new-project`.
+- `PROJECT_TEMPLATES` (`web-app`, `library`, `docs-site`, and `campaign` and `content` from
+  `content`) back `swarmup new-project`; `PlannedTask` carries type, labels, `done_when`, owner
+  and reviewer. `new-project --store` commits the template on `main` and registers the root.
 - `templates/agents/*.md` are the role files `init --with-agents` copies, `claude-improver.md`
   (see `/improve`) among them; `templates/people/`
   holds the owner template; `templates/swarm.yaml` is the commented starter that

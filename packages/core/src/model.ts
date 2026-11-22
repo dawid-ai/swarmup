@@ -27,7 +27,8 @@ export type Priority = (typeof PRIORITIES)[number];
  * run-start, run-end, merge, brief) are history. The four plan events carry a milestone's plan
  * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
  * results. `defs-propose`, `defs-promote` and `defs-reject` record a change to the definitions
- * proposed as a variant, and what a person did with it (W6). Unknown types from newer versions are
+ * proposed as a variant, and what a person did with it (W6). `publish` records that a person
+ * published the work (W8). Unknown types from newer versions are
  * kept and ignored.
  */
 export const EVENT_TYPES = [
@@ -68,6 +69,7 @@ export const EVENT_TYPES = [
   'defs-propose',
   'defs-promote',
   'defs-reject',
+  'publish',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -104,6 +106,8 @@ export interface TaskMeta {
    * after a delegation's reviewer; the human routes come before both.
    */
   review?: string;
+  /** Set when the creator used --force to give a `publish` task an owner that is no person. */
+  owner_forced?: boolean;
   created_by: string;
   created_at: string;
 }
@@ -124,8 +128,42 @@ export const PLAN_FIX_ROUNDS = 2;
 /** The most items one plan file holds; a bigger goal is several milestones. */
 export const PLAN_MAX_ITEMS = 25;
 
+/**
+ * The type of a task whose work is copy or other content (W8): drafted on a branch, reviewed and
+ * merged like code, in a workspace kept in git.
+ */
+export const CONTENT_TYPE = 'content';
+
+/**
+ * The type of a task that publishes approved work (W8). Only a person owns, claims or is
+ * assigned one: publishing is never an agent's step and never a criterion. `swarmup published`
+ * records it, and the merge has nothing to merge for it.
+ */
+export const PUBLISH_TYPE = 'publish';
+
 /** The types a plan item's task may have. Not `milestone`: plans do not nest. */
-export const PLAN_ITEM_TYPES: readonly string[] = ['task', 'bug', 'docs'];
+export const PLAN_ITEM_TYPES: readonly string[] = [
+  'task',
+  'bug',
+  'docs',
+  CONTENT_TYPE,
+  PUBLISH_TYPE,
+];
+
+/** One piece of reviewed work a review event names (W8): a file, a URL, an image or a document. */
+export interface ReviewArtifact {
+  kind: 'file' | 'url' | 'image' | 'doc';
+  /** A path from the top of the checkout (file, image), or a URL (url, doc). */
+  ref: string;
+  /** file, image: the git blob of the path at the reviewed commit. */
+  blob?: string;
+  /** doc: the document's revision, when its service names one. */
+  rev?: string;
+  label?: string;
+}
+
+/** The kinds a review artifact may have. */
+export const ARTIFACT_KINDS: readonly ReviewArtifact['kind'][] = ['file', 'url', 'image', 'doc'];
 
 /** One item of a milestone's plan: the task an approval creates for it (AO-0110). */
 export interface PlanItem {
@@ -282,6 +320,18 @@ export interface OpsEvent {
   repo?: 'code' | 'store';
   /** merge: the base branch it went into. */
   into?: string;
+  /**
+   * review: the work the reviewer reads (W8): files at the reviewed commit, URLs, images and
+   * documents. Older events have none.
+   */
+  artifacts?: ReviewArtifact[];
+  /** publish: where the work went live. */
+  url?: string;
+  /** publish: the file published, from the top of the workspace, and its git blob at `commit`. */
+  path?: string;
+  blob?: string;
+  /** publish: the tag swarmupd put on `commit` in the workspace, `published/<ID>`. */
+  tag?: string;
   /**
    * comment by swarmupd (`opsd:merge`): it has nothing to merge for the approved task, so tasks
    * blocked on it stop waiting for a merge (AO-0228). A note on a merge that failed has none.

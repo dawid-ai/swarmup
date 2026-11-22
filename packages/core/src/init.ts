@@ -13,6 +13,8 @@ export interface InitOptions {
   withAgents?: boolean;
   /** Copy only these role templates, such as `claude:qa`, and the people templates. */
   agents?: string[];
+  /** The root's `workspace_types` (W8); left out of `config.yml` when unset. */
+  workspaceTypes?: string[];
 }
 
 /** Role and people templates shipped with the core package. */
@@ -59,6 +61,7 @@ export function initRoot(target: string, opts: InitOptions = {}): string {
     writeFileSync(join(dir, f, '.gitkeep'), '');
   }
   const config = defaultRootConfig(name, prefix, opts.human);
+  if (opts.workspaceTypes?.length) config.workspace_types = [...opts.workspaceTypes];
   writeFileSync(join(dir, 'config.yml'), YAML.stringify(config));
   writeFileSync(join(dir, '.gitignore'), '.ops/\n');
   // Data files stay LF on every machine, even with core.autocrlf=true.

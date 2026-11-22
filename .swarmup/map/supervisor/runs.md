@@ -28,7 +28,8 @@ Everything about one run after the launch: where it works, what it may see, what
   `pageRuns` serves the desktop Runs view one page, narrowed by range, `resumed` and `model`.
 - `proc.ts` spawns hidden processes that can outlive swarmupd; `procs.ts` records every process a
   run starts and kills only by PID plus creation time.
-- `worktree.ts`: a code task in a store checkout works in `out/wt-<ID>` on its own branch.
+- `worktree.ts`: a task of its root's `workspace_types` (core's `workspaceTypes`; default task,
+  bug, feature) in a store checkout works in `out/wt-<ID>` on its own branch.
 - `checkout.ts` reads a checkout's dirty state and commits what a run left on a branch
   `<runtime>/<task>-<run>`, then restores the files.
 - `electron-dist.ts` shares one unpacked Electron per version across worktrees;

@@ -1,0 +1,2 @@
+- A root's `workspace_types` in `config.yml` sets which task types get a task worktree and must be committed before review; it defaults to `task`, `bug` and `feature`, as before.
+- Runs can no longer edit a task store's `rubrics/`, `workflows/` or `triggers/`, next to `agents/` and `variants/`.

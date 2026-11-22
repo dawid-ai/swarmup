@@ -17,7 +17,7 @@ covers:
   - packages/desktop/ui/src/views
   - packages/desktop/ui/src/ui
   - packages/desktop/ui/src/lib
-links: [index, replay, /core/map]
+links: [index, replay, /core/map, /core/content]
 ---
 
 # Desktop UI
@@ -34,7 +34,8 @@ What the person sees: one React app with a view per area.
 - `api.ts` holds the hooks and calls to swarmupd through the main process; `types.ts` the shapes.
 - `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the
   map graph, the criteria builder, review, **Run checks** and **Judge** in `criteria.tsx`, the
-  goal brief in `brief.tsx`);
+  goal brief in `brief.tsx`, the task panel's **Work** section in `work.tsx`: review artifacts
+  at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel;
   `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`);

@@ -169,6 +169,8 @@ export const READ_ONLY_ROLES: readonly string[] = [
   'pm',
   'orchestrator',
   'improver',
+  // The content editor (W8): reviews drafts against the voice, the claims and the channel.
+  'editor',
 ];
 
 /**
@@ -213,6 +215,7 @@ export const ROLE_BY_TYPE: Readonly<Record<string, string>> = {
   qa: 'qa',
   review: 'reviewer',
   question: 'pm',
+  content: 'writer',
 };
 
 /**

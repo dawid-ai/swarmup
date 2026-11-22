@@ -70,6 +70,26 @@ export interface RootConfig {
    * `done_when` that is not prose. Default false: they print a note instead.
    */
   require_checkable_criteria?: boolean;
+  /**
+   * Task types whose work happens in a workspace on a branch (W8): swarmupd gives a run on one its
+   * own worktree, and `swarmup review` refuses an agent's request that leaves the checkout
+   * uncommitted. Default `DEFAULT_WORKSPACE_TYPES`; a content project adds `docs` and `content`.
+   */
+  workspace_types?: string[];
+}
+
+/** Task types whose work happens on a branch when a root sets no `workspace_types`. */
+export const DEFAULT_WORKSPACE_TYPES: readonly string[] = ['task', 'bug', 'feature'];
+
+/**
+ * The task types of `root` whose work happens in a workspace on a branch: its `workspace_types`,
+ * else `DEFAULT_WORKSPACE_TYPES`. A list that is not a list of names reads as the default.
+ */
+export function workspaceTypes(root: { config: Pick<RootConfig, 'workspace_types'> }): Set<string> {
+  const list = root.config.workspace_types;
+  const ok =
+    Array.isArray(list) && list.length > 0 && list.every((t) => typeof t === 'string' && t.trim());
+  return new Set(ok ? list.map((t) => t.trim()) : DEFAULT_WORKSPACE_TYPES);
 }
 
 /** Per-machine settings, never committed: `SWARMUP_CONFIG` or the user config file. */

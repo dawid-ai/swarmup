@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
@@ -20,15 +20,23 @@ import type {
   PlanReport,
   PlanResult,
   PlanRow,
+  GitRun,
   Priority,
   ProjectPlan,
   RepeatInput,
+  ReviewArtifact,
   RepoSurvey,
   RepeatView,
   Status,
   TaskView,
 } from '@swarmup/core';
 import {
+  changedArtifacts,
+  namedArtifacts,
+  publishTarget,
+  reviewWithArtifacts,
+  workspacePath,
+  workspaceTypes,
   adoptProposal,
   adoptRepo,
   defaultHumanId,
@@ -143,9 +151,6 @@ function gitTop(cwd: string): string {
   }
 }
 
-/** Task types whose work is code a reviewer reads on a branch or in a PR (AO-0136). */
-const CODE_TASK_TYPES = new Set(['task', 'bug', 'feature']);
-
 /** A review message that names `<commit> on branch <name>`. */
 const NAMES_COMMIT = /\b[0-9a-f]{7,40}\b[\s\S]*?\bon branch\s+\S/i;
 
@@ -216,7 +221,8 @@ function uncommittedReview(ctx: Ctx, ref: string, message: string): string | nul
   const ws = ctx.ws();
   if (!ws.actor || isHuman(ws.actor)) return null;
   const v = ws.view(ref);
-  if (!CODE_TASK_TYPES.has(v.meta.type)) return null;
+  // Work on a branch (AO-0136): the root's `workspace_types` (W8), by default task, bug, feature.
+  if (!workspaceTypes(ws.resolve(ref).root).has(v.meta.type)) return null;
   if (NAMES_COMMIT.test(message) || NAMES_PR.test(message)) return null;
   if (opsdCommitsLeftovers(ctx.io.env)) return null;
   const files = uncommittedFiles(
@@ -404,6 +410,234 @@ function reviewSourceOf(
     source: { commit: head, branch, repo },
     ...(fromCheckout ? { line: workLine(head, branch) } : {}),
   };
+}
+
+/** Git in `dir` as core's `GitRun`: the CLI runs it directly. */
+function gitRunIn(dir: string, env: NodeJS.ProcessEnv): GitRun {
+  return async (args) =>
+    execFileSync('git', args, {
+      cwd: dir,
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+}
+
+/** The user config's `swarmupd.<section>` entry for a root, when it is text or has `checkout`. */
+function rootSetting(ctx: Ctx, section: 'code' | 'merge', root: string): Record<string, unknown> {
+  const all = (daemonSection(readUserConfig(ctx.io.env))?.[section] ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const v = all[root];
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : { value: v };
+}
+
+/**
+ * The workspace (code checkout) of a root, where its work is committed: `--cwd`, else the
+ * root's merge checkout or `swarmupd.code` entry in the user config, else the git checkout this
+ * command runs in. Null when none is a git checkout.
+ */
+function workspaceTopOf(ctx: Ctx, root: string): string | null {
+  const own = str(ctx.opts.cwd);
+  const merge = rootSetting(ctx, 'merge', root).checkout;
+  const code = rootSetting(ctx, 'code', root).value;
+  const candidates = [
+    own ? resolve(ctx.io.cwd, own) : null,
+    typeof merge === 'string' && merge.trim() ? resolve(merge) : null,
+    typeof code === 'string' && code.trim() ? resolve(code) : null,
+    ctx.io.cwd,
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const top = gitRead(c, ['rev-parse', '--show-toplevel']);
+    if (top !== null) return resolve(top);
+    if (own) break;
+  }
+  return null;
+}
+
+/** The branch a root's approved work merges into (`swarmupd.merge.<root>.base`), if set. */
+function baseOf(ctx: Ctx, root: string): string | undefined {
+  const base = rootSetting(ctx, 'merge', root).base;
+  return typeof base === 'string' && base.trim() ? base : undefined;
+}
+
+/** The branches a root's work merges into, for the files a review changed: its base, main, master. */
+function mergeBases(ctx: Ctx, root: string): string[] {
+  const base = baseOf(ctx, root);
+  return [...new Set([...(base ? [base] : []), 'main', 'master'])];
+}
+
+/**
+ * The artifacts of a review request (W8): what `--artifact` names, each path checked against the
+ * reviewed commit; without it, the files the reviewed commit changed from its base, minus the
+ * project map. A review of store work, or without a commit, records only what `--artifact`
+ * names.
+ */
+async function reviewArtifacts(
+  ctx: Ctx,
+  root: string,
+  source: ReviewSourceFields,
+): Promise<ReviewArtifact[]> {
+  const named = texts(ctx.opts.artifact);
+  const here = gitRead(ctx.io.cwd, ['rev-parse', '--show-toplevel']);
+  const code = source.repo === 'code' ? workspaceTopOf(ctx, root) : null;
+  const tops = [here, code].filter((t): t is string => t !== null);
+  // The checkout that has the reviewed commit: the one the command runs in, else the root's.
+  const top =
+    (source.commit ? tops.find((t) => commitIn(t, source.commit!)) : undefined) ?? tops[0] ?? null;
+  const commit = top && source.commit && commitIn(top, source.commit) ? source.commit : undefined;
+  if (named.length > 0) {
+    const from = top ?? ctx.io.cwd;
+    return namedArtifacts(gitRunIn(from, ctx.io.env), named, {
+      commit,
+      toTop: (p) => relative(from, resolve(ctx.io.cwd, p)),
+      exists: (p) => existsSync(join(from, p)),
+    });
+  }
+  if (!top || !commit || source.repo === 'store') return [];
+  return changedArtifacts(gitRunIn(top, ctx.io.env), commit, mergeBases(ctx, root));
+}
+
+/**
+ * `swarmup artifact ID [N]`: the artifacts of the task's latest review that names any, or the
+ * one at `N`: a file printed as it is at the reviewed commit (or `--at`), an image saved with
+ * `--out`, a URL printed.
+ */
+function artifactCommand(ctx: Ctx): number | void {
+  const ws = ctx.ws();
+  const ref = arg(ctx, 0, 'task id');
+  const { root, id } = ws.resolve(ref);
+  const review = reviewWithArtifacts(ws.showEvents(ref).events);
+  const items = review?.artifacts ?? [];
+  if (items.length === 0) {
+    if (ctx.opts.json) ctx.io.out('[]');
+    else ctx.io.err(`${id} has no review that names artifacts`);
+    return 3;
+  }
+  const at = str(ctx.opts.at) ?? review?.commit;
+  const pick = ctx.args[1];
+  if (pick === undefined && items.length > 1) {
+    if (ctx.opts.json) {
+      return void ctx.io.out(JSON.stringify({ commit: at ?? null, artifacts: items }, null, 2));
+    }
+    ctx.io.out(`${id}: ${items.length} artifacts${at ? ` at ${at.slice(0, 10)}` : ''}`);
+    items.forEach((a, i) => {
+      const label = a.label ? `  ${a.label}` : '';
+      ctx.io.out(`${pad(String(i + 1), 3)} ${pad(a.kind, 6)} ${a.ref}${label}`);
+    });
+    return;
+  }
+  const n = pick === undefined ? 1 : Number(pick);
+  if (!Number.isInteger(n) || n < 1 || n > items.length) {
+    usageError(`N must be 1 to ${items.length}`);
+  }
+  const a = items[n - 1]!;
+  if (a.kind === 'url' || a.kind === 'doc') {
+    if (ctx.opts.json) return void ctx.io.out(JSON.stringify(a, null, 2));
+    return void ctx.io.out(a.ref);
+  }
+  const path = workspacePath(a.ref);
+  const tops = [
+    gitRead(ctx.io.cwd, ['rev-parse', '--show-toplevel']),
+    workspaceTopOf(ctx, root.name),
+  ].filter((t): t is string => t !== null);
+  const top = (at ? tops.find((t) => commitIn(t, at)) : tops[0]) ?? null;
+  if (!top) {
+    throw new OpsError(
+      at
+        ? `no checkout here has ${at.slice(0, 10)}: run it in the workspace, or pass --cwd`
+        : 'run it in the workspace, or pass --cwd',
+      1,
+    );
+  }
+  let data: Buffer;
+  try {
+    data = at
+      ? execFileSync('git', ['cat-file', 'blob', `${at}:${path}`], {
+          cwd: top,
+          env: ctx.io.env,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          maxBuffer: 64 * 1024 * 1024,
+        })
+      : readFileSync(join(top, path));
+  } catch {
+    throw new OpsError(`${path} is not in ${at ? at.slice(0, 10) : top}`, 1);
+  }
+  const out = str(ctx.opts.out);
+  if (out) {
+    const file = resolve(ctx.io.cwd, out);
+    writeFileSync(file, data);
+    return void ctx.io.out(`wrote ${file} (${data.length} bytes)`);
+  }
+  if (ctx.opts.json) {
+    const text = a.kind === 'image' ? undefined : data.toString('utf8');
+    return void ctx.io.out(
+      JSON.stringify({ ...a, commit: at ?? null, bytes: data.length, text }, null, 2),
+    );
+  }
+  if (a.kind === 'image') {
+    return void ctx.io.out(
+      `${path} is an image (${data.length} bytes${at ? ` at ${at.slice(0, 10)}` : ''}): pass --out FILE to save it`,
+    );
+  }
+  ctx.io.out(data.toString('utf8').replace(/\n$/, ''));
+}
+
+/**
+ * `swarmup published ID --url URL`: a person records that they published the work (W8). Tags the
+ * workspace commit `published/<ID>`, writes the `publish` event (a publish task closes with it),
+ * then runs the task's post-publish criteria and records their results.
+ */
+async function publishedCommand(ctx: Ctx): Promise<number | void> {
+  const ws = ctx.ws();
+  const ref = arg(ctx, 0, 'task id');
+  const url = str(ctx.opts.url);
+  if (!url) usageError('missing --url: where the work went live');
+  const actor = ws.requireActor();
+  if (!isHuman(actor) || ws.run) {
+    throw new OpsError('only a person records a publish, outside any run', 1);
+  }
+  const { root, id } = ws.resolve(ref);
+  const top = workspaceTopOf(ctx, root.name);
+  if (!top)
+    throw new OpsError(`the workspace of ${root.name} is in no git checkout here: pass --cwd`, 1);
+  const artifact = str(ctx.opts.artifact);
+  const target = await publishTarget(gitRunIn(top, ctx.io.env), id, {
+    // Approved work is on the root's merge base; without one, what the workspace has checked out.
+    rev: str(ctx.opts.commit) ?? baseOf(ctx, root.name) ?? 'HEAD',
+    ...(artifact ? { path: relative(top, resolve(ctx.io.cwd, artifact)) } : {}),
+  });
+  const res = ws.published(ref, {
+    url,
+    commit: target.commit,
+    path: target.path,
+    blob: target.blob,
+    tag: target.tag,
+    message: str(ctx.opts.message),
+  });
+  const results = await ws.publishChecks(ref, url, { cwd: top });
+  if (ctx.opts.json) {
+    return void ctx.io.out(
+      JSON.stringify({ ...target, url, status: res.view.status, results }, null, 2),
+    );
+  }
+  ctx.io.out(
+    `${id} published at ${url}: ${target.commit.slice(0, 10)}${target.path ? ` ${target.path}` : ''}, tagged ${target.tag} in ${top}`,
+  );
+  for (const w of res.warnings ?? []) ctx.io.err(`warning: ${w}`);
+  const ids = Object.keys(results);
+  for (const cid of ids) {
+    const r = results[cid]!;
+    ctx.io.out(
+      `${pad(cid, 12)} ${pad(r.result, 4)}  ${(r.note ?? r.evidence ?? '').split('\n')[0]}`,
+    );
+  }
+  return ids.some((cid) => results[cid]!.result === 'fail') ? 1 : 0;
 }
 
 /**
@@ -1464,11 +1698,13 @@ const COMMANDS: Record<string, Command> = {
   },
   'new-project': {
     usage:
-      'new-project DIR --template T [--name NAME] [--prefix P] [--human human:NAME] | new-project --list',
+      'new-project DIR --template T [--store DIR] [--no-tasks] [--name NAME] [--prefix P] [--human human:NAME] | new-project --list',
     summary:
-      'start a project in an empty folder from a template (web-app, library, docs-site): files, roles and first tasks',
+      'start a project in an empty folder from a template (web-app, library, docs-site, campaign, content): files, roles and first tasks; --store puts the tasks in a folder apart and adds the root to the user config',
     options: {
       template: { type: 'string', short: 't' },
+      store: { type: 'string' },
+      'no-tasks': { type: 'boolean' },
       list: { type: 'boolean' },
       name: { type: 'string' },
       prefix: { type: 'string' },
@@ -1482,15 +1718,24 @@ const COMMANDS: Record<string, Command> = {
       }
       const template = str(ctx.opts.template);
       if (!template) usageError('missing --template: run `swarmup new-project --list`');
+      const store = str(ctx.opts.store);
       const res = newProject(resolve(ctx.io.cwd, arg(ctx, 0, 'DIR')), template, {
         ...applyOptions(ctx),
         name: str(ctx.opts.name),
         prefix: str(ctx.opts.prefix),
+        ...(store ? { store: resolve(ctx.io.cwd, store) } : {}),
+        ...(ctx.opts['no-tasks'] ? { tasks: [] } : {}),
       });
       if (ctx.opts.json) return void ctx.io.out(JSON.stringify(res, null, 2));
       if (res.gitInit) ctx.io.out(`git init ${res.project}`);
       ctx.io.out(`wrote ${res.files.join(', ')}`);
+      if (res.commit) ctx.io.out(`committed ${res.commit.slice(0, 10)} on ${res.base}`);
       printApplied(ctx, res);
+      if (res.store) {
+        ctx.io.out(
+          `${res.config}: added ${res.store} to roots and ${res.project} as the code checkout of ${str(ctx.opts.name) ?? basename(res.project)} (merge base ${res.base})`,
+        );
+      }
     },
   },
   roots: {
@@ -1545,9 +1790,9 @@ const COMMANDS: Record<string, Command> = {
   },
   new: {
     usage:
-      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [--done-when CHECK|{YAML}]... [-m BODY|--body-file F]',
+      'new TITLE [--to OWNER] [--type T] [--priority P] [--project S] [--parent ID] [--label L]... [--blocked-by IDS] [--done-when CHECK|{YAML}]... [--review REVIEWER] [-m BODY|--body-file F]',
     summary:
-      'create a task; --done-when adds a criterion that says when it is done: text (a command or an observable behavior) or a typed one in braces, such as {id: tests, kind: command, run: npm test}; an agent files a proposal (finding) unless --parent names an approved open task',
+      'create a task; --done-when adds a criterion that says when it is done: text (a command or an observable behavior) or a typed one in braces, such as {id: tests, kind: command, run: npm test}; --review names the reviewer its review goes to, such as codex:editor; an agent files a proposal (finding) unless --parent names an approved open task',
     options: {
       to: { type: 'string' },
       type: { type: 'string' },
@@ -1557,6 +1802,7 @@ const COMMANDS: Record<string, Command> = {
       label: { type: 'string', multiple: true },
       'blocked-by': { type: 'string' },
       'done-when': { type: 'string', multiple: true },
+      review: { type: 'string' },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
@@ -1576,6 +1822,7 @@ const COMMANDS: Record<string, Command> = {
         blockedBy: list(ctx.opts['blocked-by']),
         // Not `list`: a check is free text and may hold a comma.
         doneWhen: texts(ctx.opts['done-when']).map(doneWhenArg),
+        review: str(ctx.opts.review),
       });
       if (ctx.opts.json) {
         ctx.io.out(JSON.stringify(proposed ? { ...meta, proposed } : meta, null, 2));
@@ -1846,18 +2093,19 @@ const COMMANDS: Record<string, Command> = {
   },
   review: {
     usage:
-      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA --branch NAME]',
+      'review ID MESSAGE [--to REVIEWER | --human] [--recommend TEXT] [--commit SHA --branch NAME] [--artifact PATH|URL]...',
     summary:
-      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work; records the HEAD commit, branch and repo of the checkout it runs in for the merge (--commit with --branch overrides)',
+      'ask for review; without --to, the reviewer the delegation or the plan item names, else a reviewer of another provider, or the human for --human and release, money, account, credential, client or data-deleting work; records the HEAD commit, branch and repo of the checkout it runs in for the merge (--commit with --branch overrides), and the work to read: each --artifact (a path in the reviewed commit, or a URL), else the files the commit changed',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },
       recommend: { type: 'string' },
       commit: { type: 'string' },
       branch: { type: 'string' },
+      artifact: { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
-    run: (ctx) => {
+    run: async (ctx) => {
       const ref = arg(ctx, 0, 'task id');
       const msg = message(ctx, 1, true);
       const refused = uncommittedReview(ctx, ref, msg);
@@ -1871,6 +2119,8 @@ const COMMANDS: Record<string, Command> = {
         { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
       );
       if (note) ctx.io.err(`note: ${note}`);
+      const artifacts = await reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
+      if (artifacts.length > 0) source.artifacts = artifacts;
       // The pair as the message's last line too, which the review diff reads (AO-0396).
       const body = line ? `${msg.replace(/\s+$/, '')}\n\n${line}\n` : msg;
       return printAct(
@@ -1881,6 +2131,26 @@ const COMMANDS: Record<string, Command> = {
         }),
       );
     },
+  },
+  artifact: {
+    usage: 'artifact ID [N] [--at COMMIT] [--out FILE] [--cwd DIR]',
+    summary:
+      "list the work the task's latest review names, or print artifact N: a file as it is at the reviewed commit (or --at), an image saved with --out, a URL",
+    options: { at: { type: 'string' }, out: { type: 'string' }, cwd: { type: 'string' } },
+    run: (ctx) => artifactCommand(ctx),
+  },
+  published: {
+    usage: 'published ID --url URL [--artifact PATH] [--commit REV] [--cwd DIR] [-m TEXT]',
+    summary:
+      "a person records that they published the work: tags the workspace commit (HEAD, or --commit) published/<ID>, writes a publish event with the URL and the file's blob (a publish task closes with it), and runs the task's post-publish criteria",
+    options: {
+      url: { type: 'string' },
+      artifact: { type: 'string' },
+      commit: { type: 'string' },
+      cwd: { type: 'string' },
+      message: { type: 'string', short: 'm' },
+    },
+    run: (ctx) => publishedCommand(ctx),
   },
   verdict: {
     usage: `verdict ID approve|changes MESSAGE [--criteria-file F|-] [--pass ID[:NOTE]]... [--fail ID[:NOTE]]... [--na ID[:NOTE]]... ${MARK_USAGE}`,
