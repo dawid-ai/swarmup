@@ -1623,3 +1623,41 @@ export interface BenchComparison {
     delta: Record<keyof BenchOverall, number | null>;
   };
 }
+
+/** A proposal's benchmark: the configured set, base against variant (W6). */
+export interface ProposalBenchmark {
+  state: 'running' | 'done' | 'failed' | 'skipped';
+  base?: string;
+  run?: string;
+  verdict?: 'better' | 'worse' | 'same';
+  delta?: {
+    passRate?: number | null;
+    hiddenPassRate?: number | null;
+    costPerAttempt?: number | null;
+    wallMs?: number | null;
+  };
+  error?: string;
+}
+
+/** A variant of the definitions, as `GET /api/defs/variants` lists it (W6). */
+export interface ProposalView {
+  root: string;
+  name: string;
+  hash: string;
+  base: string;
+  status: 'proposed' | 'draft';
+  stale: boolean;
+  agents: string[];
+  ok: boolean;
+  problems: string[];
+  proposal?: {
+    task: string;
+    agents: string[];
+    scorers: string[];
+    message: string;
+    by: string;
+    at: string;
+  };
+  diffs: Array<{ path: string; kind: 'added' | 'changed' | 'removed'; lines: string[] }>;
+  benchmark?: ProposalBenchmark;
+}

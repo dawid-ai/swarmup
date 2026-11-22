@@ -1,6 +1,6 @@
 // One agent's scores for its card in the Agents view (W4): per scorer the value, pass rate, count,
 // pass or fail against the threshold, a trend, and, opened, what to change and the worst tasks.
-import { ChevronDown, ChevronRight, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, Sparkles, Wrench } from 'lucide-react';
 import { useState } from 'react';
 import type { Nav } from '../App';
 import { cx } from '../components';
@@ -33,11 +33,14 @@ function ScoreRow({
   series,
   bucket,
   nav,
+  onPropose,
 }: {
   line: ScorerLine;
   series?: ScoreSeries;
   bucket: 'hour' | 'day';
   nav: Nav;
+  /** Files an improvement task for the agent now (W6); only on a failing scorer. */
+  onPropose?: () => void;
 }) {
   const pass = linePasses(line);
   const [open, setOpen] = useState(pass === false);
@@ -108,6 +111,17 @@ function ScoreRow({
               ))}
             </div>
           )}
+          {pass === false && onPropose && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 self-start text-signal hover:underline"
+              title="File a task for the improver to propose a change to this agent's definitions"
+              onClick={onPropose}
+            >
+              <Sparkles size={12} />
+              Propose an improvement
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -120,11 +134,13 @@ export function AgentScoresBlock({
   history,
   bucket,
   nav,
+  onPropose,
 }: {
   scores?: AgentScores;
   history?: ScoreSeries[];
   bucket: 'hour' | 'day';
   nav: Nav;
+  onPropose?: () => void;
 }) {
   if (!scores || scores.scorers.length === 0) return null;
   const failing = scores.scorers.filter((l) => linePasses(l) === false).length;
@@ -151,6 +167,7 @@ export function AgentScoresBlock({
           series={seriesOf(history, scores.agent, l.scorer)}
           bucket={bucket}
           nav={nav}
+          onPropose={onPropose}
         />
       ))}
     </div>

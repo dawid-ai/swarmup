@@ -48,6 +48,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'map',
     'map/(node|search)',
     'defs',
+    // Proposals (W6): the variants with their diffs and benchmarks.
+    'defs/variants',
     'bench/(sets|runs)',
     `bench/runs/${SEG}`,
     `bench/runs/${SEG}/attempt`,
@@ -83,6 +85,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'projects/(archive|unarchive|label|remove)',
     'map/(check|index|init)',
     'defs/(validate|import|create|save)',
+    // A person promotes or rejects a proposal, and files an improvement task for an agent.
+    `defs/variants/${SEG}/(promote|reject)`,
+    'improve',
     'bench/(run|compare)',
     `bench/runs/${SEG}/stop`,
   ].map((p) => new RegExp(`^/api/${p}$`)),
