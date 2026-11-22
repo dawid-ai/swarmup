@@ -24,7 +24,8 @@ const status = (s) => writeFileSync(join(out, 'status.json'), JSON.stringify({
   pid: process.pid, startedAt: now, updatedAt: new Date().toISOString(), ...s }));
 status({ state: 'running', done: 0, total: 1, current: 'E-1 #1' });
 console.error('set demo: 1 attempts');
-if (process.env.FAKE_BENCH === 'hang') setInterval(() => {}, 1000);
+// A hung run ends on its own after a minute, so a test that misses its stop leaks no process.
+if (process.env.FAKE_BENCH === 'hang') { setInterval(() => {}, 1000); setTimeout(() => process.exit(1), 60_000); }
 else {
   const dir = join(out, 'E-1', '1');
   mkdirSync(dir, { recursive: true });
