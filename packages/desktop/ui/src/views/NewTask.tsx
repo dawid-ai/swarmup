@@ -20,6 +20,8 @@ const TYPES: Array<[string, string]> = [
   [QUESTION, 'Question'],
   ['finding', 'Finding'],
   ['doc', 'Doc'],
+  ['content', 'Content'],
+  ['publish', 'Publish'],
   ['eval', 'Eval'],
 ];
 

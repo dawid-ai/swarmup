@@ -54,6 +54,7 @@ const ROLES: Record<string, Omit<Role, 'key'>> = {
   frontend: { label: 'Frontend', color: '#7cc4ff', icon: 'engineer' },
   qa: { label: 'QA', color: '#b18cff', icon: 'qa' },
   reviewer: { label: 'Reviewer', color: '#c9a4ff', icon: 'reviewer' },
+  editor: { label: 'Editor', color: '#e9a8ff', icon: 'reviewer' },
   pm: { label: 'PM', color: '#ff7eb6', icon: 'pm' },
   product: { label: 'Product', color: '#ff7eb6', icon: 'pm' },
   designer: { label: 'Designer', color: '#ff9ee6', icon: 'designer' },

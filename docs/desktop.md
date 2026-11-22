@@ -228,6 +228,15 @@ whether a verdict, **Run checks** or the merge did. A milestone's one criterion 
   `add: true` to append). The same rules apply: the task's creator, a person, the orchestrator or
   a PM on a task nobody holds may change them, and swarmupd's refusal shows under the form. A
   criterion you change or remove loses its last result.
+- **Check builders.** Every built-in check has its fields: `file-exists`, `regex`, `word-count`,
+  `char-count` (**Min**, **Max**, **Per** whole file, each block or each line, and a
+  **Separator** line for blocks), `contains` (**Text**, all or any of them, must or must not
+  contain, ignore or match case), `heading-structure` (**Headings** in order, exactly one h1, no
+  skipped levels), `front-matter` (**Keys**, and **Match** as `key: pattern` pairs separated by
+  `;`), `links-resolve` and `url-ok`. **Path** takes one path or several, comma-separated, and a
+  glob such as `posts/*.md` checks every file it matches. A `check` or `command` row also picks
+  **Checked at merge** or **Checked after publish**; a post-publish criterion shows **after
+  publish** in the list and runs when a person records the publish with `swarmup published`.
 - **Run checks** runs the task's `command` and `check` criteria, as `swarmup criteria check ID`
   does, in the task's worktree, else the root's code checkout, and records the results in one
   `criteria-check` event. It runs in swarmupd, in the background: each criterion shows **queued**,
@@ -257,6 +266,21 @@ newest `brief` event as Markdown with its author and when, and how many children
 next, open questions, decisions in force. When children closed after the brief (or a milestone
 has closed children and no brief), a hint names them; they are the ones the PM's inbox runs list
 (see [Goal briefs](protocol.md#goal-briefs)). `brief` events show in the thread.
+
+**Work.** When the task's latest review names artifacts (see
+[Review artifacts](protocol.md#review-artifacts)), the task panel shows **Work**: each piece the
+reviewer reads, at the reviewed commit, which the heading names.
+
+- A Markdown file renders as it reads, its front matter shown as plain fields. Other text files
+  show as text. The first Markdown file and the first images open on their own; click a file to
+  open or fold it. The app reads a file only when it opens, with
+  `GET /api/tasks/ID/artifact?path=PATH&commit=SHA`.
+- **Changes** shows a word-level diff of the file against the same file at the merge base:
+  added words underlined in green, deleted words struck through in red. A new file shows as all
+  added.
+- An image shows inline. A URL or a document is a link that opens in your browser.
+- In **Done when**, a criterion's **Evidence** that names an artifact's path makes the path a
+  link: click it to open that file in **Work**.
 
 **Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
 `GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what

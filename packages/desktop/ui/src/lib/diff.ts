@@ -276,3 +276,127 @@ export function highlight(text: string, lang: Lang | null): Token[] {
   }
   return out;
 }
+
+// ---- Prose diff (W8) -----------------------------------------------------------------------------
+
+/** One run of a word-level prose diff: text both versions share, or text added or deleted. */
+export interface WordPart {
+  op: 'same' | 'add' | 'del';
+  text: string;
+}
+
+/** Past this many tokens on either side, the diff is the whole old text out, the new text in. */
+export const WORD_DIFF_MAX_TOKENS = 4000;
+
+/** The most cells the table of the changed middle may have (4 bytes each), about 16 MB. */
+const WORD_DIFF_MAX_CELLS = 4_000_000;
+
+/** Splits prose into words, runs of whitespace and single punctuation marks. */
+export function wordTokens(text: string): string[] {
+  return text.match(/\s+|[\p{L}\p{N}_'’-]+|[^\s\p{L}\p{N}_]/gu) ?? [];
+}
+
+/**
+ * A word-level diff of two versions of prose: the longest common subsequence of their tokens,
+ * with neighbouring runs of one kind merged. Inputs over `WORD_DIFF_MAX_TOKENS` tokens come back
+ * as one deletion and one addition, so a huge file never stalls the panel.
+ */
+export function wordDiff(before: string, after: string): WordPart[] {
+  if (before === after) return before ? [{ op: 'same', text: before }] : [];
+  const a = wordTokens(before);
+  const b = wordTokens(after);
+  const out: WordPart[] = [];
+  const push = (op: WordPart['op'], text: string): void => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    if (last?.op === op) last.text += text;
+    else out.push({ op, text });
+  };
+  if (a.length > WORD_DIFF_MAX_TOKENS || b.length > WORD_DIFF_MAX_TOKENS) {
+    push('del', before);
+    push('add', after);
+    return out;
+  }
+  // Shared head and tail first: most edits touch a small part of the text.
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  push('same', a.slice(0, start).join(''));
+  const x = a.slice(start, endA);
+  const y = b.slice(start, endB);
+  const n = x.length;
+  const m = y.length;
+  if (n * m > WORD_DIFF_MAX_CELLS) {
+    push('del', x.join(''));
+    push('add', y.join(''));
+    push('same', a.slice(endA).join(''));
+    return out;
+  }
+  // lcs[i][j]: the common length of x[i..] and y[j..], in one flat array.
+  const lcs = new Uint32Array((n + 1) * (m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i * (m + 1) + j] =
+        x[i] === y[j]
+          ? lcs[(i + 1) * (m + 1) + j + 1]! + 1
+          : Math.max(lcs[(i + 1) * (m + 1) + j]!, lcs[i * (m + 1) + j + 1]!);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (x[i] === y[j]) {
+      push('same', x[i]!);
+      i++;
+      j++;
+    } else if (lcs[(i + 1) * (m + 1) + j]! >= lcs[i * (m + 1) + j + 1]!) {
+      push('del', x[i]!);
+      i++;
+    } else {
+      push('add', y[j]!);
+      j++;
+    }
+  }
+  while (i < n) push('del', x[i++]!);
+  while (j < m) push('add', y[j++]!);
+  push('same', a.slice(endA).join(''));
+  return coalesce(out);
+}
+
+/**
+ * Folds the whitespace shared between two changes into them, so a rewritten phrase reads as one
+ * deletion and one addition instead of alternating words.
+ */
+function coalesce(parts: WordPart[]): WordPart[] {
+  const out: WordPart[] = [];
+  let del = '';
+  let add = '';
+  const flush = (): void => {
+    if (del) out.push({ op: 'del', text: del });
+    if (add) out.push({ op: 'add', text: add });
+    del = '';
+    add = '';
+  };
+  parts.forEach((p, k) => {
+    const changing = del !== '' || add !== '';
+    const between = p.op === 'same' && changing && /^\s+$/.test(p.text) && k + 1 < parts.length;
+    if (p.op === 'del') del += p.text;
+    else if (p.op === 'add') add += p.text;
+    else if (between) {
+      del += p.text;
+      add += p.text;
+    } else {
+      flush();
+      const last = out[out.length - 1];
+      if (last?.op === 'same') last.text += p.text;
+      else out.push({ ...p });
+    }
+  });
+  flush();
+  return out;
+}

@@ -3,7 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { api, q } from '../api';
 import { cx, ErrorLine } from '../components';
 import type { DiffLine, Hunk, Lang } from '../lib/diff';
-import { highlight, languageOf, parsePatch, splitRows } from '../lib/diff';
+import { highlight, languageOf, parsePatch, splitRows, wordDiff } from '../lib/diff';
 import { ago } from '../lib/format';
 import type { DiffFile, TaskDiff } from '../types';
 
@@ -394,5 +394,48 @@ function SplitHunk({ hunk, lang }: { hunk: Hunk; lang: Lang | null }) {
         </tr>
       ))}
     </>
+  );
+}
+
+/**
+ * A word-level diff of two versions of prose (W8), as one flowing text: added words underlined
+ * in green, deleted words struck through in red. `before` null means the file is new.
+ */
+export function ProseDiff({ before, after }: { before: string | null; after: string }) {
+  const parts = useMemo(() => wordDiff(before ?? '', after), [before, after]);
+  return (
+    <div
+      data-prose-diff
+      className="rounded-lg bg-black/20 p-3 font-sans text-[13px] leading-relaxed whitespace-pre-wrap text-fg-2"
+    >
+      {parts.length === 0 && <span className="text-fg-4">Both versions are empty.</span>}
+      {parts.map((p, i) =>
+        p.op === 'add' ? (
+          <ins
+            key={i}
+            style={{
+              color: 'var(--color-ok)',
+              textDecoration: 'underline',
+              background: 'color-mix(in oklab, var(--color-ok) 12%, transparent)',
+            }}
+          >
+            {p.text}
+          </ins>
+        ) : p.op === 'del' ? (
+          <del
+            key={i}
+            style={{
+              color: 'var(--color-bad)',
+              textDecoration: 'line-through',
+              background: 'color-mix(in oklab, var(--color-bad) 10%, transparent)',
+            }}
+          >
+            {p.text}
+          </del>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
+      )}
+    </div>
   );
 }

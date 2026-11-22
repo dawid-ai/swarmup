@@ -46,6 +46,8 @@ const TYPES: Array<[string, string]> = [
   ['', 'task'],
   ['bug', 'bug'],
   ['docs', 'docs'],
+  ['content', 'content'],
+  ['publish', 'publish'],
 ];
 const PRIORITIES: Array<[string, string]> = [
   ['', "milestone's"],
