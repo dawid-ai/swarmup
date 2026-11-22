@@ -182,12 +182,16 @@ describe('improvement policy', () => {
     const out = policyProblems(
       base,
       new Map([
-        ['agents/claude-engineer.md', '---\ntools: [Read, Edit, Bash]\nwrites: true\n---\n'],
+        [
+          'agents/claude-engineer.md',
+          '---\ntools: [Read, Edit, Bash]\nmcp: [notion]\nwrites: true\n---\n',
+        ],
       ]),
       policy,
     );
     expect(out).toEqual([
       'agents/claude-engineer.md: tools is always frozen; a person changes it by hand',
+      'agents/claude-engineer.md: mcp is always frozen; a person changes it by hand',
       'agents/claude-engineer.md: writes is always frozen; a person changes it by hand',
     ]);
     expect(

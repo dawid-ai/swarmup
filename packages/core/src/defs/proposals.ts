@@ -54,7 +54,7 @@ export const DEFAULT_FROZEN: readonly string[] = [
  * Agent frontmatter keys no proposal changes, whatever the policy says: what an agent may run,
  * whether it writes, the work it takes, and who it is.
  */
-export const ALWAYS_FROZEN_KEYS: readonly string[] = ['tools', 'writes', 'can_claim', 'id'];
+export const ALWAYS_FROZEN_KEYS: readonly string[] = ['tools', 'mcp', 'writes', 'can_claim', 'id'];
 
 /** Proposals that may wait for a person at once in one store, by default. */
 export const DEFAULT_MAX_OPEN_PROPOSALS = 2;
