@@ -316,7 +316,10 @@ export interface OpsEvent {
   run?: string;
   /** run-end: the exit code, or null when the process was killed or lost. */
   exit?: number | null;
-  /** run-end: why the run ended, such as `exit`, `budget`, `tokens`, `killed` or `lost`. */
+  /**
+   * run-end: why the run ended, such as `exit`, `budget`, `tokens`, `killed` or `lost`. ask: why
+   * only a person can answer, one of {@link ASK_REASONS}; the escalation scorer reads it.
+   */
   reason?: string;
   /** run-end: minutes the run took. */
   minutes?: number;
@@ -553,6 +556,19 @@ export interface PlanLookup {
 
 /** The actor swarmupd writes merge events, notes and send-backs as. */
 export const MERGE_ACTOR = 'opsd:merge';
+
+/**
+ * Why an agent asks a person rather than the PM (`swarmup ask --reason`): the decisions only the
+ * person can make. An ask to a person with one of these counts as a right escalation, whatever the
+ * task's labels say.
+ */
+export const ASK_REASONS = [
+  'direction', // a change of goal, scope or priority
+  'access', // an account, credential, permission or payment only the person has
+  'irreversible', // deleting data, publishing, releasing or another step that can't be undone
+  'external', // an answer from someone outside, which only the person can get
+] as const;
+export type AskReason = (typeof ASK_REASONS)[number];
 
 /** Task state after rules that need the clock or other tasks: leases and dependencies. */
 export interface TaskView extends TaskState {

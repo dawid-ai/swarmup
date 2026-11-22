@@ -505,6 +505,23 @@ describe('claims and ownership', () => {
   });
 });
 
+describe('ask --reason', () => {
+  it('records why only a person can answer, and refuses a reason not on the list', () => {
+    const { as } = setup();
+    as('human:dawid').newTask({ title: 'x' });
+    const eng = as('claude:engineer');
+    eng.start('1');
+    expect(() => eng.ask('1', 'Ok?', undefined, 'yes', { human: true, reason: 'curious' })).toThrow(
+      /bad reason 'curious': use direction, access, irreversible, external/,
+    );
+    const res = eng.ask('1', 'Which account pays?', undefined, 'the team card', {
+      human: true,
+      reason: 'access',
+    });
+    expect(res.events[0]).toMatchObject({ type: 'ask', to: 'human:dawid', reason: 'access' });
+  });
+});
+
 describe('inbox', () => {
   it('shows the event that started the current wait as the ask, not an older question', () => {
     const { as } = setup();

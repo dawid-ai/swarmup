@@ -169,6 +169,7 @@ import type {
 } from './model.js';
 import {
   ARTIFACT_KINDS,
+  ASK_REASONS,
   MERGE_ACTOR,
   MILESTONE_TYPE,
   OPEN_STATUSES,
@@ -2775,9 +2776,13 @@ export class Workspace {
     question: string,
     to?: string,
     recommend?: string,
-    opts: { human?: boolean } = {},
+    opts: { human?: boolean; reason?: string } = {},
   ): ActResult {
     const rec = recommendText(recommend);
+    const reason = opts.reason?.trim();
+    if (reason && !(ASK_REASONS as readonly string[]).includes(reason)) {
+      throw new OpsError(`bad reason '${reason}': use ${ASK_REASONS.join(', ')}`, 2);
+    }
     let routed: string | undefined;
     const res = this.act(ref, (v, ctx) => {
       ctx.requireOpen('ask on');
@@ -2807,7 +2812,15 @@ export class Workspace {
             'add --recommend "the option you would pick"',
         );
       }
-      return [{ type: 'ask', to: target, body: question, ...(rec ? { recommend: rec } : {}) }];
+      return [
+        {
+          type: 'ask',
+          to: target,
+          body: question,
+          ...(rec ? { recommend: rec } : {}),
+          ...(reason ? { reason } : {}),
+        },
+      ];
     });
     // With no addressee the question still waits for a person.
     const target = res.events.find((e) => e.type === 'ask')?.to;

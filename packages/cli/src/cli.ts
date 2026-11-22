@@ -2381,13 +2381,15 @@ const COMMANDS: Record<string, Command> = {
     run: (ctx) => printAct(ctx, ctx.ws().done(arg(ctx, 0, 'task id'), message(ctx, 1, false))),
   },
   ask: {
-    usage: 'ask ID QUESTION [--to ID | --human] [--recommend TEXT]',
+    usage:
+      'ask ID QUESTION [--to ID | --human] [--recommend TEXT] [--reason direction|access|irreversible|external]',
     summary:
-      'block on a question to the PM (--human: to the human; --to: someone else); --recommend names the option you would pick',
+      'block on a question to the PM (--human: to the human; --to: someone else); --recommend names the option you would pick; --reason says why only a person can answer',
     options: {
       to: { type: 'string' },
       human: { type: 'boolean' },
       recommend: { type: 'string' },
+      reason: { type: 'string' },
       ...MESSAGE_OPTIONS,
     },
     run: (ctx) =>
@@ -2400,7 +2402,7 @@ const COMMANDS: Record<string, Command> = {
             message(ctx, 1, true),
             str(ctx.opts.to),
             str(ctx.opts.recommend),
-            { human: ctx.opts.human === true },
+            { human: ctx.opts.human === true, reason: str(ctx.opts.reason) },
           ),
       ),
   },
