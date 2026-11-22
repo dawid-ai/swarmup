@@ -3,7 +3,16 @@
  * store's improvement policy, and kept in `variants/<name>/` with a `proposal.json` until a person
  * promotes it onto the base files or rejects it.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
@@ -23,6 +32,7 @@ import {
   readOverlay,
   splitFrontmatter,
   variantDir,
+  VARIANTS_DIR,
 } from './variants.js';
 
 /** Overlay paths a proposal may change when `swarm.yaml` sets no `improvement.may_change`. */
@@ -260,6 +270,13 @@ export function writeVariantFiles(
 /** Removes a variant's folder. */
 export function removeVariant(rootDir: string, name: string): void {
   rmSync(variantDir(rootDir, name), { recursive: true, force: true });
+  // The last variant gone: no empty `variants/` folder is left behind.
+  const dir = join(rootDir, VARIANTS_DIR);
+  try {
+    if (readdirSync(dir).length === 0) rmdirSync(dir);
+  } catch {
+    // Another variant came, or the folder is gone already.
+  }
 }
 
 /**

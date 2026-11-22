@@ -332,7 +332,7 @@ describe('defs propose, promote and reject', () => {
       variant: 'tests-first',
       body: 'Too broad.',
     });
-    expect(existsSync(join(w.rootDir, 'variants', 'tests-first'))).toBe(false);
+    expect(existsSync(join(w.rootDir, 'variants'))).toBe(false);
     expect(readFileSync(join(w.rootDir, 'agents', 'claude-engineer.md'), 'utf8')).toBe(ENGINEER);
     expect(w.dawid.variants()).toEqual([]);
   });

@@ -461,7 +461,8 @@ function propose(ctx: DefsCtx, rest: string[]): number {
   ctx.io.out(
     `${res.root}/${res.variant}  ${shortHash(res.proposal.hash)}  proposed on ${res.proposal.task} (${res.events[0]?.id ?? ''})`,
   );
-  ctx.io.out(`  wrote ${relative(ctx.io.cwd, res.dir) || res.dir}`);
+  const rel = relative(ctx.io.cwd, res.dir);
+  ctx.io.out(`  wrote ${rel && !rel.startsWith('..') ? rel : res.dir}`);
   ctx.io.out(
     `  a person promotes it with \`swarmup defs promote ${res.variant}\` or rejects it with \`swarmup defs reject ${res.variant} -m "why"\``,
   );
