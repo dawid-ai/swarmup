@@ -136,6 +136,87 @@ export const CHAT_DENY = [
 /** The CLI every Claude run may call: `swarmup`, and its old name `ops` as an alias until 0.4. */
 export const CLI_TOOLS = ['Bash(swarmup *)', 'Bash(ops *)'];
 
+/**
+ * One MCP server a run gets (W8), as the runtime starts it: always the proxy
+ * `swarmup mcp exec <name> --run-dir <scratch>`, never the real server, so no secret is ever an
+ * argument or in the run record. `env` holds no secret either (only `ELECTRON_RUN_AS_NODE`).
+ */
+export interface McpProxyEntry {
+  name: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/** The MCP servers of one run: the proxy entries, and for Claude the config file that lists them. */
+export interface McpInvocation {
+  entries: McpProxyEntry[];
+  /** Claude: the `--mcp-config` file, `<scratch>/mcp.json`. */
+  configFile?: string;
+  /** `swarmupd.mcp.strict`: every Claude run gets `--strict-mcp-config`, even with no servers. */
+  strict?: boolean;
+}
+
+/**
+ * The proxy entry of each granted server. `cli` is how to start `swarmup`: a program and the
+ * arguments before the command, such as Node and the CLI's entry file.
+ */
+export function mcpProxyEntries(
+  names: readonly string[],
+  runDir: string,
+  cli: { command: string; args: string[]; env?: Record<string, string> },
+): McpProxyEntry[] {
+  return names.map((name) => ({
+    name,
+    command: cli.command,
+    args: [...cli.args, 'mcp', 'exec', name, '--run-dir', runDir],
+    ...(cli.env ? { env: { ...cli.env } } : {}),
+  }));
+}
+
+/** Claude's `--mcp-config` file for the entries. */
+export function claudeMcpJson(entries: readonly McpProxyEntry[]): string {
+  const servers = Object.fromEntries(
+    entries.map((e) => [
+      e.name,
+      { type: 'stdio', command: e.command, args: e.args, ...(e.env ? { env: e.env } : {}) },
+    ]),
+  );
+  return `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
+}
+
+/**
+ * A TOML string for a Codex `-c` value. A literal string ('...') where it can be one: it keeps
+ * Windows backslashes as they are and has no `"`, which cannot reach a `.cmd` runtime (see
+ * `quoteBatch`). Text with `'` or a line break falls back to a basic string.
+ */
+export function tomlString(s: string): string {
+  if (!/['\r\n]/.test(s)) return `'${s}'`;
+  return JSON.stringify(s);
+}
+
+/** Codex's `-c mcp_servers.<name>.*` overrides for the entries (checked on Codex 0.167). */
+export function codexMcpArgs(entries: readonly McpProxyEntry[]): string[] {
+  return entries.flatMap((e) => {
+    const at = `mcp_servers.${e.name}`;
+    const env = e.env
+      ? [
+          '-c',
+          `${at}.env={${Object.entries(e.env)
+            .map(([k, v]) => `${k}=${tomlString(v)}`)
+            .join(',')}}`,
+        ]
+      : [];
+    return [
+      '-c',
+      `${at}.command=${tomlString(e.command)}`,
+      '-c',
+      `${at}.args=[${e.args.map(tomlString).join(',')}]`,
+      ...env,
+    ];
+  });
+}
+
 /** A Claude chat turn: the session it starts or resumes, with replies streamed as they come. */
 export interface ChatInvocation {
   session: string;
@@ -340,6 +421,7 @@ export function invocation(
   gitDirs: string[] = [],
   scratch?: string,
   fullAccess = false,
+  mcp?: McpInvocation,
 ): Invocation {
   const runtime = runtimeOf(agentId);
   const model = runModel(rc, agent);
@@ -360,6 +442,7 @@ export function invocation(
     fullAccess,
     model,
     effort,
+    mcp,
   );
   // Only Claude and Codex runs get the flags; other runtimes' `args` are the whole line.
   if (runtime !== 'claude' && runtime !== 'codex') return inv;
@@ -382,9 +465,11 @@ function invocationArgs(
   fullAccess: boolean,
   model: string | undefined,
   effort: string | undefined,
+  mcp: McpInvocation | undefined,
 ): Invocation {
   const runtime = runtimeOf(agentId);
   const base = rc.args ?? [];
+  const mcpEntries = mcp?.entries ?? [];
   const unsetEnv = rc.unset_env ?? [];
   if (runtime === 'claude') {
     const own = agent?.tools ?? (chat ? CHAT_TOOLS : DEFAULT_CLAUDE_TOOLS);
@@ -410,6 +495,8 @@ function invocationArgs(
       ...scratchOnly.allow,
       ...(chat ? CHAT_READ_TOOLS : []),
       ...CLI_TOOLS,
+      // Every tool of each granted server; the proxy filters them by the server's tool rules.
+      ...mcpEntries.map((e) => `mcp__${e.name}`),
     ];
     const roleFileDeny = roleDirs.flatMap((dir) => {
       const pattern = claudeAbsolutePattern(dir);
@@ -429,6 +516,12 @@ function invocationArgs(
         '--verbose',
         ...(model ? ['--model', model] : []),
         ...(effort ? ['--effort', effort] : []),
+        // `--mcp-config` takes several values, so a flag follows it.
+        ...(mcpEntries.length > 0 && mcp?.configFile
+          ? ['--mcp-config', mcp.configFile, '--strict-mcp-config']
+          : mcp?.strict
+            ? ['--strict-mcp-config']
+            : []),
         ...session,
         '--allowedTools',
         [...new Set(tools)].join(','),
@@ -453,6 +546,7 @@ function invocationArgs(
       'exec',
       ...(model ? ['-m', model] : []),
       ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []),
+      ...codexMcpArgs(mcpEntries),
       '--json',
       '--sandbox',
       sandbox,

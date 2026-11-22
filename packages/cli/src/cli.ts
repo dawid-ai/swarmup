@@ -134,6 +134,7 @@ import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { definitionProblemLines, defsCommand, validateCommand } from './defs-cmd.js';
 import { benchCommand } from './bench-cmd.js';
 import { mapCommand } from './map-cmd.js';
+import { mcpCommand } from './mcp-cmd.js';
 import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
 
@@ -2498,6 +2499,7 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   map: mapCommand,
+  mcp: mcpCommand,
   validate: validateCommand,
   defs: defsCommand,
   bench: benchCommand,

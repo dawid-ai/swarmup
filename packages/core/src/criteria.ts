@@ -34,6 +34,8 @@ export const CHECK_NAMES = [
   'contains',
   'heading-structure',
   'front-matter',
+  'image-alt',
+  'image-size',
 ] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
 
@@ -193,6 +195,20 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
       if (args.separator !== undefined && typeof args.separator !== 'string') {
         bad(`${where}: args.separator must be text`);
       }
+      num('urls_as');
+      break;
+    case 'image-alt':
+      need('path');
+      break;
+    case 'image-size':
+      need('path');
+      for (const f of ['width', 'height']) {
+        const v = args[f];
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+          bad(`${where}: check image-size needs args.${f}, a whole number of pixels`);
+        }
+      }
+      num('max_kb');
       break;
     case 'contains':
       need('path');
@@ -808,6 +824,113 @@ function codePoints(text: string): number {
   return [...text].length;
 }
 
+/** An http(s) URL in text, without the punctuation that ends a sentence after it. */
+const TEXT_URL_RE = /\bhttps?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'*_]/gi;
+
+/**
+ * The characters of `text`, with each http(s) URL counted as `urlsAs` when set: X counts every
+ * link as 23, however long it is.
+ */
+export function countChars(text: string, urlsAs?: number): number {
+  if (urlsAs === undefined) return codePoints(text);
+  let urls = 0;
+  const rest = text.replace(TEXT_URL_RE, () => {
+    urls++;
+    return '';
+  });
+  return codePoints(rest) + urls * urlsAs;
+}
+
+/** The text outside fenced code blocks, with each code line blanked so line numbers stay. */
+function withoutFences(text: string): string {
+  let fence: string | null = null;
+  return text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (!fence) fence = f[1]![0]!;
+        else if (f[1]![0] === fence) fence = null;
+        return '';
+      }
+      return fence ? '' : line;
+    })
+    .join('\n');
+}
+
+/** An image of a Markdown or HTML file: its alt text (null when it has none) and its line. */
+export interface ImageRef {
+  src: string;
+  alt: string | null;
+  line: number;
+}
+
+/**
+ * The images of a Markdown or HTML file, outside fenced code: `![alt](src)`, `![alt][ref]` and
+ * `<img>`.
+ */
+export function imageRefs(text: string): ImageRef[] {
+  const src = withoutFences(text);
+  const lineAt = (i: number): number => src.slice(0, i).split('\n').length;
+  const out: ImageRef[] = [];
+  for (const m of src.matchAll(/!\[([^\]]*)\]\(\s*<?([^)\s>]*)>?(?:\s+["'][^)]*["'])?\s*\)/g)) {
+    out.push({ src: m[2]!, alt: m[1]!, line: lineAt(m.index) });
+  }
+  for (const m of src.matchAll(/!\[([^\]]*)\]\[([^\]]*)\]/g)) {
+    out.push({ src: m[2] || m[1]!, alt: m[1]!, line: lineAt(m.index) });
+  }
+  for (const m of src.matchAll(/<img\b([^>]*)>/gi)) {
+    const attrs = m[1]!;
+    const alt = /\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(attrs);
+    const at = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(attrs);
+    out.push({
+      src: at ? (at[1] ?? at[2] ?? at[3] ?? '') : '',
+      alt: alt ? (alt[1] ?? alt[2] ?? alt[3] ?? '') : null,
+      line: lineAt(m.index),
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** The pixel size of a PNG or JPEG, read from its header; null for any other file. */
+export function imageDimensions(
+  buf: Buffer,
+): { type: 'png' | 'jpeg'; width: number; height: number } | null {
+  const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (
+    buf.length >= 24 &&
+    PNG.every((b, i) => buf[i] === b) &&
+    buf.toString('latin1', 12, 16) === 'IHDR'
+  ) {
+    return { type: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 4 <= buf.length) {
+    if (buf[i] !== 0xff) return null;
+    const marker = buf[i + 1]!;
+    // A fill byte, or a marker that carries no length.
+    if (marker === 0xff) {
+      i++;
+      continue;
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      i += 2;
+      continue;
+    }
+    const len = buf.readUInt16BE(i + 2);
+    // A start of frame: every SOFn but DHT (C4), JPG (C8) and DAC (CC).
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      if (i + 9 > buf.length) return null;
+      return { type: 'jpeg', height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    }
+    if (len < 2) return null;
+    i += 2 + len;
+  }
+  return null;
+}
+
 /**
  * The parts `char-count` measures: the whole text, each non-empty line, or each block. Blocks
  * are split at lines that equal `separator` (trimmed), else at blank lines.
@@ -918,8 +1041,9 @@ async function checkFile(c: Criterion, path: string, deps: CheckDeps): Promise<F
       const sep = typeof args.separator === 'string' ? args.separator : undefined;
       const min = typeof args.min === 'number' ? args.min : undefined;
       const max = typeof args.max === 'number' ? args.max : undefined;
+      const urlsAs = typeof args.urls_as === 'number' ? args.urls_as : undefined;
       const parts = textParts(withoutFrontMatter(readFile(cwd, path)), per, sep);
-      const counts = parts.map(codePoints);
+      const counts = parts.map((p) => countChars(p, urlsAs));
       const off = counts
         .map((n, i) => ({ n, i }))
         .filter(({ n }) => (min !== undefined && n < min) || (max !== undefined && n > max));
@@ -1023,6 +1147,40 @@ async function checkFile(c: Criterion, path: string, deps: CheckDeps): Promise<F
       return problems.length > 0
         ? { ok: false, what: `${path}: ${problems.join('; ')}` }
         : { ok: true, what: `${path}: front matter holds` };
+    }
+    case 'image-alt': {
+      const images = imageRefs(readFile(cwd, path));
+      const bare = images.filter((im) => !im.alt?.trim());
+      if (bare.length === 0) {
+        return { ok: true, what: `${path}: ${images.length} images, each with alt text` };
+      }
+      const list = bare
+        .slice(0, 10)
+        .map((im) => `line ${im.line} ${im.src || '(no src)'}`)
+        .join(', ');
+      const more = bare.length > 10 ? ` and ${bare.length - 10} more` : '';
+      return {
+        ok: false,
+        what: `${path}: ${bare.length} of ${images.length} images have no alt text (${list}${more})`,
+      };
+    }
+    case 'image-size': {
+      const buf = readFileSync(resolve(cwd, path));
+      const dim = imageDimensions(buf);
+      if (!dim) return { ok: false, what: `${path}: not a PNG or JPEG` };
+      const problems: string[] = [];
+      if (dim.width !== args.width || dim.height !== args.height) {
+        problems.push(
+          `${dim.width}x${dim.height}, wants ${String(args.width)}x${String(args.height)}`,
+        );
+      }
+      const kb = Math.ceil(buf.length / 1024);
+      if (typeof args.max_kb === 'number' && buf.length > args.max_kb * 1024) {
+        problems.push(`${kb} KB, wants at most ${args.max_kb} KB`);
+      }
+      return problems.length > 0
+        ? { ok: false, what: `${path}: ${problems.join('; ')}` }
+        : { ok: true, what: `${path}: ${dim.type} ${dim.width}x${dim.height}, ${kb} KB` };
     }
     case 'links-resolve': {
       const file = resolve(cwd, path);

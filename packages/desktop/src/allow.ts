@@ -55,6 +55,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'bench/(sets|runs)',
     `bench/runs/${SEG}`,
     `bench/runs/${SEG}/attempt`,
+    // Settings > MCP servers (W8): servers, secret names and each agent's servers.
+    'mcp',
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
@@ -62,6 +64,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // Done when and the goal brief: `swarmup criteria`, `criteria check`, `criteria judge` and
     // `brief`.
     `tasks/${SEG}/(criteria|criteria-check|criteria-judge|brief)`,
+    // Mark published (W8): a person records where a publish task's work went live.
+    `tasks/${SEG}/published`,
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,
@@ -92,6 +96,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'improve',
     'bench/(run|compare)',
     `bench/runs/${SEG}/stop`,
+    // Settings > MCP servers (W8). Not resolve: that is for runs, and holds secret values.
+    'mcp/(servers|secrets|strict)',
+    `mcp/servers/${SEG}/delete`,
   ].map((p) => new RegExp(`^/api/${p}$`)),
 };
 

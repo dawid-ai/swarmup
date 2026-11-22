@@ -54,6 +54,7 @@ function loadOpts(ctx: DefsCtx, strict = false) {
     strict,
     machineRuntimes: cfg ? Object.keys(cfg.runtimes) : undefined,
     machineAgents: cfg ? Object.keys(cfg.agents) : undefined,
+    machineMcp: cfg ? Object.keys(cfg.mcp.servers) : undefined,
   };
 }
 

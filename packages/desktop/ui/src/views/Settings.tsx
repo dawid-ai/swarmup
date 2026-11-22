@@ -19,6 +19,7 @@ import {
   Network,
   Pause,
   Play,
+  Plug,
   Plus,
   Power,
   RefreshCw,
@@ -60,6 +61,7 @@ import type {
   VoiceView,
 } from '../types';
 import { DefinitionsPanel } from '../ui/defs';
+import { McpServersPanel } from '../ui/mcp';
 import { ProviderMark } from '../ui/identity';
 import { RoleEditor } from '../ui/roles';
 import { setVoiceView } from '../ui/voice';
@@ -86,6 +88,12 @@ export const SETTINGS_CATEGORIES = [
     label: 'Agents',
     description: 'Providers, role files and agents',
     icon: Users,
+  },
+  {
+    id: 'mcp',
+    label: 'MCP servers',
+    description: 'Servers role files may use, their secrets and what each agent gets',
+    icon: Plug,
   },
   {
     id: 'runs',
@@ -286,6 +294,7 @@ export function Settings({
               <RolesCard data={data} onSaved={reload} />
             </>
           )}
+          {category === 'mcp' && <McpServersPanel />}
           {category === 'definitions' && <DefinitionsPanel />}
           {category === 'cleanup' && data && <CleanupCard data={data} onSaved={reload} />}
           {category === 'updates' && <UpdatesCard />}

@@ -30,6 +30,8 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
   task closes with it); `publishChecks` runs `when: publish` criteria with `{url}`.
 - `artifact-api.ts`: `GET /api/tasks/:id/artifact`, a file at the reviewed commit with its
   merge-base text, or an image as a data URL.
+- The desktop task panel's **Mark published** (on an open `publish` task a person owns) posts
+  to `POST /api/tasks/:id/published`, as `swarmup published` does.
 
 ## Invariants
 

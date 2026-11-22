@@ -21,6 +21,8 @@ export interface ValidateInput {
   texts: Map<string, string>;
   machineRuntimes?: readonly string[];
   machineAgents?: readonly string[];
+  /** MCP servers this machine defines (`swarmupd.mcp.servers`), to check role `mcp` names. */
+  machineMcp?: readonly string[];
   /** Where a key path is in each checked file, by file. */
   locate?: Map<string, Locate>;
   /** The file a path in the store is reported as; a variant reports its overlay files. */
@@ -75,6 +77,21 @@ export function validateDefinitions(input: ValidateInput): DefProblem[] {
           `runtimes.${rt}`,
           'warning',
           `${a.id} runs on ${runtimeOf(a.id)}; this entry never applies`,
+        );
+      }
+    }
+  }
+
+  // A run asks for each server its role file names; one this machine does not define is left out.
+  if (input.machineMcp) {
+    for (const a of input.agents) {
+      for (const name of a.mcp ?? []) {
+        if (input.machineMcp.includes(name)) continue;
+        at(
+          a.file,
+          'mcp',
+          'warning',
+          `this machine defines no MCP server ${name}; add it in Settings > MCP servers, or ${a.id} runs without it`,
         );
       }
     }

@@ -1695,3 +1695,34 @@ export interface ProposalView {
   diffs: Array<{ path: string; kind: 'added' | 'changed' | 'removed'; lines: string[] }>;
   benchmark?: ProposalBenchmark;
 }
+
+/** One MCP server in **Settings > MCP servers** (W8); a secret shows only whether it is set. */
+export interface McpServerView {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string | { secret: string; set: boolean }>;
+  roots: string[];
+  agents: string[];
+  tools: { allow?: string[]; deny?: string[] };
+  publish: boolean;
+}
+
+/** What an agent's role file asks for, and what its runs get in each root. */
+export interface McpAgentView {
+  id: string;
+  asked: string[];
+  missing: string[];
+  granted: Record<string, string[]>;
+}
+
+/** `GET /api/mcp`. Never a secret value. */
+export interface McpView {
+  path: string;
+  secrets_path: string;
+  strict: boolean;
+  servers: McpServerView[];
+  secrets: string[];
+  agents: McpAgentView[];
+  error?: string;
+}

@@ -43,6 +43,15 @@ import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.j
 import { NoArtifact } from './artifact-api.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
+import {
+  deleteMcpServer,
+  McpResolveError,
+  mcpView,
+  resolveMcp,
+  saveMcpServer,
+  setMcpSecret,
+  setMcpStrict,
+} from './mcp-api.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
 import { scorerCatalog, scorerSettings, summarizeScores } from './scores.js';
@@ -310,6 +319,32 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'POST') humanOnly('changing settings');
       if (method === 'POST') applySettings(sup, (body.patch ?? body) as SettingsPatch);
       if (method === 'GET' || method === 'POST') return send(res, 200, settingsView(sup));
+    }
+    // MCP servers on roles (W8). Settings is for the person; resolve is for runs alone, and is the
+    // only answer that holds secret values.
+    if (area === 'mcp') {
+      if (method === 'POST' && id === 'resolve') {
+        try {
+          return send(res, 200, resolveMcp(sup, run, need(body.name, 'name')));
+        } catch (err) {
+          if (err instanceof McpResolveError) throw new HttpError(err.status, err.message);
+          throw err;
+        }
+      }
+      if (method === 'GET' && !id) {
+        humanOnly('reading MCP settings');
+        return send(res, 200, mcpView(sup));
+      }
+      if (method === 'POST') humanOnly('changing MCP servers');
+      if (method === 'POST' && id === 'servers' && !action) {
+        return send(res, 200, saveMcpServer(sup, body));
+      }
+      if (method === 'POST' && id === 'servers' && action && parts[4] === 'delete') {
+        return send(res, 200, deleteMcpServer(sup, action));
+      }
+      if (method === 'POST' && id === 'secrets') return send(res, 200, setMcpSecret(sup, body));
+      if (method === 'POST' && id === 'strict')
+        return send(res, 200, setMcpStrict(sup, body.strict));
     }
     if (area === 'schedules') {
       if (method === 'GET' && !id) return send(res, 200, schedulesView(sup));
@@ -1542,6 +1577,7 @@ async function defsRoute(
         strict: body.strict === true,
         machineRuntimes: Object.keys(machine.runtimes),
         machineAgents: Object.keys(machine.agents),
+        machineMcp: Object.keys(machine.mcp.servers),
       });
       return { ok: set.ok, present: set.present, hash: set.hash, problems: set.problems };
     }

@@ -235,8 +235,8 @@ Any kind may carry `text` as a description. The built-in checks are:
 - `char-count`: the text at `path` has at least `min` and at most `max` characters, counted as
   code points (an emoji is one), front matter left out. `per: file` (default) counts the whole
   text, `per: line` each non-empty line, and `per: block` each block: the parts between lines
-  that hold only `separator` (such as `---`), else between blank lines. A thread for X is
-  `{ per: block, separator: '---', max: 280 }`.
+  that hold only `separator` (such as `---`), else between blank lines. `urls_as: N` counts
+  each `http://` or `https://` link as `N` characters, however long it is: X counts every link as 23. A thread for X is `{ per: block, separator: '---', max: 280, urls_as: 23 }`.
 - `contains`: the text at `path` (front matter left out) holds every string of `text` (one or a
   list), or one of them with `mode: any`; `expect: false` wants none of them, for banned words.
   Case is ignored unless `case-sensitive: true`.
@@ -246,6 +246,11 @@ Any kind may carry `text` as a description. The built-in checks are:
   count.
 - `front-matter`: the YAML front matter at `path` has each of `keys`, and each value in `match`
   (key to pattern) matches its pattern; every item of a list value must match.
+- `image-alt`: every image of the Markdown or HTML at `path` has non-empty alt text: `![alt](src)`,
+  `![alt][ref]` and `<img alt="...">`. Images in fenced code do not count.
+- `image-size`: each PNG or JPEG at `path` is exactly `width` by `height` pixels, read from its
+  header, and with `max_kb` at most that many kilobytes (1 KB is 1,024 bytes). Any other file
+  fails. Social cards are `{ path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }`.
 
 Every `path` takes one path, a list, or globs (`posts/*.md`, `assets/**/*.png`): `*` and `?`
 stay inside one folder and `**` crosses folders. The check runs on every file that matches, and a
@@ -387,7 +392,9 @@ work, not live work: publishing is a separate step that only a person takes. See
 [--artifact PATH]`. It tags the workspace commit (the root's merge base, else `HEAD`, or
   `--commit`) `published/<ID>` (`published/<ID>-2` and up for a later publish at another commit),
   writes the `publish` event, closes a `publish` task, and runs the task's `when: publish`
-  criteria. swarmupd merges nothing for a `publish` task.
+  criteria. swarmupd merges nothing for a `publish` task. In the desktop app, **Mark published**
+  in the task panel of a `publish` task a person owns does the same through
+  `POST /api/tasks/:id/published`, which answers a run token with 403.
 
 ## Milestones and plans
 

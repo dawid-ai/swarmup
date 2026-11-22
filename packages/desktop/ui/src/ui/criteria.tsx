@@ -152,6 +152,7 @@ export const CHECKS: Record<string, ArgField[]> = {
       ],
     },
     { key: 'separator', label: 'Separator', type: 'text', placeholder: '---' },
+    { key: 'urls_as', label: 'Each link counts', type: 'number', placeholder: '23' },
   ],
   contains: [
     pathField('posts/*.md'),
@@ -210,6 +211,13 @@ export const CHECKS: Record<string, ArgField[]> = {
     pathField('posts/*.md'),
     { key: 'keys', label: 'Keys', type: 'list', placeholder: 'channel, status, task' },
     { key: 'match', label: 'Match', type: 'map', placeholder: 'status: ^(draft|approved)$' },
+  ],
+  'image-alt': [pathField('posts/*.md')],
+  'image-size': [
+    pathField('assets/og/*.png'),
+    { key: 'width', label: 'Width', type: 'number', required: true, placeholder: '1200' },
+    { key: 'height', label: 'Height', type: 'number', required: true, placeholder: '630' },
+    { key: 'max_kb', label: 'Max KB', type: 'number', placeholder: '500' },
   ],
   'links-resolve': [
     pathField('docs/index.md'),
