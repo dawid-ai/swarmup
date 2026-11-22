@@ -1,2 +1,0 @@
-- New checks for `done_when`: `image-alt` (every Markdown or HTML image has alt text) and `image-size` (each PNG or JPEG has the given width and height, and with `max_kb` a size limit). `char-count` takes `urls_as: 23` to count each link as X does.
-- **Mark published** in the task panel of a `publish` task you own records the URL, and optionally the file, as `swarmup published` does.

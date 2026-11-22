@@ -1,6 +1,6 @@
 {
   "name": "@swarmup/desktop",
-  "version": "0.3.0-beta.17",
+  "version": "0.3.0-beta.18",
   "private": true,
   "description": "SwarmUp desktop: the Electron control room on top of swarmupd",
   "license": "MIT",

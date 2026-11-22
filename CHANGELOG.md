@@ -6,6 +6,29 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.18 (2026-11-22)
+
+### Added
+
+- New checks for `done_when`: `image-alt` (every Markdown or HTML image has alt text) and `image-size` (each PNG or JPEG has the given width and height, and with `max_kb` a size limit). `char-count` takes `urls_as: 23` to count each link as X does.
+- **Mark published** in the task panel of a `publish` task you own records the URL, and optionally the file, as `swarmup published` does.
+- Content projects: `swarmup new-project --template campaign` (or `content`) starts a campaign or a blog with a brand voice, a claims file, three rubrics, a calendar, a project map, an editor role and first tasks with typed criteria. `--store` keeps the tasks in a folder apart and registers the root, as `swarmup adopt --store` does.
+- New checks for `done_when`: `char-count` (per file, line or block, such as 280 characters per post of a thread), `contains` (all, any, or none for banned words), `heading-structure` and `front-matter`. Every check's `path` now takes globs, and checks each file that matches.
+- `content` and `publish` task types. A `publish` task belongs to a person, and `swarmup published ID --url URL` records a publish: it tags the commit `published/<ID>`, closes the task and runs its `when: publish` criteria.
+- Review artifacts: `swarmup review --artifact PATH|URL` names the work to read (by default, the files the commit changed), `swarmup artifact ID` prints it at the reviewed commit, and the review prompt lists it.
+- The task panel's **Work** section shows the reviewed Markdown at its commit, with a word-level diff against the base and images inline.
+- MCP servers on roles: a role file's `mcp` now gives its runs the servers this machine defines in `swarmupd.mcp.servers` and grants to the project and agent. Secrets live in `secrets.yml` next to the user config and reach only the server's environment, through `swarmup mcp exec`, which also filters tools by allow and deny rules and logs each call's tool name to `mcp.log` in the run's scratch folder. Claude runs get `--mcp-config` and `--strict-mcp-config`; Codex runs get `-c mcp_servers.<name>` overrides. A server marked `publish` is never granted to a role.
+- **Settings > MCP servers** lists, adds, edits and removes servers, sets or replaces secrets without ever showing them, and shows each agent's asked-for and granted servers. `swarmup validate` and `swarmup doctor` warn about role `mcp` names this machine does not define.
+
+### Changed
+
+- A root's `workspace_types` in `config.yml` sets which task types get a task worktree and must be committed before review; it defaults to `task`, `bug` and `feature`, as before.
+- Runs can no longer edit a task store's `rubrics/`, `workflows/` or `triggers/`, next to `agents/` and `variants/`.
+
+### Fixed
+
+- A definition proposal can no longer change an agent's `mcp` servers; like its tools, a person changes them by hand.
+
 ## 0.3.0-beta.17 (2026-11-22)
 
 ### Added

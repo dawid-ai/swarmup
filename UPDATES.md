@@ -3,6 +3,24 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.18 (2026-11-22)
+
+- **Not just code.** Start a campaign or a blog with **New project** and the `campaign` or
+  `content` template: it comes with a brand voice, a claims file every post must cite, rubrics for
+  voice, accuracy and channel fit, a calendar, and an editor that reviews every draft. Drafts are
+  versions you approve; nothing goes live until you post it.
+- **Checks for writing.** A **Done when** item can now check characters per post (280 for an X
+  thread, with links counted as X counts them), required or banned words, the headings a document
+  must have, front matter, image alt text and image size.
+- **See the work, not a commit.** A review lists the files, links and images it covers, and the
+  task panel's **Work** section shows the text as it was reviewed, with word-level changes and
+  images inline.
+- **Publishing stays yours.** A publish task belongs to you. Post it yourself, then use **Mark
+  published** to record the link; checks that need the live page run after that.
+- **Tools for agents, safely.** Give an agent MCP servers (Notion, a CMS, your calendar) in
+  **Settings > MCP servers**. Secrets stay on this PC and never reach the agent, each server can be
+  limited to certain projects, agents and tools, and every tool call is logged.
+
 ## v0.3.0-beta.17 (2026-11-22)
 
 - **A judge for quality checks.** A **Done when** item can be scored against a rubric, such as
