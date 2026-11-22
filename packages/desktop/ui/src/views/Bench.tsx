@@ -550,6 +550,11 @@ function AttemptCard({ a, onOpen }: { a: BenchAttempt; onOpen: (file: 'diff' | '
               </td>
               <td className="px-4 py-1.5">
                 <ResultPill result={c.result} />
+                {c.score !== undefined && (
+                  <span data-score className="ml-1.5 font-mono text-[11px] text-fg-3">
+                    {c.score}
+                  </span>
+                )}
               </td>
             </tr>
           ))}

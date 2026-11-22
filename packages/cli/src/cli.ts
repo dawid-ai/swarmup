@@ -75,6 +75,7 @@ import type {
   MergeStatus,
   ProcView,
   RunRecord,
+  RuntimeConfig,
   SignInState,
   UsageState,
   WaitItem,
@@ -114,6 +115,10 @@ import {
   stopDaemon,
   buildWrapped,
   wrappedText,
+  checkJudge,
+  costText,
+  judgeMessage,
+  judgeTask,
 } from '@swarmup/supervisor';
 import { envVar, reviewSources } from '@swarmup/core';
 import type { ReviewSourceFields } from '@swarmup/core';
@@ -1298,6 +1303,68 @@ async function criteriaCheck(ctx: Ctx, ref: string): Promise<number> {
   return ids.some((id) => results[id]!.result === 'fail') ? 1 : 0;
 }
 
+/**
+ * `swarmup criteria judge ID`: scores the task's `rubric` criteria with the LLM judge of
+ * `swarmupd.judge`, against the diff of `--cwd` (default: here) from its merge base with `--base`
+ * (default: the root's `swarmupd.merge.<root>.base`, else `main`). Prints each result and records
+ * those that gave a score in a `criteria-check` event with `by: judge`, unless `--no-record`.
+ * Exit 1 when one fails or gives no score.
+ */
+async function criteriaJudge(ctx: Ctx, ref: string): Promise<number> {
+  const ws = ctx.ws();
+  const v = ws.view(ref);
+  const rubrics = (v.criteria ?? []).filter((c) => c.kind === 'rubric');
+  if (rubrics.length === 0) {
+    ctx.io.out(`${v.meta.id} has no rubric criteria`);
+    return 0;
+  }
+  const cwd = resolve(ctx.io.cwd, str(ctx.opts.cwd) ?? '.');
+  const user = readUserConfig(ctx.io.env);
+  const section = daemonSection(user) ?? {};
+  const config = checkJudge(section.judge);
+  const merge = (section.merge ?? {}) as Record<string, { base?: unknown } | undefined>;
+  const { root } = ws.resolve(ref);
+  const configured = merge[root.name]?.base;
+  const base = str(ctx.opts.base) ?? (typeof configured === 'string' ? configured : 'main');
+  const { meta, body } = ws.showEvents(ref);
+  const runtimes = section.runtimes;
+  const j = await judgeTask({
+    criteria: rubrics,
+    cwd,
+    base,
+    storeDir: root.dir,
+    task: `# ${meta.title}\n\n${body}`.trim(),
+    config,
+    env: ctx.io.env,
+    ...(runtimes && typeof runtimes === 'object' && !Array.isArray(runtimes)
+      ? { runtimes: runtimes as Record<string, RuntimeConfig> }
+      : {}),
+    onStart: (id) => ctx.io.err(`judging ${id} with ${config.runtime}...`),
+  });
+  if (ctx.opts.json) {
+    ctx.io.out(
+      JSON.stringify({ results: j.results, errors: j.errors, costUsd: j.costUsd }, null, 2),
+    );
+  } else {
+    const ids = Object.keys(j.outcomes);
+    const idW = Math.max(...ids.map((id) => id.length));
+    for (const id of ids) {
+      const r = j.results[id];
+      if (r) {
+        ctx.io.out(
+          `${pad(id, idW)}  ${pad(r.result, 4)}  score ${r.score}  ${(r.note ?? '').split('\n')[0]}`,
+        );
+      } else ctx.io.out(`${pad(id, idW)}  none  the judge failed: ${j.errors[id]}`);
+    }
+    const cost = costText(j.costUsd);
+    if (cost) ctx.io.out(`judge cost ${cost}`);
+  }
+  if (Object.keys(j.results).length > 0 && !ctx.opts['no-record']) {
+    ws.recordCriteriaCheck(ref, j.results, judgeMessage(j, base, config), 'judge');
+  }
+  return j.failed.length > 0 || Object.keys(j.errors).length > 0 ? 1 : 0;
+}
+
 const COMMANDS: Record<string, Command> = {
   setup: {
     usage: 'setup [--me human:NAME] [--root DIR]...',
@@ -1828,18 +1895,20 @@ const COMMANDS: Record<string, Command> = {
   },
   criteria: {
     usage:
-      'criteria ID [--set-file F|-] [--add CRITERION|{YAML}]... [-m MESSAGE] | criteria check ID [--cwd DIR] [--no-record]',
+      'criteria ID [--set-file F|-] [--add CRITERION|{YAML}]... [-m MESSAGE] | criteria check ID [--cwd DIR] [--no-record] | criteria judge ID [--cwd DIR] [--base REF] [--no-record]',
     summary:
-      "print a task's criteria and their last results; --set-file replaces the list (YAML or JSON) and --add appends to it, as a `criteria` event; `check` runs the command and check criteria in --cwd (default: here) and records the results",
+      "print a task's criteria and their last results; --set-file replaces the list (YAML or JSON) and --add appends to it, as a `criteria` event; `check` runs the command and check criteria in --cwd (default: here) and records the results; `judge` scores the rubric criteria with an LLM judge (spends tokens) against the diff of --cwd from its merge base with --base and records them",
     options: {
       'set-file': { type: 'string' },
       add: { type: 'string', multiple: true },
       cwd: { type: 'string' },
+      base: { type: 'string' },
       'no-record': { type: 'boolean' },
       message: { type: 'string', short: 'm' },
     },
     run: async (ctx) => {
       if (ctx.args[0] === 'check') return criteriaCheck(ctx, arg(ctx, 1, 'task id'));
+      if (ctx.args[0] === 'judge') return criteriaJudge(ctx, arg(ctx, 1, 'task id'));
       const ref = arg(ctx, 0, 'task id');
       const file = str(ctx.opts['set-file']);
       const add = texts(ctx.opts.add);

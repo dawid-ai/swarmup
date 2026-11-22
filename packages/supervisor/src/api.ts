@@ -54,6 +54,7 @@ import { liveRunsEndMessage } from './supervisor.js';
 import type { Supervisor } from './supervisor.js';
 import { CommandRunner } from './merge.js';
 import { briefDetail, CriteriaChecks } from './task-criteria.js';
+import { CriteriaJudges, judgeMessage, judgeTask } from './judge.js';
 
 export interface ApiOptions {
   port: number;
@@ -184,6 +185,34 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     },
     record: (task, by, results, message) => {
       const done = sup.ws(by).recordCriteriaCheck(task, results, message);
+      checkTasks();
+      return done.events.at(-1)?.id ?? '';
+    },
+  });
+  // The app's **Judge**: `swarmup criteria judge` in swarmupd, one run per task at a time.
+  const criteriaJudges = new CriteriaJudges({
+    judge: async (job, criteria, on) => {
+      const ws = sup.ws(job.by);
+      const { meta, body } = ws.showEvents(job.task);
+      const root = ws.resolve(job.task).root;
+      const base = sup.config.merge[root.name]?.base ?? 'main';
+      const j = await judgeTask({
+        criteria,
+        cwd: job.cwd,
+        base,
+        storeDir: root.dir,
+        task: `# ${meta.title}\n\n${body}`.trim(),
+        config: sup.config.judge,
+        env: sup.commandEnv(),
+        runtimes: sup.config.runtimes,
+        ...(sup.judgeRunner ? { runner: sup.judgeRunner } : {}),
+        onStart: on.start,
+        onResult: on.result,
+      });
+      return { ...j, message: judgeMessage(j, base, sup.config.judge) };
+    },
+    record: (task, by, results, message) => {
+      const done = sup.ws(by).recordCriteriaCheck(task, results, message, 'judge');
       checkTasks();
       return done.events.at(-1)?.id ?? '';
     },
@@ -604,6 +633,26 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
             throw new HttpError(409, `the code of ${task} is in no git checkout on this PC`);
           try {
             const { job } = criteriaChecks.start(task, ws.actor, cwd, v.criteria ?? []);
+            return send(res, 202, { job });
+          } catch (err) {
+            throw new HttpError(409, (err as Error).message);
+          }
+        }
+      }
+      // **Judge**: `swarmup criteria judge ID` against the task's worktree, in the background.
+      if (action === 'criteria-judge') {
+        const v = ws.view(ref);
+        const task = `${v.root}/${v.meta.id}`;
+        if (method === 'GET') return send(res, 200, { job: criteriaJudges.get(task) });
+        if (method === 'POST') {
+          // It spends tokens on the person's account.
+          humanOnly('judging rubric criteria');
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const cwd = await sup.criteriaDir(ref);
+          if (!cwd)
+            throw new HttpError(409, `the code of ${task} is in no git checkout on this PC`);
+          try {
+            const { job } = criteriaJudges.start(task, ws.actor, cwd, v.criteria ?? []);
             return send(res, 202, { job });
           } catch (err) {
             throw new HttpError(409, (err as Error).message);

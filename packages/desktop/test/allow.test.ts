@@ -41,6 +41,8 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/criteria')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/criteria-check')).toBe(true);
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/criteria-check')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/criteria-judge')).toBe(true);
+    expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/criteria-judge')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/brief')).toBe(true);
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/brief')).toBe(false);
     expect(allowedCall('GET', '/api/scores?task=demo%2FAO-0001')).toBe(true);

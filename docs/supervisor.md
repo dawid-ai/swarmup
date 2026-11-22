@@ -1020,6 +1020,12 @@ swarmupd:
   bench: # benchmarks the desktop app lists, beyond each root's .swarmup/benchmarks/ (docs/benchmarks.md)
     sets: ['C:\work\benchmarks\tally.yaml'] # set files, or folders of them
     results: ['C:\work\bench-results'] # more folders of run folders, beyond <state>/bench/
+  judge: # the LLM judge of rubric criteria (docs/protocol.md#rubric-files)
+    runtime: claude # or codex
+    model: sonnet # default: sonnet for Claude, the runtime's own model for Codex
+    effort: low
+    budget_min: 5 # minutes one judgment may take before swarmupd stops it
+    at_merge: false # true: judge rubric criteria at merge; spends tokens on every merge that has one
 ```
 
 - **Wake:** each tick, swarmupd carries out the wake plan (see "Limits"): one run per review request,
@@ -1236,6 +1242,13 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Rubric criteria.** With `swarmupd.judge.at_merge: true`, after the task's `command` and
+  `check` criteria pass, swarmupd judges its `rubric` criteria against the diff of the rebased
+  work from the base, with the judge of `swarmupd.judge`. A score below a criterion's `pass` sends
+  the task back like a failed check; the results land on the `merge` event or the send-back. A
+  judgment that gives no score (a timeout, a signed-out runtime, an answer it cannot read) is `na`
+  with why, and the merge goes on. A task with rubric criteria to judge merges alone. Off by
+  default: each judgment spends tokens.
 - **Project map.** A repo with a project map (`.swarmup/map/`, see [map.md](map.md)) can gate
   merges on it with a plain check entry, `swarmup map check --base <base>` (for this example,
   `--base v2`): it fails when the work changes a path no node covers, breaks a link or leaves
@@ -1582,6 +1595,7 @@ restart or another human-only action, use `swarmup ask`.
 | `POST /api/tasks/:id/criteria`                               | what `swarmup criteria ID --set-file` does: `done_when` is the whole new list (text or typed criteria), or with `add: true` the entries to append; a `criteria` event under the same permission rules. The `verdict` action takes `criteria` (results by id) and `force: true`, as `--force`                                                                                                                                                                                                                                                                                                             |
 | `POST /api/tasks/:id/brief`                                  | what `swarmup brief ID --body-file -` does: `message` is the new brief (Markdown)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `POST`, `GET /api/tasks/:id/criteria-check`                  | `POST` (a person only) starts `swarmup criteria check` for the `command` and `check` criteria in the task worktree, else the code checkout, in the background, and answers 202 with the run; `GET` reads the running or last run (`ids`, `current`, `results`, `endedAt`, `error`, `event`). The results land in one `criteria-check` event. 409 while one runs or with nothing to run                                                                                                                                                                                                                   |
+| `POST`, `GET /api/tasks/:id/criteria-judge`                  | `POST` (a person only) starts `swarmup criteria judge` for the `rubric` criteria against the task worktree, else the code checkout, and the root's merge base, in the background, and answers 202 with the run; `GET` reads the running or last run, as for `criteria-check`, with `costUsd`. The results that gave a score land in one `criteria-check` event with `by: judge`. 409 while one runs or with nothing to judge                                                                                                                                                                             |
 | `GET /api/milestones`                                        | each live milestone that has a plan: `total`, `done` and `parked` items, `minutes` estimated and `spent`, and the `pending` plan's item count and estimate                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `GET /api/agents`, `GET /api/inbox`                          | agents (role files and the swarmupd config) with `wake` and a live run, the actor's inbox                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `GET /api/decisions?log`, `POST /api/decisions`              | the decision log (`all`, `project` and `task` filter it), and a new record with `text`, `root`, `scope`, `supersedes`, `narrows`; `decision` on a task `comment`, `answer`, `verdict`, `retype` or `park` marks one                                                                                                                                                                                                                                                                                                                                                                                      |

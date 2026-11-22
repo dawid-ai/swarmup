@@ -37,3 +37,4 @@ export * from './orientation.js';
 export * from './score-keeper.js';
 export * from './score-history.js';
 export * from './task-criteria.js';
+export * from './judge.js';

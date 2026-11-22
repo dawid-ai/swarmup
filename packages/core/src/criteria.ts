@@ -14,7 +14,9 @@ import type { OpsEvent, TaskMeta } from './model.js';
  * - `prose`: free text a reviewer judges by reading the work (every plain string).
  * - `command`: a command swarmupd runs at merge in its worktree; a reviewer never runs it.
  * - `check`: a deterministic built-in check (`CHECK_NAMES`), no model.
- * - `rubric`: a model judges the work against a rubric file; stored and shown, runner later.
+ * - `rubric`: a model judges the work against a rubric file (`rubric.ts`, the supervisor's
+ *   `judge.ts`): `swarmup criteria judge`, a bench run with `--judge`, or the merge when
+ *   `swarmupd.judge.at_merge` is on; otherwise the reviewer gives it a score.
  * - `human`: a person answers this specific question.
  * - `map`: the project map covers the change (`swarmup map check`, where the build has it).
  */
@@ -84,6 +86,8 @@ export interface CriterionLast extends CriterionVerdict {
   at: string;
   /** The type of the event: `verdict`, `criteria-check` or `merge`. */
   type: string;
+  /** `judge` when an LLM judge recorded it (a `criteria-check` event's `by`). */
+  by?: string;
 }
 
 const ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -366,7 +370,14 @@ export function foldCriteria(
     if (e.type !== 'verdict' && e.type !== 'criteria-check' && e.type !== 'merge') continue;
     for (const [id, r] of Object.entries(e.criteria)) {
       if (!r || !(CRITERION_RESULTS as readonly string[]).includes(r.result)) continue;
-      results[id] = { ...r, event: e.id, actor: e.actor, at: e.at, type: e.type };
+      results[id] = {
+        ...r,
+        event: e.id,
+        actor: e.actor,
+        at: e.at,
+        type: e.type,
+        ...(e.by ? { by: e.by } : {}),
+      };
     }
   }
   if (criteria.length === 0 && Object.keys(results).length === 0) return undefined;

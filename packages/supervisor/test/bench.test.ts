@@ -98,6 +98,7 @@ describe('evaluateAttempt', () => {
       passRate: 0.75,
       hidden: { total: 2, passed: 1 },
       pending: 3,
+      judged: 0,
     });
   });
 

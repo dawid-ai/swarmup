@@ -26,7 +26,8 @@ tray icon that starts and stops swarmupd.
 - `src/main.ts` is the Electron main process: one window loading `ui/index.html` with
   `contextIsolation` and `preload.cts`, the tray, and swarmupd started from the app's files.
 - `allow.ts` is the allowlist of API calls the page may make through the main process; a new
-  swarmupd endpoint the UI calls (criteria, brief, scores, map, defs, bench) needs a line here.
+  swarmupd endpoint the UI calls (criteria, criteria check and judge, brief, scores, map, defs,
+  bench) needs a line here.
 - `service.ts` (tray, background service), `updates.ts` (Manual or Auto updates from GitHub
   Releases via `electron-updater`), `add-project.ts`, `voice.ts`, `models.ts`, and the save
   helpers (`images.ts`, `gifs.ts`, `videos.ts`) are pure modules, tested without Electron.

@@ -24,7 +24,8 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
 - Read paths: `list`, `showEvents`, `inbox`, `next`, `kb`, `taskNotes` (learn notes for a run's
   prompt), `decisionLog`, `search`.
 - `recordRun` writes swarmupd's `run-start` and `run-end` events, with the resumed `session`
-  and the `defs` stamp.
+  and the `defs` stamp. `recordCriteriaCheck` writes a `criteria-check` event, with `by: judge`
+  for an LLM judge's results.
 - `review-source.ts` reads where approved work is (commit and branch) from a review event or its
   text, for the merge.
 - `brief.ts` folds the newest `brief` event of a parent task, the goal brief `swarmup brief`

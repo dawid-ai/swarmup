@@ -47,7 +47,9 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
   `/api/bench/*` live in `defs-import.ts` and `bench-runs.ts` (see `core/defs` and `bench`);
   `swarmupd.bench` names extra benchmark sets and results folders.
 - `task-criteria.ts` backs the task panel: a task's brief with its children, and **Run checks**
-  (`swarmup criteria check` in the background, one run per task).
+  (`swarmup criteria check` in the background, one run per task). **Judge**
+  (`/api/tasks/:id/criteria-judge`) is `CriteriaJudges` in `judge.ts`; `swarmupd.judge` configures
+  the LLM judge (see `/judge`).
 - `doctor.ts` checks config, roots, CLIs and sign-ins; `notify.ts` posts to a webhook URL.
 
 ## Invariants

@@ -18,13 +18,15 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   BenchCriterion,
   BenchEntry,
   BenchSet,
   CheckDeps,
   CriterionVerdict,
+  Rubric,
 } from '@swarmup/core';
 import {
   BENCH_BASE_TOKEN,
@@ -34,12 +36,25 @@ import {
   checkBenchAgent,
   criterionWhat,
   deleteEnvVars,
+  envVar,
   OpsError,
+  parseRubric,
+  readBenchSet,
+  readRubric,
   runCriteria,
   runtimeOf,
 } from '@swarmup/core';
-import type { RuntimeConfig } from './config.js';
+import type { JudgeConfig, RuntimeConfig } from './config.js';
 import { DEFAULT_RUNTIMES } from './config.js';
+import type { JudgeRunner } from './judge.js';
+import {
+  costText,
+  judgeCost,
+  judgeCriteria,
+  judgeFailed,
+  judgeModel,
+  judgeVerdict,
+} from './judge.js';
 import { logOrientation } from './orientation.js';
 import { killTree, quoteBatch, resolveCommand } from './proc.js';
 import { dropEnv, runEnv } from './runenv.js';
@@ -83,6 +98,11 @@ export interface BenchCriterionResult {
   hidden?: boolean;
   what: string;
   result: BenchResult;
+  /** A judged `rubric` criterion: the weighted score as 0..1. */
+  score?: number;
+  /** A `rubric` criterion: its rubric file and the score that passes. */
+  rubric?: string;
+  pass?: number;
   evidence?: string;
   note?: string;
 }
@@ -106,14 +126,25 @@ export interface AttemptMetrics {
 }
 
 export interface AttemptScore {
-  /** `command` and `check` criteria, hidden ones included. */
+  /** `command` and `check` criteria, hidden ones included, and judged `rubric` criteria. */
   checkable: number;
   passed: number;
   /** passed / checkable, or null without checkable criteria. */
   passRate: number | null;
   hidden: { total: number; passed: number };
-  /** Prose, rubric and human criteria, left for a judge. */
+  /** Prose, rubric and human criteria still left for a judge or a person. */
   pending: number;
+  /** `rubric` criteria a judge scored (`--judge`, `swarmup bench judge`). */
+  judged?: number;
+}
+
+/** What judging an attempt's `rubric` criteria cost, and who judged them. */
+export interface AttemptJudge {
+  runtime: string;
+  model: string | null;
+  /** Every judgment of the attempt so far; null when the runtime reports no cost. */
+  costUsd: number | null;
+  at: string;
 }
 
 /** One attempt's `results.json`. */
@@ -139,6 +170,8 @@ export interface AttemptResult {
   diff: { files: number; insertions: number; deletions: number };
   criteria: BenchCriterionResult[];
   score: AttemptScore;
+  /** Set once a judge scored its `rubric` criteria. */
+  judge?: AttemptJudge;
   /** The attempt's folder: `agent.log`, `diff.patch`, `results.json`, and the worktree when kept. */
   dir: string;
 }
@@ -151,6 +184,10 @@ export interface EntrySummary {
   /** Attempts whose hidden criteria all passed, of attempts; null for an entry with none. */
   hiddenPass: { passed: number; attempts: number } | null;
   pending: number;
+  /** Judged `rubric` results over the entry's attempts. */
+  judged?: number;
+  /** What judging the entry's attempts cost in all; null when nothing reported a cost. */
+  judgeCostUsd?: number | null;
   /** Mean per attempt. */
   costUsd: number | null;
   wallMs: number | null;
@@ -169,11 +206,17 @@ export interface SummaryOverall {
   costPerAttempt: number | null;
   wallMs: number | null;
   toolCallsBeforeEdit: number | null;
+  /** Judged `rubric` results in the run. */
+  judged?: number | null;
+  /** What judging cost in all, apart from `costUsd`, the agents' cost. */
+  judgeCostUsd?: number | null;
 }
 
 /** A run's `summary.json`. */
 export interface BenchSummary {
   set: string;
+  /** The set file, so `swarmup bench judge` finds the entries again. */
+  setFile?: string;
   mode: BenchMode;
   agent: string;
   model?: string;
@@ -182,6 +225,8 @@ export interface BenchSummary {
   out: string;
   startedAt: string;
   finishedAt: string;
+  /** The judge of the run's `rubric` criteria, and when it last judged. */
+  judge?: { runtime: string; model: string | null; at: string };
   entries: EntrySummary[];
   overall: SummaryOverall;
 }
@@ -550,10 +595,20 @@ export async function evaluateAttempt(
       ...(c.hidden ? { hidden: true } : {}),
       what: criterionWhat(c),
       result: v.result,
+      ...rubricOf(c),
       ...('evidence' in v && v.evidence ? { evidence: v.evidence } : {}),
       ...(v.note ? { note: v.note } : {}),
     };
   });
+}
+
+/** The rubric file and pass of a `rubric` criterion, for its result. */
+function rubricOf(c: BenchCriterion): Pick<BenchCriterionResult, 'rubric' | 'pass'> {
+  if (c.kind !== 'rubric') return {};
+  return {
+    ...(c.rubric ? { rubric: c.rubric } : {}),
+    ...(c.pass !== undefined ? { pass: c.pass } : {}),
+  };
 }
 
 async function runHidden(
@@ -582,9 +637,19 @@ async function runHidden(
   }
 }
 
-/** The score of an attempt's criteria. */
+/** Whether a result is a `rubric` criterion a judge scored. */
+function judgedRubric(r: BenchCriterionResult): boolean {
+  return r.kind === 'rubric' && (r.result === 'pass' || r.result === 'fail');
+}
+
+/**
+ * The score of an attempt's criteria. The pass rate counts `command` and `check` criteria, hidden
+ * ones included, and the `rubric` criteria a judge scored; pending ones stay out of it.
+ */
 export function scoreAttempt(results: readonly BenchCriterionResult[]): AttemptScore {
-  const checkable = results.filter((r) => benchCheckable(r as { kind: BenchCriterion['kind'] }));
+  const checkable = results.filter(
+    (r) => benchCheckable(r as { kind: BenchCriterion['kind'] }) || judgedRubric(r),
+  );
   const hidden = checkable.filter((r) => r.hidden);
   const passed = checkable.filter((r) => r.result === 'pass').length;
   return {
@@ -593,6 +658,7 @@ export function scoreAttempt(results: readonly BenchCriterionResult[]): AttemptS
     passRate: checkable.length > 0 ? passed / checkable.length : null,
     hidden: { total: hidden.length, passed: hidden.filter((r) => r.result === 'pass').length },
     pending: results.filter((r) => r.result === 'pending').length,
+    judged: results.filter(judgedRubric).length,
   };
 }
 
@@ -627,6 +693,8 @@ export function summarizeEntries(attempts: readonly AttemptResult[]): EntrySumma
             }
           : null,
       pending: list[0]!.score.pending,
+      judged: list.reduce((n, a) => n + (a.score.judged ?? 0), 0),
+      judgeCostUsd: sum(list.map((a) => a.judge?.costUsd)),
       costUsd: mean(list.map((a) => a.metrics.costUsd)),
       wallMs: mean(list.map((a) => a.run.wallMs)),
       toolCallsBeforeEdit: mean(list.map((a) => a.metrics.toolCallsBeforeEdit)),
@@ -658,6 +726,8 @@ export function overallOf(entries: readonly EntrySummary[]): SummaryOverall {
     costPerAttempt: weighted((e) => e.costUsd),
     wallMs: weighted((e) => e.wallMs),
     toolCallsBeforeEdit: weighted((e) => e.toolCallsBeforeEdit),
+    judged: entries.reduce((n, e) => n + (e.judged ?? 0), 0),
+    judgeCostUsd: sum(entries.map((e) => e.judgeCostUsd)),
   };
 }
 
@@ -680,9 +750,12 @@ export function summaryMarkdown(s: BenchSummary): string {
     `- Mode: ${s.mode}`,
     `- Repo: \`${s.repo}\``,
     `- Started: ${s.startedAt}; finished: ${s.finishedAt}`,
+    ...(s.judge
+      ? [`- Judge: ${[s.judge.runtime, s.judge.model].filter(Boolean).join(', ')}; ${s.judge.at}`]
+      : []),
     '',
-    '| Entry | Attempts | Pass rate | Hidden pass | Pending | Cost | Time | Tools before edit |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Entry | Attempts | Pass rate | Hidden pass | Pending | Judged | Cost | Judge cost | Time | Tools before edit |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
   ];
   for (const e of s.entries) {
     const flags = [
@@ -694,16 +767,17 @@ export function summaryMarkdown(s: BenchSummary): string {
     lines.push(
       `| ${e.entry}${flags ? ` (${flags})` : ''} | ${e.attempts} | ${pct(e.passRate)} | ${
         e.hiddenPass ? `${e.hiddenPass.passed}/${e.hiddenPass.attempts}` : '-'
-      } | ${e.pending} | ${usd(e.costUsd)} | ${dur(e.wallMs)} | ${num(e.toolCallsBeforeEdit)} |`,
+      } | ${e.pending} | ${e.judged ?? 0} | ${usd(e.costUsd)} | ${usd(e.judgeCostUsd ?? null)} | ${dur(e.wallMs)} | ${num(e.toolCallsBeforeEdit)} |`,
     );
   }
   const o = s.overall;
   lines.push(
-    `| **All** | ${o.attempts} | ${pct(o.passRate)} | ${pct(o.hiddenPassRate)} | | ${usd(o.costUsd)} total, ${usd(o.costPerAttempt)} each | ${dur(o.wallMs)} | ${num(o.toolCallsBeforeEdit)} |`,
+    `| **All** | ${o.attempts} | ${pct(o.passRate)} | ${pct(o.hiddenPassRate)} | | ${o.judged ?? 0} | ${usd(o.costUsd)} total, ${usd(o.costPerAttempt)} each | ${usd(o.judgeCostUsd ?? null)} | ${dur(o.wallMs)} | ${num(o.toolCallsBeforeEdit)} |`,
     '',
-    'Pass rate counts `command` and `check` criteria, hidden ones included. Pending criteria',
-    '(prose, rubric, human) wait for a judge. Cost, time and tools before the first edit are means',
-    'per attempt.',
+    'Pass rate counts `command` and `check` criteria, hidden ones included, and the `rubric`',
+    'criteria a judge scored. Pending criteria (prose, human, and rubric not judged yet) wait for',
+    'a judge or a person. Judged counts rubric results over all attempts, and judge cost is their',
+    'total. Cost, time and tools before the first edit are means per attempt.',
     '',
   );
   return lines.join('\n');
@@ -757,10 +831,9 @@ export function compareSummaries(a: BenchSummary, b: BenchSummary): Comparison {
     overall: {
       a: oa,
       b: ob,
-      delta: Object.fromEntries(keys.map((k) => [k, delta(oa[k], ob[k])])) as Record<
-        keyof SummaryOverall,
-        number | null
-      >,
+      delta: Object.fromEntries(
+        keys.map((k) => [k, delta(oa[k] ?? null, ob[k] ?? null)]),
+      ) as Record<keyof SummaryOverall, number | null>,
     },
   };
 }
@@ -869,8 +942,19 @@ export interface BenchRunOptions {
   log: (line: string) => void;
   /** Runs one command criterion; tests replace it. */
   runCommand?: CheckDeps['runCommand'];
+  /** Judges each attempt's `rubric` criteria after its checks (`--judge`). */
+  judge?: BenchJudge;
   /** The clock, for tests. */
   now?: () => Date;
+}
+
+/** The judge of a bench run's `rubric` criteria. */
+export interface BenchJudge {
+  config: JudgeConfig;
+  /** Runs one judge process; tests replace it. */
+  runner?: JudgeRunner;
+  /** The machine's runtimes, for the judge's command and `unset_env`. */
+  runtimes?: Record<string, RuntimeConfig>;
 }
 
 /** One attempt of the plan. */
@@ -1045,6 +1129,7 @@ export function planLines(plan: ReturnType<typeof planBench>, opts: BenchRunOpti
       `  ${a.entry.id} #${a.attempt}: base ${a.baseSha.slice(0, 12)}, ${how}; criteria ${counts}`,
     );
   }
+  if (opts.judge) lines.push(judgeLine(opts.judge, opts.runtimes));
   const cmd = plan.attempts.find((a) => a.command)?.command;
   if (cmd)
     lines.push(
@@ -1170,6 +1255,20 @@ export async function runAttempt(
       ...(ctx.hiddenDir ? { hiddenDir: ctx.hiddenDir } : {}),
       ...(opts.runCommand ? { runCommand: opts.runCommand } : {}),
     });
+    if (opts.judge) {
+      try {
+        await judgeAttempt(result, a.entry, {
+          set: opts.set,
+          repo: ctx.repo,
+          cwd: wt,
+          judge: opts.judge,
+          env: opts.env ?? process.env,
+          now,
+        });
+      } catch (err) {
+        opts.log(`${a.entry.id} #${a.attempt}: the judge failed: ${(err as Error).message}`);
+      }
+    }
     result.score = scoreAttempt(result.criteria);
   } finally {
     writeFileSync(join(dir, 'results.json'), `${JSON.stringify(result, null, 2)}\n`);
@@ -1265,6 +1364,7 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
           (r.score.hidden.total
             ? `, hidden ${r.score.hidden.passed}/${r.score.hidden.total}`
             : '') +
+          (r.score.judged ? `, ${r.score.judged} judged` : '') +
           (fails.length ? `; failed ${fails.join(', ')}` : '') +
           (r.run.timedOut ? '; timed out' : '') +
           (r.run.error ? `; ${r.run.error}` : ''),
@@ -1272,8 +1372,10 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
     }
     const first = plan.attempts[0]!;
     const entries = summarizeEntries(results);
+    const judged = results.filter((r) => r.judge);
     const summary: BenchSummary = {
       set: opts.set.id,
+      setFile: opts.set.file,
       mode: first.mode,
       agent: opts.referenceDir ? 'reference' : (opts.agent ?? first.agent),
       ...(first.mode === 'agent' && opts.model ? { model: opts.model } : {}),
@@ -1282,6 +1384,15 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
       out,
       startedAt,
       finishedAt: now().toISOString(),
+      ...(judged.length > 0
+        ? {
+            judge: {
+              runtime: judged[0]!.judge!.runtime,
+              model: judged[0]!.judge!.model,
+              at: judged.at(-1)!.judge!.at,
+            },
+          }
+        : {}),
       entries,
       overall: overallOf(entries),
     };
@@ -1294,4 +1405,275 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
     report({ state: 'failed', finishedAt: now().toISOString(), error: (err as Error).message });
     throw err;
   }
+}
+
+// ---- The judge ----------------------------------------------------------------------------------
+
+/** The plan's line about the judge. */
+function judgeLine(j: BenchJudge, runtimes?: Record<string, RuntimeConfig>): string {
+  const c = j.config;
+  const model = judgeModel(c, j.runtimes ?? runtimes);
+  return `judge: ${[c.runtime, model, c.effort].filter(Boolean).join(', ')}, ${c.budget_min} min per rubric criterion (spends tokens)`;
+}
+
+/**
+ * Reads a bench entry's rubric: an absolute path as it is; else relative to the set file; else the
+ * file at the entry's base commit in the repo under test (`git show`), never the attempt's
+ * worktree, which the agent may have changed. Throws when none has it.
+ */
+export function benchRubricLoader(
+  set: Pick<BenchSet, 'file'>,
+  repo: string,
+  sha: string,
+): (path: string) => Rubric {
+  const cache = new Map<string, Rubric>();
+  return (path: string): Rubric => {
+    const hit = cache.get(path);
+    if (hit) return hit;
+    if (!path) throw new OpsError('the criterion names no rubric file', 2);
+    let rubric: Rubric;
+    const besideSet = resolve(dirname(set.file), path);
+    if (isAbsolute(path)) rubric = readRubric(path);
+    else if (existsSync(besideSet)) rubric = readRubric(besideSet);
+    else {
+      const rel = path.replace(/\\/g, '/').replace(/^\.\//, '');
+      let text: string;
+      try {
+        text = git(repo, ['show', `${sha}:${rel}`]);
+      } catch {
+        throw new OpsError(
+          `no rubric ${path} beside the set or at ${sha.slice(0, 12)} in ${repo}`,
+          2,
+        );
+      }
+      rubric = parseRubric(text, `${rel} at ${sha.slice(0, 12)}`);
+    }
+    cache.set(path, rubric);
+    return rubric;
+  };
+}
+
+/**
+ * Judges an attempt's pending `rubric` criteria (all of them with `again`) and writes the results
+ * into `r`: pass or fail with the score, the reasons as the note and the scores as evidence. A
+ * judgment that gives no score leaves its criterion pending with what went wrong, so a later
+ * `swarmup bench judge` tries again. `cwd` is the tree after the change, for the `repo` and
+ * `files` inputs. Returns how many it judged.
+ */
+export async function judgeAttempt(
+  r: AttemptResult,
+  entry: BenchEntry,
+  ctx: {
+    set: Pick<BenchSet, 'file'>;
+    repo: string;
+    cwd?: string;
+    judge: BenchJudge;
+    env: NodeJS.ProcessEnv;
+    again?: boolean;
+    now?: () => Date;
+  },
+): Promise<number> {
+  const want = new Set(
+    r.criteria
+      .filter((c) => c.kind === 'rubric' && (ctx.again || c.result === 'pending'))
+      .map((c) => c.id),
+  );
+  const targets = entry.criteria.filter((c) => c.kind === 'rubric' && want.has(c.id));
+  if (targets.length === 0) return 0;
+  let diff = '';
+  try {
+    diff = readFileSync(join(r.dir, 'diff.patch'), 'utf8');
+  } catch {
+    // No diff saved: the attempt changed nothing, or never got a worktree.
+  }
+  const outcomes = await judgeCriteria({
+    criteria: targets,
+    source: { ...(ctx.cwd ? { cwd: ctx.cwd } : {}), diff, task: benchPrompt(entry) },
+    loadRubric: benchRubricLoader(ctx.set, ctx.repo, r.base.sha),
+    config: ctx.judge.config,
+    env: ctx.env,
+    ...(ctx.judge.runner ? { runner: ctx.judge.runner } : {}),
+    ...(ctx.judge.runtimes ? { runtimes: ctx.judge.runtimes } : {}),
+  });
+  let judged = 0;
+  r.criteria = r.criteria.map((c): BenchCriterionResult => {
+    const o = outcomes[c.id];
+    if (!o) return c;
+    const v = judgeVerdict(o);
+    const rest: BenchCriterionResult = {
+      id: c.id,
+      kind: c.kind,
+      ...(c.hidden ? { hidden: true } : {}),
+      what: c.what,
+      result: c.result,
+      ...(c.rubric ? { rubric: c.rubric } : {}),
+      ...(c.pass !== undefined ? { pass: c.pass } : {}),
+    };
+    if (judgeFailed(o)) {
+      return { ...rest, result: 'pending', note: v.note ?? '', evidence: v.evidence ?? '' };
+    }
+    judged++;
+    return {
+      ...rest,
+      result: v.result,
+      ...(v.score !== undefined ? { score: v.score } : {}),
+      ...(v.note ? { note: v.note } : {}),
+      ...(v.evidence ? { evidence: v.evidence } : {}),
+    };
+  });
+  const list = Object.values(outcomes);
+  const cost = judgeCost(list);
+  const prev = r.judge?.costUsd ?? null;
+  r.judge = {
+    runtime: ctx.judge.config.runtime,
+    model:
+      list.find((o) => o.model)?.model ?? judgeModel(ctx.judge.config, ctx.judge.runtimes) ?? null,
+    costUsd: prev === null && cost === null ? null : (prev ?? 0) + (cost ?? 0),
+    at: (ctx.now ?? (() => new Date()))().toISOString(),
+  };
+  r.score = scoreAttempt(r.criteria);
+  return judged;
+}
+
+/** The attempts' `results.json` files of a run's out folder, by entry and attempt number. */
+function attemptFiles(out: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(out, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(out, entry.name);
+    const attempts = readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^\d+$/.test(d.name))
+      .map((d) => Number(d.name))
+      .sort((a, b) => a - b);
+    for (const n of attempts) {
+      const file = join(dir, String(n), 'results.json');
+      if (existsSync(file)) files.push(file);
+    }
+  }
+  return files;
+}
+
+export interface BenchJudgeRunOptions {
+  /** The run's out folder. */
+  out: string;
+  /** The set; default the `setFile` its summary names. */
+  set?: BenchSet;
+  judge: BenchJudge;
+  /** Judges rubric criteria that already have a result too. */
+  again?: boolean;
+  /** Only these entries. */
+  entries?: string[];
+  env?: NodeJS.ProcessEnv;
+  log: (line: string) => void;
+  now?: () => Date;
+}
+
+/**
+ * `swarmup bench judge`: judges the pending `rubric` criteria of a finished run's attempts, writes
+ * each `results.json` again, and `summary.json` and `summary.md` with the new pass rates, judged
+ * counts and judge cost. An attempt whose worktree is gone gets a temporary one at its base with
+ * its `diff.patch` applied, when a rubric needs the `repo` or `files` input. Refuses a folder
+ * with no summary, or a run whose set file it cannot find, with exit 2.
+ */
+export async function judgeBenchRun(opts: BenchJudgeRunOptions): Promise<BenchSummary> {
+  const out = resolve(opts.out);
+  const summary = readBenchSummary(out);
+  const setFile = opts.set?.file ?? summary.setFile;
+  if (!opts.set && !setFile) {
+    throw new OpsError(`${out}: its summary names no set file; pass --set SET.yaml`, 2);
+  }
+  const set = opts.set ?? readBenchSet(setFile!);
+  const env = opts.env ?? process.env;
+  const now = opts.now ?? (() => new Date());
+  const results: AttemptResult[] = [];
+  let judgedAll = 0;
+  for (const file of attemptFiles(out)) {
+    const r = JSON.parse(readFileSync(file, 'utf8')) as AttemptResult;
+    r.dir = dirname(file);
+    results.push(r);
+    if (opts.entries?.length && !opts.entries.includes(r.entry)) continue;
+    const entry = set.entries.find((e) => e.id === r.entry);
+    if (!entry) {
+      opts.log(`${r.entry} #${r.attempt}: no such entry in ${set.file}; skipped`);
+      continue;
+    }
+    const pending = r.criteria.some(
+      (c) => c.kind === 'rubric' && (opts.again || c.result === 'pending'),
+    );
+    if (!pending) continue;
+    const loader = benchRubricLoader(set, summary.repo, r.base.sha);
+    const needsTree = entry.criteria.some((c) => {
+      if (c.kind !== 'rubric') return false;
+      try {
+        const rubric = loader(c.rubric ?? '');
+        return rubric.inputs.includes('repo') || rubric.inputs.includes('files');
+      } catch {
+        return false;
+      }
+    });
+    const kept = join(r.dir, 'worktree');
+    let cwd: string | undefined = existsSync(kept) ? kept : undefined;
+    let temp: string | undefined;
+    if (!cwd && needsTree) {
+      temp = join(
+        envVar(env, 'SCRATCH') ?? tmpdir(),
+        `swarmup-judge-wt-${process.pid}-${Date.now()}`,
+      );
+      try {
+        git(summary.repo, ['worktree', 'add', '--detach', temp, r.base.sha]);
+        const patch = join(r.dir, 'diff.patch');
+        if (existsSync(patch) && readFileSync(patch, 'utf8').trim()) {
+          git(temp, ['apply', '--whitespace=nowarn', '--binary', patch]);
+        }
+        cwd = temp;
+      } catch (err) {
+        opts.log(
+          `${r.entry} #${r.attempt}: no tree to show the judge (${(err as Error).message.split('\n')[0]}); it sees the diff only`,
+        );
+      }
+    }
+    opts.log(`${r.entry} #${r.attempt}: judging`);
+    try {
+      judgedAll += await judgeAttempt(r, entry, {
+        set,
+        repo: summary.repo,
+        ...(cwd ? { cwd } : {}),
+        judge: opts.judge,
+        env,
+        ...(opts.again ? { again: true } : {}),
+        now,
+      });
+      const line = r.criteria
+        .filter((c) => c.kind === 'rubric')
+        .map((c) => `${c.id} ${c.result}${c.score !== undefined ? ` ${c.score}` : ''}`)
+        .join(', ');
+      const cost = costText(r.judge?.costUsd);
+      opts.log(`${r.entry} #${r.attempt}: ${line}${cost ? `; judge cost ${cost} so far` : ''}`);
+    } finally {
+      if (temp) removeWorktree(summary.repo, temp, opts.log);
+    }
+    writeFileSync(file, `${JSON.stringify(r, null, 2)}\n`);
+  }
+  const entries = summarizeEntries(results);
+  const judged = results.filter((r) => r.judge);
+  const next: BenchSummary = {
+    ...summary,
+    out,
+    setFile: set.file,
+    ...(judged.length > 0
+      ? {
+          judge: {
+            runtime: judged[0]!.judge!.runtime,
+            model: judged[0]!.judge!.model,
+            at: now().toISOString(),
+          },
+        }
+      : {}),
+    entries,
+    overall: overallOf(entries),
+  };
+  writeFileSync(join(out, 'summary.json'), `${JSON.stringify(next, null, 2)}\n`);
+  writeFileSync(join(out, 'summary.md'), summaryMarkdown(next));
+  opts.log(`judged ${judgedAll} rubric criteria in ${out}`);
+  return next;
 }

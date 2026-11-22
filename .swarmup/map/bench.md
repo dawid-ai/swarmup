@@ -13,7 +13,7 @@ covers:
   - packages/desktop/ui/src/views/Bench.tsx
   - packages/desktop/ui/src/ui/bench.tsx
   - packages/desktop/test/bench-view.test.ts
-links: [core, supervisor/stats, cli, docs, desktop/ui]
+links: [core, supervisor/stats, cli, docs, desktop/ui, judge]
 ---
 
 # Benchmarks
@@ -35,7 +35,12 @@ swarmupd; the desktop app's Benchmarks view starts it through swarmupd's API.
   then each hidden command with the hidden folder copied in and removed after. Metrics come from
   the log, orientation from `orientation.ts`. It writes `results.json` per attempt and
   `summary.json`/`summary.md`, and compares two summaries.
-- `cli/src/bench-cmd.ts` is `swarmup bench run|compare`. `runBench` keeps `status.json` (state,
+- With `--judge`, each attempt's `rubric` criteria go to the LLM judge (see `judge`) right
+  after its checks; `judgeBenchRun` (`swarmup bench judge`) judges a finished run's pending ones,
+  with a temporary worktree from `diff.patch` when the rubric needs files. Judged rubric
+  criteria count in the pass rate; the summary adds judged counts and judge cost, and names the
+  set file (`setFile`) so a later judge finds the entries.
+- `cli/src/bench-cmd.ts` is `swarmup bench run|judge|compare`. `runBench` keeps `status.json` (state,
   attempts done of total, the attempt under way, the runner's pid) in the out folder.
 - `supervisor/src/bench-runs.ts` serves `/api/bench/*`: sets from each root's
   `benchmarks/` and `swarmupd.bench.sets`, runs under `<state>/bench/` and

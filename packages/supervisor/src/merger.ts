@@ -2,7 +2,7 @@
 // Moved out of supervisor.ts, which keeps a `merger` and delegates its public merge calls here.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { CriteriaResults, TaskView } from '@swarmup/core';
+import type { CriteriaResults, Criterion, TaskView } from '@swarmup/core';
 import {
   formatMinutes,
   redactSecrets,
@@ -38,6 +38,7 @@ import { gitError } from './push.js';
 import type { WorktreeEntry } from './worktree.js';
 import { parseWorktreeList, taskIdOfWorktree } from './worktree.js';
 import type { Supervisor } from './supervisor.js';
+import { costText, judgeTask } from './judge.js';
 import {
   sleep,
   DIRTY_CHANNEL,
@@ -1052,6 +1053,29 @@ export class Merger {
           );
           return;
         }
+        // Its `rubric` criteria, when `swarmupd.judge.at_merge` is on: an LLM judge scores the
+        // diff from the base, and a score below `pass` sends the task back like a failed check.
+        const judged = await this.mergeJudge(ref, repo.worktree, onto, r.head);
+        if (judged === 'stopped') return;
+        if (judged) {
+          criteria = { ...(criteria ?? {}), ...judged.results };
+          if (judged.failed.length > 0) {
+            this.mergeBack(
+              ref,
+              job.what,
+              job.author,
+              `its rubric criteria ${judged.failed.join(', ')} scored below their pass mark on it rebased onto ${cfg.base} (${short(onto)})`,
+              judged.failed
+                .map((id) => {
+                  const c = judged.results[id]!;
+                  return `${id}: score ${c.score ?? '?'}\n${c.note ?? ''}\n${c.evidence ?? ''}`.trim();
+                })
+                .join('\n\n'),
+              criteria,
+            );
+            return;
+          }
+        }
         checked = r.head;
       }
       // Moving the base changes the checkout: from here until the build is over, it is held.
@@ -1166,8 +1190,9 @@ export class Merger {
     };
     for (const { ref, job } of items) {
       if (this.sup.stopping) return 'again';
-      // Criteria to run belong to one task: it merges alone, where a failure sends back only it.
-      if (this.runCriteriaOf(ref).length > 0) {
+      // Criteria to run or judge belong to one task: it merges alone, where a failure sends back
+      // only it.
+      if (this.runCriteriaOf(ref).length > 0 || this.judgeCriteriaOf(ref).length > 0) {
         this.mergeLine(ref, 'has criteria to run; merges alone after the batch');
         alone.push({ ref, planned: job, job, approved: '' });
         continue;
@@ -1798,6 +1823,87 @@ export class Merger {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * The approved task's `rubric` criteria that the merge judges: none unless
+   * `swarmupd.judge.at_merge` is on, since each judgment spends tokens.
+   */
+  judgeCriteriaOf(ref: string): Criterion[] {
+    if (!this.sup.config.judge.at_merge) return [];
+    try {
+      return (this.sup.ws().view(ref).criteria ?? []).filter((c) => c.kind === 'rubric');
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Judges the approved task's `rubric` criteria (see {@link judgeCriteriaOf}) against the diff
+   * of `head` from `onto`, in swarmupd's worktree, without blocking the event loop: the judge is a
+   * child process with the time budget of `swarmupd.judge`. A judgment that gives no score is `na`
+   * with why, and does not hold the merge. Null when there is nothing to judge; `stopped` when
+   * swarmupd stopped meanwhile.
+   */
+  async mergeJudge(
+    ref: string,
+    cwd: string,
+    onto: string,
+    head: string,
+  ): Promise<{ results: CriteriaResults; failed: string[] } | 'stopped' | null> {
+    const criteria = this.judgeCriteriaOf(ref);
+    if (criteria.length === 0) return null;
+    const cfg = this.sup.config.judge;
+    this.mergeLine(
+      ref,
+      `judges its rubric criteria with ${cfg.runtime}: ${criteria.map((c) => c.id).join(', ')}`,
+    );
+    const ws = this.sup.ws();
+    const { meta, body } = ws.showEvents(ref);
+    const stop = new AbortController();
+    const watch = setInterval(() => {
+      if (this.sup.stopping) stop.abort();
+    }, 1000);
+    let j: Awaited<ReturnType<typeof judgeTask>>;
+    try {
+      j = await judgeTask({
+        criteria,
+        cwd,
+        base: onto,
+        head,
+        storeDir: ws.resolve(ref).root.dir,
+        task: `# ${meta.title}\n\n${body}`.trim(),
+        config: cfg,
+        env: this.sup.commandEnv(),
+        runtimes: this.sup.config.runtimes,
+        signal: stop.signal,
+        ...(this.sup.judgeRunner ? { runner: this.sup.judgeRunner } : {}),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.mergeLine(ref, `could not judge: ${msg}`);
+      return {
+        results: Object.fromEntries(
+          criteria.map((c) => [c.id, { result: 'na' as const, note: `the judge failed: ${msg}` }]),
+        ),
+        failed: [],
+      };
+    } finally {
+      clearInterval(watch);
+    }
+    if (this.sup.stopping) return 'stopped';
+    const results: CriteriaResults = { ...j.results };
+    for (const [id, why] of Object.entries(j.errors)) {
+      results[id] = { result: 'na', note: `the judge failed: ${why}` };
+    }
+    const cost = costText(j.costUsd);
+    this.mergeLine(
+      ref,
+      `judged: ${Object.entries(results)
+        .map(([id, r]) => `${id} ${r.result}${r.score !== undefined ? ` ${r.score}` : ''}`)
+        .join(', ')}${cost ? `; cost ${cost}` : ''}`,
+    );
+    return { results, failed: j.failed };
   }
 
   /**

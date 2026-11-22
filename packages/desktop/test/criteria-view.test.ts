@@ -315,6 +315,40 @@ describe('Done when in the task panel', () => {
     expect(posts.at(-1)).toEqual({ path: `${PATH}/criteria-check`, body: { as: 'human:dawid' } });
     expect(box.querySelector('[data-check-progress]')!.textContent).toContain('2 passed');
   });
+
+  it('judges the rubric criteria with Judge and shows the score and reasons', async () => {
+    await openPanel(detail());
+    replies.set(`${PATH}/criteria-judge`, {
+      job: {
+        task: 'r/T-0001',
+        by: 'human:dawid',
+        cwd: 'C:/code',
+        startedAt: '2026-11-21T10:00:00Z',
+        endedAt: '2026-11-21T10:00:40Z',
+        ids: ['voice'],
+        results: {
+          voice: {
+            result: 'fail',
+            score: 0.55,
+            note: 'The intro buries the price.',
+            evidence: 'voice: tone 2, clarity 2.4 (scale 0 to 4)',
+          },
+        },
+        event: 'E10',
+        costUsd: 0.0123,
+      },
+    });
+    await click(button('Judge'));
+    expect(posts.at(-1)).toEqual({ path: `${PATH}/criteria-judge`, body: { as: 'human:dawid' } });
+    expect(box.querySelector('[data-judge-progress]')!.textContent).toContain(
+      '1 of 1 below the pass mark · $0.0123',
+    );
+    const voice = items().find((li) => li.dataset.criterion === 'voice')!;
+    const result = voice.querySelector('[data-criterion-result]')!;
+    expect(result.querySelector('[data-score]')!.textContent).toBe('score 0.55');
+    expect(result.textContent).toContain('The intro buries the price.');
+    expect(result.textContent).toContain('Judge');
+  });
 });
 
 describe('the review form with criteria', () => {

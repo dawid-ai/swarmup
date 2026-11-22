@@ -2070,14 +2070,17 @@ export class Workspace {
 
   /**
    * Records the results of a check run (`swarmup criteria check`) as a `criteria-check` event:
-   * history, which `show` reads as each criterion's last result. Refuses an unknown id.
+   * history, which `show` reads as each criterion's last result. `by` is `judge` for the results
+   * of an LLM judge (`swarmup criteria judge`). Refuses an unknown id.
    */
-  recordCriteriaCheck(ref: string, results: CriteriaResults, message = ''): ActResult {
+  recordCriteriaCheck(ref: string, results: CriteriaResults, message = '', by?: string): ActResult {
     return this.act(
       ref,
       (v) => {
         checkResultIds(v.criteria ?? [], results);
-        return [{ type: 'criteria-check', criteria: results, body: message }];
+        return [
+          { type: 'criteria-check', criteria: results, body: message, ...(by ? { by } : {}) },
+        ];
       },
       { helperOk: true },
     );

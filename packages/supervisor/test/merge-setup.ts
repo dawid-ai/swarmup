@@ -7,7 +7,15 @@ import { dirname, join } from 'node:path';
 import { afterEach } from 'vitest';
 import { initRoot, Workspace } from '@swarmup/core';
 import type { UserConfig } from '@swarmup/core';
-import type { MergeCheck, MergeGitTimeout, OpsdSelf, ProcLister, RunRecord } from '../src/index.js';
+import type {
+  JudgeConfig,
+  JudgeRunner,
+  MergeCheck,
+  MergeGitTimeout,
+  OpsdSelf,
+  ProcLister,
+  RunRecord,
+} from '../src/index.js';
 import { opsdConfig, Supervisor, systemLister } from '../src/index.js';
 import { until, WAIT_MS } from './until.js';
 
@@ -293,6 +301,10 @@ export function mergeSetup(
     otherMerge?: Record<string, { base: string }>;
     /** `swarmupd.merge.test.checks`; default `['node check.mjs']`. */
     checks?: MergeCheck[];
+    /** `swarmupd.judge` over its defaults. */
+    judge?: Partial<JudgeConfig>;
+    /** Runs the LLM judge's process instead of a real runtime. */
+    judgeRunner?: JudgeRunner;
   } = {},
 ) {
   const repo = temp();
@@ -355,6 +367,7 @@ export function mergeSetup(
     },
   });
   if (opts.timeoutMinutes !== undefined) config.merge.test!.timeout_minutes = opts.timeoutMinutes;
+  if (opts.judge) config.judge = { ...config.judge, ...opts.judge };
   if (opts.batch !== undefined) config.merge.test!.batch = opts.batch;
   if (opts.install) {
     config.merge.test!.install =
@@ -375,6 +388,7 @@ export function mergeSetup(
       build: opts.build,
       version: '0.2.0-test',
       mergeGitTimeoutMs: opts.gitTimeoutMs,
+      judgeRunner: opts.judgeRunner,
     });
     sups.push(s);
     return s;
