@@ -331,7 +331,17 @@ The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
   line of the last 30 local days, one point per day. Hover a point for its day, value and count.
   Click a scorer to open it: what it measures, the definition to change when it fails (its
   `lever`), and its worst tasks or runs, each a link to the task panel or the run. A failing scorer
-  opens by default. An agent with scores but no role file or config entry gets a card too.
+  opens by default. An agent with scores but no role file or config entry gets a card too. A
+  failing scorer offers **Propose an improvement**, which files a task for the improver to
+  propose a change to the agent's definitions (see
+  [self-improvement](supervisor.md#self-improvement)).
+- **Proposals.** Above the providers, the **Agents** view lists each change to the definitions
+  that waits for you: the variant and its hash, the agents and scorers it addresses, who proposed
+  it and why, a link to its task, the diff of each file against the base, and its benchmark
+  (**better**, **worse** or **same**, with the change in pass rate, hidden pass rate and cost, or
+  that it runs or failed). **Promote** writes it onto the definition files; **Reject** asks for a
+  note for the improver. Both are yours alone: a run can't call them. The list shows only while a
+  variant waits.
 - **Reports.** The **Scores** table adds a trend under each value, over the report's own window:
   one point per hour for **Day**, else per day. Hover a column header for what the scorer
   measures, its threshold and what to change. **Worst tasks** lists the five worst tasks or runs

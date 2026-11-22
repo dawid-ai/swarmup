@@ -22,7 +22,8 @@ Starts a data root for a repo: survey it, propose roles and first tasks, create 
 - `adoptPlan` proposes roles that fit the stack; `applyPlan` writes the root, role files and
   tasks. `swarmup adopt --store DIR` keeps the store apart from the repo.
 - `PROJECT_TEMPLATES` (`web-app`, `library`, `docs-site`, ...) back `swarmup new-project`.
-- `templates/agents/*.md` are the role files `init --with-agents` copies; `templates/people/`
+- `templates/agents/*.md` are the role files `init --with-agents` copies, `claude-improver.md`
+  (see `/improve`) among them; `templates/people/`
   holds the owner template; `templates/swarm.yaml` is the commented starter that
   **Create swarm.yaml** writes (see `defs`). `init.ts` exports the folder as `TEMPLATES_DIR`;
   the installer ships it as `resources/templates`.

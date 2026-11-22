@@ -26,6 +26,8 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
 - `recordRun` writes swarmupd's `run-start` and `run-end` events, with the resumed `session`
   and the `defs` stamp. `recordCriteriaCheck` writes a `criteria-check` event, with `by: judge`
   for an LLM judge's results.
+- `defsPropose`, `defsPromote`, `defsReject` and `variants` record definition proposals as
+  variants (see `/improve`); promote and reject are for a person only.
 - `review-source.ts` reads where approved work is (commit and branch) from a review event or its
   text, for the merge.
 - `brief.ts` folds the newest `brief` event of a parent task, the goal brief `swarmup brief`

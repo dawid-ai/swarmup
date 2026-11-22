@@ -34,6 +34,10 @@ their budget.
   `/core/defs`). Each tick re-merges when a definition file changed, before limits are read.
 - A run's model and effort: Settings, then the role file's `runtimes.<rt>`, then its own
   values, then the provider's. With a `swarm.yaml`, `run-start` records the `defs` hash.
+- A launch with `variant` reads the agent from the variant's definitions, writes the resolved
+  role file to the run's scratch folder and stamps the variant's hash; the deny list covers
+  `variants/` as well as `agents/`. The tick runs the improvement loop once a minute at most
+  (`improveTick`, see `/improve`), and `benchHost` feeds `sup.bench`.
 - `mapTopOf` finds a root's map folder; `criteriaDir` is where **Run checks** runs criteria
   and **Judge** reads the task's tree. The `judgeRunner` option replaces the LLM judge's process
   in tests.

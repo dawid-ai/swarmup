@@ -34,5 +34,6 @@ whoever acts.
 
 ## Tests
 
-`packages/core/test/`, one file per behavior area; `helpers.ts` makes temp roots and runs git.
+`packages/core/test/`, one file per behavior area (`variants.test.ts` for variants and
+proposals); `helpers.ts` makes temp roots and runs git.
 Vitest runs them against the sources (no build needed).

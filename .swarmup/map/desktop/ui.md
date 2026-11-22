@@ -37,6 +37,7 @@ What the person sees: one React app with a view per area.
   goal brief in `brief.tsx`);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel;
+  `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`);
   `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history, map).
 - `assets/brand/` holds the tiles and status icons.
 

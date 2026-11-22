@@ -41,6 +41,11 @@ limits in git; each machine's user config still wins. Phase 1 of W5; see `docs/d
   of the user config, the import preview and line diff, the template, and an atomic write that
   checks the text and refuses a file changed since it was read. The API adds
   `POST /api/defs/{validate,import,create,save}`.
+- `variants.ts`: overlay folders `variants/<name>/` merged onto the base texts (YAML deep-merge,
+  agent frontmatter merge, body replace, `.delete`), `loadDefinitions(dir, { variant })` and a hash
+  per variant. `proposals.ts`: the `improvement` policy of `swarm.yaml`, `policyProblems`,
+  `proposal.json`, `listVariants` and `applyVariantToBase`; `defs-cmd.ts` adds
+  `defs propose|promote|reject|variants` and `validate --variant` (see `/improve`).
 - `desktop/ui/src/ui/defs.tsx` is **Settings > Definitions**: a card per root with the hash and
   commit, effective values, problems, the YAML with problem lines marked, and in-place edits.
 

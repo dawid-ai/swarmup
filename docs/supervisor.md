@@ -1214,6 +1214,59 @@ The desktop reads three shapes of the API:
   `pass`), from memory, with no log read. `resumed=1` keeps runs that resumed a session and
   `model` runs of one model; `models` lists the models of the range.
 
+## Self-improvement
+
+Scorer failures turn into reviewed changes to agent definitions, never into learn notes. The loop
+has four steps, and only the last one changes a definition file:
+
+1. **Trigger.** At most every `check_hours`, swarmupd counts each agent's distinct failing task and
+   run scores of the last `max_age_days` days. An agent at or over `threshold`, with no open
+   improvement task and no open proposal, gets one: a `task` labeled `improve`, owned by the
+   improver (`agent`) and created by `opsd:improve`. Its body lists the failing scorers with their
+   values, levers and evidence, and the `Agent:`, `Scorers:` and `Evidence:` lines
+   `swarmup defs propose` reads. The trigger is off by default.
+2. **Proposal.** The improver (`packages/core/templates/agents/claude-improver.md`) reads the
+   scores, the evidence tasks' threads and the agent's role file, finds one pattern, writes the
+   smallest overlay that addresses it in its scratch folder, checks it with `swarmup validate`, and
+   records it with [`swarmup defs propose`](definitions.md#proposals). swarmupd runs the improver
+   read-only: a Claude run may edit only in its scratch folder, and no run may edit `agents/` or
+   `variants/`.
+3. **Benchmark gate.** With `benchmark` set, swarmupd starts two detached bench runs for each new
+   proposal, as the app's **Run benchmark** does: the base and the variant, each with the agent's
+   role file in the prompt (`--role-file`, `--variant`). When both end, it comments the
+   `bench compare` table on the proposal's task with a verdict: **better**, **worse** or **same**,
+   on the pass rate, then the hidden pass rate. The gate is off without `benchmark`: it spends
+   tokens.
+4. **Decision.** A person promotes the proposal (`swarmup defs promote`, or **Promote** in the
+   app) or rejects it with a note.
+
+```yaml
+swarmupd:
+  improve:
+    enabled: false # file improvement tasks on its own
+    threshold: 10 # distinct failing task and run scores of one agent
+    max_age_days: 7 # only scores of the last 7 days count
+    agent: claude:improver # who works the task
+    check_hours: 3 # how often swarmupd looks at the scores
+    benchmark: # the gate; off without it
+      set: C:\dev\swarmup-store\tally\.swarmup\benchmarks\tally.yaml # a set swarmupd lists
+      repo: C:\dev\swarmup-testbed
+      hidden_dir: C:\dev\swarmup-store\tally\hidden
+      entries: [TB-02, TB-08] # all entries by default
+      repeat: 1
+      budget_min: 20
+```
+
+- The set must be one swarmupd lists: in a root's `.swarmup/benchmarks/` or under
+  `swarmupd.bench.sets`. The runs go to `<state>/bench/` and show in the **Benchmarks** view.
+- swarmupd keeps each proposal's benchmark in `improve.json` in its state folder, by variant and
+  hash: a proposal benchmarks once, and again only when its hash changes.
+- **Propose an improvement** on an agent's failing scorer in the app files the improvement task
+  now, with every kept failing score of the agent, whatever the trigger's settings.
+- The API: `GET /api/defs/variants` lists each variant with its diff against the base (`diffs`)
+  and its benchmark (`benchmark`); `POST /api/defs/variants/<name>/promote` and `.../reject`
+  (`{ root?, message }`) and `POST /api/improve` (`{ agent }`) are for a person: a run's token gets 403.
+
 ## Merging approved work
 
 With `swarmupd.merge.<root name>` set, swarmupd merges a task's work into a base branch once a review

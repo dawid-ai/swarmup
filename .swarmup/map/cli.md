@@ -21,7 +21,8 @@ answer, vote, learn, sync, launch runs, and read the project map.
   `COMMANDS` table (usage, summary, options, run). Most commands call `Workspace`; daemon,
   runs, logs and launch talk to swarmupd's API.
 - `map-cmd.ts` holds `swarmup map` (see `core/map`), `defs-cmd.ts` holds `swarmup validate`
-  and `swarmup defs` (see `core/defs`), and `bench-cmd.ts` holds `swarmup bench` (see `bench`,
+  and `swarmup defs`, with `propose`, `promote`, `reject` and `variants` (see `core/defs` and
+  `improve`), and `bench-cmd.ts` holds `swarmup bench` (see `bench`,
   and `judge` for `bench judge` and `criteria judge`, which `cli.ts` holds);
   put new large commands in their own file and register them with one line in `COMMANDS`.
 - `hooks.ts` installs Claude Code hooks that sync at session end; `banner.ts` draws the mark.

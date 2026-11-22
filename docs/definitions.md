@@ -14,6 +14,7 @@ nothing new.
 .swarmup/
   swarm.yaml                  # the team's settings
   agents/<runtime>-<role>.md  # agent files, as before
+  variants/<name>/            # sparse overlays: see Variants
   .schemas/*.schema.json      # optional: `swarmup validate --write-schemas` writes them for editors
 ```
 
@@ -47,7 +48,8 @@ roles: # as swarmupd.roles takes them
   `max_children`. `max_live` is machine-only.
 - `defaults.model` applies to every runtime that sets none, so set the model per runtime when you
   run several providers.
-- `policy`, `work_types`, `scoring`, `checks`, `variants`, `experiments`, `improvement` and
+- `improvement` sets the [improvement policy](#improvement-policy).
+- `policy`, `work_types`, `scoring`, `checks`, `variants`, `experiments` and
   `defaults.budget_min` are accepted with a warning that they are not active yet.
 - Agent files keep their fields. They also take `runtimes.<rt>.{model, effort}`, which wins over the
   file's own `model` and `effort` for that runtime. `role`, `providers`, `writes` and `scorers` are
@@ -85,6 +87,93 @@ any machine can tell which definitions did the work. swarmupd keeps the files of
 `definitions` table of `state.db` the first time it sees it, and each run's hash in `run_defs`.
 The commit is read with git off the event loop when the definitions change; a run that starts
 before that read ends records the hash alone.
+
+## Variants
+
+A variant is a sparse overlay of the definitions: a folder `variants/<name>/` in the store with the
+same layout, holding only the files it changes. Variants are how a change is tried before it
+lands: a run or a benchmark can use a variant while every other run keeps the base.
+
+```text
+.swarmup/
+  variants/engineer-tests-first/
+    agents/claude-engineer.md   # only what changes
+    proposal.json               # written by `swarmup defs propose`; not part of the overlay
+```
+
+A variant's definitions are the base files with the overlay on top:
+
+- YAML files, `swarm.yaml` among them, deep-merge: maps merge key by key, a list replaces the whole
+  list, and `null` removes a key. The base file's comments stay.
+- An agent file's frontmatter merges the same way. A non-empty body replaces the base body; an
+  overlay with frontmatter only keeps the base instructions, and one with a body only keeps the
+  base frontmatter as it is.
+- `<path>.delete` removes the base file at `<path>`. Any other file replaces its base file.
+
+A variant has its own hash, of the base files with the overlay applied, so a run or a benchmark
+names exactly the definitions it used. The base hash never covers `variants/`. Variant names use
+lowercase letters, digits and dashes.
+
+- `swarmup validate --variant NAME [--root NAME]` checks a variant as a whole; problems name the
+  overlay file when the overlay holds it.
+- A run started with a variant (`variant` in `POST /api/runs`, `LaunchRequest.variant`) gets the
+  resolved role file in its scratch folder, `role-<runtime>-<role>.md`, and its prompt points there.
+  Its run record and `run-start` event carry `variant`, and its definition stamp the variant's hash.
+- `swarmup bench run ... --variant NAME --root ROOT` replays a benchmark set with the variant's
+  role file for the agent; see [benchmarks](benchmarks.md#role-files-and-variants).
+
+## Proposals
+
+A proposal is a variant recorded on a task for a person to decide on. The improver
+([self-improvement](supervisor.md#self-improvement)) writes one; anyone can, from an overlay
+folder.
+
+```bash
+swarmup defs propose TL-0012 --dir ./overlay --name engineer-tests-first \
+  -m "Reviews send back untested work: run the tests the task names before review."
+swarmup defs variants                         # each variant: hash, status, linked task, files
+swarmup defs promote engineer-tests-first     # a person: write it onto the definitions
+swarmup defs reject engineer-tests-first -m "Too broad; name the test command instead."
+```
+
+- `defs propose ID --dir DIR --name NAME -m WHY` checks the overlay in `DIR` against the store's
+  improvement policy, writes `variants/<NAME>/`, checks the result as `validate` does (an error
+  removes the folder again), and records a `defs-propose` event on task `ID` with the variant
+  (`variant`), its short hash (`defs`) and a "Regressions addressed" section: the agents, the
+  scorers (`--scorer`, else the task's `Scorers:` line) and the evidence (the task's `Evidence:`
+  line). `--agent` names the agents when the overlay's files don't.
+- At most `improvement.max_open_proposals` proposals (default 2) wait in one store; the next
+  `defs propose` is refused until a person promotes or rejects one.
+- `defs promote NAME [--root NAME] [-m NOTE]` is for a person only. It writes the variant's result
+  onto the base files, records a `defs-promote` event with the hashes before and after
+  (`defs_from`, `defs_to`) on the linked task, and removes the variant's folder. A variant that no
+  longer checks against the base is refused.
+- `defs reject NAME [--root NAME] -m WHY` is for a person only. It records a `defs-reject` event
+  with the note on the linked task and removes the folder. The base files don't change.
+- `defs variants` lists each variant's hash, `proposed` (it has a `proposal.json`) or `draft` (a
+  folder made by hand), the linked task, the agents, the files it changes, and **stale** when the
+  base moved since the proposal.
+
+Runs can't edit `agents/` or `variants/`: they change definitions only through `defs propose`.
+
+### Improvement policy
+
+`swarm.yaml` sets what a proposal may change:
+
+```yaml
+improvement:
+  agent: claude:improver # who writes proposals
+  may_change: ['agents/*.md', 'agents/*/*.md', 'workflows/**'] # the default
+  frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'swarm.yaml'] # the default
+  max_open_proposals: 2
+```
+
+- Every path a proposal changes must match a `may_change` glob and no `frozen` glob; `frozen`
+  wins. `*` stays within one folder, `**` crosses folders.
+- An agent's `tools`, `writes`, `can_claim` and `id` are always frozen, whatever the policy says,
+  and a proposal never removes an agent file. A person changes those by hand.
+- `improvement.requires` is accepted and not active yet; `swarmupd.improve.benchmark` runs the
+  benchmark gate.
 
 ## Commands
 
