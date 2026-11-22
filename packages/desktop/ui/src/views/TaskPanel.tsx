@@ -25,6 +25,7 @@ import {
   Play,
   Reply,
   RotateCcw,
+  Send,
   Undo2,
   UserRoundPlus,
   X,
@@ -98,7 +99,7 @@ import { TriageActions, waitsOn } from '../ui/triage';
 import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 import { ProjectName } from '../ui/project-label';
 
-type Panel = 'delegate' | 'launch' | null;
+type Panel = 'delegate' | 'launch' | 'publish' | null;
 
 /** Types that wait for a person to turn them into work, with the shared triage actions. */
 const TRIAGED = new Set(['finding', 'idea']);
@@ -191,6 +192,8 @@ export function TaskPanel({
   const judge = useCriteriaCheck(id, reload, 'criteria-judge');
   // A review with criteria gives a result per criterion: the form replaces the plain buttons.
   const reviewForm = reviewsMe && criteria.length > 0;
+  // A publish task is a person's (W8): they post the approved work, then record where it went.
+  const publishable = Boolean(open && t?.type === 'publish' && t.owner?.startsWith('human:'));
   // A milestone, a parent, or a task that has a brief anyway.
   const briefShown = Boolean(t && (milestone || (data?.children?.length ?? 0) > 0 || data?.brief));
 
@@ -434,6 +437,16 @@ export function TaskPanel({
                   View changes
                 </Button>
               )}
+              {publishable && (
+                <Button
+                  kind="primary"
+                  icon={Send}
+                  onClick={() => setPanel(panel === 'publish' ? null : 'publish')}
+                  title="Record the URL where you published the approved work"
+                >
+                  Mark published
+                </Button>
+              )}
               {open && (
                 <Button
                   icon={ArrowRightLeft}
@@ -460,6 +473,17 @@ export function TaskPanel({
           )}
           {open && panel === 'delegate' && t && (
             <DelegateForm id={id} t={t} nav={nav} onDone={() => setPanel(null)} />
+          )}
+          {publishable && panel === 'publish' && (
+            <PublishForm
+              id={id}
+              nav={nav}
+              onDone={() => {
+                setPanel(null);
+                reload();
+                refreshSoon();
+              }}
+            />
           )}
           {open && panel === 'launch' && t && (
             <LaunchForm id={id} owner={t.owner ?? ''} nav={nav} onDone={() => nav.go('runs')} />
@@ -1386,6 +1410,72 @@ function DelegateForm({
         <Button kind="ghost" onClick={onDone}>
           Cancel
         </Button>
+      </div>
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+/**
+ * Records that a person published the work (W8): the URL it went live at and, optionally, the
+ * file published. swarmupd tags the commit, closes the task and runs its `when: publish` checks.
+ */
+export function PublishForm({ id, nav, onDone }: { id: string; nav: Nav; onDone: () => void }) {
+  const [url, setUrl] = useState('');
+  const [artifact, setArtifact] = useState('');
+  const act = useAction();
+  const u = url.trim();
+  const urlError = u && !/^https?:\/\/\S+$/i.test(u) ? 'An http or https URL' : null;
+  return (
+    <div data-publish-form className="panel animate-rise mt-3 flex flex-col gap-3 p-4">
+      <div className="flex items-end gap-3">
+        <Field
+          label="Published at"
+          className="flex-1"
+          hint={urlError ? <span className="text-warn">{urlError}</span> : undefined}
+        >
+          <Input
+            value={url}
+            onChange={setUrl}
+            placeholder="https://x.com/you/status/1"
+            autoFocus
+            className="font-mono"
+          />
+        </Field>
+        <Field label="File published (optional)" className="flex-1">
+          <Input
+            value={artifact}
+            onChange={setArtifact}
+            placeholder="posts/x-thread.md"
+            className="font-mono"
+          />
+        </Field>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          kind="primary"
+          icon={Send}
+          disabled={!u || Boolean(urlError) || act.busy}
+          onClick={() =>
+            act.run(
+              () =>
+                api('POST', `/api/tasks/${q(id)}/published`, {
+                  as: nav.me,
+                  url: u,
+                  ...(artifact.trim() ? { artifact: artifact.trim() } : {}),
+                }),
+              () => {
+                toast('Recorded the publish: the task is done');
+                onDone();
+              },
+            )
+          }
+        >
+          Record publish
+        </Button>
+        <span className="text-[11px] text-fg-4">
+          Tags the approved commit and runs the checks that hold after publishing.
+        </span>
       </div>
       <ErrorLine error={act.error} />
     </div>

@@ -62,6 +62,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // Done when and the goal brief: `swarmup criteria`, `criteria check`, `criteria judge` and
     // `brief`.
     `tasks/${SEG}/(criteria|criteria-check|criteria-judge|brief)`,
+    // Mark published (W8): a person records where a publish task's work went live.
+    `tasks/${SEG}/published`,
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,

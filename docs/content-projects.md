@@ -56,7 +56,9 @@ own worktrees and branches.
    ```
 
    This tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
-   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}`.
+   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}`. In the desktop
+   app, **Mark published** in the task panel records the same: the URL and, optionally, the
+   file.
 
 ## Checks that fit content
 
@@ -65,7 +67,7 @@ done_when:
   - id: thread
     kind: check
     check: char-count
-    args: { path: posts/x-thread.md, per: block, separator: '---', max: 280 }
+    args: { path: posts/x-thread.md, per: block, separator: '---', max: 280, urls_as: 23 }
   - id: banned
     kind: check
     check: contains
@@ -78,11 +80,22 @@ done_when:
     kind: check
     check: front-matter
     args: { path: 'posts/*.md', keys: [channel, status, task] }
+  - id: alt
+    kind: check
+    check: image-alt
+    args: { path: 'posts/*.md' }
+  - id: cards
+    kind: check
+    check: image-size
+    args: { path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }
   - id: voice
     kind: rubric
     rubric: rubrics/brand-voice.md
     pass: 0.7
 ```
+
+`urls_as: 23` counts each link as 23 characters, as X does, so a long repo URL does not push a
+post over 280.
 
 See [Done when](protocol.md#done-when) for every check, and [Content work and
 publishing](protocol.md#content-work-and-publishing) for the types, artifacts and the publish

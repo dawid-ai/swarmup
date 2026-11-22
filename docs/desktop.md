@@ -233,10 +233,12 @@ whether a verdict, **Run checks** or the merge did. A milestone's one criterion 
   **Separator** line for blocks), `contains` (**Text**, all or any of them, must or must not
   contain, ignore or match case), `heading-structure` (**Headings** in order, exactly one h1, no
   skipped levels), `front-matter` (**Keys**, and **Match** as `key: pattern` pairs separated by
-  `;`), `links-resolve` and `url-ok`. **Path** takes one path or several, comma-separated, and a
-  glob such as `posts/*.md` checks every file it matches. A `check` or `command` row also picks
-  **Checked at merge** or **Checked after publish**; a post-publish criterion shows **after
-  publish** in the list and runs when a person records the publish with `swarmup published`.
+  `;`), `image-alt`, `image-size` (**Width**, **Height** and **Max KB**), `links-resolve` and
+  `url-ok`. `char-count` also takes **Each link counts**, such as 23 for X. **Path** takes one
+  path or several, comma-separated, and a glob such as `posts/*.md` checks every file it
+  matches. A `check` or `command` row also picks **Checked at merge** or **Checked after
+  publish**; a post-publish criterion shows **after publish** in the list and runs when a person
+  records the publish with `swarmup published`.
 - **Run checks** runs the task's `command` and `check` criteria, as `swarmup criteria check ID`
   does, in the task's worktree, else the root's code checkout, and records the results in one
   `criteria-check` event. It runs in swarmupd, in the background: each criterion shows **queued**,
@@ -281,6 +283,12 @@ reviewer reads, at the reviewed commit, which the heading names.
 - An image shows inline. A URL or a document is a link that opens in your browser.
 - In **Done when**, a criterion's **Evidence** that names an artifact's path makes the path a
   link: click it to open that file in **Work**.
+
+**Mark published.** An open `publish` task a person owns shows **Mark published**. After you post
+the approved work, enter the URL it went live at and, optionally, the file you published, then
+choose **Record publish**. It does what `swarmup published ID --url URL --artifact PATH` does:
+tags the commit, writes the `publish` event, closes the task and runs its `when: publish`
+criteria (`POST /api/tasks/ID/published`, never a run's token).
 
 **Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
 `GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what
