@@ -1,10 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { dirname, join } from 'node:path';
 import type { ActivityItem, ActivityOptions, ActivityPage } from './activity.js';
-import type { ProposalMeta, VariantInfo } from './defs/index.js';
+import type { CompiledWorkflow, ProposalMeta, SwarmWorkType, VariantInfo } from './defs/index.js';
 import {
   applyVariantToBase,
   checkVariantName,
+  compileWorkflow,
+  gateBody,
+  readWorkflow,
   formatProblem,
   improvementPolicy,
   listVariantNames,
@@ -26,6 +28,7 @@ import type {
   AgentFiles,
   GroupProviders,
   RoleInput,
+  RoleScope,
 } from './agents.js';
 import type { Attachment } from './attachments.js';
 import { attachmentRefs, copyAttachment, findAttachment, saveAttachment } from './attachments.js';
@@ -35,6 +38,7 @@ import {
   canClaimType,
   checkRole,
   DEFAULT_PROVIDERS,
+  inAgentsDir,
   readAgentFiles,
   roleGroupFor,
   roleInactive,
@@ -162,7 +166,11 @@ import {
   PLAN_FIX_ROUNDS,
   PRIORITIES,
   PUBLISH_TYPE,
+  GATE_TYPE,
+  PERSON_TYPES,
 } from './model.js';
+import type { GateSpec } from './model.js';
+
 import type { PlanDoc } from './plan.js';
 import {
   checkPlan,
@@ -265,6 +273,33 @@ export interface NewTaskInput {
   planItem?: string;
   /** The reviewer the plan item names: a concrete actor. */
   review?: string;
+  /** A milestone started from a workflow (W5): its id, recorded in `task.md`. */
+  workflow?: string;
+  /** With `workflow`: the store's definition hash at the start. */
+  defsHash?: string;
+}
+
+/** What `swarmup workflow start` takes (W5). */
+export interface WorkflowStartInput {
+  /** Values by parameter name. */
+  params?: Record<string, string>;
+  /** The milestone title instead of the workflow's. */
+  title?: string;
+  /** The root whose workflow starts, and where the milestone goes; default the default root. */
+  root?: string;
+  project?: string;
+  priority?: Priority;
+  /** A note for the plan event. */
+  message?: string;
+}
+
+/** What `swarmup workflow start` did (W5). */
+export interface WorkflowStartResult {
+  milestone: TaskMeta;
+  compiled: CompiledWorkflow;
+  /** The plan proposal, and the approval when a person started a `starter` workflow. */
+  proposed: PlanResult;
+  approved?: PlanResult;
 }
 
 export interface DelegateInput {
@@ -538,13 +573,24 @@ function expectsCommands(v: TaskView): boolean {
 }
 
 /**
- * Refuses an agent as the one who claims or owns a publish task (W8), unless --force, which the
- * event records: publishing is a person's step.
+ * Refuses an agent as the one who claims or owns a publish task (W8) or a gate (W5), unless
+ * --force, which the event records: publishing and a gate's decision are a person's steps.
  */
 function refuseAgentPublisher(v: TaskView, ctx: ActCtx, who: string, what: 'claim' | 'own'): void {
-  if (v.meta.type !== PUBLISH_TYPE || isHuman(who)) return;
+  if (!PERSON_TYPES.includes(v.meta.type) || isHuman(who)) return;
   ctx.needForce(
-    `${who} cannot ${what} ${v.meta.id}: a publish task is a person's; only a person publishes`,
+    v.meta.type === GATE_TYPE
+      ? `${who} cannot ${what} ${v.meta.id}: a gate is a person's decision`
+      : `${who} cannot ${what} ${v.meta.id}: a publish task is a person's; only a person publishes`,
+  );
+}
+
+/** Refuses an agent or a run closing a gate (W5): only a person approves or rejects one. */
+function refuseAgentGate(v: TaskView, ctx: ActCtx, run: string | null, verb: string): void {
+  if (v.meta.type !== GATE_TYPE) return;
+  if (isHuman(ctx.actor) && !run) return;
+  throw new OpsError(
+    `${v.meta.id} is a gate: only a person ${verb}s it, outside any run; ${run ? `run ${run}` : ctx.actor} cannot`,
   );
 }
 
@@ -616,7 +662,8 @@ export interface InboxItem {
     | 'decide'
     | 'stranded'
     | 'triage'
-    | 'record';
+    | 'record'
+    | 'gate';
   /**
    * A task id, a channel as `#name`, or a decision id. Task and decision ids are written
    * `root/id` when more than one root is visible, so the ref is unique and resolvable.
@@ -661,6 +708,13 @@ export interface InboxItem {
    * it is `swarmup plan approve` or `swarmup plan reject`, never `swarmup verdict`.
    */
   plan?: { event: string; items: number; minutes: number; change: boolean };
+  /**
+   * gate (W5): a gate of a plan whose tasks before it are done, waiting for this person's
+   * decision. Approve with `swarmup done`, reject with `swarmup park`.
+   */
+  gate?: GateSpec;
+  /** gate: the milestone the gate belongs to. */
+  milestone?: string;
 }
 
 /**
@@ -1102,6 +1156,7 @@ export class Workspace {
       this.agentCache = {
         agents: each.flatMap((f) => f.agents),
         problems: each.flatMap((f) => f.problems),
+        shadowed: each.flatMap((f) => f.shadowed ?? []),
       };
     }
     return this.agentCache;
@@ -1121,7 +1176,10 @@ export class Workspace {
    * Creates (`create`) or updates the role file of `input.id` in the root named `opts.root`, or
    * in the root that holds it, or the default root. Secrets are refused like everywhere else.
    */
-  saveRole(input: RoleInput, opts: { root?: string; create?: boolean } = {}): AgentDef {
+  saveRole(
+    input: RoleInput,
+    opts: { root?: string; create?: boolean; scope?: RoleScope } = {},
+  ): AgentDef {
     this.requireActor();
     // Types and sizes first, so the secret scan below only sees checked text.
     const role = checkRole(input);
@@ -1135,7 +1193,7 @@ export class Workspace {
     );
     const existing = this.agents().filter((a) => a.id === role.id);
     const rootOf = (file: string): Root | undefined =>
-      this.roots.find((r) => join(r.dir, 'agents') === dirname(file));
+      this.roots.find((r) => inAgentsDir(r.dir, file));
     if (opts.create && existing.length > 0) {
       const name = rootOf(existing[0]!.file)?.name;
       throw new OpsError(`${role.id} already has a role file${name ? ` in ${name}` : ''}`, 2);
@@ -1157,7 +1215,7 @@ export class Workspace {
     } else {
       root = (existing[0] && rootOf(existing[0].file)) ?? this.defaultRoot();
     }
-    const def = writeAgent(root, role, { create: opts.create });
+    const def = writeAgent(root, role, { create: opts.create, scope: opts.scope });
     this.agentCache = undefined;
     return def;
   }
@@ -1758,6 +1816,8 @@ export class Workspace {
         plan_item: input.planItem,
         review: input.review ? assertActor(input.review, 'reviewer') : undefined,
         ...(ownerForced ? { owner_forced: true } : {}),
+        ...(input.workflow ? { workflow: input.workflow } : {}),
+        ...(input.workflow && input.defsHash ? { defs_hash: input.defsHash } : {}),
         created_by: actor,
         created_at: new Date(this.now()).toISOString(),
       },
@@ -1778,6 +1838,45 @@ export class Workspace {
   ): { meta: TaskMeta; proposed?: string; notes?: string[] } {
     const actor = this.requireActor();
     const type = input.type ?? 'task';
+    // A kind of work in swarm.yaml gives a task filed without criteria its default ones (W5).
+    const kind = noCriteria(input.doneWhen)
+      ? this.workType(type, input.labels ?? [], root)
+      : undefined;
+    if (kind?.done_when?.length) input = { ...input, doneWhen: kind.done_when };
+    const fits =
+      kind?.workflow && type !== MILESTONE_TYPE
+        ? [`this kind of work has a workflow: swarmup workflow start ${kind.workflow}`]
+        : [];
+    const res = this.addTaskAs(input, type, actor, root);
+    return fits.length > 0 ? { ...res, notes: [...(res.notes ?? []), ...fits] } : res;
+  }
+
+  /**
+   * The first kind of work in the root's `swarm.yaml` (`work_types`) that a task of `type` with
+   * `labels` is, or undefined (W5). An entry matches when its `types` name the type (or it has
+   * none) and the task carries one of its `labels` (or it has none); an entry with neither
+   * matches nothing.
+   */
+  workType(
+    type: string,
+    labels: readonly string[],
+    root: Root = this.defaultRoot(),
+  ): SwarmWorkType | undefined {
+    const kinds = loadDefinitions(root.dir).swarm?.work_types ?? [];
+    return kinds.find(
+      (w) =>
+        (w.types?.length || w.labels?.length) &&
+        (!w.types?.length || w.types.includes(type)) &&
+        (!w.labels?.length || labels.some((l) => w.labels!.includes(l))),
+    );
+  }
+
+  private addTaskAs(
+    input: NewTaskInput,
+    type: string,
+    actor: string,
+    root?: Root,
+  ): { meta: TaskMeta; proposed?: string; notes?: string[] } {
     // Work filed as itself: the checkable-criteria rule first, so a refusal writes nothing. A
     // proposal becomes a finding, which the rule leaves alone.
     const direct = (): { meta: TaskMeta; notes?: string[] } => {
@@ -2512,6 +2611,13 @@ export class Workspace {
     const { root } = this.resolve(ref);
     return this.act(ref, (v, ctx) => {
       ctx.requireOpen('close');
+      // A gate closes on a person's approval (W5), which is the whole of its work.
+      refuseAgentGate(v, ctx, this.run, 'approve');
+      if (v.meta.type === GATE_TYPE) {
+        return [
+          { type: 'done', body: message.trim() || `Approved: ${v.meta.gate?.ask ?? v.meta.title}` },
+        ];
+      }
       const reviewing = v.status === 'needs-review' && ownerMatches(v.reviewer, ctx.actor);
       // A plan task with a reviewer closes only through the reviewer its review event named
       // (AO-0110): the owner's `done` would skip the reviewer the person approved.
@@ -2944,6 +3050,72 @@ export class Workspace {
   }
 
   park(ref: string, message: string, mark?: MarkInput): ActResult {
+    const { root, id } = this.resolve(ref);
+    if (root.readTask(id).meta.type === GATE_TYPE) return this.gateReject(ref, message, mark);
+    return this.parkPlain(ref, message, mark);
+  }
+
+  /**
+   * A person rejects a gate (W5) with `swarmup park`. With `on_reject: revise` the tasks the gate
+   * waits for reopen with the note, and the gate stays open: it asks again when they are done.
+   * Otherwise (`park`, the default) the gate is parked, then every open task of the milestone's
+   * plan that waits on it, directly or through another, and the milestone when none of its plan
+   * is left open.
+   */
+  private gateReject(ref: string, message: string, mark?: MarkInput): ActResult {
+    const { root, id } = this.resolve(ref);
+    const note = message.trim();
+    if (!note) throw new OpsError(`say why: swarmup park ${id} "why"`, 2);
+    const meta = root.readTask(id).meta;
+    if (meta.gate?.on_reject === 'revise') {
+      const res = this.markAct(ref, mark, (v, ctx) => {
+        ctx.requireOpen('reject');
+        refuseAgentGate(v, ctx, this.run, 'reject');
+        return [{ type: 'comment', body: `Sent back for revision: ${note}` }];
+      });
+      for (const dep of meta.blocked_by ?? []) {
+        const target = this.depTarget(root, dep);
+        if (!target) continue;
+        const st = this.freshView(target.root, target.id).status;
+        if (st !== 'done' && st !== 'parked') continue;
+        this.reopen(`${target.root.name}/${target.id}`, `${id} (gate) sent this back: ${note}`);
+      }
+      return res;
+    }
+    const res = this.markAct(ref, mark, (v, ctx) => {
+      ctx.requireOpen('reject');
+      refuseAgentGate(v, ctx, this.run, 'reject');
+      return [{ type: 'park', body: `Rejected: ${note}` }];
+    });
+    const milestone = meta.parent;
+    if (!milestone || !meta.plan_item) return res;
+    const kids = root
+      .listTaskIds()
+      .map((k) => this.freshView(root, k))
+      .filter((v) => v.meta.parent === milestone && v.meta.plan_item);
+    const stopped = new Set([id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const v of kids) {
+        if (stopped.has(v.meta.id) || !OPEN_STATUSES.has(v.status)) continue;
+        if (!(v.meta.blocked_by ?? []).some((b) => stopped.has(b))) continue;
+        stopped.add(v.meta.id);
+        grew = true;
+      }
+    }
+    for (const v of kids) {
+      if (v.meta.id === id || !stopped.has(v.meta.id)) continue;
+      this.parkPlain(`${root.name}/${v.meta.id}`, `${id} (gate) was rejected: ${note}`);
+    }
+    const open = kids.filter((v) => OPEN_STATUSES.has(this.freshView(root, v.meta.id).status));
+    const ms = this.freshView(root, milestone);
+    if (open.length === 0 && OPEN_STATUSES.has(ms.status)) {
+      this.parkPlain(`${root.name}/${milestone}`, `${id} (gate) was rejected: ${note}`);
+    }
+    return res;
+  }
+
+  private parkPlain(ref: string, message: string, mark?: MarkInput): ActResult {
     const { root } = this.resolve(ref);
     return this.markAct(ref, mark, (v, ctx) => {
       ctx.requireOpen('park');
@@ -3271,6 +3443,7 @@ export class Workspace {
       if (tasks.has(item.key)) continue;
       const blocked = (item.after ?? []).flatMap((k) => tasks.get(k) ?? []);
       const serves = item.for ? `Serves: ${item.for} (${tasks.get(item.for) ?? 'no task'})` : '';
+      const gate = item.type === GATE_TYPE ? (item.gate ?? { ask: item.title }) : undefined;
       const meta = root.createTask(
         {
           title: item.title,
@@ -3284,10 +3457,11 @@ export class Workspace {
           done_when: [item.done_when ?? item.title],
           plan_item: `${id}#${item.key}`,
           review: item.review,
+          ...(gate ? { gate } : {}),
           created_by: authors.get(item.key) ?? actor,
           created_at: stamp().at,
         },
-        [item.body, serves].filter(Boolean).join('\n\n'),
+        [item.body, serves, gate ? gateBody(gate) : ''].filter(Boolean).join('\n\n'),
         this.user.id_block ?? 0,
       );
       tasks.set(item.key, meta.id);
@@ -3390,6 +3564,103 @@ export class Workspace {
    */
   planPropose(ref: string, source: string, message = ''): PlanResult {
     assertNoSecret(source, message);
+    return this.proposePlan(ref, (plan) => checkPlan(source, 'proposal', plan), message);
+  }
+
+  /**
+   * `swarmup plan propose ID --workflow W`: proposes workflow `W` of the milestone's root,
+   * compiled with `params`, as the milestone's first plan (W5). The plan event's note names the
+   * workflow and the definition hash. Always a proposal, whatever the workflow's `approval`.
+   */
+  planProposeWorkflow(
+    ref: string,
+    workflow: string,
+    opts: { params?: Record<string, string>; message?: string } = {},
+  ): PlanResult {
+    const { root } = this.resolve(ref);
+    const compiled = this.compileFor(root, workflow, opts.params);
+    const hash = loadDefinitions(root.dir).hash;
+    const note = [opts.message?.trim(), `Workflow ${workflow} (definitions ${shortHash(hash)}).`]
+      .filter(Boolean)
+      .join('\n\n');
+    assertNoSecret(note);
+    return this.proposePlan(
+      ref,
+      (plan) => {
+        validatePlan(compiled.doc, 'proposal', plan);
+        return compiled.doc;
+      },
+      note,
+    );
+  }
+
+  /** Workflow `id` of `root`, compiled for one start with the root's human (W5). */
+  private compileFor(root: Root, id: string, params?: Record<string, string>): CompiledWorkflow {
+    const human = root.config.human;
+    if (!human) {
+      throw new OpsError(
+        `${root.name} names no human in config.yml, so its gates have no owner; set human: human:<name>`,
+        2,
+      );
+    }
+    return compileWorkflow(readWorkflow(root.dir, id), { params, human });
+  }
+
+  /**
+   * `swarmup workflow start` (W5): creates a milestone from workflow `id` (its `task.md` records the
+   * workflow and the definition hash) and proposes the compiled plan. When a person starts a
+   * workflow with `approval: starter`, the start approves the plan too, and its tasks are created;
+   * an agent's start, or a `proposal` workflow, waits for a person.
+   */
+  workflowStart(id: string, input: WorkflowStartInput = {}): WorkflowStartResult {
+    const actor = this.requireActor();
+    const root = input.root ? this.roots.find((r) => r.name === input.root) : this.defaultRoot();
+    if (!root) throw new OpsError(`no root named '${input.root}'`, 2);
+    if (root.isMirror)
+      throw new OpsError(`${root.name} is a mirror; start the workflow in its own root`, 2);
+    const compiled = this.compileFor(root, id, input.params);
+    if (input.title !== undefined)
+      compiled.milestone.title = input.title.trim() || compiled.milestone.title;
+    const hash = loadDefinitions(root.dir).hash;
+    const milestone = this.newTask(
+      {
+        title: compiled.milestone.title,
+        type: MILESTONE_TYPE,
+        doneWhen: [compiled.milestone.done_when],
+        project: input.project,
+        priority: input.priority,
+        workflow: id,
+        defsHash: hash,
+      },
+      root,
+    );
+    const ref = `${root.name}/${milestone.id}`;
+    const note = [
+      input.message?.trim(),
+      `Started from workflow ${id} (definitions ${shortHash(hash)}).`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const proposed = this.proposePlan(ref, () => compiled.doc, note, { started: true });
+    const person = isHuman(actor) && !this.run;
+    if (compiled.approval !== 'starter' || !person) return { milestone, compiled, proposed };
+    const approved = this.planApprove(ref, {
+      message: `Approved on start: workflow ${id} has approval: starter.`,
+    });
+    return { milestone, compiled, proposed, approved };
+  }
+
+  /**
+   * Stores the first plan of a milestone as a `plan` event and sends the milestone to the person
+   * for review. For the holder of the milestone's claim, a person, or the start that just created
+   * the milestone (`started`).
+   */
+  private proposePlan(
+    ref: string,
+    plan: (state: PlanState | null) => PlanDoc,
+    message: string,
+    opts: { started?: boolean } = {},
+  ): PlanResult {
     return this.planWrite(ref, {}, ({ id, v, ctx, write }) => {
       ctx.requireOpen('propose a plan for');
       if (v.plan?.approval) {
@@ -3397,15 +3668,16 @@ export class Workspace {
           `${id} has an approved plan: revise it with swarmup plan amend ${id} --kind change`,
         );
       }
-      if (!ctx.holds) ctx.needHolder();
+      if (!ctx.holds && !opts.started) ctx.needHolder();
       if (v.plan?.pending) {
         throw new OpsError(
           `${id} already has a plan that waits for approval (${v.plan.pending.event}); the ` +
             `person approves it or sends it back first`,
         );
       }
-      const doc = checkPlan(source, 'proposal', v.plan);
+      const doc = plan(v.plan);
       this.planOwnerWarnings(doc, ctx);
+
       write({ type: 'plan', body: planBody(doc, message) });
       const sum = minutesText(planMinutes(doc.items));
       const n = doc.items.length;
@@ -3850,6 +4122,7 @@ export class Workspace {
         ...(item.type ? { type: item.type } : {}),
         ...(item.priority ? { priority: item.priority } : {}),
         ...(item.body ? { body: item.body } : {}),
+        ...(item.gate ? { gate: item.gate } : {}),
         ...(task && s ? { task, status: s.status, taskOwner: s.owner, spent } : {}),
       };
     };
@@ -5749,6 +6022,23 @@ export class Workspace {
           ...blocks(v),
         });
       }
+      // A gate whose tasks before it are done waits for this person's decision (W5).
+      const gateReady = v.status === 'todo' || (v.status === 'blocked' && v.unblocked);
+      if (human && v.meta.type === GATE_TYPE && v.owner === actor && gateReady) {
+        const gate = v.meta.gate ?? { ask: v.meta.title };
+        items.push({
+          kind: 'gate',
+          task,
+          root,
+          title: v.meta.title,
+          type: GATE_TYPE,
+          summary: gate.ask,
+          gate,
+          ...(v.meta.parent ? { milestone: ref(v.root, v.meta.parent) } : {}),
+          ...blocks(v),
+        });
+        continue;
+      }
       if (human && v.owner === actor && (v.status === 'todo' || v.status === 'in-progress')) {
         items.push({ kind: 'owned', task, root, title: v.meta.title, summary: v.status });
       }
@@ -5874,6 +6164,15 @@ function criteriaTexts(entries: readonly DoneWhenEntry[] | undefined): string[] 
 }
 
 /** The criteria a new task gets: its own, else its type's defaults (`TYPE_CRITERIA`). */
+/** True when a task input names no criteria: no `--done-when`, or only empty ones. */
+function noCriteria(doneWhen: NewTaskInput['doneWhen']): boolean {
+  if (doneWhen === undefined || doneWhen === null) return true;
+  if (typeof doneWhen === 'string') return !doneWhen.trim();
+  return doneWhen.every(
+    (d) => d === undefined || d === null || (typeof d === 'string' && !d.trim()),
+  );
+}
+
 function doneWhenOf(input: NewTaskInput): DoneWhenEntry[] | undefined {
   return (
     parseDoneWhen(input.doneWhen) ??
@@ -5984,6 +6283,8 @@ export interface PlanRow {
   type?: string;
   priority?: Priority;
   body?: string;
+  /** A gate item (W5): what its person decides. */
+  gate?: GateSpec;
   /** The item's task, once created, with its current status and owner and its runs' minutes. */
   task?: string;
   status?: Status;

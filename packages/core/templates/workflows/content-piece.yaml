@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=../.schemas/workflow.schema.json
+#
+# One piece of content: a brief the person approves, a draft the editor reviews, then the person
+# publishes it. Start it with
+#   swarmup workflow start content-piece --param piece="launch post" --param channel=linkedin
+title: Content piece
+description: One post or article from a brief you approve to a draft the editor reviews; you publish it.
+params:
+  piece:
+    description: What the piece is, such as "launch post"
+    required: true
+  channel:
+    description: Where it goes, such as blog, x, linkedin or newsletter
+    required: true
+  slug:
+    description: The file name part after the channel, posts/<channel>-<slug>.md
+    default: draft
+milestone:
+  title: '{{piece}} ({{channel}})'
+  done_when: '{{piece}} is live on {{channel}} as approved, and recorded with swarmup published'
+approval: proposal
+criteria:
+  content:
+    id: voice
+    kind: rubric
+    rubric: rubrics/brand-voice.md
+    pass: 0.7
+stages:
+  - key: brief
+    title: 'Write the brief for {{piece}}'
+    owner: '*:writer'
+    estimate: 30m
+    type: docs
+    body: >-
+      Write the brief in the task thread: the audience, the one point the piece makes, the claims
+      it may use from facts/claims.md, the channel's limits, and the call to action.
+    done_when: 'The brief names the audience, the point, the claims and the call to action'
+  - key: brief-ok
+    after: brief
+    gate:
+      ask: 'Is the brief for {{piece}} right?'
+      on_reject: revise
+  - key: draft
+    title: 'Draft {{piece}} for {{channel}}'
+    owner: '*:writer'
+    review: codex:editor
+    estimate: 2h
+    type: content
+    after: brief-ok
+    body: >-
+      Write posts/{{channel}}-{{slug}}.md from the approved brief, with front matter channel,
+      status: draft and task. State only claims that facts/claims.md holds. Finish with
+      `swarmup review` and `--artifact posts/{{channel}}-{{slug}}.md`.
+    rework:
+      to: '*:writer'
+      max: 2
+  - key: publish
+    title: 'Publish {{piece}} on {{channel}}'
+    type: publish
+    owner: '{{human}}'
+    estimate: 15m
+    after: draft
+    body: |-
+      Post the approved piece from main yourself, then record it:
+
+      ```sh
+      swarmup published <ID> --url <where it went live> --artifact posts/{{channel}}-{{slug}}.md
+      ```
+    done_when: 'The piece is live and recorded with swarmup published'

@@ -1,11 +1,12 @@
 /**
- * `swarm.yaml`: the team's settings kept in the task store, in git. Phase 1 reads `defaults`,
- * `runtimes.<rt>.{model, effort}` and `roles`; the other top-level keys are accepted and warned
- * about until their phase lands.
+ * `swarm.yaml`: the team's settings kept in the task store, in git. swarmupd reads `defaults`,
+ * `runtimes.<rt>.{model, effort}`, `roles` and `policy`; `work_types` give new tasks their
+ * default criteria and workflow; `improvement` is the W6 policy. The other top-level keys are
+ * accepted and warned about until their phase lands.
  */
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
-import { any, bool, enumOf, int, list, map, obj, ref, str } from './schema.js';
+import { any, bool, enumOf, int, list, map, num, obj, oneOf, ref, str } from './schema.js';
 import type { Schema } from './schema.js';
 import {
   EFFORT_HINT,
@@ -49,12 +50,57 @@ export interface SwarmImprovement {
   max_open_proposals?: number;
 }
 
+/** Which test and check files a review run's prompt lists, as `swarmupd.test_changes.<root>`. */
+export interface SwarmTestChanges {
+  tests?: string[];
+  checks?: string[];
+}
+
+/**
+ * Team policy (W5 phase 2): the git half of top-level `swarmupd` keys. A machine that sets the
+ * key in its user config wins.
+ */
+export interface SwarmPolicy {
+  review_rounds?: number;
+  stuck_runs?: number;
+  review_backlog?: number;
+  review_fallback_hours?: number;
+  plan_check_minutes?: number;
+  budget_minutes?: number;
+  /** For this store's root: the patterns, or false for no list. */
+  test_changes?: SwarmTestChanges | false;
+}
+
+/** The policy keys of `swarm.yaml` that map one to one onto top-level `swarmupd` keys. */
+export const POLICY_KEYS = [
+  'review_rounds',
+  'stuck_runs',
+  'review_backlog',
+  'review_fallback_hours',
+  'plan_check_minutes',
+  'budget_minutes',
+] as const;
+
+/**
+ * A kind of work (W5 phase 3): tasks whose type is in `types` (any type without it) and that
+ * carry one of `labels` (any labels without it). The first match gives a new task without
+ * `--done-when` its `done_when`, and names the workflow that fits.
+ */
+export interface SwarmWorkType {
+  types?: string[];
+  labels?: string[];
+  workflow?: string;
+  done_when?: unknown[];
+}
+
 /** The part of `swarm.yaml` swarmupd applies. */
 export interface SwarmDefs {
   swarmup_defs: number;
   defaults?: { budget_min?: number; effort?: string; model?: string };
   runtimes?: Record<string, SwarmRuntime>;
   roles?: Record<string, SwarmRole>;
+  policy?: SwarmPolicy;
+  work_types?: SwarmWorkType[];
   improvement?: SwarmImprovement;
 }
 
@@ -146,7 +192,7 @@ export const SWARM_SCHEMA: Schema = obj(
       {
         budget_min: int({
           min: 1,
-          inactive: 'budget defaults come with the policy keys (phase 2)',
+          doc: "Run budget in minutes for agents that set none. It wins over `policy.budget_minutes`; a machine's `swarmupd.budget_minutes` wins over both.",
         }),
         effort: effortSchema('Effort for runtimes that set none, here or on the machine.'),
         model: modelSchema(
@@ -166,8 +212,73 @@ export const SWARM_SCHEMA: Schema = obj(
       nullable: true,
       doc: 'Providers and limits per role, as `swarmupd.roles` takes them.',
     }),
-    policy: later('team policy moves into git in phase 2'),
-    work_types: later('work types come with workflows (phase 3)'),
+    policy: obj(
+      {
+        review_rounds: int({
+          min: 0,
+          doc: '`changes` verdicts in a row before swarmupd stops waking the author. 0 turns it off.',
+        }),
+        stuck_runs: int({
+          min: 0,
+          doc: 'Runs in a row that end without finishing before swarmupd stops starting a task. 0 turns it off.',
+        }),
+        review_backlog: int({
+          min: 1,
+          doc: 'Tasks waiting for review in one project at which writing roles hold and reviewers burst.',
+        }),
+        review_fallback_hours: num({
+          min: 0,
+          doc: "Hours a review waits for the other provider's reviewer before it falls back. 0 never.",
+        }),
+        plan_check_minutes: int({
+          min: 0,
+          doc: 'Minutes between two plan checks. 0 turns them off.',
+        }),
+        budget_minutes: int({
+          min: 1,
+          doc: 'Run budget in minutes when neither the task nor the agent sets one; `defaults.budget_min` wins.',
+        }),
+        test_changes: oneOf(
+          [
+            enumOf([false]),
+            obj(
+              {
+                tests: list(str(), { doc: 'Patterns of test files.' }),
+                checks: list(str(), { doc: 'Patterns of test, lint and CI configuration.' }),
+              },
+              { doc: 'The patterns; an unset list takes the defaults.' },
+            ),
+          ],
+          {
+            doc: "Which test and check files a review run's prompt lists for this store's root, or false for no list.",
+          },
+        ),
+      },
+      {
+        nullable: true,
+        doc: "Team policy: the git half of top-level `swarmupd` keys. A machine's key wins.",
+      },
+    ),
+    work_types: list(
+      obj(
+        {
+          types: list(str(), { doc: 'Task types this kind of work has; any type when unset.' }),
+          labels: list(str(), {
+            doc: 'Labels of which a task carries one; any labels when unset.',
+          }),
+          workflow: str({
+            pattern: /^[a-z0-9][a-z0-9-]{0,39}$/,
+            hint: 'name a workflow such as bugfix',
+            doc: 'The workflow (`workflows/<id>.yaml`) that fits this kind of work.',
+          }),
+          done_when: list(any(), {
+            doc: 'Criteria a new task of this kind gets when it names none (`swarmup new` without --done-when).',
+          }),
+        },
+        { doc: 'One kind of work: the first entry that matches a task applies.' },
+      ),
+      { nullable: true, doc: 'Kinds of work, with default criteria and workflow.' },
+    ),
     scoring: later('scorers in git come in phase 4'),
     checks: later('checks in git come in phase 4, after `swarmup defs trust`'),
     variants: later('variants come in phase 5'),
@@ -217,9 +328,12 @@ const KNOWN_ROLE_KEYS = [
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const strings = (x: unknown): string[] | undefined =>
+  Array.isArray(x) ? x.filter((e): e is string => typeof e === 'string') : undefined;
+
 /**
- * The phase 1 part of a parsed `swarm.yaml` that passed {@link SWARM_SCHEMA}: later-phase keys,
- * unknown keys and `null` values are left out.
+ * The part of a parsed `swarm.yaml` that passed {@link SWARM_SCHEMA} and that SwarmUp applies:
+ * later-phase keys, unknown keys and `null` values are left out.
  */
 export function swarmDefs(value: unknown): SwarmDefs {
   const v = isRecord(value) ? value : {};
@@ -228,6 +342,7 @@ export function swarmDefs(value: unknown): SwarmDefs {
     const d: NonNullable<SwarmDefs['defaults']> = {};
     if (typeof v.defaults.model === 'string') d.model = v.defaults.model;
     if (typeof v.defaults.effort === 'string') d.effort = v.defaults.effort;
+    if (typeof v.defaults.budget_min === 'number') d.budget_min = v.defaults.budget_min;
     if (Object.keys(d).length > 0) out.defaults = d;
   }
   if (isRecord(v.runtimes)) {
@@ -251,12 +366,37 @@ export function swarmDefs(value: unknown): SwarmDefs {
     }
     out.roles = roles;
   }
+  if (isRecord(v.policy)) {
+    const p: SwarmPolicy = {};
+    for (const k of POLICY_KEYS) if (typeof v.policy[k] === 'number') p[k] = v.policy[k];
+    const tc = v.policy.test_changes;
+    if (tc === false) p.test_changes = false;
+    else if (isRecord(tc)) {
+      const t: SwarmTestChanges = {};
+      const tests = strings(tc.tests);
+      if (tests) t.tests = tests;
+      const checks = strings(tc.checks);
+      if (checks) t.checks = checks;
+      p.test_changes = t;
+    }
+    if (Object.keys(p).length > 0) out.policy = p;
+  }
+  if (Array.isArray(v.work_types)) {
+    out.work_types = v.work_types.filter(isRecord).map((w) => {
+      const t: SwarmWorkType = {};
+      const types = strings(w.types);
+      if (types) t.types = types;
+      const labels = strings(w.labels);
+      if (labels) t.labels = labels;
+      if (typeof w.workflow === 'string') t.workflow = w.workflow;
+      if (Array.isArray(w.done_when)) t.done_when = w.done_when;
+      return t;
+    });
+  }
   if (isRecord(v.improvement)) {
     const i = v.improvement;
     const imp: SwarmImprovement = {};
     if (typeof i.agent === 'string') imp.agent = i.agent;
-    const strings = (x: unknown): string[] | undefined =>
-      Array.isArray(x) ? x.filter((e): e is string => typeof e === 'string') : undefined;
     const may = strings(i.may_change);
     if (may) imp.may_change = may;
     const frozen = strings(i.frozen);

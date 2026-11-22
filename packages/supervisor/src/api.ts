@@ -8,10 +8,14 @@ import type {
   Priority,
   RepeatInput,
   RoleInput,
+  RoleScope,
   TaskView,
   Workspace,
 } from '@swarmup/core';
 import {
+  agentRuntimeValues,
+  readAgentLayers,
+  readWorkflows,
   checkDefinitionText,
   COMMAND_TIMEOUT_MS,
   loadDefinitions,
@@ -932,7 +936,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const def = ws.agent(id);
         if (!def) throw new HttpError(404, `no role file for ${id}`);
         const root = ws.roots.find((r) => def.file.startsWith(r.dir + sep))?.name ?? null;
-        return send(res, 200, { ...roleOut(def), root });
+        return send(res, 200, {
+          ...roleOut(def),
+          root,
+          ...(def.folder ? { layers: readAgentLayers(def) } : {}),
+          settings: roleSettings(sup, def),
+        });
       }
       if (method === 'POST' && !id) {
         humanOnly('editing role files');
@@ -940,11 +949,68 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const role = (body.role ?? {}) as RoleInput;
         if (typeof role !== 'object' || Array.isArray(role))
           throw new HttpError(400, 'role: expected an object');
+        const scope = str(body.scope);
+        if (scope !== undefined && scope !== 'role' && scope !== 'runtime') {
+          throw new HttpError(400, 'scope: use role or runtime');
+        }
         const def = ws.saveRole(role, {
           root: str(body.root) || undefined,
           create: body.create === true,
+          scope: scope as RoleScope | undefined,
         });
         return send(res, body.create === true ? 201 : 200, roleOut(def));
+      }
+    }
+    // Workflows (W5): each root's list, one compiled with sample values, and a start.
+    if (area === 'workflows') {
+      const ws = wsAs();
+      if (method === 'GET' && !id) {
+        return send(
+          res,
+          200,
+          ws.roots
+            .filter((r) => !r.isMirror)
+            .flatMap((r) =>
+              readWorkflows(r.dir).map((w) => ({
+                root: r.name,
+                id: w.id,
+                title: w.def?.title,
+                description: w.def?.description,
+                approval: w.def ? (w.def.approval ?? 'proposal') : undefined,
+                params: w.def?.params ?? {},
+                stages: w.def?.stages.length ?? 0,
+                ok: w.def !== null,
+                problems: w.problems.map((p) => `${p.path}: ${p.message}`),
+              })),
+            ),
+        );
+      }
+      if (method === 'POST' && id === 'start') {
+        humanOnly('starting a workflow');
+        if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+        const raw = body.params ?? {};
+        if (typeof raw !== 'object' || Array.isArray(raw) || raw === null) {
+          throw new HttpError(400, 'params: expected an object of names to values');
+        }
+        const params = Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>)
+            .filter(([, v]) => v !== undefined && v !== null && String(v) !== '')
+            .map(([k, v]) => [k, String(v)]),
+        );
+        const out = ws.workflowStart(need(body.id, 'id'), {
+          params,
+          root: str(body.root) || undefined,
+          title: str(body.title) || undefined,
+          project: str(body.project) || undefined,
+          message: str(body.message) || undefined,
+        });
+        return send(res, 201, {
+          milestone: out.milestone,
+          workflow: out.compiled.id,
+          approved: Boolean(out.approved),
+          created: out.approved?.created ?? [],
+          warnings: [...(out.proposed.warnings ?? []), ...(out.approved?.warnings ?? [])],
+        });
       }
     }
     if (method === 'GET' && area === 'inbox') {
@@ -1516,6 +1582,9 @@ export function compact(v: TaskView): Json {
     checkpoint: v.checkpoint,
     delegation: v.delegation ?? undefined,
     updatedAt: v.updatedAt,
+    // A gate (W5): its question; a milestone from a workflow: the workflow's id.
+    gate: v.meta.gate,
+    workflow: v.meta.workflow,
   };
 }
 
@@ -1539,6 +1608,57 @@ function roleOut({ file: _file, body, ...rest }: AgentDef): Omit<AgentDef, 'file
   instructions: string;
 } {
   return { ...rest, instructions: body.trim() };
+}
+
+/** One setting of a role, with where its value comes from, for the app's role editor (W5). */
+interface RoleSetting {
+  key: string;
+  value: unknown;
+  /** `machine`: this machine's user config; `swarm.yaml`: the store's; `role`: the role file. */
+  from: 'machine' | 'swarm.yaml' | 'role';
+  /** The value it overrides, when a machine value wins over a git one. */
+  over?: unknown;
+}
+
+/**
+ * The run settings of an agent and where each comes from (W5): model and effort, budget, and its
+ * role's providers and limits. A machine value wins over `swarm.yaml` and the role file.
+ */
+function roleSettings(sup: Supervisor, def: AgentDef): RoleSetting[] {
+  const at = def.id.indexOf(':');
+  const runtime = def.id.slice(0, at);
+  const role = def.id.slice(at + 1);
+  const machine = sup.machineConfig;
+  const out: RoleSetting[] = [];
+  const own = machine.agents[def.id] ?? {};
+  const file = agentRuntimeValues(def, runtime);
+  for (const k of ['model', 'effort'] as const) {
+    if (own[k])
+      out.push({ key: k, value: own[k], from: 'machine', ...(file[k] ? { over: file[k] } : {}) });
+    else if (file[k]) out.push({ key: k, value: file[k], from: 'role' });
+  }
+  if (own.budget) out.push({ key: 'budget', value: own.budget, from: 'machine' });
+  for (const v of sup.defsView().values) {
+    const mine = v.key.startsWith(`runtimes.${runtime}.`) || v.key.startsWith(`roles.${role}.`);
+    if (!mine || v.source === 'unused') continue;
+    // The agent's own model and effort, when it has them, win over its runtime's.
+    if (v.key.startsWith('runtimes.') && out.some((o) => o.key === v.key.split('.').pop()))
+      continue;
+    out.push({
+      key: v.key,
+      value: v.value,
+      from: v.source === 'machine' ? 'machine' : 'swarm.yaml',
+      ...(v.source === 'machine' && JSON.stringify(v.git) !== JSON.stringify(v.value)
+        ? { over: v.git }
+        : {}),
+    });
+  }
+  const local = machine.roles[role] ?? {};
+  for (const [k, value] of Object.entries(local)) {
+    if (value === undefined || out.some((o) => o.key === `roles.${role}.${k}`)) continue;
+    out.push({ key: `roles.${role}.${k}`, value, from: 'machine' });
+  }
+  return out;
 }
 
 function taskSignature(views: TaskView[]): string {

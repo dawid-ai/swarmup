@@ -75,6 +75,8 @@ export interface ProjectPlan {
   tasks: PlannedTask[];
   /** The root's `workspace_types` (W8); unset keeps the default. */
   workspaceTypes?: string[];
+  /** Starter workflows (`templates/workflows/<id>.yaml`) copied into the store (W5). */
+  workflows?: string[];
 }
 
 export interface ApplyOptions {
@@ -529,6 +531,8 @@ export interface ProjectTemplate {
   mergeChecks?: string[];
   /** With `--store`: the paths `swarmupd.test_changes.<root>.checks` flags to the reviewer. */
   testChanges?: string[];
+  /** Starter workflows (`templates/workflows/<id>.yaml`) the store gets (W5). */
+  workflows?: string[];
 }
 
 const AGENTS_MD = `# Instructions for agents working on {{name}}
@@ -565,6 +569,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     id: 'web-app',
     description: 'a web app with a UI, a server side and tests',
+    workflows: ['feature', 'bugfix'],
     agents: [
       { id: 'cursor:frontend', why: 'pages and components' },
       { id: 'codex:backend', why: 'APIs and data' },
@@ -610,6 +615,8 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     id: 'library',
     description: 'a package other code imports, with tests, docs and releases',
+    workflows: ['feature', 'bugfix'],
+
     agents: [
       { id: 'codex:backend', why: 'the library code' },
       { id: 'claude:qa', why: 'tests and checks' },
@@ -737,6 +744,7 @@ export function templatePlan(t: ProjectTemplate, name: string, prefix?: string):
       ...(x.done_when ? { done_when: fillEntries(x.done_when, name) } : {}),
     })),
     ...(t.workspaceTypes ? { workspaceTypes: t.workspaceTypes } : {}),
+    ...(t.workflows ? { workflows: t.workflows } : {}),
   };
 }
 
@@ -773,6 +781,7 @@ export function applyPlan(repo: string, plan: ProjectPlan, opts: ApplyOptions = 
     human: opts.human,
     agents: plan.agents.map((a) => a.id),
     workspaceTypes: plan.workspaceTypes,
+    workflows: plan.workflows,
   });
   const ws = new Workspace({ cwd: dir, env, actor, root: plan.name, force: opts.force });
   if (resolve(ws.defaultRoot().dir) !== resolve(root)) {

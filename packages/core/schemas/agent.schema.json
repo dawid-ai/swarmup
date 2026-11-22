@@ -144,17 +144,41 @@
         ]
       }
     },
-    "role": {
-      "description": "Accepted but not active yet: agent folders (phase 2)."
-    },
-    "providers": {
-      "description": "Accepted but not active yet: agent folders (phase 2)."
-    },
     "writes": {
-      "description": "Accepted but not active yet: agent folders (phase 2)."
+      "description": "The role changes files. A machine's `swarmupd.roles.<role>.writes` wins; this wins over `swarm.yaml`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "scorers": {
-      "description": "Accepted but not active yet: scorers in git come in phase 4."
+      "description": "Scorers that judge the agent’s work.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "role": {
+      "description": "The role; the same as the part of the id after the colon.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "providers": {
+      "description": "Runtimes the folder expands into, one agent each. Default: the role's providers in `swarm.yaml`, then its runtimes, then claude and codex.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9]*$"
+      }
     }
   },
   "additionalProperties": false,

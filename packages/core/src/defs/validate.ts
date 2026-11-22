@@ -3,7 +3,8 @@
  * runtime overrides and secrets. Each file's own shape is checked by its schema first.
  */
 import { join } from 'node:path';
-import type { AgentDef } from '../agents.js';
+import type { AgentDef, ShadowedAgent } from '../agents.js';
+import { AGENT_FOLDER_FILE, folderProviders } from '../agents.js';
 import { isActorId, slugToActor } from '../ids.js';
 import { secretKind } from '../secrets.js';
 import type { DefProblem, Locate } from './schema.js';
@@ -15,8 +16,12 @@ export interface ValidateInput {
   swarm: SwarmDefs | null;
   /** The agent files that read, as `readAgentFiles` returns them. */
   agents: AgentDef[];
-  /** Each agent file's frontmatter as plain data, by file. */
+  /** Each legacy agent file's frontmatter as plain data, by file. */
   agentValues: Map<string, unknown>;
+  /** The frontmatter of each agent folder file (`agent.md`, addenda) as plain data, by file. */
+  folderValues?: Map<string, unknown>;
+  /** Folder agents a legacy file of the same id hides. */
+  shadowed?: ShadowedAgent[];
   /** Text of each definition file, by path in the store. */
   texts: Map<string, string>;
   machineRuntimes?: readonly string[];
@@ -66,8 +71,110 @@ export function validateDefinitions(input: ValidateInput): DefProblem[] {
     }
   }
 
-  // `runtimes.<rt>` in an agent file applies only to the runtime of its id.
+  // A legacy file defines one agent: `providers` belongs to agent folders, and `role` must agree
+  // with the id.
+  for (const [file, value] of input.agentValues) {
+    const v = (value ?? {}) as { id?: unknown; role?: unknown; providers?: unknown };
+    if (v.providers !== undefined && v.providers !== null) {
+      at(
+        file,
+        'providers',
+        'warning',
+        'providers applies to agent folders (agents/<role>/agent.md); a legacy file defines one agent, so it is not read',
+      );
+    }
+    const name = file.replace(/\\/g, '/').split('/').pop() ?? '';
+    const id = typeof v.id === 'string' ? v.id : slugToActor(name.replace(/\.md$/, ''));
+    if (typeof v.role === 'string' && isActorId(id) && roleOf(id) !== v.role) {
+      at(file, 'role', 'warning', `${id} has the role ${roleOf(id)}; role ${v.role} is not read`);
+    }
+  }
+
+  // Agent folders: a legacy file that hides one, `role` against the folder name, addenda without
+  // agent.md or for a runtime the folder does not expand into, and `runtimes.<rt>` entries that
+  // never apply.
+  for (const s of input.shadowed ?? []) {
+    const name = s.by.replace(/\\/g, '/').split('/').pop() ?? s.by;
+    at(
+      s.file,
+      '(top)',
+      'warning',
+      `${s.id} is also defined in agents/${name}, which wins; remove it, or run swarmup defs migrate --prune`,
+    );
+  }
+  const folders = new Map<string, { agent?: string; addenda: Map<string, string> }>();
+  for (const file of input.folderValues?.keys() ?? []) {
+    const parts = file.replace(/\\/g, '/').split('/');
+    const role = parts.at(-2) ?? '';
+    const base = parts.at(-1) ?? '';
+    const f = folders.get(role) ?? { addenda: new Map<string, string>() };
+    if (base === AGENT_FOLDER_FILE) f.agent = file;
+    else f.addenda.set(base.replace(/\.md$/, ''), file);
+    folders.set(role, f);
+  }
+  for (const [role, f] of folders) {
+    if (!f.agent) {
+      for (const file of f.addenda.values()) {
+        at(
+          file,
+          '(top)',
+          'warning',
+          `agents/${role}/ has no agent.md, so this addendum is not read`,
+        );
+      }
+      continue;
+    }
+    const value = (input.folderValues!.get(f.agent) ?? {}) as {
+      role?: unknown;
+      providers?: unknown;
+      runtimes?: unknown;
+    };
+    if (typeof value.role === 'string' && value.role !== role) {
+      at(
+        f.agent,
+        'role',
+        'warning',
+        `the folder agents/${role}/ names the role; role ${value.role} is not read`,
+      );
+    }
+    const { providers } = folderProviders(value.providers, role, input.texts.get(SWARM_FILE));
+    if (providers.length === 0) {
+      at(
+        f.agent,
+        'providers',
+        'warning',
+        `no runtime takes the role ${role}, so it defines no agent`,
+      );
+    }
+    for (const [rt, file] of f.addenda) {
+      if (!providers.includes(rt)) {
+        at(
+          file,
+          '(top)',
+          'warning',
+          `agents/${role}/ expands into ${providers.join(', ') || 'no runtime'}; add ${rt} to its providers, or this addendum never applies`,
+        );
+      }
+    }
+    for (const file of [f.agent, ...f.addenda.values()]) {
+      const rts = (input.folderValues!.get(file) as { runtimes?: unknown } | undefined)?.runtimes;
+      if (!rts || typeof rts !== 'object') continue;
+      for (const rt of Object.keys(rts)) {
+        if (providers.includes(rt)) continue;
+        at(
+          file,
+          `runtimes.${rt}`,
+          'warning',
+          `the role ${role} does not run on ${rt}; this entry never applies`,
+        );
+      }
+    }
+  }
+
+  // `runtimes.<rt>` in a legacy agent file applies only to the runtime of its id.
   for (const a of input.agents) {
+    if (a.folder) continue;
+
     const rts = (input.agentValues.get(a.file) as { runtimes?: unknown } | undefined)?.runtimes;
     if (!rts || typeof rts !== 'object') continue;
     for (const rt of Object.keys(rts)) {
@@ -84,11 +191,16 @@ export function validateDefinitions(input: ValidateInput): DefProblem[] {
 
   // A run asks for each server its role file names; one this machine does not define is left out.
   if (input.machineMcp) {
+    const told = new Set<string>();
     for (const a of input.agents) {
       for (const name of a.mcp ?? []) {
         if (input.machineMcp.includes(name)) continue;
+        // The agents of one folder share their agent.md: one warning per file and server.
+        const file = a.folder?.addendum ?? a.file;
+        if (told.has(`${file}\0${name}`)) continue;
+        told.add(`${file}\0${name}`);
         at(
-          a.file,
+          file,
           'mcp',
           'warning',
           `this machine defines no MCP server ${name}; add it in Settings > MCP servers, or ${a.id} runs without it`,

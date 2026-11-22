@@ -96,7 +96,8 @@ export function improveTaskBody(f: AgentFailures, opts: { maxAgeDays?: number } 
     `1. Read \`swarmup scores --agent ${f.agent}\` and the threads of the evidence tasks (\`swarmup show ID\`).`,
     `2. Read ${f.agent}'s role file and find the pattern behind the failures.`,
     '3. Write the smallest overlay that addresses it in your scratch folder, laid out as the',
-    '   definitions are (`agents/<runtime>-<role>.md`), and check it with `swarmup validate`.',
+    '   definitions are (`agents/<runtime>-<role>.md`, or `agents/<role>/agent.md` with addenda',
+    '   `agents/<role>/<runtime>.md`), and check it with `swarmup validate`.',
     '4. Record it: `swarmup defs propose ID --dir DIR --name NAME -m "why"`, then send this task to',
     '   the person for review.',
   ];
@@ -270,7 +271,9 @@ export class Improver {
       const proposed = ws.variants().filter((v) => v.status === 'proposed');
       for (const f of failingByAgent(this.host.scores(), { now, maxAgeDays: cfg.max_age_days })) {
         if (f.subjects.length < cfg.threshold || f.agent === cfg.agent) continue;
-        if (proposed.some((v) => v.agents.includes(f.agent))) continue;
+        // `*:<role>` is a change to an agent folder's agent.md, which every runtime reads (W5).
+        const role = `*:${f.agent.slice(f.agent.indexOf(':') + 1)}`;
+        if (proposed.some((v) => v.agents.includes(f.agent) || v.agents.includes(role))) continue;
         if (this.openTask(ws, f.agent)) continue;
         try {
           filed.push(this.file(ws, f, cfg.max_age_days));
@@ -329,7 +332,10 @@ export class Improver {
           startedAt,
         };
         state.gates[key] = gate;
-        const agent = v.agents[0];
+        // A change to a folder's agent.md (`*:<role>`) is measured on the role's Claude agent.
+        const agent =
+          v.agents.find((a) => /^(claude|codex):/.test(a)) ??
+          v.agents.find((a) => a.startsWith('*:'))?.replace('*', 'claude');
         if (!agent || !/^(claude|codex):/.test(agent)) {
           Object.assign(gate, { state: 'skipped', error: 'it names no Claude or Codex agent' });
           continue;

@@ -1,0 +1,103 @@
+# yaml-language-server: $schema=../.schemas/workflow.schema.json
+#
+# A launch campaign: a brief you approve, the claims and the calendar, a draft per channel that the
+# editor reviews, a go/no-go gate, then you publish. Start it with
+#   swarmup workflow start campaign-launch --param campaign="v1 launch" --param date=2026-12-15
+title: Campaign launch
+description: A launch across channels, from a brief you approve to drafts the editor reviews and a go/no-go you decide; you publish.
+params:
+  campaign:
+    description: What launches, such as "v1 launch"
+    required: true
+  date:
+    description: The launch date, YYYY-MM-DD
+    required: true
+  blog:
+    description: Whether the launch has a blog post
+    default: 'yes'
+    options: ['yes', 'no']
+milestone:
+  title: 'Launch: {{campaign}} on {{date}}'
+  done_when: 'Every piece of {{campaign}} is live as approved, and recorded with swarmup published'
+approval: proposal
+criteria:
+  content:
+    id: voice
+    kind: rubric
+    rubric: rubrics/brand-voice.md
+    pass: 0.7
+stages:
+  - key: brief
+    title: 'Write the campaign brief for {{campaign}}'
+    owner: '*:writer'
+    estimate: 1h
+    type: docs
+    body: >-
+      Write the brief in the task thread: the audience, the message, the channels with one angle
+      each, the claims from facts/claims.md the pieces may use, and the launch date {{date}}.
+    done_when: 'The brief names the audience, the message, an angle per channel and the claims'
+  - key: brief-ok
+    after: brief
+    gate:
+      ask: 'Is the campaign brief for {{campaign}} right?'
+      on_reject: revise
+  - key: claims
+    title: 'Check the claims {{campaign}} uses'
+    owner: '*:researcher'
+    estimate: 1h
+    type: docs
+    after: brief-ok
+    body: Make sure every claim the brief uses is in facts/claims.md with a source and a checked date.
+    done_when: 'Every claim the brief uses has a row in facts/claims.md with a source and a date'
+  - key: calendar
+    title: 'Put {{campaign}} on the calendar'
+    owner: '*:writer'
+    estimate: 30m
+    type: content
+    after: brief-ok
+    done_when: 'calendar.md has a row per piece of {{campaign}}, dated up to {{date}}'
+  - key: x
+    title: 'Draft the X thread for {{campaign}}'
+    owner: '*:writer'
+    review: codex:editor
+    estimate: 1h
+    type: content
+    after: [claims, calendar]
+    body: Write posts/x-{{campaign}}.md from the brief. Finish with `swarmup review --artifact`.
+  - key: linkedin
+    title: 'Draft the LinkedIn post for {{campaign}}'
+    owner: '*:writer'
+    review: codex:editor
+    estimate: 1h
+    type: content
+    after: [claims, calendar]
+    body: Write posts/linkedin-{{campaign}}.md from the brief. Finish with `swarmup review --artifact`.
+  - key: blog
+    title: 'Draft the blog post for {{campaign}}'
+    owner: '*:writer'
+    review: codex:editor
+    estimate: 3h
+    type: content
+    after: [claims, calendar]
+    when:
+      param: blog
+      equals: 'yes'
+    body: Write posts/blog-{{campaign}}.md from the brief. Finish with `swarmup review --artifact`.
+  - key: go
+    after: [x, linkedin, blog]
+    gate:
+      ask: 'Go for the {{campaign}} launch on {{date}}?'
+      options: [go, hold]
+  - key: publish
+    title: 'Publish {{campaign}} on {{date}}'
+    type: publish
+    owner: '{{human}}'
+    estimate: 1h
+    after: go
+    body: |-
+      Post each approved piece from main yourself, then record each one:
+
+      ```sh
+      swarmup published <ID> --url <where it went live> --artifact posts/<file>.md
+      ```
+    done_when: 'Every piece is live and recorded with swarmup published'

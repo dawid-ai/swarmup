@@ -15,6 +15,18 @@ export interface InitOptions {
   agents?: string[];
   /** The root's `workspace_types` (W8); left out of `config.yml` when unset. */
   workspaceTypes?: string[];
+  /** Starter workflows to copy from `templates/workflows/<id>.yaml` into `workflows/` (W5). */
+  workflows?: string[];
+}
+
+/** Ids of the starter workflows in `templates/workflows/`, such as `bugfix`. */
+export function templateWorkflowIds(): string[] {
+  const src = join(TEMPLATES_DIR, 'workflows');
+  if (!existsSync(src)) return [];
+  return readdirSync(src)
+    .filter((f) => f.endsWith('.yaml'))
+    .map((f) => f.slice(0, -5))
+    .sort();
 }
 
 /** Role and people templates shipped with the core package. */
@@ -75,6 +87,19 @@ export function initRoot(target: string, opts: InitOptions = {}): string {
         if (!f.endsWith('.md') || (sub === 'agents' && only && !only.has(f))) continue;
         copyFileSync(join(src, f), join(dir, sub, f));
       }
+    }
+  }
+  if (opts.workflows?.length) {
+    const known = templateWorkflowIds();
+    mkdirSync(join(dir, 'workflows'), { recursive: true });
+    for (const id of opts.workflows) {
+      if (!known.includes(id)) {
+        throw new OpsError(`no starter workflow '${id}': use ${known.join(', ')}`, 2);
+      }
+      copyFileSync(
+        join(TEMPLATES_DIR, 'workflows', `${id}.yaml`),
+        join(dir, 'workflows', `${id}.yaml`),
+      );
     }
   }
   writeFileSync(join(dir, 'README.md'), README);

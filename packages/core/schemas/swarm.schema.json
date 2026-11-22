@@ -19,7 +19,9 @@
       ],
       "properties": {
         "budget_min": {
-          "description": "Accepted but not active yet: budget defaults come with the policy keys (phase 2)."
+          "description": "Run budget in minutes for agents that set none. It wins over `policy.budget_minutes`; a machine's `swarmupd.budget_minutes` wins over both.",
+          "type": "integer",
+          "minimum": 1
         },
         "effort": {
           "description": "Effort for runtimes that set none, here or on the machine.",
@@ -75,10 +77,113 @@
       }
     },
     "policy": {
-      "description": "Accepted but not active yet: team policy moves into git in phase 2."
+      "description": "Team policy: the git half of top-level `swarmupd` keys. A machine's key wins.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "review_rounds": {
+          "description": "`changes` verdicts in a row before swarmupd stops waking the author. 0 turns it off.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "stuck_runs": {
+          "description": "Runs in a row that end without finishing before swarmupd stops starting a task. 0 turns it off.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_backlog": {
+          "description": "Tasks waiting for review in one project at which writing roles hold and reviewers burst.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "review_fallback_hours": {
+          "description": "Hours a review waits for the other provider's reviewer before it falls back. 0 never.",
+          "type": "number",
+          "minimum": 0
+        },
+        "plan_check_minutes": {
+          "description": "Minutes between two plan checks. 0 turns them off.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_minutes": {
+          "description": "Run budget in minutes when neither the task nor the agent sets one; `defaults.budget_min` wins.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "test_changes": {
+          "description": "Which test and check files a review run's prompt lists for this store's root, or false for no list.",
+          "oneOf": [
+            {
+              "enum": [
+                false
+              ]
+            },
+            {
+              "description": "The patterns; an unset list takes the defaults.",
+              "type": "object",
+              "properties": {
+                "tests": {
+                  "description": "Patterns of test files.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "checks": {
+                  "description": "Patterns of test, lint and CI configuration.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "work_types": {
-      "description": "Accepted but not active yet: work types come with workflows (phase 3)."
+      "description": "Kinds of work, with default criteria and workflow.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "description": "One kind of work: the first entry that matches a task applies.",
+        "type": "object",
+        "properties": {
+          "types": {
+            "description": "Task types this kind of work has; any type when unset.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "description": "Labels of which a task carries one; any labels when unset.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workflow": {
+            "description": "The workflow (`workflows/<id>.yaml`) that fits this kind of work.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "done_when": {
+            "description": "Criteria a new task of this kind gets when it names none (`swarmup new` without --done-when).",
+            "type": "array",
+            "items": {}
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "scoring": {
       "description": "Accepted but not active yet: scorers in git come in phase 4."

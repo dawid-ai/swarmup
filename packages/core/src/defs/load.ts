@@ -3,10 +3,16 @@ import { join } from 'node:path';
 import { OpsError } from '../ids.js';
 import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
 import { agentFilesFromTexts, readAgentFiles } from '../agents.js';
-import { AGENT_SCHEMA } from './agent.js';
+import { AGENT_FOLDER_FILE } from '../agents.js';
+import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
+import { ROLE_NAME_RE, RUNTIME_NAME_RE } from './values.js';
+import { parseDoneWhen } from '../criteria.js';
+import type { WorkflowInfo } from './workflow.js';
+import { checkWorkflowText, WORKFLOWS_DIR, workflowIdOf } from './workflow.js';
 import type { DefFile } from './hash.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
+
 import { checkYaml } from './schema.js';
 import type { SwarmDefs } from './swarm.js';
 import { SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
@@ -50,6 +56,8 @@ export interface DefinitionSet {
   overlay?: Record<string, string>;
   /** A variant's base hash: the store's own definitions. */
   baseHash?: string;
+  /** The store's workflows (W5 phase 3), each with its problems. */
+  workflows: WorkflowInfo[];
 }
 
 export interface LoadOptions {
@@ -197,29 +205,47 @@ function checkSet(
     if (!checked.problems.some((p) => p.severity === 'error')) swarm = swarmDefs(checked.value);
   }
   const agentValues = new Map<string, unknown>();
+  const folderValues = new Map<string, unknown>();
+  const warnAt = (file: string, message: string): void => {
+    problems.push({ file, path: '(top)', line: 1, col: 1, severity: 'warning', message });
+  };
   for (const f of files) {
     if (!f.path.startsWith('agents/') || !f.path.endsWith('.md')) continue;
-    const name = f.path.slice('agents/'.length);
+    const parts = f.path.slice('agents/'.length).split('/');
     const file = fileOf(f.path);
-    if (name.includes('/')) {
-      problems.push({
+    if (parts.some((p) => p.startsWith('_'))) continue;
+    let schema = AGENT_SCHEMA;
+    if (parts.length > 2) {
+      warnAt(
         file,
-        path: '(top)',
-        line: 1,
-        col: 1,
-        severity: 'warning',
-        message:
-          'agent folders (agents/<role>/agent.md) are read from phase 2 on; this file is not used yet',
-      });
+        'an agent folder holds agents/<role>/agent.md and agents/<role>/<runtime>.md only; this file is not read',
+      );
       continue;
     }
-    if (name.startsWith('_')) continue;
+    if (parts.length === 2) {
+      const [role, base] = parts as [string, string];
+      if (!ROLE_NAME_RE.test(role)) {
+        warnAt(file, `agents/${role}/ is no role name (lowercase letters, digits and -); not read`);
+        continue;
+      }
+      if (base === AGENT_FOLDER_FILE) schema = FOLDER_AGENT_SCHEMA;
+      else if (RUNTIME_NAME_RE.test(base.slice(0, -3))) schema = ADDENDUM_SCHEMA;
+      else {
+        warnAt(
+          file,
+          'neither agent.md nor a runtime addendum (<runtime>.md); this file is not read',
+        );
+        continue;
+      }
+    }
     const yamlText = frontmatter(texts.get(f.path) ?? '');
     if (yamlText === null) continue;
-    const checked = checkYaml(AGENT_SCHEMA, yamlText, { file, strict: opts.strict, lineOffset: 1 });
+    const checked = checkYaml(schema, yamlText, { file, strict: opts.strict, lineOffset: 1 });
     problems.push(...checked.problems);
     locate.set(file, checked.at);
-    if (checked.value !== undefined) agentValues.set(file, checked.value);
+    if (checked.value !== undefined) {
+      (parts.length === 2 ? folderValues : agentValues).set(file, checked.value);
+    }
     // A file the queue skips always shows as an error, whatever the schema says of it.
     const skipped = read.problems.find((p) => p.file === file);
     if (skipped && !checked.problems.some((p) => p.severity === 'error')) {
@@ -233,12 +259,51 @@ function checkSet(
       });
     }
   }
+  // Workflows (W5 phase 3): each file against its schema, then compiled once with sample values.
+  const workflows: WorkflowInfo[] = [];
+  for (const [path, text] of texts) {
+    if (!path.startsWith(`${WORKFLOWS_DIR}/`)) continue;
+    const id = workflowIdOf(path);
+    if (!id) {
+      warnAt(
+        fileOf(path),
+        'a workflow is workflows/<id>.yaml, with an id of lowercase letters, digits and dashes; this file is not read',
+      );
+      continue;
+    }
+    const w = checkWorkflowText(id, text, { file: fileOf(path), strict: opts.strict });
+    problems.push(...w.problems);
+    workflows.push(w);
+  }
+  // Work types name workflows that exist, and criteria that read.
+  if (swarm?.work_types) {
+    const swarmFile = fileOf(SWARM_FILE);
+    const at = (path: string, severity: DefProblem['severity'], message: string): void => {
+      const pos = locate.get(swarmFile)?.(path.split('.')) ?? { line: 1, col: 1 };
+      problems.push({ file: swarmFile, path, ...pos, severity, message });
+    };
+    swarm.work_types.forEach((w, i) => {
+      if (w.workflow && !workflows.some((x) => x.id === w.workflow)) {
+        at(`work_types.${i}.workflow`, 'warning', `no workflows/${w.workflow}.yaml in this store`);
+      }
+      if (!w.types?.length && !w.labels?.length) {
+        at(`work_types.${i}`, 'warning', 'names no types and no labels, so it matches every task');
+      }
+      try {
+        parseDoneWhen(w.done_when);
+      } catch (err) {
+        at(`work_types.${i}.done_when`, 'error', (err as Error).message.split('\n')[0] ?? 'bad');
+      }
+    });
+  }
   problems.push(
     ...validateDefinitions({
       root: rootDir,
       swarm,
       agents: read.agents,
       agentValues,
+      folderValues,
+      shadowed: read.shadowed ?? [],
       texts,
       machineRuntimes: opts.machineRuntimes,
       machineAgents: opts.machineAgents,
@@ -259,27 +324,49 @@ function checkSet(
     fingerprint,
     problems: sortProblems(problems),
     ok: !problems.some((p) => p.severity === 'error'),
+    workflows,
   };
 }
 
 /**
- * Checks one definition file's text without its store: `swarm.yaml`, or an agent file's
- * frontmatter when `kind` is `agent` or the name ends in `.md`. For loose files and editors;
- * the checks across files need {@link loadDefinitions}.
+ * Checks one definition file's text without its store: `swarm.yaml`, an agent file's
+ * frontmatter when `kind` is `agent` or the name ends in `.md`, or a workflow when `kind` is
+ * `workflow` or the file is a `.yaml` in a `workflows` folder. For loose files and editors; the
+ * checks across files need {@link loadDefinitions}.
  */
 export function checkDefinitionText(
   file: string,
   text: string,
-  opts: { strict?: boolean; kind?: 'swarm' | 'agent' } = {},
+  opts: { strict?: boolean; kind?: 'swarm' | 'agent' | 'workflow' } = {},
 ): DefProblem[] {
   const src = normalText(text);
-  const kind = opts.kind ?? (/\.md$/i.test(file) ? 'agent' : 'swarm');
+  const parts = file.replace(/\\/g, '/').split('/');
+  const kind =
+    opts.kind ??
+    (/\.md$/i.test(file)
+      ? 'agent'
+      : parts.at(-2) === WORKFLOWS_DIR && /\.ya?ml$/i.test(file)
+        ? 'workflow'
+        : 'swarm');
   const problems: DefProblem[] = [];
-  if (kind === 'agent') {
+  if (kind === 'workflow') {
+    const name = (parts.at(-1) ?? '').replace(/\.ya?ml$/i, '');
+    problems.push(...checkWorkflowText(name, src, { file, strict: opts.strict }).problems);
+  } else if (kind === 'agent') {
     const yamlText = frontmatter(src);
     if (yamlText !== null) {
+      // A file named agent.md is an agent folder's; one inside a folder named after a runtime
+      // is an addendum.
+      const base = parts.at(-1) ?? '';
+      const folder = parts.length > 2 && parts.at(-3) === 'agents';
+      const schema =
+        base === AGENT_FOLDER_FILE
+          ? FOLDER_AGENT_SCHEMA
+          : folder && RUNTIME_NAME_RE.test(base.replace(/\.md$/i, ''))
+            ? ADDENDUM_SCHEMA
+            : AGENT_SCHEMA;
       problems.push(
-        ...checkYaml(AGENT_SCHEMA, yamlText, { file, strict: opts.strict, lineOffset: 1 }).problems,
+        ...checkYaml(schema, yamlText, { file, strict: opts.strict, lineOffset: 1 }).problems,
       );
     }
   } else problems.push(...checkYaml(SWARM_SCHEMA, src, { file, strict: opts.strict }).problems);

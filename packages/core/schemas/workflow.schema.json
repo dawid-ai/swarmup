@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmup.tech/schemas/workflow.schema.json",
+  "title": "Workflow",
+  "description": "A workflow: a repeatable milestone plan.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Defaults to the file name.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "title": {
+      "description": "A short name for lists.",
+      "type": "string"
+    },
+    "description": {
+      "description": "When to use it.",
+      "type": "string"
+    },
+    "params": {
+      "description": "Parameters; `{{name}}` in any text takes the value.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "description": "One parameter.",
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "description": {
+            "description": "What it is for.",
+            "type": "string"
+          },
+          "required": {
+            "description": "Start refuses without it, unless it has a default.",
+            "type": "boolean"
+          },
+          "default": {
+            "description": "The value when start names none.",
+            "type": "string"
+          },
+          "options": {
+            "description": "The values it may take.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "milestone": {
+      "description": "The milestone the workflow runs under.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "The milestone title.",
+          "type": "string"
+        },
+        "done_when": {
+          "description": "The milestone’s one check: one line, or one typed criterion."
+        }
+      },
+      "required": [
+        "title",
+        "done_when"
+      ],
+      "additionalProperties": false
+    },
+    "approval": {
+      "description": "proposal (default): the plan waits for a person. starter: a person who starts it approves it; an agent’s start is always a proposal.",
+      "enum": [
+        "proposal",
+        "starter"
+      ]
+    },
+    "criteria": {
+      "description": "Default `done_when` per task type for stages that set none.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9-]*$"
+      },
+      "additionalProperties": {}
+    },
+    "stages": {
+      "description": "The stages, in any order; `after` orders them.",
+      "type": "array",
+      "items": {
+        "description": "One stage: one plan item.",
+        "type": "object",
+        "properties": {
+          "key": {
+            "description": "The stage key; `after` names it, and the plan item takes it.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+          },
+          "title": {
+            "description": "The task title; `{{param}}` fills in. A gate defaults to its question.",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Who works on it: an agent id, a role wildcard such as `*:writer`, or a person.",
+            "type": "string"
+          },
+          "estimate": {
+            "description": "A planning number, never a budget. A gate defaults to 15m.",
+            "type": "string",
+            "pattern": "^[0-9]+(m|h|d)$"
+          },
+          "after": {
+            "description": "Keys of the stages this one waits for.",
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,39}$"
+                }
+              }
+            ]
+          },
+          "review": {
+            "description": "The reviewer: a concrete agent id or a person.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The task type, such as task, bug, docs, content, publish or gate.",
+            "type": "string"
+          },
+          "priority": {
+            "description": "p0 to p3, or a parameter such as {{severity}}; default the milestone’s.",
+            "type": "string"
+          },
+          "body": {
+            "description": "The task body.",
+            "type": "string"
+          },
+          "done_when": {
+            "description": "The stage’s check: one line, or one typed criterion. Default `criteria.<type>`, then the title."
+          },
+          "gate": {
+            "description": "A person approves (`swarmup done`) or rejects (`swarmup park`) here.",
+            "type": "object",
+            "properties": {
+              "ask": {
+                "description": "The question the person answers.",
+                "type": "string"
+              },
+              "to": {
+                "description": "The person; default the store’s human.",
+                "type": "string"
+              },
+              "options": {
+                "description": "Answers to pick from.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "on_reject": {
+                "description": "park (default): a rejection parks this gate and every stage after it. revise: the stages it waits for reopen.",
+                "enum": [
+                  "park",
+                  "revise"
+                ]
+              }
+            },
+            "required": [
+              "ask"
+            ],
+            "additionalProperties": false
+          },
+          "when": {
+            "description": "Keep the stage only when the parameter has this value.",
+            "type": "object",
+            "properties": {
+              "param": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,39}$"
+              },
+              "equals": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            },
+            "required": [
+              "param",
+              "equals"
+            ],
+            "additionalProperties": false
+          },
+          "rework": {
+            "description": "Advice for QA fix rounds; it goes in the task body.",
+            "type": "object",
+            "properties": {
+              "to": {
+                "description": "Who reworks the stage after a failed check.",
+                "type": "string"
+              },
+              "max": {
+                "description": "At most this many rounds.",
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "milestone",
+    "stages"
+  ],
+  "additionalProperties": false
+}

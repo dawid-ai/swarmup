@@ -68,7 +68,8 @@ describe('swarmup validate', () => {
 
   it('exits 0 on warnings, and 1 on warnings with --strict', () => {
     const { dir, store, config } = project();
-    writeFileSync(join(store, 'swarm.yaml'), 'swarmup_defs: 1\npolicy: {stuck_runs: 2}\n');
+    writeFileSync(join(store, 'swarm.yaml'), 'swarmup_defs: 1\nscoring: {sample: 1}\n');
+
     expect(cli(dir, config, 'validate').code).toBe(0);
     expect(cli(dir, config, 'validate', '--strict').code).toBe(1);
     writeFileSync(join(store, 'swarm.yaml'), 'swarmup_defs: 1\nextra: 1\n');

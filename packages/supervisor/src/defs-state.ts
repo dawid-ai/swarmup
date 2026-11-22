@@ -4,7 +4,13 @@
  * The commit is read with git off the event loop, never in `launch` (AO-0171).
  */
 import type { DefinitionSet, DefProblem, SwarmDefs } from '@swarmup/core';
-import { definitionsFingerprint, loadDefinitions, shortHash, SWARM_FILE } from '@swarmup/core';
+import {
+  DEF_FOLDERS,
+  definitionsFingerprint,
+  loadDefinitions,
+  shortHash,
+  SWARM_FILE,
+} from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
 import type { DefsMerge, DefsSource } from './defs-config.js';
 import { overridesFor, withDefinitions } from './defs-config.js';
@@ -101,6 +107,17 @@ export class DefsState {
     this.roots = roots.map((r) => {
       const set = loadDefinitions(r.dir);
       let stale = false;
+      // An agent file's `writes` sets its role's (W5): the first agent of the role that sets it.
+      const roleWrites: Record<string, boolean> = {};
+      for (const a of set.agents) {
+        const role = a.id.slice(a.id.indexOf(':') + 1);
+        if (typeof a.writes === 'boolean' && roleWrites[role] === undefined)
+          roleWrites[role] = a.writes;
+      }
+      const writes = Object.keys(roleWrites).length > 0 ? { roleWrites } : {};
+      if (!set.present && writes.roleWrites) {
+        sources.push({ root: r.name, swarm: { swarmup_defs: 1 }, ...writes });
+      }
       if (set.present) {
         if (set.swarm) this.lastGood.set(r.dir, set.swarm);
         else {
@@ -115,7 +132,7 @@ export class DefsState {
           }
         }
         const swarm = set.swarm ?? this.lastGood.get(r.dir);
-        if (swarm) sources.push({ root: r.name, swarm });
+        if (swarm) sources.push({ root: r.name, swarm, ...writes });
         this.lookUp(r, set);
       }
       return { ...r, set, stale };
@@ -145,7 +162,7 @@ export class DefsState {
         env: this.opts.env?.(),
         ...(this.opts.gitTimeoutMs ? { timeoutMs: this.opts.gitTimeoutMs } : {}),
       });
-    const paths = ['--', SWARM_FILE, 'agents'];
+    const paths = ['--', SWARM_FILE, ...DEF_FOLDERS];
     const job = (async () => {
       let found: DefsCommit = {};
       try {
