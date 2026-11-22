@@ -198,6 +198,27 @@ function record(v: unknown): Record<string, string> {
 }
 
 /** Counts test files under `dir`, bounded by depth and entry count. */
+/**
+ * Whether the repo's Python tests use the standard library's `unittest`: a `test*.py` file in a
+ * top-level `tests` or `test` folder that imports it. Such tests run with `python -m unittest`.
+ */
+function usesUnittest(dir: string): boolean {
+  for (const folder of ['tests', 'test']) {
+    let names: string[];
+    try {
+      names = readdirSync(join(dir, folder));
+    } catch {
+      continue;
+    }
+    for (const name of names.filter((n) => /^test.*\.py$/.test(n)).slice(0, 20)) {
+      if (/^\s*(import unittest|from unittest\b)/m.test(readText(join(dir, folder, name)))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function countTests(dir: string): number {
   let files = 0;
   let seen = 0;
@@ -275,6 +296,9 @@ export function surveyRepo(target: string): RepoSurvey {
     if (/\bpytest\b/.test(text) || has('pytest.ini') || has('conftest.py')) {
       runner ??= 'pytest';
       testCmd ??= 'pytest';
+    } else if (usesUnittest(dir)) {
+      runner ??= 'unittest';
+      testCmd ??= 'python -m unittest';
     }
     if (/\bruff\b/.test(text)) lint ??= 'ruff check .';
   }

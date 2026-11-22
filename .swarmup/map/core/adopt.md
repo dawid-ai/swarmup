@@ -17,7 +17,8 @@ Starts a data root for a repo: survey it, propose roles and first tasks, create 
 ## How it works
 
 - `surveyRepo` reads manifests (package.json, pyproject, Cargo.toml, go.mod and others) for
-  stacks, frameworks, test, build and lint commands, docs and CI.
+  stacks, frameworks, test, build and lint commands, docs and CI. Python tests that import
+  `unittest` get `python -m unittest` when no pytest config is found.
 - `adoptPlan` proposes roles that fit the stack; `applyPlan` writes the root, role files and
   tasks. `swarmup adopt --store DIR` keeps the store apart from the repo.
 - `PROJECT_TEMPLATES` (`web-app`, `library`, `docs-site`, ...) back `swarmup new-project`.

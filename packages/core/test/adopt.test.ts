@@ -93,6 +93,19 @@ describe('surveyRepo', () => {
     expect(s.tests).toEqual({ runner: 'pytest', command: 'pytest', files: 2 });
   });
 
+  it('finds unittest tests in a python repo without pytest', () => {
+    const d = tmp();
+    write(d, {
+      'pyproject.toml': '[project]\nname = "tally"\n',
+      'tests/test_rules.py': 'import unittest\n\nclass T(unittest.TestCase):\n    pass\n',
+    });
+    expect(surveyRepo(d).tests).toEqual({
+      runner: 'unittest',
+      command: 'python -m unittest',
+      files: 1,
+    });
+  });
+
   it('ignores the npm placeholder test script', () => {
     const d = tmp();
     write(d, {
