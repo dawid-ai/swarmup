@@ -1595,6 +1595,10 @@ describe('swarmup adopt and swarmup new-project', () => {
     expect(applied.code).toBe(0);
     expect(applied.out).toMatch(/roles: claude:qa/);
     expect(applied.out).toMatch(/SHP-0001\s+Record the baseline/);
+    // No role wakes yet, so the output says how to wake them.
+    expect(applied.out).toMatch(
+      /note: .*claude:qa.* start no run on their own until you turn on Wake/,
+    );
     expect(swarmup(d, 'human:dawid', 'list').out).toMatch(/SHP-0002/);
     expect(swarmup(d, 'human:dawid', 'adopt').code).toBe(1);
   });

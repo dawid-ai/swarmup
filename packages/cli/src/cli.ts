@@ -831,6 +831,18 @@ function printApplied(ctx: Ctx, res: AppliedPlan): void {
     const note = t.proposed ? `  (finding: ${t.proposed})` : '';
     ctx.io.out(`${pad(t.id, 10)} ${t.title}${note}`);
   }
+  // A new role starts no run on its own until it wakes; say so, or its tasks just wait.
+  const agents = (daemonSection(readUserConfig(ctx.io.env))?.agents ?? {}) as Record<
+    string,
+    { wake?: unknown } | undefined
+  >;
+  const asleep = res.agents.filter((id) => agents[id]?.wake !== true);
+  if (asleep.length > 0) {
+    ctx.io.out(
+      `note: ${asleep.join(', ')} start no run on their own until you turn on Wake for them ` +
+        '(the Agents view, or `wake: true` under `swarmupd.agents.<id>` in the user config)',
+    );
+  }
 }
 
 /** What `GET /api/waits` answers. `merge` is missing from a swarmupd older than AO-0161. */
