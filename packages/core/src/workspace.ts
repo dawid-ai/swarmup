@@ -32,6 +32,7 @@ import {
   writeVariantFiles,
 } from './defs/index.js';
 import { activityPage } from './activity.js';
+import { likelyDuplicate } from './similar.js';
 import type {
   AgentDef,
   AgentFileProblem,
@@ -4420,20 +4421,56 @@ export class Workspace {
 
   // ---- Findings and the KB -------------------------------------------------------------------
 
-  /** Files a finding as a new task of type `finding`; with `task`, links it from that task. */
-  finding(input: NewTaskInput & { task?: string }): { meta: TaskMeta; linked?: OpsEvent } {
+  /**
+   * Files a finding as a new task of type `finding`; with `task`, links it from that task. A task
+   * of the root with a near-identical title, open or closed, is named in the body as a possible
+   * duplicate for whoever triages it (`similar`); the finding is filed either way.
+   */
+  finding(input: NewTaskInput & { task?: string }): {
+    meta: TaskMeta;
+    linked?: OpsEvent;
+    similar?: string[];
+  } {
     const from = input.task ? this.resolve(input.task) : undefined;
     // A linked finding lives in its source task's root, so the plain id in the link is unique,
     // and belongs to its project, so swarmupd counts work on both against one project.
     const project =
       input.project?.trim() ||
       (from ? this.projectOfTask(`${from.root.name}/${from.id}`) : undefined);
-    const meta = this.newTask({ ...input, type: 'finding', project }, from?.root);
-    if (!from) return { meta };
+    const root = from?.root ?? this.defaultRoot();
+    const similar = this.similarTasks(root, input.title);
+    const body = similar.length
+      ? [
+          input.body?.trim(),
+          `Possible duplicate of ${similar.join('; ')}. Park this one as a duplicate if it is the same work.`,
+        ]
+          .filter(Boolean)
+          .join('\n\n')
+      : input.body;
+    const meta = this.newTask({ ...input, body, type: 'finding', project }, from?.root);
+    const found = similar.length ? { similar } : {};
+    if (!from) return { meta, ...found };
     const res = this.act(`${from.root.name}/${from.id}`, () => [
       { type: 'finding', ref: meta.id, body: meta.title },
     ]);
-    return { meta, linked: res.events[0] };
+    return { meta, linked: res.events[0], ...found };
+  }
+
+  /** Up to 3 tasks of `root` whose title likely names the same work, as `ID (status) "title"`. */
+  private similarTasks(root: Root, title: string): string[] {
+    const out: string[] = [];
+    for (const id of root.listTaskIds()) {
+      let other: string;
+      try {
+        other = root.readTask(id).meta.title;
+      } catch {
+        continue;
+      }
+      if (!likelyDuplicate(title, other)) continue;
+      out.push(`${id} (${root.foldTask(id).status}) "${other}"`);
+      if (out.length === 3) break;
+    }
+    return out;
   }
 
   /** Writes a learn note to `kb/<topic>/<slug>.md`; with `task`, adds a learn event to it. */

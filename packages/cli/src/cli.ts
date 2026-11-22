@@ -2643,6 +2643,7 @@ const COMMANDS: Record<string, Command> = {
         project: str(ctx.opts.project),
       });
       ctx.io.out(ctx.opts.json ? JSON.stringify(res.meta, null, 2) : res.meta.id);
+      for (const s of res.similar ?? []) ctx.io.err(`note: possible duplicate of ${s}`);
     },
   },
   learn: {

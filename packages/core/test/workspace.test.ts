@@ -16,6 +16,8 @@ import {
   ROOTS_ONLY_ENV,
   samePath,
   searchSources,
+  likelyDuplicate,
+  titleSimilarity,
   Workspace,
 } from '../src/index.js';
 import { fakeToken, gitRepo, setup } from './helpers.js';
@@ -718,5 +720,29 @@ describe('index cache', () => {
     expect(new Root(rootDir).states()[0]).toMatchObject({ status: 'blocked' });
     expect(h.inbox()).toEqual([expect.objectContaining({ kind: 'ask', summary: 'Which way?' })]);
     expect(JSON.parse(readFileSync(indexFile, 'utf8')).v).toBeGreaterThan(6);
+  });
+});
+
+describe('findings that repeat a task', () => {
+  it('names a task with a near-identical title as a possible duplicate, closed ones too', () => {
+    const { as, rootDir } = setup();
+    const dawid = as('human:dawid', { force: true });
+    dawid.newTask({ title: 'Fix the broken docs links in the README' });
+    dawid.newTask({ title: 'Add a JSON export' });
+    dawid.done('1', 'fixed');
+    const res = as('claude:qa').finding({ title: 'README docs links are broken' });
+    expect(res.similar).toEqual(['T-0001 (done) "Fix the broken docs links in the README"']);
+    expect(new Root(rootDir).readTask(res.meta.id).body).toContain(
+      'Possible duplicate of T-0001 (done)',
+    );
+    expect(as('claude:qa').finding({ title: 'Export to CSV' }).similar).toBeUndefined();
+  });
+
+  it('scores titles by shared meaningful words', () => {
+    expect(titleSimilarity('Fix the tests', 'fix tests')).toBe(1);
+    expect(likelyDuplicate('Add amount ranges', 'Add year to date')).toBe(false);
+    expect(likelyDuplicate('Parse Harbor CSV format', 'Harbor CSV format parsing fails')).toBe(
+      true,
+    );
   });
 });

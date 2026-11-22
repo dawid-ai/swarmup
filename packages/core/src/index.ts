@@ -30,6 +30,7 @@ export * from './repeats.js';
 export * from './review-source.js';
 export * from './root.js';
 export * from './rubric.js';
+export * from './similar.js';
 export * from './roots.js';
 export * from './search.js';
 export * from './search-index.js';
