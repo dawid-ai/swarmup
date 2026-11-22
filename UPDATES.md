@@ -3,6 +3,21 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.17 (2026-11-22)
+
+- **A judge for quality checks.** A **Done when** item can be scored against a rubric, such as
+  "readable, follows the project's conventions, tested". A judge model reads the change and gives
+  a score and its reasons. Use **Judge** in the task panel, judge benchmark runs, or have SwarmUp
+  judge at merge (off by default; it costs a few cents a task).
+- **SwarmUp improves its agents, with your say.** When an agent keeps failing a score, SwarmUp
+  can open an improvement task: an improver agent reads the failures and proposes a small change
+  to that agent's instructions. Proposals show up at the top of **Agents** with the exact change,
+  the scores they address and, if you set one up, a benchmark of before and after. Nothing changes
+  until you click **Promote**; **Reject** drops it. Off by default.
+- **Fixes:** adding a Python project finds tests written with `unittest`; adding a project tells
+  you which new agents need **Wake** turned on before they pick up work; and checks written over
+  several lines are read as one check.
+
 ## v0.3.0-beta.16 (2026-11-21)
 
 - **Everything from beta.15 now lives in the app.** The task panel shows each **Done when** item

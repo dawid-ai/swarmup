@@ -6,6 +6,54 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.17 (2026-11-22)
+
+### Added
+
+- `swarmup adopt --apply` and `swarmup new-project` name the new roles that start no run on their own until you turn on Wake for them.
+- An LLM judge scores `rubric` criteria against their rubric file (frontmatter `id`, `scale`,
+  weighted `criteria`, `inputs`; a body with the judge's instructions). The judge is one
+  read-only model call with no tools and everything in the prompt; it answers with JSON, and the
+  weighted total, normalized to 0 to 1, passes at the criterion's `pass`. Configure it in
+  `swarmupd.judge` (`runtime`, `model`, `effort`, `budget_min`; default Claude, `sonnet`, `low`,
+  5 minutes).
+- `swarmup bench run ... --judge` judges each attempt's rubric criteria, and
+  `swarmup bench judge RUN-DIR` judges a finished run's pending ones. Judged rubric criteria count
+  in the pass rate; the summary gains a **Judged** column and the judge's cost.
+- `swarmup criteria judge ID` judges a task's rubric criteria against its branch diff and records
+  the results in a `criteria-check` event with `by: judge`. The desktop app's task panel has a
+  **Judge** button next to **Run checks**, and shows each judged score and its reasons.
+- With `swarmupd.judge.at_merge: true`, swarmupd judges rubric criteria at merge after the
+  `command` and `check` criteria pass, and sends the task back when one scores below its `pass`.
+  Off by default: each judgment spends tokens.
+- Variants: a sparse overlay folder `variants/<name>/` in a task store changes the definitions
+  for the runs and benchmarks that ask for it. YAML deep-merges (maps merge, lists replace, `null`
+  deletes), agent frontmatter merges the same way, a non-empty body replaces the instructions, and
+  each variant has its own hash. `swarmup validate --variant NAME` checks one. A run started with
+  a variant reads its resolved role file from its scratch folder and records the variant.
+- Proposals: `swarmup defs propose ID --dir DIR --name NAME -m WHY` records an overlay on a task
+  as a variant, after checking it against the store's improvement policy (`improvement.may_change`
+  and `frozen` in `swarm.yaml`; an agent's `tools`, `writes`, `can_claim` and `id` are always
+  frozen) and the cap on open proposals (`max_open_proposals`, default 2). A person runs
+  `swarmup defs promote NAME` to write it onto the definitions or `swarmup defs reject NAME -m WHY`;
+  `swarmup defs variants` lists them. Each step is a `defs-propose`, `defs-promote` or `defs-reject`
+  event on the task.
+- The improver: a `claude:improver` role template that turns an agent's failing scores into one
+  small proposal. It runs read-only and may edit only in its scratch folder. With
+  `swarmupd.improve.enabled: true` (off by default), swarmupd files an improvement task when an
+  agent has `threshold` distinct failing task and run scores in `max_age_days` days.
+- The benchmark gate: with `swarmupd.improve.benchmark` set, swarmupd replays the set with the base
+  and with each new proposal's variant and comments the comparison on its task. Off unless set: it
+  spends tokens. `swarmup bench run` takes `--role-file` and `--variant` with `--root` to put an
+  agent's role file in each prompt.
+- The desktop **Agents** view lists proposals with their diff, the scorers they address and their
+  benchmark, with **Promote** and **Reject**. A failing scorer offers **Propose an improvement**.
+
+### Fixed
+
+- `swarmup adopt` finds Python tests written with `unittest` and proposes `python -m unittest` as the test command, instead of reporting no runner.
+- `--done-when` and `swarmup criteria --add` take a typed criterion written as block YAML over several lines (with a `kind:` key) as one criterion, instead of one text criterion per line.
+
 ## 0.3.0-beta.16 (2026-11-21)
 
 ### Added
