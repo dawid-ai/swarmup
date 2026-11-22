@@ -170,7 +170,7 @@ improvement:
 
 - Every path a proposal changes must match a `may_change` glob and no `frozen` glob; `frozen`
   wins. `*` stays within one folder, `**` crosses folders.
-- An agent's `tools`, `writes`, `can_claim` and `id` are always frozen, whatever the policy says,
+- An agent's `tools`, `mcp`, `writes`, `can_claim` and `id` are always frozen, whatever the policy says,
   and a proposal never removes an agent file. A person changes those by hand.
 - `improvement.requires` is accepted and not active yet; `swarmupd.improve.benchmark` runs the
   benchmark gate.
