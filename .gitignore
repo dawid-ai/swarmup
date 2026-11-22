@@ -12,3 +12,6 @@ out/
 
 # Desktop installer build output
 packages/desktop/release/
+
+# Claude Code agent worktrees
+.claude/worktrees/
