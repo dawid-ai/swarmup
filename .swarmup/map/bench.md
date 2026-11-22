@@ -4,12 +4,14 @@ summary: 'swarmup bench and the Benchmarks view: replay set entries in throwaway
 covers:
   - packages/core/src/bench.ts
   - packages/supervisor/src/bench.ts
+  - packages/supervisor/src/bench-cost.ts
   - packages/supervisor/src/bench-runs.ts
   - packages/cli/src/bench-cmd.ts
   - docs/benchmarks.md
   - packages/core/test/bench.test.ts
   - packages/supervisor/test/bench.test.ts
   - packages/supervisor/test/bench-api.test.ts
+  - packages/cli/test/bench-cmd.test.ts
   - packages/desktop/ui/src/views/Bench.tsx
   - packages/desktop/ui/src/ui/bench.tsx
   - packages/desktop/test/bench-view.test.ts
@@ -44,6 +46,12 @@ swarmupd; the desktop app's Benchmarks view starts it through swarmupd's API.
   file, or a variant's, at the top of each prompt (`rolePrompt`) and take its model and effort;
   the run writes `role.md` and `summary.json` records `role` (agent, store, hash, variant). The
   improvement loop's benchmark gate starts runs this way (see `improve`).
+- `supervisor/src/bench-cost.ts` prices attempts whose log reports tokens but no cost (Codex):
+  built-in list prices per million tokens, `swarmupd.bench.prices` over them, and the model from
+  `--model`, the runtime config or `$CODEX_HOME/config.toml`. Estimated costs carry
+  `costEstimated` and show with `~`. With repeats, entries and `overall` carry the spread
+  (pass-rate min, max and SD, cost SD; `overall` over repeats). `--max-usd` stops starting
+  attempts once agent and judge cost reach the cap and lists the rest as `skipped`.
 - `cli/src/bench-cmd.ts` is `swarmup bench run|judge|compare`. `runBench` keeps `status.json` (state,
   attempts done of total, the attempt under way, the runner's pid) in the out folder.
 - `supervisor/src/bench-runs.ts` serves `/api/bench/*`: sets from each root's

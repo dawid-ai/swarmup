@@ -45,7 +45,8 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
   Schedules and Standups. Runs get their own run token, never the human's. `state.db` also
   serves score history (`agentScoreHistory`) to `GET /api/scores/history`. `/api/defs/*` and
   `/api/bench/*` live in `defs-import.ts` and `bench-runs.ts` (see `core/defs` and `bench`);
-  `swarmupd.bench` names extra benchmark sets and results folders. `/api/defs/variants` and
+  `swarmupd.bench` names extra benchmark sets and results folders, and model prices for estimated
+  bench costs (`checkBenchPrices`). `/api/defs/variants` and
   `/api/improve` serve the proposals and improvement tasks; `swarmupd.improve` (`checkImprove`)
   configures the loop (see `/improve`).
 - `task-criteria.ts` backs the task panel: a task's brief with its children, and **Run checks**

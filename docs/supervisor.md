@@ -1092,6 +1092,8 @@ swarmupd:
   bench: # benchmarks the desktop app lists, beyond each root's .swarmup/benchmarks/ (docs/benchmarks.md)
     sets: ['C:\work\benchmarks\tally.yaml'] # set files, or folders of them
     results: ['C:\work\bench-results'] # more folders of run folders, beyond <state>/bench/
+    prices: # USD per million tokens, over the built-in prices, for Codex costs estimated from tokens
+      gpt-5.6-sol: { input: 5, cached_input: 0.5, output: 30 }
   judge: # the LLM judge of rubric criteria (docs/protocol.md#rubric-files)
     runtime: claude # or codex
     model: sonnet # default: sonnet for Claude, the runtime's own model for Codex
