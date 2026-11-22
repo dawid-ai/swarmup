@@ -38,8 +38,12 @@ export const CHECK_NAMES = [
   'image-alt',
   'image-size',
   'readability',
+  'page-contains',
 ] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
+
+/** The checks that read the published page: valid only with `when: publish`. */
+export const POST_PUBLISH_CHECKS: ReadonlySet<CheckName> = new Set(['page-contains']);
 
 /** The kinds the merge and `swarmup criteria check` run; a reviewer leaves them alone. */
 export const RUN_KINDS: ReadonlySet<CriterionKind> = new Set(['command', 'check']);
@@ -232,6 +236,22 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
       }
       break;
     }
+    case 'page-contains': {
+      if ((args.url === undefined) === (args.from === undefined)) {
+        bad(`${where}: check page-contains needs args.url or args.from: published, not both`);
+      }
+      if (args.url !== undefined) need('url');
+      if (args.from !== undefined && args.from !== 'published') {
+        bad(`${where}: args.from must be published, the URL the task's publish event records`);
+      }
+      if (args.contains !== undefined) need('contains');
+      if (args.absent !== undefined) need('absent');
+      if (args.contains === undefined && args.absent === undefined) {
+        bad(`${where}: check page-contains needs args.contains or args.absent`);
+      }
+      bool('case-sensitive');
+      break;
+    }
     case 'contains':
       need('path');
       need('text');
@@ -310,6 +330,12 @@ function readSpec(raw: Record<string, unknown>, where: string): CriterionSpec {
       const args = raw.args ?? {};
       if (typeof args !== 'object' || Array.isArray(args)) bad(`${where}: args must be a mapping`);
       checkArgs(spec.check, args as Record<string, unknown>, where);
+      // A page exists to check only once the work is published.
+      if (POST_PUBLISH_CHECKS.has(spec.check) && spec.when !== 'publish') {
+        bad(
+          `${where}: check ${spec.check} reads the published page, so it runs only after publishing: add when: publish`,
+        );
+      }
       spec.args = args as Record<string, unknown>;
       break;
     }
@@ -445,7 +471,7 @@ export const TYPE_CRITERIA: Readonly<
   },
   publish: {
     defaults: [],
-    hint: 'a `check` criterion with `when: publish`, such as url-ok on {url}',
+    hint: 'a `check` criterion with `when: publish`, such as url-ok on {url} or page-contains',
   },
 };
 
@@ -623,6 +649,11 @@ export interface CheckDeps {
   cwd: string;
   /** The HTTP status of a GET of `url`; throws when it cannot connect or times out. */
   fetchStatus?: (url: string, timeoutMs: number) => Promise<number>;
+  /**
+   * A GET of `url` for `page-contains`: its status and up to `maxBytes` of its body as text;
+   * throws when it cannot connect or times out. Default: {@link defaultFetchPage}.
+   */
+  fetchPage?: (url: string, opts: { timeoutMs: number; maxBytes: number }) => Promise<FetchedPage>;
   /** Runs one command criterion. Default: a shell in `cwd`, 10 minutes at most. */
   runCommand?: (command: string, cwd: string) => Promise<CommandOutcome>;
   /** Runs a `map` criterion; without one, a map criterion is `na`. */
@@ -638,6 +669,18 @@ export interface CheckDeps {
 
 /** How long `url-ok` waits for an answer. */
 export const URL_TIMEOUT_MS = 10_000;
+/** How long `page-contains` waits for the whole page. */
+export const PAGE_TIMEOUT_MS = 15_000;
+/** How much of a page `page-contains` reads; the rest is not searched. */
+export const PAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/** What `page-contains` fetched. */
+export interface FetchedPage {
+  status: number;
+  text: string;
+  /** True when the page was longer than the cap and was cut. */
+  truncated?: boolean;
+}
 /** How long a command criterion may run under the default runner. */
 export const COMMAND_TIMEOUT_MS = 10 * 60_000;
 /** How much of a command's output a result keeps as evidence. */
@@ -652,6 +695,64 @@ export async function defaultFetchStatus(url: string, timeoutMs: number): Promis
   });
   await res.body?.cancel().catch(() => undefined);
   return res.status;
+}
+
+/**
+ * A GET of `url` that follows redirects and reads at most `maxBytes` of the body, all within
+ * `timeoutMs`.
+ */
+export async function defaultFetchPage(
+  url: string,
+  opts: { timeoutMs: number; maxBytes: number },
+): Promise<FetchedPage> {
+  const res = await fetch(url, {
+    method: 'GET',
+    redirect: 'follow',
+    signal: AbortSignal.timeout(opts.timeoutMs),
+  });
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let truncated = false;
+  const reader = res.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value));
+    size += value.byteLength;
+    if (size > opts.maxBytes) {
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  const text = Buffer.concat(chunks).subarray(0, opts.maxBytes).toString('utf8');
+  return { status: res.status, text, ...(truncated ? { truncated } : {}) };
+}
+
+const ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/** A page's visible text, roughly: scripts, styles and tags dropped, common entities decoded. */
+export function pageText(html: string): string {
+  return html
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e.startsWith('#')) {
+        const hex = e[1] === 'x' || e[1] === 'X';
+        const n = parseInt(e.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+      }
+      return ENTITIES[e.toLowerCase()] ?? m;
+    })
+    .replace(/\s+/g, ' ');
 }
 
 /** Runs `command` in a shell, without a window, and keeps the end of its output. */
@@ -1285,6 +1386,8 @@ async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict
           ? fail(broken.join('; '))
           : pass(`${urls.join(', ')} answered 2xx or 3xx`);
       }
+      case 'page-contains':
+        return await pageContains(c, deps);
       case 'file-exists': {
         const { paths, unmatched } = expandPaths(cwd, args.path);
         const missing = [...unmatched, ...paths.filter((p) => !existsSync(resolve(cwd, p)))];
@@ -1324,6 +1427,57 @@ async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict
   } catch (err) {
     return fail((err as Error).message);
   }
+}
+
+/**
+ * `page-contains`: fetches the page (`url`, or with `from: published` the URL the task's
+ * `publish` event records) and checks that it holds every string of `contains` and none of
+ * `absent`. A string counts as on the page when it is in the HTML or in its text
+ * ({@link pageText}). Case is ignored unless `case-sensitive: true`.
+ */
+async function pageContains(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict> {
+  const args = c.args ?? {};
+  const url = args.from === 'published' ? deps.url : strings(args.url)[0];
+  if (!url) {
+    return {
+      result: 'fail',
+      evidence: 'no published URL: page-contains with from: published runs after a publish',
+    };
+  }
+  if (!URL_RE.test(url)) return { result: 'fail', evidence: `'${url}' is no http(s) URL` };
+  const fetchPage = deps.fetchPage ?? defaultFetchPage;
+  let page: FetchedPage;
+  try {
+    page = await fetchPage(url, { timeoutMs: PAGE_TIMEOUT_MS, maxBytes: PAGE_MAX_BYTES });
+  } catch (err) {
+    return { result: 'fail', evidence: `${url}: ${(err as Error).message || 'no answer'}` };
+  }
+  if (page.status < 200 || page.status >= 300) {
+    return { result: 'fail', evidence: `${url} answered ${page.status}` };
+  }
+  const sensitive = args['case-sensitive'] === true;
+  const norm = (t: string): string => (sensitive ? t : t.toLowerCase());
+  const html = norm(page.text);
+  const text = norm(pageText(page.text));
+  const on = (s: string): boolean => html.includes(norm(s)) || text.includes(norm(s));
+  const quote = (l: string[]): string => l.map((w) => `"${w}"`).join(', ');
+  const wanted = strings(args.contains);
+  const banned = strings(args.absent);
+  const missing = wanted.filter((s) => !on(s));
+  const present = banned.filter((s) => on(s));
+  const cut = page.truncated ? ` (only the first ${PAGE_MAX_BYTES / 1024 / 1024} MB read)` : '';
+  const problems = [
+    ...(missing.length > 0 ? [`lacks ${quote(missing)}`] : []),
+    ...(present.length > 0 ? [`has ${quote(present)}`] : []),
+  ];
+  if (problems.length > 0) {
+    return { result: 'fail', evidence: `${url} ${problems.join('; ')}${cut}` };
+  }
+  const held = [
+    ...(wanted.length > 0 ? [`has ${quote(wanted)}`] : []),
+    ...(banned.length > 0 ? [`has none of ${quote(banned)}`] : []),
+  ];
+  return { result: 'pass', evidence: `${url} ${held.join('; ')}${cut}` };
 }
 
 /** The start of a check's evidence, cut at the evidence length. */

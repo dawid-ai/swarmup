@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // W8 phase 2 in the task panel and the criteria builder: Mark published on a publish task a
 // person owns, which records the URL through the person-only endpoint, and the builder entries
-// of image-alt, image-size and char-count's urls_as; phase 3's readability.
+// of image-alt, image-size and char-count's urls_as; phase 3's readability and page-contains.
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -194,6 +194,29 @@ describe('the builders of the phase 2 checks', () => {
     expect(draftProblem({ ...d, args: { ...d.args, min_grade: '10' } })).toBe(
       'Min grade is above Max grade',
     );
+  });
+
+  it('round-trips page-contains, after publish only', () => {
+    const spec = {
+      id: 'live',
+      kind: 'check' as const,
+      check: 'page-contains',
+      args: { from: 'published', contains: ['github.com/you/repo', 'Launch'], absent: 'TODO' },
+      when: 'publish' as const,
+    };
+    const d = draftOf(spec, 0);
+    expect(d.args).toEqual({
+      from: 'published',
+      contains: 'github.com/you/repo, Launch',
+      absent: 'TODO',
+    });
+    expect(entryOf(d)).toEqual(spec);
+    expect(draftProblem(d)).toBeNull();
+    expect(draftProblem({ ...d, when: '' })).toMatch(/check it after publish/);
+    expect(draftProblem({ ...d, args: { from: '', contains: 'x' } })).toBe(
+      'Set URL, or check the published URL',
+    );
+    expect(draftProblem({ ...d, args: { from: 'published' } })).toBe('Set Contains or Absent');
   });
 
   it('round-trips char-count urls_as', () => {

@@ -237,6 +237,29 @@ export const CHECKS: Record<string, ArgField[]> = {
       ],
     },
   ],
+  'page-contains': [
+    {
+      key: 'from',
+      label: 'Page',
+      type: 'select',
+      choices: [
+        ['published', 'The published URL'],
+        ['', 'This URL'],
+      ],
+    },
+    { key: 'url', label: 'URL', type: 'text', placeholder: 'https://example.com/post' },
+    { key: 'contains', label: 'Contains', type: 'list', placeholder: 'github.com/you/project' },
+    { key: 'absent', label: 'Absent', type: 'list', placeholder: 'lorem ipsum, TODO' },
+    {
+      key: 'case-sensitive',
+      label: 'Case',
+      type: 'bool',
+      choices: [
+        ['', 'Ignore case'],
+        ['true', 'Match case'],
+      ],
+    },
+  ],
   'url-ok': [
     {
       key: 'url',
@@ -705,6 +728,15 @@ export function draftProblem(d: DraftCriterion): string | null {
       }
       if (d.check === 'front-matter' && !d.args.keys?.trim() && !d.args.match?.trim()) {
         return 'Set Keys or Match';
+      }
+      if (d.check === 'page-contains') {
+        const url = d.args.url?.trim();
+        const published = d.args.from === 'published';
+        if (!published && !url) return 'Set URL, or check the published URL';
+        if (published && url) return 'Clear URL to check the published URL';
+        if (!d.args.contains?.trim() && !d.args.absent?.trim()) return 'Set Contains or Absent';
+        if (d.when !== 'publish')
+          return 'page-contains reads the published page: check it after publish';
       }
       if (d.check === 'readability') {
         const min = d.args.min_grade?.trim();

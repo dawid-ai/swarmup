@@ -265,7 +265,9 @@ whether a verdict, **Run checks** or the merge did. A milestone's one criterion 
   contain, ignore or match case), `heading-structure` (**Headings** in order, exactly one h1, no
   skipped levels), `front-matter` (**Keys**, and **Match** as `key: pattern` pairs separated by
   `;`), `image-alt`, `image-size` (**Width**, **Height** and **Max KB**), `readability`
-  (**Max grade** and **Min grade**), `links-resolve` and `url-ok`. `char-count` also takes
+  (**Max grade** and **Min grade**), `page-contains` (**Page** the published URL or a **URL**,
+  **Contains**, **Absent** and case; only with **Checked after publish**), `links-resolve` and
+  `url-ok`. `char-count` also takes
   **Each link counts**, such as 23 for X. **Path** takes one path or several, comma-separated,
   and a glob such as `posts/*.md` checks every file it matches. A `check` or `command` row also picks **Checked at merge** or **Checked after
   publish**; a post-publish criterion shows **after publish** in the list and runs when a person

@@ -74,7 +74,8 @@ The stages, by hand or from the workflow:
    ```
 
    This tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
-   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}`. In the desktop
+   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}` or a
+   `page-contains` check that the live page holds the repo link. In the desktop
    app, **Mark published** in the task panel records the same: the URL and, optionally, the
    file.
 

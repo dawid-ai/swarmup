@@ -32,7 +32,8 @@ Computes a task's current state from its event files, the same way on every mach
   `command` and `check` kinds for `swarmup criteria check` and the merge. Every file check takes
   path globs; `char-count` (with `urls_as`), `contains`, `heading-structure`, `front-matter`,
   `image-alt`, `image-size` (PNG and JPEG headers read in place) and `readability` (a pinned
-  Flesch-Kincaid grade in `readability.ts`) serve content,
+  Flesch-Kincaid grade in `readability.ts`) serve content; `page-contains` fetches the published
+  page through an injectable `fetchPage` and is refused without `when: publish`,
   and `when: publish` criteria run only after `swarmup published` (see `content`). The `rubric` kind is
   judged by `rubric.ts` and the supervisor's `judge.ts` (see `/judge`).
 

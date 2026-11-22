@@ -260,6 +260,13 @@ Any kind may carry `text` as a description. The built-in checks are:
   from a fixed rule, not a dictionary (`syllables` in `packages/core/src/readability.ts`), so
   every machine gets the same grade. A file with no prose fails. Grade 8 to 9 reads as plain
   English: `{ path: 'posts/*.md', max_grade: 9 }`.
+- `page-contains`: the page at `url`, or with `from: published` the URL the task's `publish`
+  event records, answers 2xx and holds every string of `contains` and none of `absent` (one or a
+  list each). A string counts when it is in the HTML or in its text with scripts, styles and tags
+  removed and entities decoded; case is ignored unless `case-sensitive: true`. It follows
+  redirects, waits 15 seconds at most and reads the first 2 MB. It reads the published page, so
+  it takes `when: publish` and is refused without it:
+  `{ check: page-contains, args: { from: published, contains: github.com/you/repo }, when: publish }`.
 
 Every `path` takes one path, a list, or globs (`posts/*.md`, `assets/**/*.png`): `*` and `?`
 stay inside one folder and `**` crosses folders. The check runs on every file that matches, and a
@@ -268,7 +275,7 @@ glob that matches no file fails it, as a missing file does.
 A criterion with `when: publish` holds after the work is published, not at merge: the merge and
 `swarmup criteria check` leave it out, and `swarmup published` runs it, with `{url}` in a check's
 arguments read as the published URL, such as `{ check: url-ok, args: { url: '{url}' }, when:
-publish }`.
+publish }`. `page-contains` is valid only there.
 
 - **Set it** with `swarmup new TITLE --done-when "CHECK"`, once per criterion. A value in braces
   is a typed criterion in YAML: `--done-when '{id: tests, kind: command, run: npm test}'`. A text
