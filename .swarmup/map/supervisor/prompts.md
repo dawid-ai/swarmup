@@ -21,7 +21,9 @@ Turns a launch into a command line and a prompt for Claude Code, Codex or any co
 ## How it works
 
 - `invocation` builds the args per runtime: Claude's allowed tools and `CLAUDE_DENY`, Codex's
-  sandbox and writable dirs, read-only roles, model and effort. For Claude and Codex it also
+  sandbox and writable dirs, read-only roles, model and effort. A read-only scratch writer (the
+  improver) gets `Edit` and `Write` for its scratch folder only, denied everywhere else it
+  reads. For Claude and Codex it also
   returns the `model` and `effort` it passed, for the run record.
 - `runPrompt` assembles the standard prompt: role file, learn notes (up to 3), the project map
   block, then the work, review, question or milestone-check lines with the task's criteria, the

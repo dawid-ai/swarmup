@@ -128,6 +128,8 @@ export interface RunRecord {
   model?: string;
   /** The reasoning effort the run was started with. */
   effort?: string;
+  /** The variant of the definitions the run started with (W5); unset for the base. */
+  variant?: string;
 }
 
 /** Which definitions a run started with (`RunRecord.defs`). */
@@ -142,6 +144,8 @@ export interface RunDefs {
   dirty?: boolean;
   /** Machine settings that overrode git for this run, such as `runtimes.claude.model`. */
   local?: string[];
+  /** The variant whose overlay `hash` includes (W5). */
+  variant?: string;
 }
 
 /** A commit of what a run left, in the checkout `top`; `into` is the branch to merge it into. */

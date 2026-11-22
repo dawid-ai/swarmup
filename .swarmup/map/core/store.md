@@ -47,10 +47,13 @@ Defines what a data root holds and how each file is named, read and written.
 - `ulid.ts` makes strictly increasing ULIDs, so file name order is time order.
 - `model.ts` lists event types and statuses; unknown event types from newer builds are kept.
   A `criteria-check` event carries `by: judge` when an LLM judge wrote its results.
-  A `run-start` event carries `session` when it resumes and `defs` (the definitions hash) when
-  the store has a `swarm.yaml`.
-- `agents.ts` reads role files; `runtimes.<rt>` gives a model and effort per runtime that wins
-  over the file's own `model` and `effort` (see `/core/defs`).
+  A `run-start` event carries `session` when it resumes, `defs` (the definitions hash) when
+  the store has a `swarm.yaml`, and `variant` for a variant run. `defs-propose`, `defs-promote`
+  (`defs_from`, `defs_to`) and `defs-reject` record a definition change (see `/improve`).
+- `agents.ts` reads role files, from disk or from texts (`agentFilesFromTexts`, for variants);
+  `runtimes.<rt>` gives a model and effort per runtime that wins over the file's own `model` and
+  `effort` (see `/core/defs`). `READ_ONLY_ROLES` includes the improver, and
+  `SCRATCH_WRITER_ROLES` lets it edit in its scratch folder only.
 - `lock.ts` takes file locks with stale takeover; `presence.ts` writes `machines/<name>.json`.
 - `store-move.ts` and `env.ts` keep the old `.agent-ops/` and `OPS_*` names readable.
 

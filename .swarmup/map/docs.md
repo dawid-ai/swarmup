@@ -31,9 +31,12 @@ What people and agents read to use and change SwarmUp. The website builds its do
 - `docs/protocol.md`: ids, the state machine, commands, permissions, events, sync, decisions.
 - `docs/supervisor.md`: swarmupd runs, prompts, limits, config, chat, merging, pushing, API.
 - `docs/desktop.md`: the app. `docs/map.md`: the project map format and commands.
-- `docs/definitions.md`: `swarm.yaml`, its precedence under the user config, run stamps.
-- `docs/benchmarks.md`: benchmark sets, hidden tests, `swarmup bench run|judge|compare`, and
-  judging rubric criteria.
+- `docs/definitions.md`: `swarm.yaml`, its precedence under the user config, run stamps,
+  variants, proposals and the improvement policy.
+- `docs/supervisor.md` ("Self-improvement"): the improvement trigger, the improver, the benchmark
+  gate and `swarmupd.improve`; `docs/desktop.md` has the **Proposals** list.
+- `docs/benchmarks.md`: benchmark sets, hidden tests, `swarmup bench run|judge|compare`, judging
+  rubric criteria, and role files and variants in the prompt.
 - `docs/protocol.md` ("Rubric files") is the rubric format and how the judge scores; the judge's
   settings and its merge hook are in `docs/supervisor.md`.
 - `skills/swarmup/SKILL.md`: the skill agents load to work the queue; `.agents/` and

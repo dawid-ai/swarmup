@@ -126,6 +126,26 @@ Two modes check the harness itself:
 
 Both run each entry once, whatever `repeat` says.
 
+## Role files and variants
+
+By default an attempt's prompt is the entry's task alone. `--role-file --root ROOT` puts the
+agent's role file from `ROOT` (a store folder, or the name of a root) at the top of each prompt and
+runs with the model and effort it gives the agent's runtime, unless `--model` or `--effort` say
+otherwise. `--variant NAME --root ROOT` does the same with variant `NAME` on top of the store's
+definitions, so a [proposal](definitions.md#proposals) can be measured against its base:
+
+```bash
+swarmup bench run tally.yaml --repo C:\dev\swarmup-testbed --agent claude:engineer \
+  --role-file --root tally --out base
+swarmup bench run tally.yaml --repo C:\dev\swarmup-testbed --agent claude:engineer \
+  --variant engineer-tests-first --root tally --out variant
+swarmup bench compare base variant
+```
+
+The run writes the resolved role file to `role.md` in its out folder, and `summary.json` records
+`role`: the agent, the store, the definition hash and the variant. `bench compare` names the
+variant in its header.
+
 ## Results
 
 The out folder holds one folder per attempt and the run's summary:

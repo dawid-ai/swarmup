@@ -114,6 +114,38 @@ export function readAgentFiles(rootDir: string): AgentFiles {
 }
 
 /**
+ * Reads the agent files among `texts` (path in the store to text), as {@link readAgentFiles}
+ * reads them from disk: `agents/<name>.md`, not in a subfolder and not starting with `_`. For a
+ * variant, whose files are a base with an overlay on top (W5). `fileOf` names each agent's file;
+ * by default the path under `rootDir`.
+ */
+export function agentFilesFromTexts(
+  rootDir: string,
+  texts: ReadonlyMap<string, string>,
+  fileOf: (path: string) => string = (path) => join(rootDir, path),
+): AgentFiles {
+  const out: AgentFiles = { agents: [], problems: [] };
+  for (const [path, text] of [...texts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const m = /^agents\/([^/]+\.md)$/.exec(path);
+    if (!m || m[1]!.startsWith('_')) continue;
+    const name = m[1]!;
+    const file = fileOf(path);
+    let doc: { data: Partial<AgentDef>; body: string };
+    try {
+      doc = parseAgentFile(text);
+    } catch (err) {
+      const message = (err as Error).message.split('\n')[0] ?? 'unreadable';
+      out.problems.push({ file, message });
+      continue;
+    }
+    const id = doc.data.id ?? slugToActor(name.slice(0, -3));
+    if (!isActorId(id)) continue;
+    out.agents.push({ ...doc.data, id, status: doc.data.status ?? 'active', file, body: doc.body });
+  }
+  return out;
+}
+
+/**
  * Why the role may not run or take work, or null when it is active or has no role file. A
  * proposed role waits for a person to approve it; a paused one for a person to resume it.
  */
@@ -131,7 +163,19 @@ export function readAgents(rootDir: string): AgentDef[] {
  * Roles that only read code and post to SwarmUp: they review and answer, and never take work
  * that changes files (AO-0136). swarmupd gives their runs no `Edit` or `Write` by default.
  */
-export const READ_ONLY_ROLES: readonly string[] = ['qa', 'reviewer', 'pm', 'orchestrator'];
+export const READ_ONLY_ROLES: readonly string[] = [
+  'qa',
+  'reviewer',
+  'pm',
+  'orchestrator',
+  'improver',
+];
+
+/**
+ * Read-only roles whose runs may still write in their own scratch folder, and nowhere else: the
+ * improver (W6) drafts a definition overlay there before `swarmup defs propose`.
+ */
+export const SCRATCH_WRITER_ROLES: readonly string[] = ['improver'];
 
 /** Task types a read-only role takes from the queue when its role file sets no `can_claim`. */
 export const READ_ONLY_CAN_CLAIM: readonly string[] = ['question'];

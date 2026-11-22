@@ -7,6 +7,7 @@ import {
   roleOf,
   RUN_KINDS,
   runtimeOf,
+  SCRATCH_WRITER_ROLES,
 } from '@swarmup/core';
 import type { RuntimeConfig } from './config.js';
 import { checkEffort, checkModel } from './config.js';
@@ -387,9 +388,26 @@ function invocationArgs(
   const unsetEnv = rc.unset_env ?? [];
   if (runtime === 'claude') {
     const own = agent?.tools ?? (chat ? CHAT_TOOLS : DEFAULT_CLAUDE_TOOLS);
-    const denied = new Set([...(chat ? CHAT_DENY : []), ...(readOnly ? READ_ONLY_DENY : [])]);
+    // A read-only role that drafts in its scratch folder (the improver, W6) may edit there and
+    // nowhere else: the edit tools are allowed for the scratch folder alone, and denied in the
+    // run's folder and every other folder it may read.
+    const scratchWrites =
+      readOnly && !chat && scratch !== undefined && SCRATCH_WRITER_ROLES.includes(roleOf(agentId));
+    const denied = new Set([
+      ...(chat ? CHAT_DENY : []),
+      ...(readOnly ? (scratchWrites ? ['NotebookEdit'] : READ_ONLY_DENY) : []),
+    ]);
+    const scratchOnly = scratchWrites
+      ? {
+          allow: ['Edit', 'Write'].map((t) => `${t}(${claudeAbsolutePattern(scratch!)})`),
+          deny: [cwd, ...addDirs]
+            .filter((d) => normalDir(d) !== normalDir(scratch!))
+            .flatMap((d) => ['Edit', 'Write'].map((t) => `${t}(${claudeAbsolutePattern(d)})`)),
+        }
+      : { allow: [], deny: [] };
     const tools = [
-      ...own.filter((t) => !denied.has(t)),
+      ...own.filter((t) => !denied.has(t) && !(scratchWrites && (t === 'Edit' || t === 'Write'))),
+      ...scratchOnly.allow,
       ...(chat ? CHAT_READ_TOOLS : []),
       ...CLI_TOOLS,
     ];
@@ -421,6 +439,7 @@ function invocationArgs(
             ...(storeCheckout ? STORE_CHECKOUT_DENY : []),
             ...denied,
             ...roleFileDeny,
+            ...scratchOnly.deny,
           ]),
         ].join(','),
         ...addDirs.flatMap((d) => ['--add-dir', d]),

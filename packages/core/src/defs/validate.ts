@@ -23,6 +23,8 @@ export interface ValidateInput {
   machineAgents?: readonly string[];
   /** Where a key path is in each checked file, by file. */
   locate?: Map<string, Locate>;
+  /** The file a path in the store is reported as; a variant reports its overlay files. */
+  fileOf?: (path: string) => string;
 }
 
 const roleOf = (id: string): string => id.slice(id.indexOf(':') + 1);
@@ -30,7 +32,8 @@ const runtimeOf = (id: string): string => id.slice(0, id.indexOf(':'));
 
 export function validateDefinitions(input: ValidateInput): DefProblem[] {
   const out: DefProblem[] = [];
-  const swarmFile = join(input.root, SWARM_FILE);
+  const fileOf = input.fileOf ?? ((path: string) => join(input.root, path));
+  const swarmFile = fileOf(SWARM_FILE);
   const at = (file: string, path: string, severity: DefProblem['severity'], message: string) => {
     const keys = path === '(top)' ? [] : path.split('.');
     const pos = input.locate?.get(file)?.(keys) ?? { line: 1, col: 1 };
@@ -108,7 +111,7 @@ export function validateDefinitions(input: ValidateInput): DefProblem[] {
     }
   }
 
-  for (const [path, text] of input.texts) out.push(...secretProblems(join(input.root, path), text));
+  for (const [path, text] of input.texts) out.push(...secretProblems(fileOf(path), text));
   return out;
 }
 

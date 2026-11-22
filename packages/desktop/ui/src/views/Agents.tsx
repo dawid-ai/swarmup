@@ -64,6 +64,7 @@ import { RefText } from '../ui/refs';
 import { RoleEditor } from '../ui/roles';
 import { historyPath } from '../ui/score';
 import { AgentScoresBlock } from '../ui/score-agent';
+import { Proposals } from '../ui/proposals';
 import { ProjectName } from '../ui/project-label';
 
 /** Re-renders every `ms` so elapsed times on live runs keep moving. */
@@ -221,6 +222,8 @@ export function Agents({ nav, selected }: { nav: Nav; selected?: string }) {
               </Button>
             </div>
           ))}
+
+        <Proposals nav={nav} />
 
         <section>
           <Caps>Providers</Caps>
@@ -890,6 +893,15 @@ function AgentCard(props: {
         history={props.history}
         bucket={props.bucket}
         nav={nav}
+        onPropose={() =>
+          void api<{ id: string }>('POST', '/api/improve', { agent: props.id }).then(
+            (t) => {
+              toast(`Filed ${t.id} for the improver`);
+              refreshSoon();
+            },
+            (err: unknown) => toast((err as Error).message, { tone: 'bad' }),
+          )
+        }
       />
 
       {runs.length > 0 && (

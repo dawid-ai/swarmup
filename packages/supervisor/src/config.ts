@@ -240,6 +240,52 @@ export const DEFAULT_JUDGE: JudgeConfig = {
   at_merge: false,
 };
 
+/**
+ * The benchmark gate of the self-improvement loop (W6, `swarmupd.improve.benchmark`): the set a
+ * proposal is replayed on, base against variant, and the repo it runs in.
+ */
+export interface ImproveBenchConfig {
+  /** A set file swarmupd lists: under `swarmupd.bench.sets` or a root's `benchmarks/`. */
+  set: string;
+  /** The repo under test. */
+  repo: string;
+  hidden_dir?: string;
+  /** Entries of the set to run; all by default. */
+  entries?: string[];
+  /** Attempts per entry, for each of base and variant. Default 1. */
+  repeat: number;
+  /** Minutes each attempt may run; the set's own by default. */
+  budget_min?: number;
+}
+
+/**
+ * The self-improvement loop (W6, `swarmupd.improve`): when an agent's scores fail often enough,
+ * swarmupd files a task for the improver; when a proposal is recorded and `benchmark` is set, it
+ * replays the set with the base and the variant.
+ */
+export interface ImproveConfig {
+  /** File improvement tasks on its own. Off unless set to true. */
+  enabled: boolean;
+  /** Distinct failing task and run scores of one agent that file a task. Default 10. */
+  threshold: number;
+  /** Only scores of the last this many days count. Default 7. */
+  max_age_days: number;
+  /** Who works the task. Default `claude:improver`. */
+  agent: string;
+  /** Hours between looks at the scores. Default 3. */
+  check_hours: number;
+  /** The benchmark gate; off without it, since it spends tokens. */
+  benchmark?: ImproveBenchConfig;
+}
+
+export const DEFAULT_IMPROVE: ImproveConfig = {
+  enabled: false,
+  threshold: 10,
+  max_age_days: 7,
+  agent: 'claude:improver',
+  check_hours: 3,
+};
+
 /** The model a Claude judge uses when `swarmupd.judge.model` is unset. */
 export const DEFAULT_JUDGE_CLAUDE_MODEL = 'sonnet';
 
@@ -405,6 +451,7 @@ export interface OpsdConfig {
   resume_max_hours: number;
   bench: BenchConfig;
   judge: JudgeConfig;
+  improve: ImproveConfig;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -523,6 +570,7 @@ export function opsdConfig(
     resume_max_hours: raw.resume_max_hours ?? 24,
     bench: checkBench((raw as { bench?: unknown }).bench),
     judge: checkJudge((raw as { judge?: unknown }).judge),
+    improve: checkImprove((raw as { improve?: unknown }).improve),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -757,6 +805,82 @@ export function checkJudge(raw: unknown): JudgeConfig {
       throw new OpsError('swarmupd.judge.at_merge: use true or false', 2);
     }
     out.at_merge = j.at_merge;
+  }
+  return out;
+}
+
+const IMPROVE_KEYS = ['enabled', 'threshold', 'max_age_days', 'agent', 'check_hours', 'benchmark'];
+const IMPROVE_BENCH_KEYS = ['set', 'repo', 'hidden_dir', 'entries', 'repeat', 'budget_min'];
+
+/**
+ * `swarmupd.improve`, checked, with {@link DEFAULT_IMPROVE} for what it leaves out. Refuses an
+ * unknown key, a count below 1, an agent that is no `<runtime>:<role>`, and a benchmark without a
+ * set or a repo, with exit 2.
+ */
+export function checkImprove(raw: unknown): ImproveConfig {
+  if (raw === undefined || raw === null) return { ...DEFAULT_IMPROVE };
+  const fail = (m: string): never => {
+    throw new OpsError(`swarmupd.improve${m}`, 2);
+  };
+  if (typeof raw !== 'object' || Array.isArray(raw)) fail(`: use ${IMPROVE_KEYS.join(', ')}`);
+  const extra = Object.keys(raw as object).filter((k) => !IMPROVE_KEYS.includes(k));
+  if (extra.length > 0) fail(`: unknown key ${extra[0]}; use ${IMPROVE_KEYS.join(', ')}`);
+  const r = raw as Record<string, unknown>;
+  const out: ImproveConfig = { ...DEFAULT_IMPROVE };
+  if (r.enabled !== undefined && r.enabled !== null) {
+    if (typeof r.enabled !== 'boolean') fail('.enabled: use true or false');
+    out.enabled = r.enabled as boolean;
+  }
+  const whole = (v: unknown, k: string): number | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 1)
+      fail(`.${k}: use a number of at least 1`);
+    return v as number;
+  };
+  out.threshold = whole(r.threshold, 'threshold') ?? out.threshold;
+  out.max_age_days = whole(r.max_age_days, 'max_age_days') ?? out.max_age_days;
+  out.check_hours = whole(r.check_hours, 'check_hours') ?? out.check_hours;
+  if (r.agent !== undefined && r.agent !== null) {
+    if (typeof r.agent !== 'string' || !/^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$/.test(r.agent)) {
+      fail('.agent: use <runtime>:<role>, such as claude:improver');
+    }
+    out.agent = r.agent as string;
+  }
+  if (r.benchmark !== undefined && r.benchmark !== null) {
+    const b = r.benchmark;
+    if (typeof b !== 'object' || Array.isArray(b))
+      fail(`.benchmark: use ${IMPROVE_BENCH_KEYS.join(', ')}`);
+    const bx = b as Record<string, unknown>;
+    const bad = Object.keys(bx).filter((k) => !IMPROVE_BENCH_KEYS.includes(k));
+    if (bad.length > 0)
+      fail(`.benchmark: unknown key ${bad[0]}; use ${IMPROVE_BENCH_KEYS.join(', ')}`);
+    const path = (k: string, need: boolean): string | undefined => {
+      const v = bx[k];
+      if (v === undefined || v === null || v === '') {
+        if (need) fail(`.benchmark.${k}: name a path`);
+        return undefined;
+      }
+      if (typeof v !== 'string') fail(`.benchmark.${k}: name a path`);
+      return v as string;
+    };
+    let entries: string[] | undefined;
+    if (bx.entries !== undefined && bx.entries !== null) {
+      const list = typeof bx.entries === 'string' ? bx.entries.split(',') : bx.entries;
+      if (!Array.isArray(list) || list.some((e) => typeof e !== 'string')) {
+        fail('.benchmark.entries: use a list of entry ids');
+      }
+      entries = (list as string[]).map((e) => e.trim()).filter(Boolean);
+    }
+    const hidden = path('hidden_dir', false);
+    const budget = whole(bx.budget_min, 'benchmark.budget_min');
+    out.benchmark = {
+      set: path('set', true)!,
+      repo: path('repo', true)!,
+      ...(hidden ? { hidden_dir: hidden } : {}),
+      ...(entries?.length ? { entries } : {}),
+      repeat: whole(bx.repeat, 'benchmark.repeat') ?? 1,
+      ...(budget !== undefined ? { budget_min: budget } : {}),
+    };
   }
   return out;
 }

@@ -1,8 +1,20 @@
+import { existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import type { ParseArgsConfig } from 'node:util';
-import { daemonSection, envVar, OpsError, readBenchSet, readUserConfig } from '@swarmup/core';
-import type { BenchJudge, RuntimeConfig } from '@swarmup/supervisor';
+import type { Workspace } from '@swarmup/core';
+import {
+  agentRuntimeValues,
+  daemonSection,
+  envVar,
+  loadDefinitions,
+  OpsError,
+  readBenchSet,
+  readUserConfig,
+  ROOT_DIR_NAME,
+  runtimeOf,
+} from '@swarmup/core';
+import type { BenchJudge, BenchRole, RuntimeConfig } from '@swarmup/supervisor';
 import {
   checkJudge,
   checkModel,
@@ -24,6 +36,7 @@ interface BenchCtx {
   };
   args: string[];
   opts: Record<string, string | boolean | string[] | undefined>;
+  ws?: () => Workspace;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
@@ -66,12 +79,68 @@ function benchJudge(ctx: BenchCtx): BenchJudge {
   };
 }
 
+/**
+ * The store `--root` names: a folder (a store, or one that holds `.swarmup/`), else a root of the
+ * workspace by name.
+ */
+function storeOf(ctx: BenchCtx, root: string): { name: string; dir: string } {
+  const path = resolve(ctx.io.cwd, root);
+  if (existsSync(path) && statSync(path).isDirectory()) {
+    const inner = join(path, ROOT_DIR_NAME);
+    const dir = basename(path) !== ROOT_DIR_NAME && existsSync(inner) ? inner : path;
+    return { name: dir, dir };
+  }
+  const r = ctx.ws?.().roots.find((x) => x.name === root);
+  if (!r) throw new OpsError(`--root ${root}: no such folder or root`, 2);
+  return { name: r.name, dir: r.dir };
+}
+
+/**
+ * The role file `--role-file` or `--variant` puts in each prompt: the agent's file in the root's
+ * definitions, with the variant's overlay on top when one is named.
+ */
+function benchRole(ctx: BenchCtx): BenchRole | undefined {
+  const variant = str(ctx.opts.variant);
+  if (!variant && !ctx.opts['role-file']) return undefined;
+  const agent = str(ctx.opts.agent);
+  if (!agent || agent === 'none') {
+    throw new OpsError('--role-file and --variant need --agent RUNTIME:ROLE', 2);
+  }
+  const root = str(ctx.opts.root);
+  if (!root)
+    throw new OpsError('--role-file and --variant need --root, the store the role file is in', 2);
+  const store = storeOf(ctx, root);
+  const set = loadDefinitions(store.dir, variant ? { variant } : {});
+  if (!set.ok) {
+    const first = set.problems.find((p) => p.severity === 'error');
+    throw new OpsError(
+      `the definitions of ${store.name}${variant ? ` with variant ${variant}` : ''} do not check: ` +
+        `${first ? `${first.path}: ${first.message}` : 'errors'}`,
+      2,
+    );
+  }
+  const def = set.agents.find((a) => a.id === agent);
+  if (!def) throw new OpsError(`${store.name} has no role file for ${agent}`, 2);
+  const norm = def.file.replace(/\\/g, '/');
+  const path = Object.keys(set.texts).find((p) => norm.endsWith(`/${p}`));
+  const values = agentRuntimeValues(def, runtimeOf(agent));
+  return {
+    agent,
+    root: store.name,
+    defs: set.hash,
+    ...(variant ? { variant } : {}),
+    text: path ? set.texts[path]! : def.body,
+    body: def.body,
+    ...values,
+  };
+}
+
 /** `swarmup bench`: replay a benchmark set against an agent and compare two runs. */
 export const benchCommand = {
   usage:
-    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--repeat N] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json]',
+    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--role-file --root ROOT] [--variant NAME --root ROOT] [--repeat N] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json]',
   summary:
-    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json",
+    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --role-file puts the agent's role file from --root (a store folder or root name) in each prompt and takes its model and effort, --variant does the same with a variant's overlay on top; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json",
   options: {
     repo: { type: 'string' },
     entries: { type: 'string', multiple: true },
@@ -89,6 +158,8 @@ export const benchCommand = {
     set: { type: 'string' },
     again: { type: 'boolean' },
     'dry-run': { type: 'boolean' },
+    variant: { type: 'string' },
+    'role-file': { type: 'boolean' },
   } satisfies NonNullable<ParseArgsConfig['options']>,
   run: (ctx: BenchCtx): Promise<number> => runBenchCmd(ctx),
 };
@@ -116,14 +187,18 @@ async function runBenchCmd(ctx: BenchCtx): Promise<number> {
   const out = at(ctx.opts.out) ?? defaultOut(ctx.io.env, set.id);
   const repeat = positive(ctx.opts.repeat, '--repeat', true);
   const budgetMin = positive(ctx.opts['budget-min'], '--budget-min', false);
+  const role = benchRole(ctx);
+  const model = str(ctx.opts.model) ?? role?.model;
+  const effort = str(ctx.opts.effort) ?? role?.effort;
   const summary = await runBench({
     set,
     repo: resolve(ctx.io.cwd, repo),
     out,
     ...(entries.length > 0 ? { entries } : {}),
     ...(str(ctx.opts.agent) ? { agent: str(ctx.opts.agent) } : {}),
-    ...(str(ctx.opts.model) ? { model: str(ctx.opts.model) } : {}),
-    ...(str(ctx.opts.effort) ? { effort: str(ctx.opts.effort) } : {}),
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    ...(role ? { role } : {}),
     ...(repeat !== undefined ? { repeat } : {}),
     ...(budgetMin !== undefined ? { budgetMin } : {}),
     ...(at(ctx.opts['hidden-dir']) ? { hiddenDir: at(ctx.opts['hidden-dir']) } : {}),

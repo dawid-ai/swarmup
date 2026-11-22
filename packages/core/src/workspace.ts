@@ -1,6 +1,24 @@
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import type { ActivityItem, ActivityOptions, ActivityPage } from './activity.js';
+import type { ProposalMeta, VariantInfo } from './defs/index.js';
+import {
+  applyVariantToBase,
+  checkVariantName,
+  formatProblem,
+  improvementPolicy,
+  listVariantNames,
+  listVariants,
+  loadDefinitions,
+  overlayAgents,
+  overlayFrom,
+  policyProblems,
+  readProposal,
+  removeVariant,
+  shortHash,
+  writeProposal,
+  writeVariantFiles,
+} from './defs/index.js';
 import { activityPage } from './activity.js';
 import type {
   AgentDef,
@@ -400,6 +418,41 @@ export interface EventMark {
   by: string;
   /** Who wrote the record down, when that is not the decider. */
   recorded_by?: string;
+}
+
+/** What `swarmup defs propose` takes (W6). */
+export interface DefsProposeInput {
+  /** The folder that holds the overlay, laid out as the definitions are. */
+  dir: string;
+  /** The variant's name: `variants/<name>/`. */
+  name: string;
+  /** Why: the start of the event body. */
+  message: string;
+  /** The scorers it addresses; by default the `Scorers:` line of the task's body. */
+  scorers?: string[];
+  /** The agents it changes; by default the agent files of the overlay. */
+  agents?: string[];
+}
+
+export interface DefsProposeResult extends ActResult {
+  variant: string;
+  root: string;
+  dir: string;
+  proposal: ProposalMeta;
+}
+
+/** What `swarmup defs promote` and `reject` did. */
+export interface DefsDecisionResult {
+  variant: string;
+  root: string;
+  /** The `defs-promote` or `defs-reject` event; none for a variant without a linked task. */
+  events: OpsEvent[];
+  proposal?: ProposalMeta;
+  /** Promote: the hashes before and after, and the paths written or removed. */
+  from?: string;
+  to?: string;
+  written?: string[];
+  removed?: string[];
 }
 
 export interface ActResult {
@@ -1974,7 +2027,10 @@ export class Workspace {
   recordRun(
     ref: string,
     type: 'run-start' | 'run-end',
-    fields: Pick<OpsEvent, 'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session' | 'defs'>,
+    fields: Pick<
+      OpsEvent,
+      'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session' | 'defs' | 'variant'
+    >,
     message = '',
   ): ActResult {
     return this.act(ref, () => [{ type, ...fields, body: message }]);
@@ -3361,6 +3417,212 @@ export class Workspace {
       if (!pending) throw new OpsError(`${id} has no plan that waits for approval`);
       write({ type: 'plan-reject', plan: pending.event, to: pending.actor, body: note });
     });
+  }
+
+  // ---- Definition proposals (W6) ------------------------------------------------------------
+
+  /**
+   * `swarmup defs propose`: records a change to the definitions as variant `name` of the task's
+   * store. The overlay in `dir` must pass the store's improvement policy (`may_change`, `frozen`,
+   * the always-frozen agent keys) and the variant must check; then the folder is written to
+   * `variants/<name>/` with a `proposal.json`, and a `defs-propose` event with the variant's hash
+   * and a "Regressions addressed" section goes on the task. Refuses a store that already has
+   * `max_open_proposals` proposals waiting.
+   */
+  defsPropose(ref: string, input: DefsProposeInput): DefsProposeResult {
+    const actor = this.requireActor();
+    const name = checkVariantName(input.name);
+    const message = input.message.trim();
+    if (!message) {
+      throw new OpsError('say why: swarmup defs propose ID --dir DIR --name NAME -m "why"', 2);
+    }
+    assertNoSecret(message);
+    const { root, id } = this.resolve(ref);
+    if (root.isMirror) {
+      throw new OpsError(`${root.name} is a mirror; propose in the project's own root`, 2);
+    }
+    const overlay = overlayFrom(input.dir);
+    for (const text of overlay.values()) assertNoSecret(text);
+    const task = root.readTask(id);
+    const marked = (label: string): string[] => {
+      const m = new RegExp(`^${label}: (.+)$`, 'm').exec(task.body);
+      return m ? m[1]!.split(/[,\s]+/).filter(Boolean) : [];
+    };
+    return root.lock('defs-variants', () => {
+      const base = loadDefinitions(root.dir);
+      const policy = improvementPolicy(base.swarm);
+      const open = listVariantNames(root.dir).filter((n) => readProposal(root.dir, n));
+      if (open.length >= policy.max_open_proposals) {
+        throw new OpsError(
+          `${open.length} proposal(s) wait for a person in ${root.name} (${open.join(', ')}); ` +
+            `max_open_proposals is ${policy.max_open_proposals}: a person promotes or rejects one first`,
+        );
+      }
+      const refused = policyProblems(new Map(Object.entries(base.texts)), overlay, policy);
+      if (refused.length > 0) {
+        throw new OpsError(
+          `the improvement policy refuses the overlay:\n- ${refused.join('\n- ')}`,
+          1,
+        );
+      }
+      const dir = writeVariantFiles(root.dir, name, overlay);
+      try {
+        const set = loadDefinitions(root.dir, { variant: name });
+        const errors = set.problems.filter((p) => p.severity === 'error');
+        if (errors.length > 0) {
+          throw new OpsError(
+            `the variant does not check:\n${errors.map((p) => formatProblem(p)).join('\n')}`,
+            1,
+          );
+        }
+        const agents = input.agents?.length
+          ? input.agents
+          : overlayAgents(overlay).length > 0
+            ? overlayAgents(overlay)
+            : marked('Agent');
+        const scorers = input.scorers?.length ? input.scorers : marked('Scorers');
+        const evidence = marked('Evidence');
+        const files = [...overlay.keys()];
+        const section = [
+          '## Regressions addressed',
+          '',
+          `- Agents: ${agents.join(', ') || '(none named)'}`,
+          `- Scorers: ${scorers.join(', ') || '(none named)'}`,
+          ...(evidence.length > 0 ? [`- Evidence: ${evidence.join(', ')}`] : []),
+        ].join('\n');
+        const body = [
+          message,
+          /regressions addressed/i.test(message) ? '' : section,
+          `Variant \`${name}\` (${shortHash(set.hash)}) on base ${shortHash(set.baseHash ?? '')}` +
+            `, files: ${files.join(', ')}.`,
+          `A person promotes it with \`swarmup defs promote ${name}\` or rejects it with ` +
+            `\`swarmup defs reject ${name} -m "why"\`.`,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+        const res = this.act(
+          `${root.name}/${id}`,
+          (_v, ctx) => {
+            ctx.requireOpen('propose a definition change on');
+            return [{ type: 'defs-propose', variant: name, defs: shortHash(set.hash), body }];
+          },
+          { helperOk: true },
+        );
+        const meta: ProposalMeta = {
+          task: `${root.name}/${id}`,
+          agents,
+          scorers,
+          message,
+          by: actor,
+          at: new Date(this.now()).toISOString(),
+          base: set.baseHash ?? '',
+          hash: set.hash,
+          ...(res.events[0] ? { event: res.events[0].id } : {}),
+        };
+        writeProposal(root.dir, name, meta);
+        return { ...res, variant: name, root: root.name, dir, proposal: meta };
+      } catch (err) {
+        removeVariant(root.dir, name);
+        throw err;
+      }
+    });
+  }
+
+  /** The root that holds variant `name`: the one `rootName` names, else the only one with it. */
+  private variantRoot(name: string, rootName?: string): Root {
+    checkVariantName(name);
+    const roots = this.roots.filter((r) => !r.isMirror && (!rootName || r.name === rootName));
+    if (rootName && roots.length === 0) throw new OpsError(`no root named '${rootName}'`, 2);
+    const holders = roots.filter((r) => listVariantNames(r.dir).includes(name));
+    if (holders.length === 0) throw new OpsError(`no variant '${name}'`, 2);
+    if (holders.length > 1) {
+      throw new OpsError(
+        `variant '${name}' is in ${holders.map((r) => r.name).join(' and ')}; pass --root`,
+        2,
+      );
+    }
+    return holders[0]!;
+  }
+
+  /** A person's decision on a proposal: only a person promotes or rejects one. */
+  private needPerson(what: string): string {
+    const actor = this.requireActor();
+    if (!isHuman(actor)) {
+      throw new OpsError(`only a person ${what} a definition change; ${actor} cannot`);
+    }
+    return actor;
+  }
+
+  /**
+   * `swarmup defs promote`: a person writes variant `name` onto the store's definition files,
+   * records a `defs-promote` event with the hashes before and after on the linked task, and
+   * removes the variant's folder.
+   */
+  defsPromote(name: string, opts: { root?: string; message?: string } = {}): DefsDecisionResult {
+    this.needPerson('promotes');
+    if (opts.message) assertNoSecret(opts.message);
+    const root = this.variantRoot(name, opts.root);
+    return root.lock('defs-variants', () => {
+      const meta = readProposal(root.dir, name);
+      const done = applyVariantToBase(root.dir, name);
+      const files = [...done.written, ...done.removed.map((p) => `${p} (removed)`)];
+      let events: OpsEvent[] = [];
+      if (meta?.task) {
+        const body = [
+          opts.message?.trim(),
+          `Promoted variant \`${name}\`: ${shortHash(done.from)} -> ${shortHash(done.to)}. ` +
+            `Changed ${files.join(', ') || 'nothing'}.`,
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+        events = this.act(meta.task, () => [
+          {
+            type: 'defs-promote',
+            variant: name,
+            defs_from: shortHash(done.from),
+            defs_to: shortHash(done.to),
+            body,
+          },
+        ]).events;
+      }
+      removeVariant(root.dir, name);
+      return {
+        variant: name,
+        root: root.name,
+        events,
+        ...done,
+        ...(meta ? { proposal: meta } : {}),
+      };
+    });
+  }
+
+  /**
+   * `swarmup defs reject`: a person turns variant `name` down with a note, recorded as a
+   * `defs-reject` event on the linked task, and its folder goes.
+   */
+  defsReject(name: string, message: string, opts: { root?: string } = {}): DefsDecisionResult {
+    this.needPerson('rejects');
+    if (!message.trim()) throw new OpsError('say why: swarmup defs reject NAME -m "why"', 2);
+    assertNoSecret(message);
+    const root = this.variantRoot(name, opts.root);
+    return root.lock('defs-variants', () => {
+      const meta = readProposal(root.dir, name);
+      let events: OpsEvent[] = [];
+      if (meta?.task) {
+        events = this.act(meta.task, () => [
+          { type: 'defs-reject', variant: name, body: message.trim() },
+        ]).events;
+      }
+      removeVariant(root.dir, name);
+      return { variant: name, root: root.name, events, ...(meta ? { proposal: meta } : {}) };
+    });
+  }
+
+  /** Every variant of the visible roots, with its hash, status, linked task and files. */
+  variants(): Array<VariantInfo & { root: string }> {
+    return this.scopedRoots()
+      .filter((r) => !r.isMirror)
+      .flatMap((r) => listVariants(r.dir).map((v) => ({ ...v, root: r.name })));
   }
 
   /**
