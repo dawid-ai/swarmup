@@ -230,6 +230,8 @@ describe('improvement trigger', () => {
           },
           delta: {
             attempts: 0,
+            judged: null,
+            judgeCostUsd: null,
             passRate: passB - passA,
             hiddenPassRate: null,
             costUsd: 0,
