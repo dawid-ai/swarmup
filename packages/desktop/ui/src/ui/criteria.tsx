@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, q, useData } from '../api';
 import { Button, cx, ErrorLine, Input, Select, useAction, Who } from '../components';
 import { ago } from '../lib/format';
+import { EvidenceLinks } from './work';
 import type {
   CriteriaCheckJob,
   Criterion,
@@ -32,6 +33,12 @@ import type {
   CriterionVerdict,
   TaskDetail,
 } from '../types';
+
+/** The artifacts of the task's review, for evidence that names one (W8). */
+export interface ArtifactLinks {
+  paths: readonly string[];
+  open: (path: string) => void;
+}
 
 export type CriterionKind = CriterionSpec['kind'];
 export type CriterionResult = CriterionVerdict['result'];
@@ -88,7 +95,7 @@ export const RUN_KINDS: ReadonlySet<CriterionKind> = new Set(['command', 'check'
 /** The kinds a reviewer judges by reading the work. */
 export const JUDGED_KINDS: ReadonlySet<CriterionKind> = new Set(['prose', 'rubric', 'human']);
 
-type ArgType = 'text' | 'list' | 'number' | 'bool';
+type ArgType = 'text' | 'list' | 'number' | 'bool' | 'select' | 'map';
 
 interface ArgField {
   key: string;
@@ -96,28 +103,126 @@ interface ArgField {
   type: ArgType;
   required?: boolean;
   placeholder?: string;
+  /** bool and select: the choices, value then label; the empty value leaves the argument out. */
+  choices?: Array<[string, string]>;
 }
 
-/** The built-in checks and their arguments. A `list` takes one value or several, comma-separated. */
+/** A file check's paths: one or several, comma-separated; a glob checks each file it matches. */
+function pathField(placeholder: string): ArgField {
+  return { key: 'path', label: 'Path', type: 'list', required: true, placeholder };
+}
+
+/**
+ * The built-in checks and their arguments. A `list` takes one value or several, comma-separated;
+ * a `map` takes `key: pattern` pairs separated by `;`.
+ */
 export const CHECKS: Record<string, ArgField[]> = {
-  'file-exists': [
-    { key: 'path', label: 'Path', type: 'list', required: true, placeholder: 'dist/app.js' },
-  ],
+  'file-exists': [pathField('dist/app.js, posts/*.md')],
   regex: [
-    { key: 'path', label: 'Path', type: 'text', required: true, placeholder: 'README.md' },
+    pathField('README.md'),
     { key: 'pattern', label: 'Pattern', type: 'text', required: true, placeholder: '^## Install' },
     { key: 'flags', label: 'Flags', type: 'text', placeholder: 'm' },
-    { key: 'expect', label: 'Match', type: 'bool' },
+    {
+      key: 'expect',
+      label: 'Match',
+      type: 'bool',
+      choices: [
+        ['', 'Must match'],
+        ['false', 'Must not match'],
+      ],
+    },
   ],
   'word-count': [
-    { key: 'path', label: 'Path', type: 'text', required: true, placeholder: 'content/post.md' },
+    pathField('content/post.md'),
     { key: 'min', label: 'Min', type: 'number', placeholder: '600' },
     { key: 'max', label: 'Max', type: 'number', placeholder: '900' },
   ],
+  'char-count': [
+    pathField('posts/x-*.md'),
+    { key: 'min', label: 'Min', type: 'number', placeholder: '1' },
+    { key: 'max', label: 'Max', type: 'number', placeholder: '280' },
+    {
+      key: 'per',
+      label: 'Per',
+      type: 'select',
+      choices: [
+        ['', 'Whole file'],
+        ['block', 'Each block'],
+        ['line', 'Each line'],
+      ],
+    },
+    { key: 'separator', label: 'Separator', type: 'text', placeholder: '---' },
+  ],
+  contains: [
+    pathField('posts/*.md'),
+    { key: 'text', label: 'Text', type: 'list', required: true, placeholder: 'example.com/repo' },
+    {
+      key: 'mode',
+      label: 'Mode',
+      type: 'select',
+      choices: [
+        ['', 'All of them'],
+        ['any', 'Any of them'],
+      ],
+    },
+    {
+      key: 'expect',
+      label: 'Expect',
+      type: 'bool',
+      choices: [
+        ['', 'Must contain'],
+        ['false', 'Must not contain'],
+      ],
+    },
+    {
+      key: 'case-sensitive',
+      label: 'Case',
+      type: 'bool',
+      choices: [
+        ['', 'Ignore case'],
+        ['true', 'Match case'],
+      ],
+    },
+  ],
+  'heading-structure': [
+    pathField('docs/*.md'),
+    { key: 'headings', label: 'Headings', type: 'list', placeholder: '# Title, ## Why' },
+    {
+      key: 'single-h1',
+      label: 'H1',
+      type: 'bool',
+      choices: [
+        ['', 'Exactly one h1'],
+        ['false', 'Any number of h1'],
+      ],
+    },
+    {
+      key: 'no-skip',
+      label: 'Levels',
+      type: 'bool',
+      choices: [
+        ['', 'No skipped levels'],
+        ['false', 'Levels may skip'],
+      ],
+    },
+  ],
+  'front-matter': [
+    pathField('posts/*.md'),
+    { key: 'keys', label: 'Keys', type: 'list', placeholder: 'channel, status, task' },
+    { key: 'match', label: 'Match', type: 'map', placeholder: 'status: ^(draft|approved)$' },
+  ],
   'links-resolve': [
-    { key: 'path', label: 'Path', type: 'text', required: true, placeholder: 'docs/index.md' },
+    pathField('docs/index.md'),
     { key: 'root', label: 'Root', type: 'text', placeholder: 'docs' },
-    { key: 'url-ok', label: 'Web links', type: 'bool' },
+    {
+      key: 'url-ok',
+      label: 'Web links',
+      type: 'bool',
+      choices: [
+        ['', 'Skip web links'],
+        ['true', 'Check web links'],
+      ],
+    },
   ],
   'url-ok': [
     {
@@ -135,6 +240,11 @@ const CHECK_NAMES = Object.keys(CHECKS);
 /** What a criterion checks, in one line: its spec, with its description first when it has one. */
 export function criterionLine(c: CriterionSpec | string): string {
   if (typeof c === 'string') return c;
+  const line = kindLine(c);
+  return c.when === 'publish' ? `${line} (after publish)` : line;
+}
+
+function kindLine(c: CriterionSpec): string {
   const own = (s: string): string => (c.text ? `${c.text} (${s})` : s);
   switch (c.kind) {
     case 'prose':
@@ -154,6 +264,27 @@ export function criterionLine(c: CriterionSpec | string): string {
 
 function argText(v: unknown): string {
   return typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : JSON.stringify(v);
+}
+
+/** A `map` argument as the builder's text: `key: pattern` pairs separated by `; `. */
+function mapText(v: unknown): string {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return argText(v);
+  return Object.entries(v as Record<string, unknown>)
+    .map(([k, p]) => `${k}: ${String(p)}`)
+    .join('; ');
+}
+
+/** The builder's `key: pattern; key: pattern` text as a mapping, or null when a pair has no key. */
+function parseMapText(raw: string): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  for (const part of raw.split(';')) {
+    const t = part.trim();
+    if (!t) continue;
+    const at = t.indexOf(':');
+    if (at <= 0) return null;
+    out[t.slice(0, at).trim()] = t.slice(at + 1).trim();
+  }
+  return out;
 }
 
 function argsText(args: Record<string, unknown> | undefined): string {
@@ -273,10 +404,13 @@ const EVENT_NAME: Record<string, string> = {
 export function ResultDetail({
   r,
   who,
+  links,
 }: {
   r: CriterionVerdict;
   /** The event that recorded it, for the last result of a criterion. */
   who?: Pick<CriterionLast, 'actor' | 'at' | 'type' | 'by'>;
+  /** Artifact paths in the evidence become links to the **Work** section. */
+  links?: ArtifactLinks;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -304,7 +438,11 @@ export function ResultDetail({
         <details className="text-xs">
           <summary className="cursor-pointer text-fg-4 hover:text-fg-2">Evidence</summary>
           <pre className="mt-1 max-h-48 overflow-auto rounded-lg bg-black/30 p-2 font-mono text-[11px] whitespace-pre-wrap text-fg-3">
-            {r.evidence}
+            {links ? (
+              <EvidenceLinks text={r.evidence} paths={links.paths} onOpen={links.open} />
+            ) : (
+              r.evidence
+            )}
           </pre>
         </details>
       )}
@@ -321,12 +459,15 @@ export function CriteriaList({
   results,
   job: checkJob,
   judge,
+  links,
 }: {
   criteria: Criterion[];
   results?: Record<string, CriterionLast>;
   job?: CriteriaCheckJob | null;
   /** The **Judge** run under way or last ended, for the rubric criteria. */
   judge?: CriteriaCheckJob | null;
+  /** The review's artifacts, which evidence that names them links to. */
+  links?: ArtifactLinks;
 }) {
   return (
     <ul data-criteria className="flex flex-col gap-2 text-sm">
@@ -352,6 +493,15 @@ export function CriteriaList({
               <div className="min-w-0 flex-1">
                 <CriterionSpecView c={c} />
               </div>
+              {c.when === 'publish' && (
+                <span
+                  data-when="publish"
+                  title="Checked after swarmup published records the post, not at merge"
+                  className="shrink-0 rounded-md bg-white/6 px-1.5 py-0.5 text-[11px] text-fg-3"
+                >
+                  after publish
+                </span>
+              )}
             </div>
             <div className="mt-1.5 pl-1" data-criterion-result>
               {waiting ? (
@@ -362,6 +512,7 @@ export function CriteriaList({
               ) : fresh ? (
                 <ResultDetail
                   r={fresh}
+                  links={links}
                   who={{
                     actor: job!.by,
                     at: job!.startedAt,
@@ -370,7 +521,7 @@ export function CriteriaList({
                   }}
                 />
               ) : last ? (
-                <ResultDetail r={last} who={last} />
+                <ResultDetail r={last} who={last} links={links} />
               ) : (
                 <span className="text-xs text-fg-4">no result yet</span>
               )}
@@ -399,6 +550,8 @@ export interface DraftCriterion {
   rubric: string;
   pass: string;
   ask: string;
+  /** `publish`: checked after `swarmup published`; empty: at merge (W8). */
+  when: string;
 }
 
 let draftSeq = 0;
@@ -416,6 +569,7 @@ export function newDraft(kind: CriterionKind = 'prose'): DraftCriterion {
     rubric: '',
     pass: '',
     ask: '',
+    when: '',
   };
 }
 
@@ -431,7 +585,7 @@ export function draftOf(c: Criterion | CriterionSpec | string, i: number): Draft
   const extra: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(c.args ?? {})) {
     const f = fields.find((x) => x.key === k);
-    if (f) args[k] = argText(v);
+    if (f) args[k] = f.type === 'map' ? mapText(v) : argText(v);
     else extra[k] = v;
   }
   const plainProse = c.kind === 'prose' && (!c.id || c.id === `c${i + 1}`);
@@ -447,6 +601,7 @@ export function draftOf(c: Criterion | CriterionSpec | string, i: number): Draft
     rubric: c.rubric ?? '',
     pass: c.pass !== undefined ? String(c.pass) : '',
     ask: c.ask ?? '',
+    when: c.when ?? '',
   };
 }
 
@@ -458,6 +613,10 @@ function argValue(f: ArgField, raw: string): unknown {
       return Number(s);
     case 'bool':
       return s === 'true';
+    case 'map': {
+      const m = parseMapText(s);
+      return m && Object.keys(m).length > 0 ? m : undefined;
+    }
     case 'list': {
       const parts = s
         .split(',')
@@ -477,6 +636,7 @@ export function entryOf(d: DraftCriterion): string | CriterionSpec {
   if (d.kind === 'prose' && !id) return text;
   const out: CriterionSpec = { ...(id ? { id } : {}), kind: d.kind };
   if (text) out.text = text;
+  if (d.when === 'publish') out.when = 'publish';
   switch (d.kind) {
     case 'command':
       out.run = d.run.trim();
@@ -519,9 +679,19 @@ export function draftProblem(d: DraftCriterion): string | null {
         const raw = (d.args[f.key] ?? '').trim();
         if (f.required && !raw) return `${f.label} is required`;
         if (f.type === 'number' && raw && !(Number(raw) >= 0)) return `${f.label} is a number`;
+        if (f.type === 'map' && raw && !parseMapText(raw)) {
+          return `${f.label}: write key: pattern pairs, separated by ;`;
+        }
       }
-      if (d.check === 'word-count' && !d.args.min?.trim() && !d.args.max?.trim()) {
+      if (
+        (d.check === 'word-count' || d.check === 'char-count') &&
+        !d.args.min?.trim() &&
+        !d.args.max?.trim()
+      ) {
         return 'Set Min or Max';
+      }
+      if (d.check === 'front-matter' && !d.args.keys?.trim() && !d.args.match?.trim()) {
+        return 'Set Keys or Match';
       }
       return null;
     }
@@ -695,6 +865,17 @@ function DraftRow({
       </div>
       <div className="mt-2 flex flex-col gap-2 pl-6">
         <KindFields d={d} onSet={onSet} />
+        {(d.kind === 'check' || d.kind === 'command') && (
+          <Select
+            value={d.when}
+            onChange={(when) => onSet({ when })}
+            options={[
+              ['', 'Checked at merge'],
+              ['publish', 'Checked after publish'],
+            ]}
+            className="w-48"
+          />
+        )}
         {d.kind !== 'prose' && (
           <Input
             value={d.text}
@@ -743,22 +924,12 @@ function KindFields({
             className="w-36 font-mono"
           />
           {(CHECKS[d.check] ?? []).map((f) =>
-            f.type === 'bool' ? (
+            f.type === 'bool' || f.type === 'select' ? (
               <Select
                 key={f.key}
                 value={d.args[f.key] ?? ''}
                 onChange={(v) => onSet({ args: { ...d.args, [f.key]: v } })}
-                options={
-                  f.key === 'expect'
-                    ? [
-                        ['', 'Must match'],
-                        ['false', 'Must not match'],
-                      ]
-                    : [
-                        ['', 'Skip web links'],
-                        ['true', 'Check web links'],
-                      ]
-                }
+                options={f.choices ?? []}
                 className="w-40"
               />
             ) : (
@@ -768,7 +939,10 @@ function KindFields({
                   value={d.args[f.key] ?? ''}
                   onChange={(v) => onSet({ args: { ...d.args, [f.key]: v } })}
                   placeholder={f.placeholder}
-                  className={cx('font-mono', f.type === 'number' ? 'w-20' : 'w-44')}
+                  className={cx(
+                    'font-mono',
+                    f.type === 'number' ? 'w-20' : f.type === 'map' ? 'w-64' : 'w-44',
+                  )}
                 />
               </label>
             ),

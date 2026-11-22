@@ -1,5 +1,6 @@
 export * from './admin.js';
 export * from './api.js';
+export * from './artifact-api.js';
 export * from './bench.js';
 export * from './bench-runs.js';
 export * from './chat.js';

@@ -4,12 +4,6 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { samePath } from '@swarmup/core';
 import { gitAsync } from './git.js';
 
-/**
- * Task types whose work is code, as `swarmup review` reads them (AO-0136): a run on one gets a
- * worktree of its own when its folder would be a store checkout (AO-0168).
- */
-export const CODE_TASK_TYPES = new Set(['task', 'bug', 'feature']);
-
 /** How long one `git worktree add` may take: it checks out every file of the repo. */
 export const WORKTREE_TIMEOUT_MS = 5 * 60_000;
 

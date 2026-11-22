@@ -203,6 +203,10 @@ A review run's prompt tells the reviewer what to review against and what it may 
   check the reviewer could not run, with the reason.
 - **No changes.** The reviewer never edits files, commits or pushes. Logs and test output go in
   the scratch folder.
+- **The work to read.** When the review request records artifacts (W8; `swarmup review
+--artifact`, else the files the reviewed commit changed), the prompt lists each one: a file
+  or image with the `git show <commit>:<path>` that prints it at the reviewed commit, a URL or
+  document as it is. `swarmup artifact ID` lists them too.
 
 - **Changes to tests and check configuration.** The merge `checks` run in swarmupd's worktree,
   but on the tests and the configuration the branch itself has: a branch that deletes or skips a
@@ -462,7 +466,9 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   prompt. A run in a linked worktree is in no data root's checkout and gets neither. Linked
   worktrees inside a checkout are never changes of it: they do not hold back a writing run, and
   swarmupd never commits them with what a run left.
-- **Task worktrees (AO-0168).** A run on a code task (type `task`, `bug` or `feature`) of a role
+- **Task worktrees (AO-0168).** A run on a task of a type its root works on in a branch (the
+  root's `workspace_types` in `config.yml`; by default `task`, `bug` and `feature`, and a content
+  project made from the `campaign` or `content` template adds `docs` and `content`) of a role
   that writes, whose folder would be a data root's checkout, starts in the task's own worktree
   `out/wt-<ID>` inside that checkout instead. Not for an explicit `--cwd`, an agent with its own
   `cwd`, a helper, a review, a question or a chat turn. A worktree that is there is reused as it
@@ -1230,7 +1236,8 @@ has four steps, and only the last one changes a definition file:
    smallest overlay that addresses it in its scratch folder, checks it with `swarmup validate`, and
    records it with [`swarmup defs propose`](definitions.md#proposals). swarmupd runs the improver
    read-only: a Claude run may edit only in its scratch folder, and no run may edit `agents/` or
-   `variants/`.
+   `variants/`. No run may edit the store's `rubrics/`, `workflows/` or `triggers/` either (W8):
+   they are the yardsticks work is judged by and what starts runs.
 3. **Benchmark gate.** With `benchmark` set, swarmupd starts two detached bench runs for each new
    proposal, as the app's **Run benchmark** does: the base and the variant, each with the agent's
    role file in the prompt (`--role-file`, `--variant`). When both end, it comments the
@@ -1324,7 +1331,9 @@ swarmupd:
   from the store folder is still merged; a `--commit` neither has is refused. An approved review with `repo: store`
   is store work that `swarmup sync` already pushed: swarmupd records "nothing to merge: store work,
   synced" (a `no_merge` comment), files no finding, and the tasks blocked on it go on; the
-  approval itself does not hold them for a merge. Reviews without the fields (older ones, or sent
+  approval itself does not hold them for a merge. An approved `publish` task (W8) has nothing to
+  merge either: swarmupd records "nothing to merge: a publish task changes no files", and its
+  approval holds no task back. Reviews without the fields (older ones, or sent
   from outside a checkout, or from a detached HEAD) are read from their text, as below.
 - **What it merges.** A task whose last verdict approves it, when the review that verdict answers
   names `<commit> on branch <name>` (the form `swarmup review` asks for, and the one swarmupd's own
@@ -1614,7 +1623,7 @@ A run token:
   state, like `swarmup` inside the helper.
 - Stops working when the run ends.
 - Cannot change settings, roles, schedules, repeats or root mirroring; test notifications; answer or give
-  verdicts; pause, resume or stop swarmupd; or launch runs for another agent.
+  verdicts; record a publish; pause, resume or stop swarmupd; or launch runs for another agent.
 - Can stop only its own run or a direct helper, and can clean up only a direct helper's processes.
   It cannot stop or clean up another run.
 
@@ -1639,6 +1648,8 @@ restart or another human-only action, use `swarmup ask`.
 | `POST /api/runs/:id/kill`                                    | stop a run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `GET /api/runs/:id/procs`, `POST /api/runs/:id/procs`        | the run's process ledger with `alive` for each; `POST` kills what an ended run left, or `pid` alone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `GET /api/tasks`, `GET /api/tasks/:id`                       | tasks (`?all` includes closed and archived), one task with its events                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `GET /api/tasks/:id/artifact?path=P&commit=C`                | one file of the task's work (W8), read off the event loop from the root's code checkout: at `commit`, else at the commit of the newest review that records artifacts, else from the checkout's files. Text comes as `text` with `base` (the file at the merge base with the root's base, `null` text when it is new); an image as a `data` URL (8 MB at most). A path outside the workspace is refused with 400, a missing file or commit is 404                                                                                                                                                         |
+| `POST /api/tasks/:id/published`                              | what `swarmup published` does (W8), for a person only (a run token gets 403): `url`, optional `artifact` (a path in the workspace), `commit` and `message`. Tags the commit (the root's merge base, else `HEAD`) `published/<ID>` off the event loop, writes the `publish` event and runs the post-publish criteria; answers the tag, commit, path, blob, `results` and the `task`                                                                                                                                                                                                                       |
 | `GET /api/tasks/:id/diff`                                    | the diff of the commits the task's newest review names, read from the root's code checkout: `source`, `base`, `from`, `to`, `merged`, `commits` and `files` (path, status, counts and each file's hunks). Against where the work left the base branch; after swarmupd merged it, what the base got. Read-only. 404 with the reason when no review names work the repo has                                                                                                                                                                                                                                |
 | `POST /api/tasks`                                            | create a task: `title`, `body`, `to`, `type`, `priority`, `project`, `parent`, `done_when` (a list of checks, or text with one per line); `root` names the data root it goes to (default: the default root), and an unknown name is a 400 that lists the loaded roots                                                                                                                                                                                                                                                                                                                                    |
 | `POST /api/tasks/:id/:action`                                | `comment`, `answer`, `start`, `block`, `review`, `unblock`, `done`, `release`, `reopen`, `park`, `assign`, `priority`, `retype` (`type`; optional `to`, `priority` and `answer` land in the same write), `verdict`, `delegate`                                                                                                                                                                                                                                                                                                                                                                           |

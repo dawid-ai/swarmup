@@ -15,9 +15,12 @@ import {
   storeDirIn,
   userConfigPath,
 } from './config.js';
+import { CONTENT_TEMPLATES } from './content-templates.js';
+import type { DoneWhenEntry } from './criteria.js';
 import { deleteEnvVars, envVar } from './env.js';
 import { assertActor, OpsError } from './ids.js';
 import { initRoot, templateAgentIds } from './init.js';
+import { initMap, readMap, writeMapIndex } from './map.js';
 import type { Priority } from './model.js';
 import { Workspace } from './workspace.js';
 
@@ -48,6 +51,15 @@ export interface PlannedTask {
   priority: Priority;
   /** Indexes of earlier tasks in the same plan that must close first. */
   after?: number[];
+  /** The task type; default `task`. */
+  type?: string;
+  labels?: string[];
+  /** Criteria that say when the task is done, text or typed (W8). */
+  done_when?: DoneWhenEntry[];
+  /** The owner: an agent id, a group, or a person. A `publish` task without one gets the human. */
+  owner?: string;
+  /** The reviewer the task names, such as `codex:editor` for drafts. */
+  review?: string;
 }
 
 export interface PlannedAgent {
@@ -61,6 +73,8 @@ export interface ProjectPlan {
   prefix: string;
   agents: PlannedAgent[];
   tasks: PlannedTask[];
+  /** The root's `workspace_types` (W8); unset keeps the default. */
+  workspaceTypes?: string[];
 }
 
 export interface ApplyOptions {
@@ -506,7 +520,15 @@ export interface ProjectTemplate {
   agents: PlannedAgent[];
   /** Repo files by path; `{{name}}` becomes the project name. */
   files: Record<string, string>;
+  /** Project map files by path, written over a fresh `swarmup map init` (W8). */
+  map?: Record<string, string>;
   tasks: PlannedTask[];
+  /** The root's `workspace_types` (W8). */
+  workspaceTypes?: string[];
+  /** With `--store`: the root's merge checks in the user config (`swarmupd.merge.<root>.checks`). */
+  mergeChecks?: string[];
+  /** With `--store`: the paths `swarmupd.test_changes.<root>.checks` flags to the reviewer. */
+  testChanges?: string[];
 }
 
 const AGENTS_MD = `# Instructions for agents working on {{name}}
@@ -673,6 +695,7 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
       },
     ],
   },
+  ...CONTENT_TEMPLATES,
 ];
 
 export function projectTemplate(id: string): ProjectTemplate {
@@ -688,13 +711,32 @@ function fill(text: string, name: string): string {
   return text.replaceAll('{{name}}', name);
 }
 
+/** `{{name}}` filled in the text of criteria: prose, a description or a person's question. */
+function fillEntries(entries: DoneWhenEntry[], name: string): DoneWhenEntry[] {
+  return entries.map((e) =>
+    typeof e === 'string'
+      ? fill(e, name)
+      : {
+          ...e,
+          ...(e.text ? { text: fill(e.text, name) } : {}),
+          ...(e.ask ? { ask: fill(e.ask, name) } : {}),
+        },
+  );
+}
+
 /** The plan `swarmup new-project` applies: the template's roles and tasks, named for the project. */
 export function templatePlan(t: ProjectTemplate, name: string, prefix?: string): ProjectPlan {
   return {
     name,
     prefix: (prefix ?? prefixFor(name)).toUpperCase(),
     agents: t.agents,
-    tasks: t.tasks.map((x) => ({ ...x, title: fill(x.title, name), body: fill(x.body, name) })),
+    tasks: t.tasks.map((x) => ({
+      ...x,
+      title: fill(x.title, name),
+      body: fill(x.body, name),
+      ...(x.done_when ? { done_when: fillEntries(x.done_when, name) } : {}),
+    })),
+    ...(t.workspaceTypes ? { workspaceTypes: t.workspaceTypes } : {}),
   };
 }
 
@@ -730,6 +772,7 @@ export function applyPlan(repo: string, plan: ProjectPlan, opts: ApplyOptions = 
     prefix: plan.prefix,
     human: opts.human,
     agents: plan.agents.map((a) => a.id),
+    workspaceTypes: plan.workspaceTypes,
   });
   const ws = new Workspace({ cwd: dir, env, actor, root: plan.name, force: opts.force });
   if (resolve(ws.defaultRoot().dir) !== resolve(root)) {
@@ -747,6 +790,11 @@ export function applyPlan(repo: string, plan: ProjectPlan, opts: ApplyOptions = 
       priority: t.priority,
       project: plan.name,
       blockedBy: blockedBy.length ? blockedBy : undefined,
+      type: t.type,
+      labels: t.labels,
+      doneWhen: t.done_when,
+      owner: t.owner,
+      review: t.review,
     });
     ids.push(res.meta.id);
     tasks.push({ id: res.meta.id, title: res.meta.title, proposed: res.proposed });
@@ -811,6 +859,10 @@ export interface CodeCheckout {
   checkout: string;
   /** The branch approved work merges into. */
   base: string;
+  /** The merge checks, `swarmupd.merge.<name>.checks` (W8). */
+  checks?: string[];
+  /** The paths `swarmupd.test_changes.<name>.checks` flags to the reviewer (W8). */
+  testChanges?: string[];
 }
 
 export interface AddedRoot {
@@ -852,6 +904,10 @@ export function addRootToUserConfig(
         doc.setIn([key, 'code', code.name], code.checkout);
         doc.setIn([key, 'merge', code.name, 'base'], code.base);
         doc.setIn([key, 'merge', code.name, 'checkout'], code.checkout);
+        if (code.checks?.length) doc.setIn([key, 'merge', code.name, 'checks'], code.checks);
+        if (code.testChanges?.length) {
+          doc.setIn([key, 'test_changes', code.name, 'checks'], code.testChanges);
+        }
       }
     },
     check,
@@ -945,19 +1001,7 @@ export function adoptRepo(target: string, opts: AdoptOptions = {}): AdoptedProje
     throw new OpsError(`${repo} is not a git repo: run \`git init\` there first`, 2);
   }
   if (store) base = checkStoreFolder(repo, store);
-  if (register) {
-    // Reading it now refuses a config that does not parse before anything is written.
-    const user = readUserConfig(env);
-    for (const r of [...(user.roots ?? []), ...(user.master ? [user.master] : [])]) {
-      const dir = resolve(String(r));
-      if (rootNameOf(storeDirIn(dir) ?? dir) === plan.name) {
-        throw new OpsError(
-          `a data root named '${plan.name}' is loaded already (${r}): pick another name`,
-          2,
-        );
-      }
-    }
-  }
+  if (register) refuseLoadedName(env, plan.name);
   let gitInit = false;
   let applied: AppliedPlan;
   try {
@@ -995,9 +1039,30 @@ export function adoptRepo(target: string, opts: AdoptOptions = {}): AdoptedProje
   return { ...applied, repo, name: plan.name, store, base, gitInit, config };
 }
 
+/**
+ * Refuses a root name the user config loads already, reading the config first so one that does
+ * not parse is refused before anything is written.
+ */
+function refuseLoadedName(env: NodeJS.ProcessEnv, name: string): void {
+  const user = readUserConfig(env);
+  for (const r of [...(user.roots ?? []), ...(user.master ? [user.master] : [])]) {
+    const dir = resolve(String(r));
+    if (rootNameOf(storeDirIn(dir) ?? dir) === name) {
+      throw new OpsError(
+        `a data root named '${name}' is loaded already (${r}): pick another name`,
+        2,
+      );
+    }
+  }
+}
+
 export interface NewProjectOptions extends ApplyOptions {
   name?: string;
   prefix?: string;
+  /** With `store`: sees the user config before it is written and throws to refuse it. */
+  checkConfig?: (next: UserConfig) => void;
+  /** Indexes of the template's tasks to file; default all, `[]` none. */
+  tasks?: number[];
 }
 
 export interface NewProject extends AppliedPlan {
@@ -1007,12 +1072,28 @@ export interface NewProject extends AppliedPlan {
   files: string[];
   /** True when the folder was outside any git repo and got `git init`. */
   gitInit: boolean;
+  /** With `store`: the folder that holds `.swarmup/`. */
+  store?: string;
+  /** With `store`: the branch approved work merges into, and the first commit on it. */
+  base?: string;
+  commit?: string;
+  /** With `store`: the user config file the root was added to. */
+  config?: string;
 }
+
+/** The branch a project made with `--store` starts on: its merge base. */
+export const NEW_PROJECT_BASE = 'main';
 
 /**
  * Starts a project from a template in `target`, which must be missing or empty: the template's
- * files, `git init` when the folder is outside a repo, and a project root with its roles and
- * first tasks.
+ * files and project map, `git init` when the folder is outside a repo, and a project root with
+ * its roles and first tasks.
+ *
+ * With `opts.store`, the store goes in that folder apart from the project, as `swarmup adopt
+ * --store` does: the project must be outside any repo, starts on `main` with the template
+ * committed, and the user config gains the root, the project as its code checkout, and the
+ * template's merge checks and test-change paths. Everything that can be checked is checked
+ * before the first write.
  */
 export function newProject(
   target: string,
@@ -1021,6 +1102,7 @@ export function newProject(
 ): NewProject {
   const t = projectTemplate(templateId);
   const project = resolve(target);
+  const env = opts.env ?? process.env;
   if (existsSync(project)) {
     if (!isDir(project)) throw new OpsError(`${project} is a file`, 2);
     if (readdirSafe(project).length > 0) {
@@ -1028,19 +1110,87 @@ export function newProject(
     }
   }
   const name = opts.name ?? basename(project);
-  const plan = templatePlan(t, name, opts.prefix);
+  const full = templatePlan(t, name, opts.prefix);
+  const plan = opts.tasks ? keepTasks(full, opts.tasks) : full;
   // Refuse a bad actor, prefix or human before the folder is made.
   checkPlan(dirname(project), plan, opts);
+  const store = opts.store ? resolve(opts.store) : undefined;
+  if (store) {
+    if (inGitRepo(existsSync(project) ? project : dirname(project))) {
+      throw new OpsError(
+        `${project} is inside a git repo: with --store, the project becomes a repo of its own`,
+        2,
+      );
+    }
+    if (within(project, store) || within(store, project)) {
+      throw new OpsError(`${store}: pick a folder outside the project for the tasks`, 2);
+    }
+    if (existsSync(store) && !isDir(store)) throw new OpsError(`${store} is a file`, 2);
+    if (storeDirIn(store)) throw new OpsError(`${store} has a data root already`, 2);
+    refuseLoadedName(env, plan.name);
+  }
   mkdirSync(project, { recursive: true });
   const gitInit = !inGitRepo(project);
-  if (gitInit) {
-    execFileSync('git', ['init', '-q'], { cwd: project, windowsHide: true, stdio: 'ignore' });
-  }
+  const git = (args: string[]): string =>
+    execFileSync('git', args, {
+      cwd: project,
+      // The caller's env may hold only SWARMUP_* names; git needs PATH and its own settings.
+      env: { ...process.env, ...env },
+      windowsHide: true,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  if (gitInit) git(['init', '-q', ...(store ? [`--initial-branch=${NEW_PROJECT_BASE}`] : [])]);
   const files = Object.keys(t.files);
   for (const f of files) {
     mkdirSync(dirname(join(project, f)), { recursive: true });
     writeFileSync(join(project, f), fill(t.files[f]!, name));
   }
-  const applied = applyPlan(project, plan, opts);
-  return { ...applied, project, files, gitInit };
+  if (t.map) {
+    initMap(project, { type: 'campaign', name });
+    for (const [f, text] of Object.entries(t.map)) {
+      mkdirSync(dirname(join(project, f)), { recursive: true });
+      writeFileSync(join(project, f), fill(text, name));
+      files.push(f);
+    }
+    writeMapIndex(readMap(project)!);
+    for (const f of ['.swarmup/map/ignore', '.swarmup/map/README.md', '.swarmup/map/_INDEX.md']) {
+      if (!files.includes(f)) files.push(f);
+    }
+  }
+  if (!store) {
+    const applied = applyPlan(project, plan, opts);
+    return { ...applied, project, files, gitInit };
+  }
+  // Worktrees and merges need a commit on the base branch.
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', `Start ${name} from the ${t.id} template`]);
+  const commit = git(['rev-parse', 'HEAD']).trim();
+  const base = checkStoreFolder(project, store);
+  mkdirSync(store, { recursive: true });
+  if (!inGitRepo(store)) {
+    execFileSync('git', ['init', '-q'], { cwd: store, windowsHide: true, stdio: 'ignore' });
+  }
+  const applied = applyPlan(project, plan, { ...opts, store });
+  let config: string;
+  try {
+    config = addRootToUserConfig(
+      env,
+      applied.dir,
+      {
+        name: plan.name,
+        checkout: project,
+        base,
+        ...(t.mergeChecks ? { checks: t.mergeChecks } : {}),
+        ...(t.testChanges ? { testChanges: t.testChanges } : {}),
+      },
+      opts.checkConfig,
+    ).path;
+  } catch (err) {
+    throw new OpsError(
+      `created ${applied.dir}, but the user config was not changed: ${(err as Error).message}`,
+      1,
+    );
+  }
+  return { ...applied, project, files, gitInit, store, base, commit, config };
 }

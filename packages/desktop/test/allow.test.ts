@@ -30,6 +30,11 @@ describe('IPC allowlist', () => {
     // The diff of a task's work is read-only (AO-0106).
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/diff')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/AO-0001/diff')).toBe(false);
+    // A review artifact at its commit is read-only too (W8).
+    expect(
+      allowedCall('GET', '/api/tasks/demo%2FLC-0004/artifact?path=posts%2Fx.md&commit=abc1234'),
+    ).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/LC-0004/artifact')).toBe(false);
     // A milestone's plan (AO-0321): read it, approve it, send it back; progress for the board.
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/plan')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-approve')).toBe(true);

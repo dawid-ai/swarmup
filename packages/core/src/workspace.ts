@@ -52,7 +52,7 @@ import {
   readChannel,
 } from './channels.js';
 import type { UserConfig } from './config.js';
-import { daemonSection, discoverRoots, readUserConfig } from './config.js';
+import { daemonSection, DEFAULT_WORKSPACE_TYPES, discoverRoots, readUserConfig } from './config.js';
 import { envVar } from './env.js';
 import type { NoteMapping } from './decision-import.js';
 import { readDecisionTable } from './decision-import.js';
@@ -101,7 +101,7 @@ import {
   planLookup,
   summaryLine,
 } from './fold.js';
-import type { CriteriaResults, Criterion, DoneWhenEntry } from './criteria.js';
+import type { CheckDeps, CriteriaResults, Criterion, DoneWhenEntry } from './criteria.js';
 import {
   checkResultIds,
   criteriaHint,
@@ -110,6 +110,7 @@ import {
   hasCheckable,
   JUDGED_KINDS,
   parseDoneWhen,
+  runCriteria,
   TYPE_CRITERIA,
 } from './criteria.js';
 import {
@@ -146,18 +147,21 @@ import type {
   PlanOrigin,
   PlanState,
   Priority,
+  ReviewArtifact,
   Status,
   TaskMeta,
   TaskState,
   TaskView,
 } from './model.js';
 import {
+  ARTIFACT_KINDS,
   MERGE_ACTOR,
   MILESTONE_TYPE,
   OPEN_STATUSES,
   PLAN_CHECKER,
   PLAN_FIX_ROUNDS,
   PRIORITIES,
+  PUBLISH_TYPE,
 } from './model.js';
 import type { PlanDoc } from './plan.js';
 import {
@@ -522,6 +526,28 @@ export const QUESTION_TYPE = 'question';
  */
 const APPROVING_EVENTS = new Set(['retype', 'assign', 'delegate', 'reopen']);
 
+/**
+ * Whether a review request owes the commands it ran (AO-0290) rather than the work to read (W8):
+ * a task with a `command` criterion, or code work whose criteria are all prose, such as
+ * "npm test passes". Copy, posts and other work with typed criteria and no command name artifacts.
+ */
+function expectsCommands(v: TaskView): boolean {
+  const criteria = v.criteria ?? [];
+  if (criteria.some((c) => c.kind === 'command')) return true;
+  return criteria.every((c) => c.kind === 'prose') && DEFAULT_WORKSPACE_TYPES.includes(v.meta.type);
+}
+
+/**
+ * Refuses an agent as the one who claims or owns a publish task (W8), unless --force, which the
+ * event records: publishing is a person's step.
+ */
+function refuseAgentPublisher(v: TaskView, ctx: ActCtx, who: string, what: 'claim' | 'own'): void {
+  if (v.meta.type !== PUBLISH_TYPE || isHuman(who)) return;
+  ctx.needForce(
+    `${who} cannot ${what} ${v.meta.id}: a publish task is a person's; only a person publishes`,
+  );
+}
+
 function privileged(actor: string | undefined): boolean {
   return actor !== undefined && (isHuman(actor) || isOrchestrator(actor));
 }
@@ -548,6 +574,8 @@ export const HUMAN_REVIEW_LABELS: readonly string[] = [
   'client',
   'delete-data',
   'irreversible',
+  // A content project's yardsticks (W8): the voice, the claims and the rubrics work is judged by.
+  'yardstick',
 ];
 
 /** Whether a task's type or labels name a category only the person reviews (AO-0173). */
@@ -820,6 +848,60 @@ export interface ReviewSourceFields {
   commit?: string;
   branch?: string;
   repo?: ReviewRepo;
+  /** The work the reviewer reads (W8): files at the commit, URLs, images and documents. */
+  artifacts?: ReviewArtifact[];
+}
+
+/** What `swarmup published` records (W8): where the work went live and what was published. */
+export interface PublishInput {
+  url: string;
+  /** The workspace commit that was published. */
+  commit?: string;
+  /** The file published, from the top of the workspace, and its blob at `commit`. */
+  path?: string;
+  blob?: string;
+  /** The tag put on `commit`, such as `published/LC-0004`. */
+  tag?: string;
+  message?: string;
+}
+
+/** The most artifacts one review names. */
+export const MAX_REVIEW_ARTIFACTS = 50;
+
+/** Review artifacts checked: a known kind, a one-line ref, a hex blob; refuses others with exit 2. */
+export function checkArtifacts(list: readonly ReviewArtifact[]): ReviewArtifact[] {
+  if (list.length > MAX_REVIEW_ARTIFACTS) {
+    throw new OpsError(`a review names ${MAX_REVIEW_ARTIFACTS} artifacts at most`, 2);
+  }
+  const line = (v: unknown, what: string, max: number): string | undefined => {
+    if (v === undefined || v === null || v === '') return undefined;
+    if (typeof v !== 'string' || /[\r\n]/.test(v) || v.length > max) {
+      throw new OpsError(`artifact ${what}: one line of ${max} characters at most`, 2);
+    }
+    return v.trim() || undefined;
+  };
+  return list.map((a) => {
+    if (!ARTIFACT_KINDS.includes(a.kind)) {
+      throw new OpsError(
+        `artifact kind must be ${ARTIFACT_KINDS.join(', ')}, not '${String(a.kind)}'`,
+        2,
+      );
+    }
+    const ref = line(a.ref, 'ref', 2000);
+    if (!ref) throw new OpsError('an artifact needs a ref: a path or a URL', 2);
+    if (a.blob !== undefined && !/^[0-9a-f]{40,64}$/i.test(a.blob)) {
+      throw new OpsError(`artifact ${ref}: blob must be a git object id`, 2);
+    }
+    const rev = line(a.rev, 'rev', 200);
+    const label = line(a.label, 'label', 200);
+    return {
+      kind: a.kind,
+      ref,
+      ...(a.blob ? { blob: a.blob.toLowerCase() } : {}),
+      ...(rev ? { rev } : {}),
+      ...(label ? { label } : {}),
+    };
+  });
 }
 
 /** `ReviewSourceFields` checked: a commit is 7 to 40 hex digits, a branch one line. */
@@ -840,6 +922,7 @@ function reviewSourceFields(src: ReviewSourceFields | undefined): ReviewSourceFi
     ...(commit ? { commit: commit.toLowerCase() } : {}),
     ...(branch ? { branch } : {}),
     ...(src.repo ? { repo: src.repo } : {}),
+    ...(src.artifacts?.length ? { artifacts: checkArtifacts(src.artifacts) } : {}),
   };
 }
 
@@ -1629,7 +1712,21 @@ export class Workspace {
     if (input.type === MILESTONE_TYPE) assertMilestoneCheck(doneWhen);
     if (input.owner) assertOwner(input.owner);
     if (input.type === QUESTION_TYPE) assertQuestionTo(input.owner, actor, actor);
-    const why = input.owner ? this.ownerRefusal(input.owner) : null;
+    // A publish task belongs to a person (W8): the root's human when none is named.
+    let owner = input.owner;
+    let ownerForced = false;
+    if (input.type === PUBLISH_TYPE) {
+      owner ??= root.config.human;
+      if (owner && !isHuman(owner)) {
+        if (!this.force) {
+          throw new OpsError(
+            `${owner} cannot own a publish task: only a person publishes; name a human:<name> owner (use --force to override)`,
+          );
+        }
+        ownerForced = true;
+      }
+    }
+    const why = owner ? this.ownerRefusal(owner) : null;
     if (why && !this.force) {
       throw new OpsError(
         `owner ${why}, so no run picks it up; ${this.ownerSuggestions(root)} (use --force to override)`,
@@ -1652,7 +1749,7 @@ export class Workspace {
         title,
         type: input.type ?? 'task',
         priority: input.priority ?? 'p2',
-        owner: input.owner,
+        owner,
         project,
         parent,
         labels: input.labels && input.labels.length > 0 ? input.labels : undefined,
@@ -1660,6 +1757,7 @@ export class Workspace {
         done_when: doneWhen,
         plan_item: input.planItem,
         review: input.review ? assertActor(input.review, 'reviewer') : undefined,
+        ...(ownerForced ? { owner_forced: true } : {}),
         created_by: actor,
         created_at: new Date(this.now()).toISOString(),
       },
@@ -1940,6 +2038,7 @@ export class Workspace {
       ? ownerMatches(v.owner, ctx.actor)
       : canClaimType(agent, v.meta.type, ctx.actor) && !isHuman(ctx.actor);
     if (!eligible) ctx.needPrivilege(`${v.meta.id} is owned by ${v.owner ?? 'nobody'}`);
+    refuseAgentPublisher(v, ctx, ctx.actor, 'claim');
     const rule = this.planTask(root, v);
     if (rule) this.planReviewerCheck(ctx, rule, ctx.actor);
     this.requireTriaged(v, ctx);
@@ -2181,6 +2280,7 @@ export class Workspace {
       const byOpsd = !!this.actor && runtimeOf(this.actor) === 'opsd';
       if (!(byOpsd && !v.claimedBy)) ctx.needOwnerOrHolder();
       if (v.meta.type === QUESTION_TYPE) assertQuestionTo(to, v.meta.created_by, ctx.actor);
+      refuseAgentPublisher(v, ctx, to, 'own');
       this.checkTarget(ctx, to, 'new owner');
       const rule = this.planTask(root, v);
       const on = rule ? this.planOwnerChange(v, ctx, rule, to) : null;
@@ -2195,6 +2295,7 @@ export class Workspace {
       ctx.requireOpen('assign');
       ctx.needOwnerHolderOrRouter();
       if (v.meta.type === QUESTION_TYPE) assertQuestionTo(to, v.meta.created_by, ctx.actor);
+      refuseAgentPublisher(v, ctx, to, 'own');
       const why = this.ownerRefusal(to);
       if (why) {
         const root = this.roots.find((r) => r.name === v.root);
@@ -2243,6 +2344,7 @@ export class Workspace {
       evidence = evidenceNotes(
         message,
         v.criteria?.map((c) => criterionWhat(c)),
+        { commands: expectsCommands(v), artifacts: source.artifacts?.length ?? 0 },
       );
       ctx.needOwnerOrHolder();
       // The author is whoever holds the work, whoever sends it.
@@ -2451,6 +2553,70 @@ export class Workspace {
   }
 
   /**
+   * Records that a person published the work (W8): a `publish` event with the URL, and the
+   * workspace commit, file, blob and tag the caller found. A `publish` task that is open closes
+   * with it. Only a person outside any run may record it: publishing is never an agent's step.
+   */
+  published(ref: string, input: PublishInput): ActResult {
+    const actor = this.requireActor();
+    if (!isHuman(actor) || this.run) {
+      throw new OpsError(
+        `only a person records a publish, outside any run; ${this.run ? `run ${this.run}` : actor} cannot`,
+      );
+    }
+    const url = input.url.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      throw new OpsError(`--url: '${url}' is no http(s) URL`, 2);
+    }
+    if (input.commit && !/^[0-9a-f]{7,64}$/i.test(input.commit)) {
+      throw new OpsError(`'${input.commit}' is no commit id`, 2);
+    }
+    if (input.blob && !/^[0-9a-f]{40,64}$/i.test(input.blob)) {
+      throw new OpsError(`'${input.blob}' is no blob id`, 2);
+    }
+    return this.act(ref, (v, ctx) => {
+      const event: PlannedEvent = {
+        type: 'publish',
+        url,
+        ...(input.commit ? { commit: input.commit.toLowerCase() } : {}),
+        ...(input.path ? { path: input.path } : {}),
+        ...(input.blob ? { blob: input.blob.toLowerCase() } : {}),
+        ...(input.tag ? { tag: input.tag } : {}),
+        body: input.message?.trim() || `Published at ${url}`,
+      };
+      if (v.meta.type !== PUBLISH_TYPE || !OPEN_STATUSES.has(v.status)) return [event];
+      if (v.owner && !ownerMatches(v.owner, ctx.actor)) {
+        ctx.needPrivilege(`${v.meta.id} is owned by ${v.owner}`);
+      }
+      return [event, { type: 'done', body: `Published at ${url}` }];
+    });
+  }
+
+  /**
+   * Runs the task's post-publish criteria (`when: publish`) with `{url}` read as `url`, in
+   * `deps.cwd`, and records the results in a `criteria-check` event. Empty when it has none.
+   */
+  async publishChecks(
+    ref: string,
+    url: string,
+    deps: Omit<CheckDeps, 'phase' | 'url'>,
+  ): Promise<CriteriaResults> {
+    const v = this.view(ref);
+    const results = await runCriteria(v.criteria ?? [], { ...deps, phase: 'publish', url });
+    const ids = Object.keys(results);
+    if (ids.length > 0) {
+      const failed = ids.filter((id) => results[id]!.result === 'fail');
+      const summary = failed.length > 0 ? `failed: ${failed.join(', ')}` : 'all passed';
+      this.recordCriteriaCheck(
+        ref,
+        results,
+        `Checked ${ids.length} post-publish criteria: ${summary}.`,
+      );
+    }
+    return results;
+  }
+
+  /**
    * Blocks the task on a question. Without `to`, an agent's question goes to the PM (AO-0173),
    * which answers it or forwards it; the PM's own, the orchestrator's, one with `human`, or any
    * when no PM is configured goes to the person. The addressee of an open ask may forward it with
@@ -2589,6 +2755,8 @@ export class Workspace {
   private approvalAwaitsMerge(ref: string): boolean {
     const { root, id } = this.resolve(ref);
     if (this.actor === MERGE_ACTOR || !this.mergeRoots().has(root.name)) return false;
+    // A publish task changes no files: the merge has nothing to merge for it (W8).
+    if (root.readTask(id).meta.type === PUBLISH_TYPE) return false;
     return root.readEvents(id).some((e) => {
       if (e.type !== 'review') return false;
       const src = reviewSourcesOf(e);

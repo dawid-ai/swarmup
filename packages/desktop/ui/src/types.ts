@@ -71,9 +71,41 @@ export interface OpsEvent {
   done_when?: Array<string | CriterionSpec>;
   /** verdict, criteria-check, merge: results by criterion id. */
   criteria?: Record<string, CriterionVerdict>;
+  /** review, merge, publish: the commit. */
+  commit?: string;
+  /** review: the work the reviewer reads (W8). */
+  artifacts?: ReviewArtifact[];
+  /** publish: where the work went live, the file and its blob, and the workspace tag. */
+  url?: string;
+  path?: string;
+  blob?: string;
+  tag?: string;
   body: string;
   /** Shown while its write is out; opsd has not stored it yet (AO-0171). */
   pending?: boolean;
+}
+
+/** One piece of reviewed work a review event names (mirrors `ReviewArtifact` in core). */
+export interface ReviewArtifact {
+  kind: 'file' | 'url' | 'image' | 'doc';
+  /** A path from the top of the workspace (file, image), or a URL (url, doc). */
+  ref: string;
+  blob?: string;
+  rev?: string;
+  label?: string;
+}
+
+/** `GET /api/tasks/:id/artifact` (mirrors `TaskArtifact` in the supervisor's artifact-api.ts). */
+export interface TaskArtifact {
+  path: string;
+  commit: string | null;
+  kind: 'text' | 'image';
+  text?: string;
+  /** image: a data URL. */
+  data?: string;
+  bytes: number;
+  /** text at a commit: the file at the merge base, or null text when it is new. */
+  base?: { commit: string; text: string | null } | null;
 }
 
 export interface TaskDetail {
@@ -141,6 +173,8 @@ export interface CriterionSpec {
   rubric?: string;
   pass?: number;
   ask?: string;
+  /** `publish`: checked after `swarmup published`, not at merge (W8). */
+  when?: 'publish';
 }
 
 export interface Criterion extends CriterionSpec {

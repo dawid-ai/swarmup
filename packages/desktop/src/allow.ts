@@ -10,6 +10,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'tasks',
     `tasks/${SEG}`,
     `tasks/${SEG}/diff`,
+    // One file of a task's review at the reviewed commit, for the Work section (W8).
+    `tasks/${SEG}/artifact`,
     `tasks/${SEG}/plan`,
     `tasks/${SEG}/criteria-check`,
     `tasks/${SEG}/criteria-judge`,

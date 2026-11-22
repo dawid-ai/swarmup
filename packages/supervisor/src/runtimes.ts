@@ -1,4 +1,4 @@
-import type { AgentDef, Criterion, LogEntry, MapPrompt } from '@swarmup/core';
+import type { AgentDef, Criterion, LogEntry, MapPrompt, ReviewArtifact } from '@swarmup/core';
 import {
   actorSlug,
   criterionWhat,
@@ -518,6 +518,8 @@ export interface PromptInput {
   decisions?: Array<Pick<LogEntry, 'id' | 'at' | 'text'>>;
   /** The task's current criteria, ids settled; listed in work and review prompts. */
   criteria?: Criterion[];
+  /** A review run: the artifacts the review request names, and the commit they are read at (W8). */
+  artifacts?: ReviewArtifactsPrompt;
   /**
    * What a work or review run would otherwise fetch first: the task text, its recent thread and
    * its chain of parents with their briefs (`run-context.ts`).
@@ -534,6 +536,31 @@ function scratchLines(scratch: string): string[] {
     '  ($SWARMUP_SCRATCH; TEMP points there too). swarmupd removes it some days after the run.',
     '  Never leave them in the repo, its `out/` folder or the folder that holds the repo; what',
     '  must last goes in a commit, a task comment or `swarmup attach`.',
+  ];
+}
+
+/** The work a review request names (W8), for the review prompt. */
+export interface ReviewArtifactsPrompt {
+  /** The reviewed commit, when the review names one. */
+  commit?: string;
+  items: ReviewArtifact[];
+}
+
+/** The artifacts of a review, one line each, with the command that shows each file. */
+export function artifactLines(task: string, a: ReviewArtifactsPrompt): string[] {
+  if (a.items.length === 0) return [];
+  const at = a.commit ? ` at ${a.commit.slice(0, 10)}` : '';
+  return [
+    `- The work to read${at} (\`swarmup artifact ${task}\` lists it):`,
+    ...a.items.map((x, i) => {
+      const label = x.label ? ` (${x.label})` : '';
+      if (x.kind === 'url' || x.kind === 'doc') {
+        return `  ${i + 1}. ${x.kind} ${x.ref}${x.rev ? ` revision ${x.rev}` : ''}${label}`;
+      }
+      const show = a.commit ? `\`git show ${a.commit.slice(0, 10)}:${x.ref}\`` : `\`${x.ref}\``;
+      return `  ${i + 1}. ${x.kind} \`${x.ref}\`${label}: ${show}`;
+    }),
+    '  Judge each piece as a reader of its channel would see it.',
   ];
 }
 
@@ -852,10 +879,15 @@ const DONE_WHEN_REVIEW = [
  * matters outside the task become findings, not change requests. It never edits, commits or
  * pushes. The role files of the reviewers say the same.
  */
-function reviewLines(task: string, criteria: readonly Criterion[] = []): string[] {
+function reviewLines(
+  task: string,
+  criteria: readonly Criterion[] = [],
+  artifacts?: ReviewArtifactsPrompt,
+): string[] {
   return [
     '',
     `Review ${task}: run \`swarmup show ${task}\` and check the work its review request names.`,
+    ...(artifacts ? artifactLines(task, artifacts) : []),
     ...DONE_WHEN_REVIEW,
     ...(criteria.length > 0 ? criteriaReviewLines(task, criteria) : []),
     '- Review against the task text and its "Done when": approve work that meets them, and ask for',
@@ -1080,7 +1112,7 @@ export function runPrompt(p: PromptInput): string {
   if (p.extra) {
     lines.push('', p.extra.trim());
   } else if (p.task && p.review) {
-    lines.push(...reviewLines(p.task, p.criteria));
+    lines.push(...reviewLines(p.task, p.criteria, p.artifacts));
   } else if (p.task && p.question) {
     lines.push(...questionLines(p.task, p.question));
   } else if (p.task && p.check) {

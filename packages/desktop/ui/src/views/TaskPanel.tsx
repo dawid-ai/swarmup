@@ -67,6 +67,8 @@ import { moveTo, shownStatus } from '../lib/transitions';
 import type { Criterion, CriterionLast, OpsEvent, Status, Task, TaskDetail } from '../types';
 import { BriefSection } from '../ui/brief';
 import { TaskScoresSection } from '../ui/task-scores';
+import type { ArtifactFocus } from '../ui/work';
+import { reviewWithArtifacts, WorkSection } from '../ui/work';
 import type { ReviewMarks } from '../ui/criteria';
 import {
   CriteriaForm,
@@ -173,6 +175,18 @@ export function TaskPanel({
   const [diff, setDiff] = useState(Boolean(showDiff));
   const criteria = data?.criteria ?? [];
   const [editCriteria, setEditCriteria] = useState(false);
+  // The artifact a criterion's evidence asked to open in Work (W8).
+  const [artifactFocus, setArtifactFocus] = useState<ArtifactFocus | null>(null);
+  const workPaths = (reviewWithArtifacts(events)?.artifacts ?? [])
+    .filter((a) => a.kind === 'file' || a.kind === 'image')
+    .map((a) => a.ref);
+  const artifactLinks =
+    workPaths.length > 0
+      ? {
+          paths: workPaths,
+          open: (path: string) => setArtifactFocus((f) => ({ path, n: (f?.n ?? 0) + 1 })),
+        }
+      : undefined;
   const check = useCriteriaCheck(id, reload);
   const judge = useCriteriaCheck(id, reload, 'criteria-judge');
   // A review with criteria gives a result per criterion: the form replaces the plain buttons.
@@ -497,6 +511,7 @@ export function TaskPanel({
                     results={data?.criteriaResults}
                     job={check.job}
                     judge={judge.job}
+                    links={artifactLinks}
                   />
                   {criteria.some((c) => RUN_KINDS.has(c.kind) || c.kind === 'rubric') && (
                     <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -524,6 +539,8 @@ export function TaskPanel({
               )}
             </section>
           )}
+
+          {t && <WorkSection task={id} events={events} focus={artifactFocus} />}
 
           {t && <TaskScoresSection task={`${t.root}/${t.id}`} />}
 

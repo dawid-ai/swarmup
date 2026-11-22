@@ -6,7 +6,7 @@ covers:
   - packages/core/tsconfig.json
   - packages/core/src/index.ts
   - packages/core/test
-links: [store, fold, workspace, sync, knowledge, repeats, search, adopt, map, defs, /leaks]
+links: [store, fold, workspace, sync, knowledge, repeats, search, adopt, content, map, defs, /leaks]
 ---
 
 # Core

@@ -40,6 +40,7 @@ import {
 import type { BenchHost, BenchRunRequest } from './bench-runs.js';
 import { listBenchSets } from './bench-runs.js';
 import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.js';
+import { NoArtifact } from './artifact-api.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
 import { doctor, installUserSkills } from './doctor.js';
@@ -588,6 +589,32 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           if (err instanceof NoDiff) throw new HttpError(404, err.message);
           throw err;
         }
+      }
+      // One file of the task's review at the reviewed commit, for the **Work** section (W8).
+      if (method === 'GET' && action === 'artifact') {
+        try {
+          return send(
+            res,
+            200,
+            await sup.taskArtifact(ref, need(q.get('path'), 'path'), q.get('commit') || undefined),
+          );
+        } catch (err) {
+          if (err instanceof NoArtifact) throw new HttpError(404, err.message);
+          throw err;
+        }
+      }
+      // A person records that they published the work (W8); never a run.
+      if (method === 'POST' && action === 'published') {
+        humanOnly('recording a publish');
+        if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+        const done = await sup.recordPublished(ref, ws.actor, {
+          url: need(body.url, 'url'),
+          artifact: str(body.artifact) || undefined,
+          commit: str(body.commit) || undefined,
+          message: str(body.message) || undefined,
+        });
+        const { view, ...rest } = done;
+        return send(res, 200, { ...rest, task: compact(view) });
       }
       // A milestone's plan as `swarmup plan show` reports it (AO-0110).
       if (method === 'GET' && action === 'plan') return send(res, 200, ws.planShow(ref));

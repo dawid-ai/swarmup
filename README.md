@@ -136,7 +136,8 @@ app in [docs/desktop.md](docs/desktop.md). The project map, which tells agents w
 project is for, is in [docs/map.md](docs/map.md). Team settings kept in the task store
 (`swarm.yaml`) are in [docs/definitions.md](docs/definitions.md).
 Benchmarks, which replay real tasks against an agent configuration and score the results, are in
-[docs/benchmarks.md](docs/benchmarks.md).
+[docs/benchmarks.md](docs/benchmarks.md). Campaigns, blogs and other content that agents draft and a
+person publishes are in [docs/content-projects.md](docs/content-projects.md).
 
 ## How data is stored
 
@@ -159,7 +160,8 @@ same way.
 - **Root config** (`.swarmup/config.yml`, committed): `name`, `id_prefix`, `human`, `sync`
   (`policy`: `manual`, `checkpoint` or `coordinated`), `leases`, `project` (the project of a task
   that names none; default `name`), and `project_aliases` (old project names and the name each
-  reads as now, such as `v2: swarmup`).
+  reads as now, such as `v2: swarmup`), and `workspace_types` (the task types whose work happens on a
+  branch; default `[task, bug, feature]`).
 - **User config** (not committed): `%APPDATA%\swarmup\config.yml` on Windows,
   `~/.config/swarmup/config.yml` elsewhere, or the path in `SWARMUP_CONFIG`. Keys: `me`, `roots`,
   `machine`, `id_block`, and `swarmupd` (limits, providers, wakes, schedules, notifications). The app's

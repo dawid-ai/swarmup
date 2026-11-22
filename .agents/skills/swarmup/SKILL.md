@@ -107,7 +107,8 @@ items:
 
 Every item needs a lowercase, never-reused `key`, `title`, `owner` and `estimate` (`30m`, `2h`,
 `1d`; a day is 8 hours). `after` names item keys it waits for. Optional fields are `done_when`
-(defaults to the title), `type` (`task`, `bug` or `docs`), `priority`, one concrete `review` actor,
+(defaults to the title), `type` (`task`, `bug`, `docs`, `content` or `publish`), `priority`, one
+concrete `review` actor,
 and `body`. Plans hold at most 25 items and do not nest milestones.
 
 Use the plan commands as follows:
@@ -221,6 +222,10 @@ EOF
   their output, for every line of the list: `` `npm test`: 412 passed ``, not "tests pass".
   `swarmup review` prints a `note:` when the request names no command or no result. Set the list
   on a task you create with `swarmup new "Title" --done-when "npm test passes"` (repeatable).
+- Content work (copy, posts, submissions) has no command to run: name each piece with
+  `swarmup review ID "..." --artifact posts/x-thread.md` (a path in your commit, or a URL). As its
+  reviewer, `swarmup artifact ID` lists the pieces and `swarmup artifact ID N` prints one at the
+  reviewed commit. Never publish: a `publish` task is a person's, recorded with `swarmup published`.
 - `swarmup review ID "..."` without `--to` goes to a reviewer agent of another provider:
   `codex:reviewer` for Claude work, `claude:reviewer` for Codex work. `swarmup review` refuses a
   same-provider reviewer. A task that names its reviewer goes to that one instead: the reviewer
@@ -230,7 +235,8 @@ EOF
 - Send it to the human with `--human` when the change touches money, accounts, credentials,
   publishing or releases, client-facing output, deleting data, or anything irreversible. A task
   whose type or label is `release`, `publish`, `money`, `billing`, `payment`, `account(s)`,
-  `credentials`, `client`, `delete-data` or `irreversible` goes to the human on its own.
+  `credentials`, `client`, `delete-data`, `irreversible` or `yardstick` goes to the human on its
+  own.
 - As a reviewer: `swarmup show ID`, check the work, then `swarmup verdict ID approve "why"` (closes it) or
   `swarmup verdict ID changes "what to fix"` (back to the owner).
 - Criteria have ids and kinds (`swarmup show ID` prints them). As the author, name the evidence

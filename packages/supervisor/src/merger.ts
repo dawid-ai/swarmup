@@ -12,6 +12,7 @@ import {
   ulid,
   Workspace,
   MERGE_ACTOR,
+  PUBLISH_TYPE,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import { StoredMap, StoredSet } from './state-db.js';
@@ -534,6 +535,16 @@ export class Merger {
     const review = reviews[0];
     if (!review) return null;
     const { root, id } = ws.resolve(ref);
+    // A publish task changes no files (W8): its work is a post a person made, recorded with
+    // `swarmup published`. The tasks blocked on it go on.
+    if (root.readTask(id).meta.type === PUBLISH_TYPE) {
+      this.mergeNothing(
+        ref,
+        `swarmupd merges nothing for ${id}: nothing to merge: a publish task changes no files. ` +
+          'The tasks blocked on it go on.',
+      );
+      return null;
+    }
     // A run may ask for review before it ends, then leave files that its sandbox could not
     // commit. Wrap-up commits those files on a run-suffixed branch and records that source after
     // the review. The approval covers the review plus that note, so it is the source to merge;
