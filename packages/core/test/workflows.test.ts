@@ -333,6 +333,8 @@ describe('gates', () => {
     const ship = taskOf(h, ms, 'ship');
     expect(h.view(ship.meta.id).unblocked).toBe(false);
     expect(h.inbox().some((i) => i.kind === 'gate')).toBe(false);
+    // Approving before the stage it waits for is done would start `ship` on no draft.
+    expect(() => h.done(gate.meta.id, 'early')).toThrow(/waits for/);
     h.done(draft.meta.id, 'drafted');
     // The gate waits for the person now.
     const item = h.inbox().find((i) => i.kind === 'gate')!;
@@ -340,8 +342,17 @@ describe('gates', () => {
     // No agent answers a gate, by claim or by done.
     const eng = as('claude:engineer');
     expect(() => eng.claim(gate.meta.id)).toThrow(/human:dawid/);
-    expect(() => eng.done(gate.meta.id)).toThrow(/only a person approves it/);
+    expect(() => eng.done(gate.meta.id)).toThrow(/only a person can approve it/);
     expect(() => as('human:dawid', { run: '01RUN' }).done(gate.meta.id)).toThrow(/outside any run/);
+    // Neither --force nor a retype by the PM turns the gate into work an agent closes.
+    expect(() => as('claude:engineer', { force: true }).claim(gate.meta.id)).toThrow(
+      /a gate is a person's decision/,
+    );
+    expect(() => as('claude:pm').retype(gate.meta.id, 'task', 'mine now')).toThrow(
+      /only a person changes its type/,
+    );
+    // Another person decides a gate that asks dawid only with --force.
+    expect(() => as('human:alex').done(gate.meta.id)).toThrow(/asks human:dawid/);
     h.done(gate.meta.id, 'yes');
     expect(h.view(gate.meta.id).status).toBe('done');
     expect(h.view(ship.meta.id).unblocked).toBe(true);

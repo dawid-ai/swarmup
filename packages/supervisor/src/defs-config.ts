@@ -183,12 +183,15 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
   }
   // Team policy: a top-level key the machine leaves unset takes the git value.
   const policy: Partial<Record<(typeof POLICY_KEYS)[number], number>> = {};
+  // The first root that sets a key wins; in one root, `defaults.budget_min` beats
+  // `policy.budget_minutes`.
+  const rootOrder = new Map(sources.map((s, i) => [s.root, i]));
+  const earlier = (a: { root: string }, b: { root: string }): boolean =>
+    (rootOrder.get(a.root) ?? Infinity) <= (rootOrder.get(b.root) ?? Infinity);
   for (const k of POLICY_KEYS) {
-    const from =
-      k === 'budget_minutes' && git.has('defaults.budget_min')
-        ? 'defaults.budget_min'
-        : `policy.${k}`;
-    const g = git.get(from);
+    const pol = git.get(`policy.${k}`);
+    const def = k === 'budget_minutes' ? git.get('defaults.budget_min') : undefined;
+    const g = def && (!pol || earlier(def, pol)) ? def : pol;
     if (!g) continue;
     if (machineSets(cfg, k)) {
       if (!same(cfg[k], g.value))
@@ -230,11 +233,14 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
         : Object.hasOwn(cfg.runtimes, name!) && k !== undefined;
     if (!used) values.push({ key, value: g.value, source: 'unused', git: g.value, root: g.root });
   }
-  // `policy.budget_minutes` under a `defaults.budget_min`: set, but in no effect.
-  const unusedBudget = git.get('policy.budget_minutes');
-  if (unusedBudget && git.has('defaults.budget_min')) {
+  // Of `defaults.budget_min` and `policy.budget_minutes`, the one that lost: set, but in no effect.
+  const polBudget = git.get('policy.budget_minutes');
+  const defBudget = git.get('defaults.budget_min');
+  if (polBudget && defBudget) {
+    const lostDefault = !earlier(defBudget, polBudget);
+    const unusedBudget = lostDefault ? defBudget : polBudget;
     values.push({
-      key: 'policy.budget_minutes',
+      key: lostDefault ? 'defaults.budget_min' : 'policy.budget_minutes',
       value: unusedBudget.value,
       source: 'unused',
       git: unusedBudget.value,

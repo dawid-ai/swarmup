@@ -560,10 +560,10 @@ function migrate(ctx: DefsCtx): number {
     logMigration(
       migrationLogDir(ctx.io.env),
       `defs migrate: ${root.name} (${root.dir}): ${plan.agents.join(', ')} into agent folders; ` +
-        `wrote ${done.wrote.join(', ')}` +
+        `wrote ${done.wrote.join(', ') || 'nothing'}` +
         (done.removed.length > 0 ? `; removed ${done.removed.join(', ')}` : '; legacy files kept'),
     );
-    say(`wrote ${done.wrote.join(', ')}`);
+    if (done.wrote.length > 0) say(`wrote ${done.wrote.join(', ')}`);
     if (done.removed.length > 0) say(`removed ${done.removed.join(', ')}`);
     else say('the legacy files stay and win until `swarmup defs migrate --prune` removes them');
   }

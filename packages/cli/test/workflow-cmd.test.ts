@@ -78,13 +78,11 @@ describe('swarmup defs migrate', () => {
       'wrote agents/writer/agent.md, agents/writer/claude.md, agents/writer/codex.md',
     );
     expect(existsSync(join(store, 'agents', 'claude-writer.md'))).toBe(true);
-    const pruned = cli(dir, config, 'defs', 'migrate', '--prune');
-    // The folders exist now, so the role is skipped; prune the files of a fresh plan instead.
-    expect(pruned.out.join('\n')).toContain('skipped writer: agents/writer/ exists');
-    rmSync(join(store, 'agents', 'writer'), { recursive: true });
+    // The folders match the legacy files, so --prune removes them without writing again.
     const again = cli(dir, config, 'defs', 'migrate', '--prune');
     expect(again.code).toBe(0);
     expect(again.out).toContain('removed agents/claude-writer.md, agents/codex-writer.md');
+    expect(again.out.join('\n')).not.toContain('wrote');
     const after = cli(dir, config, 'agents', '--json');
     const strip = (text: string) =>
       (JSON.parse(text) as Array<Record<string, unknown>>).map(

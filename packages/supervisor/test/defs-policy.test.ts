@@ -68,6 +68,17 @@ describe('policy in git', () => {
       { root: 'a', swarm: { swarmup_defs: 1, policy: { budget_minutes: 90 } } },
     ]);
     expect(noDefault.config.budget_minutes).toBe(90);
+    // The first root wins: its policy.budget_minutes beats a later root's defaults.budget_min.
+    const twoRoots = withDefinitions(machine({}), [
+      { root: 'a', swarm: { swarmup_defs: 1, policy: { budget_minutes: 90 } } },
+      { root: 'b', swarm: { swarmup_defs: 1, defaults: { budget_min: 30 } } },
+    ]);
+    expect(twoRoots.config.budget_minutes).toBe(90);
+    expect(twoRoots.values).toEqual(
+      expect.arrayContaining([
+        { key: 'defaults.budget_min', value: 30, source: 'unused', git: 30, root: 'b' },
+      ]),
+    );
   });
 
   it('lets a key the machine sets win, even when it holds the default value', () => {

@@ -58,6 +58,8 @@ export function RoleEditor({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [active, setActive] = useState(true);
+  /** Active as loaded: a folder layer gets `status` only when you change it (W5). */
+  const [loadedActive, setLoadedActive] = useState(true);
   const [instructions, setInstructions] = useState('');
   const [kb, setKb] = useState<string[]>([]);
   const [topicText, setTopicText] = useState('');
@@ -79,7 +81,9 @@ export function RoleEditor({
     const d = (r.layers ? (layer?.data ?? {}) : r) as Partial<RoleFile>;
     setName(d.name ?? '');
     setDescription(d.description ?? '');
-    setActive((d.status ?? r.status) === 'active');
+    const shown = (d.status ?? r.status) === 'active';
+    setActive(shown);
+    setLoadedActive(shown);
     setInstructions(r.layers ? (layer?.instructions ?? '') : (r.instructions ?? ''));
     setKb(d.kb ?? []);
     setFiles((d.files ?? []).join('\n'));
@@ -112,7 +116,9 @@ export function RoleEditor({
           id: fullId,
           name: name.trim() || null,
           description: description.trim() || null,
-          status: active ? 'active' : 'paused',
+          // A folder layer without `status` reads it from the other layer: writing the shown value
+          // back would copy one runtime's pause into agent.md, which pauses every runtime.
+          ...(!folder || active !== loadedActive ? { status: active ? 'active' : 'paused' } : {}),
           instructions,
           kb: kb.length > 0 ? kb : null,
           files: splitList(files).length > 0 ? splitList(files) : null,

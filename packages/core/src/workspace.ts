@@ -577,20 +577,31 @@ function expectsCommands(v: TaskView): boolean {
  * --force, which the event records: publishing and a gate's decision are a person's steps.
  */
 function refuseAgentPublisher(v: TaskView, ctx: ActCtx, who: string, what: 'claim' | 'own'): void {
-  if (!PERSON_TYPES.includes(v.meta.type) || isHuman(who)) return;
+  if (isHuman(who)) return;
+  // No --force for a gate: a gate an agent holds can reach a verdict without the person.
+  if (isGate(v)) {
+    throw new OpsError(`${who} cannot ${what} ${v.meta.id}: a gate is a person's decision`);
+  }
+  if (!PERSON_TYPES.includes(v.meta.type)) return;
   ctx.needForce(
-    v.meta.type === GATE_TYPE
-      ? `${who} cannot ${what} ${v.meta.id}: a gate is a person's decision`
-      : `${who} cannot ${what} ${v.meta.id}: a publish task is a person's; only a person publishes`,
+    `${who} cannot ${what} ${v.meta.id}: a publish task is a person's; only a person publishes`,
   );
+}
+
+/**
+ * Whether a task is a gate (W5). `gate` is fixed when the plan creates the task, so a retype can't
+ * turn a gate into a task an agent closes; retyping a gate is a person's step too (`retype`).
+ */
+function isGate(v: TaskView): boolean {
+  return v.meta.type === GATE_TYPE || v.meta.gate !== undefined;
 }
 
 /** Refuses an agent or a run closing a gate (W5): only a person approves or rejects one. */
 function refuseAgentGate(v: TaskView, ctx: ActCtx, run: string | null, verb: string): void {
-  if (v.meta.type !== GATE_TYPE) return;
+  if (!isGate(v)) return;
   if (isHuman(ctx.actor) && !run) return;
   throw new OpsError(
-    `${v.meta.id} is a gate: only a person ${verb}s it, outside any run; ${run ? `run ${run}` : ctx.actor} cannot`,
+    `${v.meta.id} is a gate: only a person can ${verb} it, outside any run; ${run ? `run ${run}` : ctx.actor} cannot`,
   );
 }
 
@@ -2440,6 +2451,7 @@ export class Workspace {
     let evidence: string[] = [];
     const res = this.act(ref, (v, ctx) => {
       ctx.requireStatus(['claimed', 'in-progress'], 'send for review');
+      refuseAgentGate(v, ctx, this.run, 'send for review');
       evidence = evidenceNotes(
         message,
         v.criteria?.map((c) => criterionWhat(c)),
@@ -2557,6 +2569,7 @@ export class Workspace {
     let unjudged: string[] = [];
     const res = this.markAct(ref, mark, (v, ctx) => {
       ctx.requireStatus(['needs-review'], 'give a verdict on');
+      refuseAgentGate(v, ctx, this.run, 'give a verdict on');
       // A plain approval would close the milestone without creating its tasks, and a plain
       // rejection would not mark the plan rejected (AO-0110).
       if (v.meta.type === MILESTONE_TYPE && v.plan?.pending) {
@@ -2613,7 +2626,17 @@ export class Workspace {
       ctx.requireOpen('close');
       // A gate closes on a person's approval (W5), which is the whole of its work.
       refuseAgentGate(v, ctx, this.run, 'approve');
-      if (v.meta.type === GATE_TYPE) {
+      if (isGate(v)) {
+        // A gate asks once the stages it waits for are done; approving sooner starts the stages
+        // after it on work that doesn't exist yet.
+        if (v.status === 'blocked' && !v.unblocked) {
+          throw new OpsError(
+            `${v.meta.id} waits for ${(v.meta.blocked_by ?? []).join(', ') || 'other tasks'}; decide it when they are done`,
+          );
+        }
+        if (!ownerMatches(v.owner, ctx.actor)) {
+          ctx.needForce(`${v.meta.id} asks ${v.owner ?? 'nobody'}, not ${ctx.actor}`);
+        }
         return [
           { type: 'done', body: message.trim() || `Approved: ${v.meta.gate?.ask ?? v.meta.title}` },
         ];
@@ -3010,6 +3033,12 @@ export class Workspace {
     // A mark goes on the retype event, the first of the write.
     return this.markAct(ref, opts.mark, (v, ctx) => {
       ctx.needTriager('only a person, the orchestrator or the PM changes a task type');
+      // Retyping a gate or a publish task would let an agent close it: a person's step only.
+      if ((isGate(v) || PERSON_TYPES.includes(v.meta.type)) && (!isHuman(ctx.actor) || this.run)) {
+        throw new OpsError(
+          `${v.meta.id} is a ${v.meta.type}: only a person changes its type, outside any run`,
+        );
+      }
       if (v.meta.type === type) throw new OpsError(`${v.meta.id} is already a ${type}`, 1);
       if (type === MILESTONE_TYPE) assertMilestoneCheck(v.criteria);
       if (type === QUESTION_TYPE) {
@@ -3051,7 +3080,8 @@ export class Workspace {
 
   park(ref: string, message: string, mark?: MarkInput): ActResult {
     const { root, id } = this.resolve(ref);
-    if (root.readTask(id).meta.type === GATE_TYPE) return this.gateReject(ref, message, mark);
+    const meta = root.readTask(id).meta;
+    if (meta.type === GATE_TYPE || meta.gate) return this.gateReject(ref, message, mark);
     return this.parkPlain(ref, message, mark);
   }
 

@@ -107,7 +107,28 @@ export function planMigration(rootDir: string): MigrationPlan {
   for (const a of legacy) byRole.set(roleOf(a.id), [...(byRole.get(roleOf(a.id)) ?? []), a]);
   for (const [role, agents] of [...byRole].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (texts.has(`agents/${role}/${AGENT_FOLDER_FILE}`)) {
-      plan.skipped.push(`${role}: agents/${role}/ exists; move its legacy files into it by hand`);
+      // A folder an earlier `--apply` wrote: the legacy files may go once the folder alone gives
+      // every agent the same fields, so `--prune` finishes that migration.
+      const without = new Map(texts);
+      for (const a of agents) without.delete(storePath(rootDir, a.file));
+      const folder = agentFilesFromTexts(rootDir, without).agents;
+      const diffs = agents.flatMap((a) =>
+        agentDifferences(
+          a,
+          folder.find((f) => f.id === a.id),
+        ),
+      );
+      if (diffs.length > 0) {
+        plan.skipped.push(
+          `${role}: agents/${role}/ exists and differs from its legacy files (${diffs[0]}); ` +
+            'move them into it by hand',
+        );
+        continue;
+      }
+      for (const a of agents) {
+        plan.legacy.push(storePath(rootDir, a.file));
+        plan.agents.push(a.id);
+      }
       continue;
     }
     const ids = agents.map((a) => a.id);

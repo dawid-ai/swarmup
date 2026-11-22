@@ -331,6 +331,33 @@ describe('swarmup defs migrate', () => {
     expect(readAgentFiles(dir).shadowed).toHaveLength(4);
   });
 
+  it('removes the legacy files with --prune after an --apply that kept them', () => {
+    const dir = legacyStore();
+    applyMigration(planMigration(dir));
+    clearDefinitionsCache();
+    const again = planMigration(dir);
+    expect(again.refused).toEqual([]);
+    expect(again.writes).toEqual({});
+    expect(again.legacy).toEqual(Object.keys(LEGACY).sort());
+    expect(applyMigration(again, { prune: true }).removed).toEqual(Object.keys(LEGACY).sort());
+    clearDefinitionsCache();
+    expect(readAgentFiles(dir).shadowed).toHaveLength(0);
+  });
+
+  it('leaves legacy files that differ from an existing folder alone', () => {
+    const dir = legacyStore();
+    applyMigration(planMigration(dir));
+    put(
+      dir,
+      'agents/claude-qa.md',
+      LEGACY['agents/claude-qa.md']!.replace('Check.', 'Check twice.'),
+    );
+    clearDefinitionsCache();
+    const again = planMigration(dir);
+    expect(again.legacy).not.toContain('agents/claude-qa.md');
+    expect(again.skipped).toEqual([expect.stringMatching(/^qa: agents\/qa\/ exists and differs/)]);
+  });
+
   it('refuses when a legacy file does not read, and without swarmup_defs', () => {
     const dir = legacyStore();
     put(dir, 'agents/claude-pm.md', '---\ncan_claim: nope\n---\n');
@@ -358,11 +385,13 @@ describe('swarmup defs migrate', () => {
     ]);
   });
 
-  it('skips a role that has a folder already', () => {
+  it('skips a role whose existing folder differs from its legacy files', () => {
     const dir = legacyStore();
     put(dir, 'agents/qa/agent.md', '---\nproviders: [codex]\n---\n');
     const plan = planMigration(dir);
-    expect(plan.skipped).toEqual(['qa: agents/qa/ exists; move its legacy files into it by hand']);
+    expect(plan.skipped).toEqual([
+      expect.stringMatching(/^qa: agents\/qa\/ exists and differs from its legacy files/),
+    ]);
     expect(plan.agents).not.toContain('claude:qa');
   });
 });
