@@ -229,7 +229,30 @@
           "minimum": 0
         },
         "requires": {
-          "description": "Accepted but not active yet: benchmark requirements come later; swarmupd.improve.benchmark runs the gate."
+          "description": "What a proposal needs before a person promotes it; `swarmup defs promote --force` overrides it and says so on the task.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "benchmark": {
+              "description": "A finished benchmark of the variant as proposed (`swarmupd.improve.benchmark` runs it) before a person promotes it. Default false.",
+              "type": "boolean"
+            },
+            "min_delta": {
+              "description": "The least pass-rate gain of the variant over the base, from -1 to 1 (0.05 is 5 points). Default 0: no worse than the base. Applies when `benchmark` is true.",
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1
+            },
+            "human_approval": {
+              "description": "Promote is always a person's step; only `true` is accepted.",
+              "enum": [
+                true
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

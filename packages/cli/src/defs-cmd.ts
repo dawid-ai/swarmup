@@ -196,7 +196,7 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] | defs reject NAME [--root NAME] -m WHY | defs variants [--root NAME]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs variants [--root NAME]',
   summary:
     "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions or reject it (a person), and list the variants",
   options: {
@@ -481,10 +481,13 @@ function propose(ctx: DefsCtx, rest: string[]): number {
 
 function promote(ctx: DefsCtx, rest: string[]): number {
   const name = rest[0];
-  if (!name || rest.length > 1) throw new OpsError('usage: swarmup defs promote NAME [-m NOTE]', 2);
+  if (!name || rest.length > 1) {
+    throw new OpsError('usage: swarmup defs promote NAME [-m NOTE] [--force]', 2);
+  }
   const res = ctx.ws().defsPromote(name, {
     root: str(ctx.opts.root),
     message: messageOf(ctx) || undefined,
+    force: Boolean(ctx.opts.force),
   });
   if (ctx.opts.json) {
     ctx.io.out(JSON.stringify(res, null, 2));

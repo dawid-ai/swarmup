@@ -1312,8 +1312,10 @@ has four steps, and only the last one changes a definition file:
    proposal, as the app's **Run benchmark** does: the base and the variant, each with the agent's
    role file in the prompt (`--role-file`, `--variant`). When both end, it comments the
    `bench compare` table on the proposal's task with a verdict: **better**, **worse** or **same**,
-   on the pass rate, then the hidden pass rate. The gate is off without `benchmark`: it spends
-   tokens.
+   on the pass rate, then the hidden pass rate, and records the result in the proposal's
+   `proposal.json`, where `defs promote` checks
+   [`improvement.requires`](definitions.md#improvement-policy). The gate is off without
+   `benchmark`: it spends tokens.
 4. **Decision.** A person promotes the proposal (`swarmup defs promote`, or **Promote** in the
    app) or rejects it with a note.
 

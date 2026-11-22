@@ -241,10 +241,12 @@ swarmup defs reject engineer-tests-first -m "Too broad; name the test command in
   line). `--agent` names the agents when the overlay's files don't.
 - At most `improvement.max_open_proposals` proposals (default 2) wait in one store; the next
   `defs propose` is refused until a person promotes or rejects one.
-- `defs promote NAME [--root NAME] [-m NOTE]` is for a person only. It writes the variant's result
-  onto the base files, records a `defs-promote` event with the hashes before and after
-  (`defs_from`, `defs_to`) on the linked task, and removes the variant's folder. A variant that no
-  longer checks against the base is refused.
+- `defs promote NAME [--root NAME] [-m NOTE] [--force]` is for a person only. It writes the
+  variant's result onto the base files, records a `defs-promote` event with the hashes before and
+  after (`defs_from`, `defs_to`) on the linked task, and removes the variant's folder. A variant
+  that no longer checks against the base is refused, and so is one that doesn't meet
+  [`improvement.requires`](#improvement-policy). `--force` promotes it anyway, and the event says
+  so.
 - `defs reject NAME [--root NAME] -m WHY` is for a person only. It records a `defs-reject` event
   with the note on the linked task and removes the folder. The base files don't change.
 - `defs variants` lists each variant's hash, `proposed` (it has a `proposal.json`) or `draft` (a
@@ -263,14 +265,21 @@ improvement:
   may_change: ['agents/*.md', 'agents/*/*.md', 'workflows/**'] # the default
   frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'swarm.yaml'] # the default
   max_open_proposals: 2
+  requires:
+    benchmark: true # a finished benchmark of the variant before promote; default false
+    min_delta: 0.05 # the least pass-rate gain, variant minus base; default 0
 ```
 
 - Every path a proposal changes must match a `may_change` glob and no `frozen` glob; `frozen`
   wins. `*` stays within one folder, `**` crosses folders.
 - An agent's `tools`, `mcp`, `writes`, `can_claim` and `id` are always frozen, whatever the policy says,
   and a proposal never removes an agent file. A person changes those by hand.
-- `improvement.requires` is accepted and not active yet; `swarmupd.improve.benchmark` runs the
-  benchmark gate.
+- With `improvement.requires.benchmark: true`, `defs promote` refuses a proposal until swarmupd's
+  benchmark gate (`swarmupd.improve.benchmark`, in [the supervisor](supervisor.md)) has run the
+  variant as proposed and recorded the result in its `proposal.json`. It refuses when the
+  benchmark failed, when the variant changed after it ran, or when the pass rate gained less than
+  `min_delta` (from -1 to 1; 0.05 is 5 points, and the default 0 means no worse than the base).
+  `human_approval` accepts only `true`: promote is always a person's step.
 
 ## Commands
 

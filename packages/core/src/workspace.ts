@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type { ActivityItem, ActivityOptions, ActivityPage } from './activity.js';
-import type { CompiledWorkflow, ProposalMeta, SwarmWorkType, VariantInfo } from './defs/index.js';
+import type {
+  CompiledWorkflow,
+  ProposalBenchmark,
+  ProposalMeta,
+  SwarmWorkType,
+  VariantInfo,
+} from './defs/index.js';
 import {
   applyVariantToBase,
   checkVariantName,
@@ -17,6 +23,7 @@ import {
   policyProblems,
   readProposal,
   removeVariant,
+  requiresProblems,
   shortHash,
   writeProposal,
   writeVariantFiles,
@@ -603,6 +610,15 @@ function refuseAgentGate(v: TaskView, ctx: ActCtx, run: string | null, verb: str
   throw new OpsError(
     `${v.meta.id} is a gate: only a person can ${verb} it, outside any run; ${run ? `run ${run}` : ctx.actor} cannot`,
   );
+}
+
+/** swarmupd's improvement loop, the only actor that records a proposal's benchmark (W6). */
+export const IMPROVE_BENCH_ACTOR = 'opsd:improve';
+
+/** A pass-rate change as points, such as `+5 pts`; `-` when unknown. */
+function deltaPts(x: number | null | undefined): string {
+  if (x === null || x === undefined) return '-';
+  return `${x > 0 ? '+' : ''}${Math.round(x * 1000) / 10} pts`;
 }
 
 function privileged(actor: string | undefined): boolean {
@@ -4028,12 +4044,30 @@ export class Workspace {
    * records a `defs-promote` event with the hashes before and after on the linked task, and
    * removes the variant's folder.
    */
-  defsPromote(name: string, opts: { root?: string; message?: string } = {}): DefsDecisionResult {
+  defsPromote(
+    name: string,
+    opts: { root?: string; message?: string; force?: boolean } = {},
+  ): DefsDecisionResult {
     this.needPerson('promotes');
     if (opts.message) assertNoSecret(opts.message);
     const root = this.variantRoot(name, opts.root);
     return root.lock('defs-variants', () => {
       const meta = readProposal(root.dir, name);
+      // `improvement.requires` (W6): the benchmark a proposal must pass first, unless --force.
+      const unmet = meta
+        ? requiresProblems(
+            improvementPolicy(loadDefinitions(root.dir).swarm),
+            meta,
+            loadDefinitions(root.dir, { variant: name }).hash,
+          )
+        : [];
+      if (unmet.length > 0 && !opts.force) {
+        throw new OpsError(
+          `${name} does not meet improvement.requires:\n- ${unmet.join('\n- ')}\n` +
+            'promote it anyway with --force, which the task records',
+          1,
+        );
+      }
       const done = applyVariantToBase(root.dir, name);
       const files = [...done.written, ...done.removed.map((p) => `${p} (removed)`)];
       let events: OpsEvent[] = [];
@@ -4042,6 +4076,11 @@ export class Workspace {
           opts.message?.trim(),
           `Promoted variant \`${name}\`: ${shortHash(done.from)} -> ${shortHash(done.to)}. ` +
             `Changed ${files.join(', ') || 'nothing'}.`,
+          unmet.length > 0
+            ? `Promoted with --force over improvement.requires: ${unmet.join('; ')}.`
+            : meta?.benchmark?.state === 'done'
+              ? `Benchmark: ${meta.benchmark.verdict ?? 'done'}, pass rate ${deltaPts(meta.benchmark.pass_delta)}.`
+              : '',
         ]
           .filter(Boolean)
           .join('\n\n');
@@ -4085,6 +4124,26 @@ export class Workspace {
       }
       removeVariant(root.dir, name);
       return { variant: name, root: root.name, events, ...(meta ? { proposal: meta } : {}) };
+    });
+  }
+
+  /**
+   * swarmupd records the benchmark it ran of proposal `name` in its `proposal.json`, where
+   * `defs promote` checks it against `improvement.requires`. Only swarmupd's improvement loop
+   * (`opsd:improve`) records one: runs can't write `variants/`, and a person decides with promote.
+   * False when the proposal is gone.
+   */
+  defsRecordBenchmark(name: string, rootName: string, bench: ProposalBenchmark): boolean {
+    const actor = this.requireActor();
+    if (actor !== IMPROVE_BENCH_ACTOR) {
+      throw new OpsError(`only swarmupd records a proposal's benchmark; ${actor} cannot`);
+    }
+    const root = this.variantRoot(name, rootName);
+    return root.lock('defs-variants', () => {
+      const meta = readProposal(root.dir, name);
+      if (!meta) return false;
+      writeProposal(root.dir, name, { ...meta, benchmark: bench });
+      return true;
     });
   }
 

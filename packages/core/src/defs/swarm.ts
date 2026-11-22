@@ -48,6 +48,18 @@ export interface SwarmImprovement {
   frozen?: string[];
   /** Most proposals that wait for a person at once in this store. */
   max_open_proposals?: number;
+  /** What a proposal needs before a person promotes it. */
+  requires?: SwarmImprovementRequires;
+}
+
+/** `improvement.requires`: the benchmark a proposal must pass before promote (W6). */
+export interface SwarmImprovementRequires {
+  /** A finished benchmark of the variant as proposed, base against variant. */
+  benchmark?: boolean;
+  /** The least pass-rate gain, variant minus base, from -1 to 1 (0.05 is 5 points). */
+  min_delta?: number;
+  /** Promote is a person's step; only `true` is accepted. */
+  human_approval?: true;
 }
 
 /** Which test and check files a review run's prompt lists, as `swarmupd.test_changes.<root>`. */
@@ -300,9 +312,25 @@ export const SWARM_SCHEMA: Schema = obj(
           min: 0,
           doc: 'Most proposals that wait for a person at once in this store. Default 2.',
         }),
-        requires: any({
-          inactive: 'benchmark requirements come later; swarmupd.improve.benchmark runs the gate',
-        }),
+        requires: obj(
+          {
+            benchmark: bool({
+              doc: 'A finished benchmark of the variant as proposed (`swarmupd.improve.benchmark` runs it) before a person promotes it. Default false.',
+            }),
+            min_delta: num({
+              min: -1,
+              max: 1,
+              doc: 'The least pass-rate gain of the variant over the base, from -1 to 1 (0.05 is 5 points). Default 0: no worse than the base. Applies when `benchmark` is true.',
+            }),
+            human_approval: enumOf([true], {
+              doc: "Promote is always a person's step; only `true` is accepted.",
+            }),
+          },
+          {
+            nullable: true,
+            doc: 'What a proposal needs before a person promotes it; `swarmup defs promote --force` overrides it and says so on the task.',
+          },
+        ),
       },
       {
         nullable: true,
@@ -402,6 +430,14 @@ export function swarmDefs(value: unknown): SwarmDefs {
     const frozen = strings(i.frozen);
     if (frozen) imp.frozen = frozen;
     if (typeof i.max_open_proposals === 'number') imp.max_open_proposals = i.max_open_proposals;
+    if (isRecord(i.requires)) {
+      const r = i.requires;
+      const req: SwarmImprovementRequires = {};
+      if (typeof r.benchmark === 'boolean') req.benchmark = r.benchmark;
+      if (typeof r.min_delta === 'number') req.min_delta = r.min_delta;
+      if (r.human_approval === true) req.human_approval = true;
+      imp.requires = req;
+    }
     out.improvement = imp;
   }
   return out;

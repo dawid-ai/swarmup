@@ -67,6 +67,8 @@ export interface ImprovementPolicy {
   may_change: string[];
   frozen: string[];
   max_open_proposals: number;
+  /** `improvement.requires`, with its defaults: no benchmark needed, and no worse than the base. */
+  requires: { benchmark: boolean; min_delta: number };
 }
 
 /** The improvement policy of a store's `swarm.yaml`, with the defaults for what it leaves out. */
@@ -77,6 +79,10 @@ export function improvementPolicy(swarm: SwarmDefs | null | undefined): Improvem
     may_change: i.may_change ?? [...DEFAULT_MAY_CHANGE],
     frozen: i.frozen ?? [...DEFAULT_FROZEN],
     max_open_proposals: i.max_open_proposals ?? DEFAULT_MAX_OPEN_PROPOSALS,
+    requires: {
+      benchmark: i.requires?.benchmark ?? false,
+      min_delta: i.requires?.min_delta ?? 0,
+    },
   };
 }
 
@@ -148,6 +154,51 @@ export interface ProposalMeta {
   hash: string;
   /** The `defs-propose` event on the task. */
   event?: string;
+  /** The benchmark swarmupd ran of this variant, base against variant (`improvement.requires`). */
+  benchmark?: ProposalBenchmark;
+}
+
+/** A finished benchmark of a proposal, as swarmupd records it in `proposal.json`. */
+export interface ProposalBenchmark {
+  /** The variant hash the benchmark ran; a later change to the variant makes it stale. */
+  hash: string;
+  state: 'done' | 'failed';
+  verdict?: 'better' | 'worse' | 'same';
+  /** Variant minus base, overall: pass rate and hidden pass rate, from -1 to 1. */
+  pass_delta?: number | null;
+  hidden_delta?: number | null;
+  /** The bench run ids of the base and the variant. */
+  base_run?: string;
+  run?: string;
+  error?: string;
+  at: string;
+}
+
+/**
+ * Why `requires` refuses to promote a proposal, one line per problem; empty when it may be
+ * promoted. `hash` is the variant's hash now.
+ */
+export function requiresProblems(
+  policy: Pick<ImprovementPolicy, 'requires'>,
+  meta: ProposalMeta | undefined,
+  hash: string,
+): string[] {
+  const req = policy.requires;
+  if (!req.benchmark) return [];
+  const b = meta?.benchmark;
+  if (!b) return ['improvement.requires a benchmark, and this proposal has none yet'];
+  if (b.hash !== hash) {
+    return ['the variant changed after its benchmark ran; it needs a new benchmark'];
+  }
+  if (b.state !== 'done') return [`its benchmark failed: ${b.error ?? 'no result'}`];
+  const delta = b.pass_delta ?? 0;
+  if (delta < req.min_delta - 1e-9) {
+    const pts = (x: number): string => `${x > 0 ? '+' : ''}${Math.round(x * 1000) / 10} pts`;
+    return [
+      `its pass rate moved ${pts(delta)}; improvement.requires at least ${pts(req.min_delta)}`,
+    ];
+  }
+  return [];
 }
 
 /** Reads a variant's `proposal.json`; undefined when it has none or it does not read. */

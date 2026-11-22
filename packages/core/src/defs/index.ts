@@ -38,6 +38,7 @@ export type {
   SwarmDefs,
   SwarmImport,
   SwarmImprovement,
+  SwarmImprovementRequires,
   SwarmPolicy,
   SwarmRole,
   SwarmRuntime,
@@ -52,7 +53,13 @@ export {
   SWARM_SCHEMA,
   swarmDefs,
 } from './swarm.js';
-export type { ImprovementPolicy, ProposalMeta, VariantFile, VariantInfo } from './proposals.js';
+export type {
+  ImprovementPolicy,
+  ProposalBenchmark,
+  ProposalMeta,
+  VariantFile,
+  VariantInfo,
+} from './proposals.js';
 export {
   ALWAYS_FROZEN_KEYS,
   applyVariantToBase,
@@ -66,6 +73,7 @@ export {
   policyProblems,
   readProposal,
   removeVariant,
+  requiresProblems,
   variantInfo,
   writeProposal,
   writeVariantFiles,
