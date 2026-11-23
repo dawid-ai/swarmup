@@ -14,6 +14,7 @@ import type {
   GitRun,
   McpConfig,
   McpEnvValue,
+  PublishEdits,
   PublishTarget,
   ReviewArtifact,
   TaskView,
@@ -33,6 +34,7 @@ import {
   mcpToolAllowed,
   OpsError,
   previewPage,
+  publishEdits,
   PUBLISH_TYPE,
   publishTarget,
   readSecrets,
@@ -529,6 +531,21 @@ export function publishSources(
   return out;
 }
 
+/**
+ * What the person changed between approval and a publish of `target` (W8 phase 3): the edits of
+ * the task's approved files, all of them, or only `target.path` when the publish names one.
+ */
+export async function editsOfPublish(
+  ws: Workspace,
+  ref: string,
+  git: GitRun,
+  target: { commit: string; path?: string },
+): Promise<PublishEdits | undefined> {
+  const approved = taskApprovedFiles(ws, ref);
+  const paths = target.path ? [target.path] : approved.map((f) => f.path);
+  return publishEdits(git, approved, target.commit, paths);
+}
+
 /** The approved files of a publish task (see {@link approvedFiles}). */
 export function taskApprovedFiles(ws: Workspace, ref: string): ApprovedFile[] {
   return approvedFiles(publishSources(ws, ref));
@@ -835,10 +852,12 @@ export async function publishWithAdapter(o: {
     rev: commit,
     ...(paths.length === 1 ? { path: paths[0] } : {}),
   });
+  const edits = await publishEdits(git, taskApprovedFiles(ws, o.ref), commit, paths);
   ws.published(o.ref, {
     url: outcome.url,
     ...target,
     adapter: name,
+    ...(edits ? { edits } : {}),
     message: `Published at ${outcome.url} with adapter ${name}`,
   });
   const results = await ws.publishChecks(o.ref, outcome.url, { cwd: o.top });

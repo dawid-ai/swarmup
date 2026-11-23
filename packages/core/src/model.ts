@@ -195,6 +195,16 @@ export interface ReviewArtifact {
   label?: string;
 }
 
+/** What `publish` events record of the edits between approval and publishing (W8 phase 3). */
+export interface PublishEdits {
+  /** Words taken out plus words put in, over every file. */
+  changed: number;
+  /** Words of the approved text plus words of the published text, over every file. */
+  total: number;
+  /** Per file: the task whose approval it comes from, and its approving verdict. */
+  files: Array<{ path: string; task: string; verdict: string; changed: number; total: number }>;
+}
+
 /** The kinds a review artifact may have. */
 export const ARTIFACT_KINDS: readonly ReviewArtifact['kind'][] = ['file', 'url', 'image', 'doc'];
 
@@ -377,6 +387,12 @@ export interface OpsEvent {
    * adapter that published, when one did.
    */
   adapter?: string;
+  /**
+   * publish: how much the person changed the approved work before publishing it (W8 phase 3):
+   * words, from the approved blob of each published file to its blob at `commit`. The
+   * `post-approval-edits` scorer reads it.
+   */
+  edits?: PublishEdits;
   /**
    * comment by swarmupd (`opsd:merge`): it has nothing to merge for the approved task, so tasks
    * blocked on it stop waiting for a merge (AO-0228). A note on a merge that failed has none.

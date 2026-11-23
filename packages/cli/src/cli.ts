@@ -132,6 +132,7 @@ import {
   costText,
   judgeMessage,
   judgeTask,
+  editsOfPublish,
   publishWithAdapter,
   taskPreview,
 } from '@swarmup/supervisor';
@@ -617,12 +618,14 @@ async function publishedCommand(ctx: Ctx): Promise<number | void> {
     rev: str(ctx.opts.commit) ?? baseOf(ctx, root.name) ?? 'HEAD',
     ...(artifact ? { path: relative(top, resolve(ctx.io.cwd, artifact)) } : {}),
   });
+  const edits = await editsOfPublish(ws, ref, async (args) => syncGit(args), target);
   const res = ws.published(ref, {
     url,
     commit: target.commit,
     path: target.path,
     blob: target.blob,
     tag: target.tag,
+    ...(edits ? { edits } : {}),
     message: str(ctx.opts.message),
   });
   const results = await ws.publishChecks(ref, url, { cwd: top });

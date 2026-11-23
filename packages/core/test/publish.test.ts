@@ -8,7 +8,9 @@ import {
   checkArtifacts,
   evidenceNotes,
   namedArtifacts,
+  approvedFiles,
   publishTarget,
+  wordEdits,
   workspacePath,
 } from '../src/index.js';
 import type { GitRunSync, ReviewArtifact } from '../src/index.js';
@@ -205,5 +207,51 @@ describe('review artifacts', () => {
     expect(artifactKindOf('assets/a.PNG')).toBe('image');
     expect(artifactKindOf('https://news.ycombinator.com/item?id=1')).toBe('url');
     expect(artifactKindOf('https://www.notion.so/page')).toBe('doc');
+  });
+});
+
+describe('approved work and edits after approval', () => {
+  it('counts words taken out and put in, ignoring whitespace', () => {
+    expect(wordEdits('a b c', 'a  b\nc')).toEqual({ changed: 0, total: 6 });
+    expect(wordEdits('the approved words', 'the edited words')).toEqual({ changed: 2, total: 6 });
+    expect(wordEdits('', 'new text')).toEqual({ changed: 2, total: 2 });
+  });
+
+  it("takes the files of the review each task's latest approval approved", () => {
+    const e = (id: string, type: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      type,
+      actor: 'codex:editor',
+      at: '2026-11-22T10:00:00Z',
+      body: '',
+      ...extra,
+    });
+    const file = (ref: string) => ({ kind: 'file' as const, ref, blob: 'a'.repeat(40) });
+    const files = approvedFiles([
+      {
+        id: 'T-1',
+        events: [
+          e('E1', 'review', { commit: 'c1', artifacts: [file('old.md')] }),
+          e('E2', 'review', {
+            commit: 'c2',
+            artifacts: [file('a.md'), { kind: 'url', ref: 'https://x' }],
+          }),
+          e('E3', 'verdict', { verdict: 'approve' }),
+          e('E4', 'verdict', { verdict: 'approve', actor: 'opsd:merge' }),
+        ],
+      },
+      { id: 'T-2', events: [e('E5', 'review', { artifacts: [file('b.md')] })] },
+      {
+        id: 'T-3',
+        events: [
+          e('E6', 'review', { artifacts: [file('c.md')] }),
+          e('E7', 'verdict', { verdict: 'approve' }),
+          e('E8', 'reopen'),
+        ],
+      },
+    ]);
+    expect(files).toEqual([
+      { path: 'a.md', blob: 'a'.repeat(40), task: 'T-1', commit: 'c2', verdict: 'E3' },
+    ]);
   });
 });

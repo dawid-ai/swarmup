@@ -3,7 +3,7 @@
 // directly and swarmupd off its event loop.
 import { isAbsolute } from 'node:path';
 import { OpsError } from './ids.js';
-import type { OpsEvent, ReviewArtifact } from './model.js';
+import type { OpsEvent, PublishEdits, ReviewArtifact } from './model.js';
 import { MERGE_ACTOR } from './model.js';
 
 /** Runs git in the workspace with `args` and resolves to its output; rejects when git fails. */
@@ -284,4 +284,75 @@ export function approvedFiles(
     }
   }
   return out;
+}
+
+/** The most cells the word diff fills; past it, words are compared as multisets. */
+const DIFF_CELLS = 16_000_000;
+
+/**
+ * The words taken out of `a` plus the words put into it to make `b` (from a longest common
+ * subsequence of their words; a pair too long for that compares them as multisets), and the
+ * words of both. Whitespace and line breaks do not count.
+ */
+export function wordEdits(a: string, b: string): { changed: number; total: number } {
+  const x = a.split(/\s+/).filter(Boolean);
+  const y = b.split(/\s+/).filter(Boolean);
+  const total = x.length + y.length;
+  if (x.length * y.length > DIFF_CELLS) {
+    const count = new Map<string, number>();
+    for (const w of x) count.set(w, (count.get(w) ?? 0) + 1);
+    let common = 0;
+    for (const w of y) {
+      const n = count.get(w) ?? 0;
+      if (n > 0) {
+        common++;
+        count.set(w, n - 1);
+      }
+    }
+    return { changed: total - 2 * common, total };
+  }
+  // One row of the table at a time: lengths of the common subsequence of x and y[..j].
+  let prev = new Uint32Array(y.length + 1);
+  let cur = new Uint32Array(y.length + 1);
+  for (let i = 1; i <= x.length; i++) {
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1]! + 1 : Math.max(prev[j]!, cur[j - 1]!);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return { changed: total - 2 * prev[y.length]!, total };
+}
+
+/**
+ * The edits between approval and publishing of each approved text file the publish has (its
+ * path in `paths`, and in `commit`): its approved blob against its blob at `commit`. Undefined
+ * when no file has both.
+ */
+export async function publishEdits(
+  git: GitRun,
+  approved: readonly ApprovedFile[],
+  commit: string,
+  paths: readonly string[],
+): Promise<PublishEdits | undefined> {
+  const files: PublishEdits['files'] = [];
+  for (const f of approved) {
+    if (!paths.includes(f.path) || artifactKindOf(f.path) !== 'file') continue;
+    const now = await blobAt(git, commit, f.path);
+    if (!now) continue;
+    let before: string;
+    let after: string;
+    try {
+      before = await git(['cat-file', 'blob', f.blob]);
+      after = now === f.blob ? before : await git(['cat-file', 'blob', now]);
+    } catch {
+      continue;
+    }
+    files.push({ path: f.path, task: f.task, verdict: f.verdict, ...wordEdits(before, after) });
+  }
+  if (files.length === 0) return undefined;
+  return {
+    changed: files.reduce((n, f) => n + f.changed, 0),
+    total: files.reduce((n, f) => n + f.total, 0),
+    files,
+  };
 }

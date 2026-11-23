@@ -32,7 +32,7 @@ import type { PublishTarget, SyncResult } from '@swarmup/core';
 import type { TaskArtifact } from './artifact-api.js';
 import { NoArtifact, readArtifact } from './artifact-api.js';
 import type { PublishOptions, PublishOutcome, TaskPreview } from './publish.js';
-import { publishWithAdapter, taskAdapter, taskPreview } from './publish.js';
+import { editsOfPublish, publishWithAdapter, taskAdapter, taskPreview } from './publish.js';
 import {
   actorSlug,
   agentRuntimeValues,
@@ -6205,15 +6205,18 @@ export class Supervisor extends EventEmitter {
     const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
     if (!top) throw new OpsError(`the workspace of ${root.name} is in no git checkout on this PC`);
     const env = this.commandEnv();
-    const target = await publishTarget(
-      (args) => gitAsync(top, args, { env, timeoutMs: 60_000 }),
-      id,
-      {
-        rev: input.commit ?? cfg?.base ?? 'HEAD',
-        ...(input.artifact ? { path: input.artifact } : {}),
-      },
-    );
-    const res = ws.published(ref, { url: input.url, ...target, message: input.message });
+    const git = (args: string[]) => gitAsync(top, args, { env, timeoutMs: 60_000 });
+    const target = await publishTarget(git, id, {
+      rev: input.commit ?? cfg?.base ?? 'HEAD',
+      ...(input.artifact ? { path: input.artifact } : {}),
+    });
+    const edits = await editsOfPublish(ws, ref, git, target);
+    const res = ws.published(ref, {
+      url: input.url,
+      ...target,
+      ...(edits ? { edits } : {}),
+      message: input.message,
+    });
     const results = await ws.publishChecks(ref, input.url, { cwd: top });
     return { ...target, url: input.url, results, view: res.view };
   }

@@ -333,6 +333,58 @@ function costScorer(now: () => number): Scorer {
   };
 }
 
+/**
+ * How much the person rewrote approved work before publishing it (W8 phase 3): the share of
+ * words changed between the approved blob of each published file and what was published, as the
+ * `publish` event's `edits` record it. The score counts for the writer of the approved task, not
+ * the person who published.
+ */
+const postApprovalEdits: Scorer = {
+  id: 'post-approval-edits',
+  description: 'share of words the person changed between the approved text and the published text',
+  level: 'task',
+  unit: 'ratio',
+  better: 'lower',
+  pass: 0.1,
+  lever: "the writer's role file (the approved task's author), and the brief it worked from",
+  score(ctx, pass) {
+    const out: ScoreResult[] = [];
+    const byId = new Map(ctx.tasks.map((t) => [`${t.root}/${t.id}`, t] as const));
+    for (const t of ctx.tasks) {
+      const publish = [...t.events].reverse().find((e) => e.type === 'publish' && e.edits);
+      const edits = publish?.edits;
+      if (!publish || !edits || edits.total <= 0) continue;
+      // The writer: the author of the task whose approval the first file comes from.
+      const first = edits.files[0];
+      const source = first ? byId.get(`${t.root}/${first.task}`) : undefined;
+      const agent = source ? ctx.facts(source).author : ctx.facts(t).author;
+      const value = round(edits.changed / edits.total);
+      const many = edits.files.length > 1;
+      out.push({
+        scorer: this.id,
+        level: 'task',
+        subject: ref(t),
+        agent,
+        value,
+        unit: this.unit,
+        pass: passes(this, value, pass),
+        n: edits.total,
+        evidence: [publish.id, ...new Set(edits.files.map((f) => f.verdict))],
+        at: publish.at,
+        extra: { changed: edits.changed, words: edits.total },
+        ...(many
+          ? {
+              note: edits.files
+                .map((f) => `${f.path} ${f.total > 0 ? round(f.changed / f.total) : 0}`)
+                .join(', '),
+            }
+          : {}),
+      });
+    }
+    return out;
+  },
+};
+
 /** Event types where a person steps into a task: asks to a person count apart. */
 const HUMAN_TOUCH_TYPES = new Set(['answer', 'verdict', 'comment']);
 
@@ -592,6 +644,7 @@ export function builtinScorers(now: () => number = Date.now): Scorer[] {
     recommendationAcceptance,
     stuckRuns,
     orientation,
+    postApprovalEdits,
   ];
 }
 

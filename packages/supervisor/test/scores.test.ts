@@ -785,3 +785,56 @@ describe('scores in the report and the API', () => {
     expect(body.scorers.length).toBeGreaterThan(0);
   });
 });
+
+describe('post-approval-edits', () => {
+  it("scores the words changed after approval for the approved task's writer", () => {
+    const draft = task('T-1', [
+      ev(0, 'claim', ENG),
+      ev(5, 'review', ENG),
+      ev(10, 'verdict', REV, { verdict: 'approve' }),
+    ]);
+    const pub = (changed: number, files = 1) =>
+      task(
+        'T-2',
+        [
+          ev(20, 'publish', 'human:dawid', {
+            url: 'https://x.example/1',
+            edits: {
+              changed,
+              total: 100,
+              files: Array.from({ length: files }, (_, i) => ({
+                path: `posts/${i}.md`,
+                task: 'T-1',
+                verdict: draft.events[2]!.id,
+                changed: changed / files,
+                total: 100 / files,
+              })),
+            },
+          }),
+        ],
+        { type: 'publish' },
+      );
+    const light = only(computeScores({ tasks: [draft, pub(4)], runs: [] }), 'post-approval-edits');
+    expect(light).toHaveLength(1);
+    expect(light[0]).toMatchObject({
+      subject: 'r/T-2',
+      agent: ENG,
+      value: 0.04,
+      pass: true,
+      n: 100,
+      extra: { changed: 4, words: 100 },
+    });
+    expect(light[0]!.evidence).toEqual([expect.stringMatching(/^E/), draft.events[2]!.id]);
+    const heavy = only(
+      computeScores({ tasks: [draft, pub(30, 2)], runs: [] }),
+      'post-approval-edits',
+    );
+    expect(heavy[0]).toMatchObject({
+      value: 0.3,
+      pass: false,
+      note: 'posts/0.md 0.3, posts/1.md 0.3',
+    });
+    // No publish with edits, no score.
+    expect(only(computeScores({ tasks: [draft], runs: [] }), 'post-approval-edits')).toEqual([]);
+  });
+});

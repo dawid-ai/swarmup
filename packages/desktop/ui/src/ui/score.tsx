@@ -18,6 +18,7 @@ export const SCORER_LABELS: Array<[string, string]> = [
   ['stuck-runs', 'Stuck runs'],
   ['criteria-pass-rate', 'Criteria'],
   ['orientation', 'Calls to edit'],
+  ['post-approval-edits', 'Edits after OK'],
 ];
 
 const LABELS = new Map(SCORER_LABELS);

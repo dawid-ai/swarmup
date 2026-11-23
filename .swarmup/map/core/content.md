@@ -44,6 +44,9 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
   `POST /api/tasks/:id/publish` and the task panel's **Publish** call it. `taskPreview` renders
   the same files with `preview.ts` (core: escape everything, then a fixed set of tags; workspace
   images as `data:` URLs) for `swarmup preview`, `GET /api/tasks/:id/preview` and **Preview**.
+- Every publish record (`published`, adapters) carries `edits` (`publishEdits`, `wordEdits` in
+  `artifacts.ts`: approved blob against published blob, in words), which the
+  `post-approval-edits` scorer in `scores.ts` reads.
 - `artifact-api.ts`: `GET /api/tasks/:id/artifact`, a file at the reviewed commit with its
   merge-base text, or an image as a data URL.
 - The desktop task panel's **Mark published** (on an open `publish` task a person owns) posts

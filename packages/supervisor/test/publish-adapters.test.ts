@@ -405,3 +405,31 @@ describe('taskPreview', () => {
     ).toBe(false);
   });
 });
+
+describe('edits after approval', () => {
+  it('records on the publish event how many words changed since the approval', async () => {
+    const s = setup();
+    commit(s.repo, { 'posts/x.md': '# Launch\n\nThe edited words.\n' }, 'person edits');
+    const fake = fakeCommand({ ok: true, url: 'https://blog.example/1', output: '' });
+    await publishWithAdapter({
+      ws: s.as('human:dawid'),
+      ref: '2',
+      publish: PUBLISH,
+      mcp: checkMcpConfig(undefined),
+      top: s.repo,
+      git: s.gitRun,
+      env: s.env,
+      runners: fake.runners,
+    });
+    const events = s.as('human:dawid').showEvents('2').events;
+    const verdict = s
+      .as('human:dawid')
+      .showEvents('1')
+      .events.find((e) => e.type === 'verdict')!;
+    expect(events.find((e) => e.type === 'publish')!.edits).toEqual({
+      changed: 2,
+      total: 10,
+      files: [{ path: 'posts/x.md', task: 'T-0001', verdict: verdict.id, changed: 2, total: 10 }],
+    });
+  });
+});

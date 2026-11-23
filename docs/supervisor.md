@@ -1305,9 +1305,16 @@ swarmup scores --refresh                # compute again and keep them in state.d
 | `recommendation-acceptance` | agent | share of the agent's recommendations (`ask --recommend`, review requests) the answer or verdict took (`accepted`)                                              | at least 70%    |
 | `stuck-runs`                | agent | share of ended runs that failed: no work event before an unfinished release, a stuck block, a non-zero exit, budget, tokens, lost                              | at most 10%     |
 | `orientation`               | run   | tool calls of a writing run before its first edit, from its log; the share of tool-result bytes read by then as an extra                                       | at most 30      |
+| `post-approval-edits`       | task  | on a published task: the share of words the person changed between each approved file and what was published (the `publish` event's `edits`), for the writer   | at most 10%     |
 
 - A task score counts for the task's author: the last agent to ask for review, else the last to
-  claim it. `escalation-correctness` counts for the agent that asked. A run score counts for the
+  claim it. `escalation-correctness` counts for the agent that asked. `post-approval-edits`
+  counts for the author of the approved task the published file came from, such as the draft a
+  publish task waits on; its lever is that writer's role file.
+- `swarmup published`, `swarmup publish` and **Mark published** record `edits` on the `publish`
+  event: per published text file, words taken out plus words put in (from a longest common
+  subsequence of the words) between its approved blob and its blob at the published commit, over
+  the words of both. 0 is published as approved; 1 is rewritten. A run score counts for the
   run's agent.
 - Task and run scores fall in a window by the time of their subject: the approval, the merge, the
   closing event, the last ask or the run's start. Agent scores count the events and runs in the

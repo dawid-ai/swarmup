@@ -418,6 +418,9 @@ work, not live work: publishing is a separate step that only a person takes. See
   and a second attempt for the same files and blobs is refused unless `--again`, so an adapter
   posts once. On success the URL it reports becomes the `publish` event, with `adapter`. See
   [Publish adapters](supervisor.md#publish-adapters).
+- **Edits after approval.** Every `publish` event of approved work records `edits`: how many
+  words the person changed between each approved file and what was published. The
+  `post-approval-edits` score reads it.
 
 ## Milestones and plans
 

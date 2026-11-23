@@ -178,6 +178,7 @@ import {
   PLAN_FIX_ROUNDS,
   PRIORITIES,
   PUBLISH_TYPE,
+  type PublishEdits,
   GATE_TYPE,
   PERSON_TYPES,
 } from './model.js';
@@ -952,6 +953,8 @@ export interface PublishInput {
   tag?: string;
   /** The publish adapter that published it, when one did. */
   adapter?: string;
+  /** What the person changed between the approval and the publish. */
+  edits?: PublishEdits;
   message?: string;
 }
 
@@ -2755,6 +2758,7 @@ export class Workspace {
         ...(input.blob ? { blob: input.blob.toLowerCase() } : {}),
         ...(input.tag ? { tag: input.tag } : {}),
         ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(input.edits ? { edits: input.edits } : {}),
         body: input.message?.trim() || `Published at ${url}`,
       };
       if (v.meta.type !== PUBLISH_TYPE || !OPEN_STATUSES.has(v.status)) return [event];
