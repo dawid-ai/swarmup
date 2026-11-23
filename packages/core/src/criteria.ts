@@ -763,16 +763,72 @@ export async function checkPageTarget(url: string, lookup: HostLookup = lookupAl
 }
 
 /**
+ * A GET over `node:http(s)` whose connection resolves the host itself and refuses a blocked
+ * address at connect time. Checking the name first and fetching after would let a DNS answer
+ * that changes in between (rebinding) reach this machine or its network.
+ */
+async function pinnedFetch(url: string, init: { signal: AbortSignal }): Promise<Response> {
+  const u = new URL(url);
+  const mod = u.protocol === 'https:' ? await import('node:https') : await import('node:http');
+  const dns = await import('node:dns');
+  const { Readable } = await import('node:stream');
+  const lookup = (
+    host: string,
+    options: import('node:dns').LookupOptions,
+    cb: (...args: unknown[]) => void,
+  ): void => {
+    dns.lookup(host, { ...options, all: true }, (err, found) => {
+      if (err) return cb(err);
+      const list = found as import('node:dns').LookupAddress[];
+      if (list.length === 0 || list.some((a) => blockedAddress(a.address))) {
+        return cb(
+          new Error(`refusing ${host}: it resolves to a loopback, private or link-local address`),
+        );
+      }
+      if (options.all) return cb(null, list);
+      return cb(null, list[0]!.address, list[0]!.family);
+    });
+  };
+  return new Promise((done, fail) => {
+    const req = mod.get(
+      u,
+      {
+        signal: init.signal,
+        lookup: lookup as never,
+        headers: { 'user-agent': 'swarmup-page-contains', accept: 'text/html,*/*' },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const headers = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+        }
+        const noBody = (status >= 300 && status < 400) || [204, 205].includes(status);
+        if (noBody) res.resume();
+        done(
+          new Response(noBody ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), {
+            status,
+            headers,
+          }),
+        );
+      },
+    );
+    req.on('error', fail);
+  });
+}
+
+/**
  * A GET of `url` that reads at most `maxBytes` of the body, all within `timeoutMs`. Redirects
  * are followed by hand, at most {@link PAGE_MAX_REDIRECTS}, and every hop's host is checked with
- * {@link checkPageTarget} first.
+ * {@link checkPageTarget} first. Without an injected `fetch`, the connection also refuses a
+ * blocked address when it resolves the host ({@link pinnedFetch}).
  */
 export async function defaultFetchPage(
   url: string,
   opts: { timeoutMs: number; maxBytes: number },
   deps: { fetch?: typeof fetch; lookup?: HostLookup } = {},
 ): Promise<FetchedPage> {
-  const get = deps.fetch ?? fetch;
+  const get = deps.fetch ?? (pinnedFetch as unknown as typeof fetch);
   const signal = AbortSignal.timeout(opts.timeoutMs);
   let at = url;
   let res: Response;
