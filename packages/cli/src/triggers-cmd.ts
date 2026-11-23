@@ -81,9 +81,17 @@ function list(ctx: TriggersCtx): number {
     for (const v of mine) {
       const where = v.runs_on ? ` runs_on ${v.runs_on.join(', ')}` : '';
       const head = v.when ? `${v.when}  ${v.target}${where}` : 'has errors';
+      const hook = v.hook
+        ? `each delivery ${v.hook === 'direct' ? 'runs the action' : 'files a finding'}`
+        : '';
+      const time = v.next_fire
+        ? `next ${localTime(Date.parse(v.next_fire))}`
+        : hook
+          ? ''
+          : 'next never';
       const next = v.here
-        ? `next ${v.next_fire ? localTime(Date.parse(v.next_fire)) : 'never'}`
-        : `not here: ${v.why}`;
+        ? [time, hook].filter(Boolean).join('; ')
+        : [`not here: ${v.why}`, hook].filter(Boolean).join('; ');
       const last = v.last_fire ? `, last ${localTime(Date.parse(v.last_fire))}` : '';
       ctx.io.out(`  ${v.name}  ${head}  ${next}${last}`);
     }

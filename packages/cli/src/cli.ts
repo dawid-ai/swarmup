@@ -142,6 +142,7 @@ import type { ReviewSourceFields } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { definitionProblemLines, defsCommand, validateCommand } from './defs-cmd.js';
 import { benchCommand } from './bench-cmd.js';
+import { triggerCommand } from './trigger-cmd.js';
 import { triggersCommand } from './triggers-cmd.js';
 import { mapCommand } from './map-cmd.js';
 import { mcpCommand } from './mcp-cmd.js';
@@ -2926,6 +2927,7 @@ const COMMANDS: Record<string, Command> = {
   defs: defsCommand,
   bench: benchCommand,
   triggers: triggersCommand,
+  trigger: triggerCommand,
   kb: {
     usage:
       'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale | --promote] [--days N] [--shown N] [--reads N] [--agent ID] | kb archive TOPIC/SLUG... (-m WHY | --body-file F)',
