@@ -49,7 +49,7 @@ import {
   withDefinitions,
 } from '@swarmup/supervisor';
 import type { TrustChange } from './trust.js';
-import { recordTrust, requirePerson, triggerLines } from './trust.js';
+import { notifyDaemon, recordTrust, requirePerson, triggerLines } from './trust.js';
 
 /** What `swarmup validate` and `swarmup defs` need of the CLI's context. */
 interface DefsCtx {
@@ -598,7 +598,7 @@ function defsDiff(ctx: DefsCtx, ref: string): number {
   return 0;
 }
 
-function importConfig(ctx: DefsCtx): number {
+async function importConfig(ctx: DefsCtx): Promise<number> {
   const ws = ctx.ws();
   const root = ws.defaultRoot();
   const { runtimes, roles } = importableConfig(ws.user);
@@ -643,6 +643,8 @@ function importConfig(ctx: DefsCtx): number {
     }
     if (empty([key, 'roles'])) d.deleteIn([key, 'roles']);
   });
+  // A running swarmupd reads the user config again now, as after `defs trust`.
+  await notifyDaemon(ctx.io.env);
   ctx.io.out(`removed ${imported.length} key(s) from the user config: ${imported.join(', ')}`);
   return 0;
 }
@@ -653,7 +655,7 @@ function importConfig(ctx: DefsCtx): number {
  * the files; `--apply` writes them (never over a different file), and `--remove` then takes the
  * schedules out of the user config and turns the root's triggers on, so nothing fires twice.
  */
-function importSchedules(ctx: DefsCtx): number {
+async function importSchedules(ctx: DefsCtx): Promise<number> {
   const ws = ctx.ws();
   const name = str(ctx.opts.root);
   const root = name ? ws.roots.find((r) => r.name === name) : ws.defaultRoot();
@@ -747,6 +749,8 @@ function importSchedules(ctx: DefsCtx): number {
     }
     d.setIn([key, 'triggers', root.name], true);
   });
+  // A running swarmupd stops the schedules and reads the triggers now, as after `triggers on`.
+  await notifyDaemon(ctx.io.env);
   ctx.io.out(
     `removed ${names.size} schedule(s) from the user config and turned on swarmupd.triggers.${root.name}; they fire once you trust them: swarmup defs trust --root ${root.name}`,
   );

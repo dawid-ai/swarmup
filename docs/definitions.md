@@ -286,7 +286,8 @@ it does, and whether and when it fires next on this machine.
 file, with `runs_on` set to this machine when the user config names it. `--apply` writes the
 files, never over a different one, and `--remove` also takes the schedules out of the user config
 and turns on `swarmupd.triggers.<root>`, so nothing fires twice; the new triggers fire once a
-person trusts them. A schedule on a task of another store is refused.
+person trusts them. A running swarmupd reads the user config again at once, as after
+`defs trust` and `triggers on|off`. A schedule on a task of another store is refused.
 
 ## Merge checks in git
 
@@ -656,7 +657,8 @@ improvement:
   [Workflows](protocol.md#workflows).
 - `swarmup defs import-config` writes the user config's `swarmupd.runtimes.*.{model, effort}` and
   `swarmupd.roles.*` into `swarm.yaml`, keeping its comments, and prints the change. The user
-  config keeps those keys, so this machine still overrides them, unless you pass `--remove`.
+  config keeps those keys, so this machine still overrides them, unless you pass `--remove`,
+  which a running swarmupd reads at once.
 - `swarmup doctor` and `swarmup agents` show the problems of each root with a `swarm.yaml`.
 - The API has `GET /api/defs` (each root's set, what it applied, overrides and conflicts) and
   `POST /api/defs/validate` with `{ file, text, strict? }`, which checks text without writing it.
