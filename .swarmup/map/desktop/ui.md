@@ -29,7 +29,7 @@ What the person sees: one React app with a view per area.
 ## How it works
 
 - `App.tsx` routes between `views/*.tsx`: Inbox, Board, List, TaskPanel, Chat, Runs, Agents,
-  Schedules, Repeating, Channels, Decisions, Findings, Knowledge, Map, Search, Activity,
+  Schedules, Automation, Repeating, Channels, Decisions, Findings, Knowledge, Map, Search, Activity,
   Reports, Bench, Replay, Settings, Setup, AddProject, NewTask and Standups.
 - `api.ts` holds the hooks and calls to swarmupd through the main process; `types.ts` the shapes.
 - `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the

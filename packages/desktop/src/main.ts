@@ -996,7 +996,7 @@ async function screenshots(dir: string): Promise<void> {
   const views = (
     process.env.SWARMUP_VIEWS ??
     process.env.AGENT_OPS_VIEWS ??
-    'inbox,board,list,findings,activity,reports,replay,agents,runs,standups,schedules,repeating,decisions,chat,channels,knowledge,map,bench,settings:general,settings:projects,settings:agents,settings:runs,settings:definitions,settings:cleanup,settings:updates,settings:notifications,settings:health'
+    'inbox,board,list,findings,activity,reports,replay,agents,runs,standups,schedules,automation,repeating,decisions,chat,channels,knowledge,map,bench,settings:general,settings:projects,settings:agents,settings:runs,settings:definitions,settings:cleanup,settings:updates,settings:notifications,settings:health'
   ).split(',');
   mkdirSync(dir, { recursive: true });
   // Views call swarmupd as soon as they show: wait until the app has started it, which takes

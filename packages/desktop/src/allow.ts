@@ -64,6 +64,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'mcp',
     // Workflows (W5): each root's workflows, for the start dialog.
     'workflows',
+    // Automation: git triggers, merge-check trust and the inbound webhook listener.
+    'automation',
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
   POST: [
     'tasks',
@@ -112,6 +114,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `mcp/servers/${SEG}/delete`,
     // A person starts a workflow (W5): a milestone with the workflow's plan.
     'workflows/start',
+    // Automation: a person turns triggers on or off, trusts or revokes git definitions, turns the
+    // inbound listener on or off and approves direct webhook actions.
+    'automation/(triggers|trust|revoke|hooks|direct)',
   ].map((p) => new RegExp(`^/api/${p}$`)),
 };
 

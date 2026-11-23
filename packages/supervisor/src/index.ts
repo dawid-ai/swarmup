@@ -46,3 +46,4 @@ export * from './triggers.js';
 export * from './git-scorers.js';
 export * from './hooks.js';
 export * from './rubric-scorers.js';
+export * from './automation-api.js';

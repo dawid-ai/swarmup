@@ -22,6 +22,7 @@ import {
   parseCriteriaResults,
   parseDoneWhen,
   findAttachment,
+  isHuman,
   listDecisionIds,
   MAX_ATTACHMENT_BYTES,
   OpsError,
@@ -43,7 +44,16 @@ import {
 } from './admin.js';
 import type { BenchHost, BenchRunRequest } from './bench-runs.js';
 import { listBenchSets } from './bench-runs.js';
+import {
+  automationView,
+  revokeRoot,
+  setDirect,
+  setHooksEnabled,
+  trustRoot,
+  turnTriggers,
+} from './automation-api.js';
 import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.js';
+import { HOOKS_LOG } from './hooks.js';
 import { NoArtifact } from './artifact-api.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
@@ -927,6 +937,31 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       }
       const defs = await defsRoute(sup, method, id, body, humanOnly);
       if (defs !== undefined) return send(res, 200, defs);
+    }
+    // Automation: git triggers, merge-check trust and the inbound listener on this machine. What
+    // git may start or run here is a person's decision: every write refuses run tokens and any
+    // `as` that is not a person, as `swarmup triggers on` and `swarmup defs trust` do.
+    if (area === 'automation' && !action) {
+      const view = (): unknown =>
+        automationView(sup, readTail(join(sup.store.dir, HOOKS_LOG), 64 * 1024));
+      if (method === 'GET' && !id) return send(res, 200, view());
+      const writes: Record<string, [string, (b: Json) => unknown]> = {
+        triggers: ['turning git triggers on or off', (b) => turnTriggers(sup, b)],
+        trust: ['trusting git definitions', (b) => trustRoot(sup, b)],
+        revoke: ['revoking trust in git definitions', (b) => revokeRoot(sup, b)],
+        hooks: ['turning the inbound webhook listener on or off', (b) => setHooksEnabled(sup, b)],
+        direct: ['approving direct webhook actions', (b) => setDirect(sup, b)],
+      };
+      const write = method === 'POST' && id && Object.hasOwn(writes, id) ? writes[id] : undefined;
+      if (write) {
+        humanOnly(write[0]);
+        const who = wsAs().actor;
+        if (!who || !isHuman(who)) {
+          throw new HttpError(403, `only a person does ${write[0]}${who ? `; ${who} cannot` : ''}`);
+        }
+        write[1](body);
+        return send(res, 200, view());
+      }
     }
     // **Propose an improvement** on an agent's failing scorer: the improvement task, now (W6).
     // `{ kind: 'notes' }` files the one that folds the agent's learn-note candidates in.

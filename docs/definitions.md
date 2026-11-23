@@ -642,6 +642,12 @@ and the file with each problem's line marked. **Validate**, **Import from my set
 preview, then a write that keeps your user config as it is), **Create swarm.yaml** from the
 template, and **Edit** with checks as you type. See [the desktop app](desktop.md#definitions).
 
+**Automation**, next to **Schedules**, lists each project's triggers and merge checks with where
+this machine's consent and trust stand, and does what `swarmup triggers on|off` and
+`swarmup defs trust [--revoke]` do after a review of the exact set the hash covers. It also turns
+the inbound listener on and approves direct webhook actions. See
+[the desktop app](desktop.md#automation).
+
 The role editor (**Agents**, **Role file**) edits a folder agent's `agent.md` (**The writer
 role**) or its runtime's addendum (**Only codex**), and lists the agent's run settings with where
 each comes from: **this machine**, **swarm.yaml** or **role file**. `GET /api/roles/:id` gives a
