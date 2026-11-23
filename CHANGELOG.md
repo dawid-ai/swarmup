@@ -6,6 +6,34 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.23 (2026-11-23)
+
+### Added
+
+- Desktop app: an **Automation** view next to **Schedules** shows each project's git triggers
+  (schedule, action, `runs_on`, next fire here or why not), its merge checks and whether this
+  machine trusts them. **Turn on here**, **Review and trust** (the exact trigger fields and check
+  commands, then a confirm), and **Revoke trust** replace the CLI round trip.
+- The same view shows the inbound webhook listener (off, listening, or failed), turns it on with
+  an offer to restart swarmupd, shows whether each webhook trigger's secret is set (never its
+  value), approves **Direct action** per trigger behind a warning, and shows the last 20 lines of
+  `hooks.log`. Runs and agents cannot change any of it.
+- Webhook triggers: a trigger file with a `webhook` section (`verify: hmac | bearer | linear |
+  slack`, `secret` naming a value in `secrets.yml`) takes signed deliveries at
+  `POST /hooks/<root>/<trigger>` on a separate inbound listener, off by default and on loopback
+  (`swarmupd.hooks`); give it a public URL through your own tunnel. Deliveries are checked,
+  rate-limited, capped at 256 KB and deduped for 24 hours, and each one is logged in `hooks.log`.
+- A delivery files a finding for triage with the payload fenced as untrusted text. It runs the
+  trigger's action only where you set `swarmupd.hooks.direct.<root>.<trigger>: true`.
+- `swarmup trigger fire <root>/<name>` does what a delivery does, and `swarmup trigger test
+  <root>/<name> --payload FILE --sign` sends a signed payload through the local listener.
+  `swarmup doctor` reports the listener and hook triggers whose secret is missing.
+
+### Fixed
+
+- A benchmark set whose `base.ref` is an unquoted commit sha that looks like a number, such as
+  `8e1234...` or all digits, now reads as that sha instead of `Infinity` or a rounded number.
+
 ## 0.3.0-beta.22 (2026-11-23)
 
 ### Added

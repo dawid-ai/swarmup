@@ -3,6 +3,12 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.23 (2026-11-23)
+
+- **Automation in the app.** A new **Automation** view shows each project's scheduled triggers and merge checks, whether this PC runs them, and lets you turn them on, review the exact set and approve it, or revoke it.
+- **Work from outside.** A project can take webhooks from GitHub, Linear, Slack or anything that signs its requests, through your own tunnel. Each delivery arrives as a finding for you or your PM to triage; a trigger acts on its own only if you allow it.
+- **Benchmark fix.** A benchmark whose commit id looks like a number now reads correctly.
+
 ## v0.3.0-beta.22 (2026-11-23)
 
 - **Updates that wait their turn.** Installing an update no longer fails with "swarmupd did not stop in time" while SwarmUp finishes syncing your projects; it waits up to 2 minutes for that.
