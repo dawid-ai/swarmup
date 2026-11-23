@@ -147,4 +147,30 @@ describe('parseBenchSet', () => {
     expect(benchPrompt(s.entries[0]!)).toBe('# Fix it\n\nIt is broken.');
     expect(benchPrompt({ prompt: 'Do it.' })).toBe('Do it.');
   });
+
+  it('keeps an unquoted sha that YAML reads as a number as written', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-set-'));
+    dirs.push(dir);
+    const file = join(dir, 'demo.yaml');
+    const exp = '8e12345678901234567890123456789012345678';
+    const digits = '1234567890123456789012345678901234567890';
+    const entry = (id: string, ref: string) => [
+      `  - id: ${id}`,
+      `    base: { ref: ${ref} }`,
+      '    prompt: Do it.',
+      '    done_when: ["It is done."]',
+    ];
+    writeFileSync(
+      file,
+      [
+        'id: demo',
+        'defaults: { agent: none }',
+        'entries:',
+        ...entry('A', exp),
+        ...entry('B', digits),
+      ].join('\n'),
+    );
+    const refs = readBenchSet(file).entries.map((e) => ('ref' in e.base ? e.base.ref : ''));
+    expect(refs).toEqual([exp, digits]);
+  });
 });
