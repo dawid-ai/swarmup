@@ -823,10 +823,11 @@ describe('merging approved work', () => {
       );
       expect(message).toContain(refused);
       expect(message).not.toContain('swarmupd stopped it');
-      // The hook did outlive the merge's git: its marks go on.
-      await until(() => existsSync(beat), 15_000);
+      // The hook did outlive the merge's git: its marks go on. Under full-suite load Git Bash
+      // can take well over 15 s to fork the next `printf` (AO-0251 failed there).
+      await until(() => existsSync(beat), 45_000);
       const size = statSync(beat).size;
-      await until(() => statSync(beat).size > size, 15_000);
+      await until(() => statSync(beat).size > size, 45_000);
     } finally {
       // Ends the hook, so nothing has to kill it. Under full-suite load Git Bash forks slowly, so
       // a pause in the marks does not mean the hook ended, and its `sh` still held the repo when
@@ -836,5 +837,5 @@ describe('merging approved work', () => {
       await until(() => existsSync(left), 30_000);
       await until(() => removed(repo) && removed(state), 30_000);
     }
-  }, 120_000);
+  }, 180_000);
 });
