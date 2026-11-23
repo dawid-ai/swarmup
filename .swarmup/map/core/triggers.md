@@ -8,6 +8,7 @@ covers:
   - packages/core/src/defs/scorer.ts
   - packages/supervisor/src/git-scorers.ts
   - packages/supervisor/src/triggers.ts
+  - packages/supervisor/src/automation-api.ts
   - packages/cli/src/triggers-cmd.ts
   - packages/cli/src/trust.ts
   - packages/core/test/triggers.test.ts
@@ -39,6 +40,10 @@ true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires t
   inbound listener fires it (see `/supervisor/hooks`), and the section is part of the hash.
 - `cli/src/triggers-cmd.ts` is `swarmup triggers list|on|off`; `defs import-schedules` in
   `defs-cmd.ts` writes `swarmupd.schedules` as trigger files.
+- `supervisor/src/automation-api.ts` serves the app's **Automation** view (`GET /api/automation`)
+  and its person-only writes (triggers on/off, trust, revoke, listener, direct actions). It owns
+  the config edits (`applyTrust`, `applyTriggersOn`) that `cli/src/trust.ts` and
+  `triggers-cmd.ts` call too, so the app and the CLI write the same hashes.
 
 - `checks.ts`: `swarm.yaml` `checks.<name>` and `checksHash` (name, command, paths).
   `withDefinitions` puts them under `merge.<root>.checks` only when `trusted_defs.<root>` is
@@ -54,7 +59,7 @@ true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires t
 ## Invariants
 
 - Git triggers fire only where `swarmupd.triggers.<root>` is true, a person trusted the exact
-  set (`trusted_defs.<root>.triggers`, `cli/src/trust.ts`) and a run's agent has `wake: true`; workflows and
+  set (`trusted_defs.<root>.triggers`, written by `applyTrust` in `automation-api.ts`) and a run's agent has `wake: true`; workflows and
   repeats they start act as `opsd:trigger`, never as a person.
 - Git checks never run without a person's trust of their exact hash on that machine.
 - One fire time starts once per machine: a `run` trigger is recorded after its launch, a

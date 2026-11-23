@@ -1,7 +1,6 @@
 import type { ParseArgsConfig } from 'node:util';
 import type { Workspace } from '@swarmup/core';
 import {
-  daemonKeyIn,
   editUserConfig,
   loadDefinitions,
   localTime,
@@ -11,7 +10,15 @@ import {
   triggersTrust,
   untrustedTriggersText,
 } from '@swarmup/core';
-import { opsdConfig, RunStore, stateDir, TRIGGERS_STATE, triggersView } from '@swarmup/supervisor';
+import {
+  applyTriggersOn,
+  checkUserConfig,
+  opsdConfig,
+  RunStore,
+  stateDir,
+  TRIGGERS_STATE,
+  triggersView,
+} from '@swarmup/supervisor';
 import { notifyDaemon, recordTrust, requirePerson, triggerLines } from './trust.js';
 
 /** What `swarmup triggers` needs of the CLI's context. */
@@ -107,13 +114,7 @@ async function turn(ctx: TriggersCtx, on: boolean): Promise<number> {
     throw new OpsError('name the root: swarmup triggers on|off --root NAME [--trust]', 2);
   }
   const root = roots[0]!;
-  editUserConfig(
-    ctx.io.env,
-    (doc) => {
-      doc.setIn([daemonKeyIn(doc), 'triggers', root.name], on);
-    },
-    (next) => void opsdConfig(next),
-  );
+  editUserConfig(ctx.io.env, (doc) => applyTriggersOn(doc, root.name, on), checkUserConfig);
   if (!on) {
     ctx.io.out(`${root.name}: this machine runs none of its git triggers`);
     await notifyDaemon(ctx.io.env);
