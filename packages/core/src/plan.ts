@@ -112,6 +112,20 @@ function readItem(raw: unknown, n: number): PlanItem {
     }
     item.priority = priority as Priority;
   }
+  if (data.labels !== undefined && data.labels !== null) {
+    const raw = data.labels;
+    if (!Array.isArray(raw) || !raw.every((l) => typeof l === 'string')) {
+      bad(`${where}: labels must be a list of words, such as [publish:blog]`);
+    }
+    const labels = (raw as string[]).map((l) => l.trim()).filter(Boolean);
+    for (const l of labels) {
+      if (!/^[a-z0-9][a-z0-9:._/-]{0,59}$/i.test(l)) {
+        bad(`${where}: bad label '${l}': use letters, digits and : . _ / -, no spaces`);
+      }
+      if (l.startsWith('milestone:')) bad(`${where}: the milestone label is added for you`);
+    }
+    if (labels.length > 0) item.labels = [...new Set(labels)];
+  }
   const review = optional(data, 'review', where);
   if (review) {
     // A wildcard names no provider, so nobody can tell whether it differs from the author's.
@@ -370,6 +384,7 @@ const FIXED_FIELDS = [
   'review',
   'type',
   'priority',
+  'labels',
   'for',
   'gate',
 ] as const;

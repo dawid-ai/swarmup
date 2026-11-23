@@ -146,6 +146,14 @@
             "description": "p0 to p3, or a parameter such as {{severity}}; default the milestone’s.",
             "type": "string"
           },
+          "labels": {
+            "description": "Labels the task gets besides `milestone:<id>`, such as `publish:blog`, which names the adapter `swarmup publish` runs.",
+            "type": "array",
+            "items": {
+              "description": "A label; `{{param}}` fills in.",
+              "type": "string"
+            }
+          },
           "body": {
             "description": "The task body.",
             "type": "string"

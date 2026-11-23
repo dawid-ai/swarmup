@@ -459,7 +459,9 @@ Each item needs a lowercase, never-reused `key`, a `title`, an `owner` and an `e
 `2h`, `1d`, where a day is 8 hours). `after` names keys whose tasks must close first.
 `done_when` defaults to the title; it is one line of text or one typed criterion. `type` may be
 `task` (the default), `bug`, `docs`, `content`, `publish` or `gate` (see [Gates](#gates)); plans
-do not nest milestones. `priority` defaults to the milestone's priority. `review` is one concrete
+do not nest milestones. `priority` defaults to the milestone's priority. `labels` adds labels to
+the task besides `milestone:<id>`, such as `publish:blog` for the adapter a publish task uses;
+like the title, they are fixed once approved. `review` is one concrete
 actor and must be on another provider than a concrete agent owner. `body` supplies more task
 detail. An item in a `subtask` amendment also needs `for`, naming the approved item it serves;
 `for` is optional for a `fix` amendment and is not allowed in a proposal. A plan holds at most
@@ -635,7 +637,7 @@ stages:
   `{{human}}` is the store's person. A start refuses a missing `required` parameter, one the
   workflow does not declare, and a value outside `options`.
 - **Stages** map one to one onto plan items: `key`, `title`, `owner`, `estimate`, `after`,
-  `review`, `type`, `priority`, `body` and `done_when`, plus:
+  `review`, `type`, `priority`, `labels`, `body` and `done_when`, plus:
   - `gate: { ask, to, options, on_reject }`: a [gate](#gates) item owned by `to`, default the
     store's person, with estimate `15m` unless the stage sets one.
   - `when: { param, equals }`: the stage is left out unless the parameter has the value (or one of

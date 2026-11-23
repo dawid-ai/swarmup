@@ -226,6 +226,8 @@ export interface PlanItem {
   done_when?: DoneWhenEntry;
   type?: string;
   priority?: Priority;
+  /** Labels the task gets besides `milestone:<id>`, such as `publish:blog` for its adapter. */
+  labels?: string[];
   /** Expected reviewer: a concrete actor id. */
   review?: string;
   body?: string;
