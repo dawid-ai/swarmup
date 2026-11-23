@@ -1228,6 +1228,20 @@ export interface KbNote {
   score: number;
 }
 
+/** A learn note that keeps mattering (W6), as `/api/kb/promote` lists it. */
+export interface KbCandidate {
+  /** The ref `swarmup kb --read` takes: `<root>/<topic>/<slug>` when another root has it. */
+  ref: string;
+  note: Omit<KbNote, 'body' | 'score'>;
+  shown: number;
+  reads: number;
+  relearned: string[];
+  why: string[];
+  agents: Array<{ agent: string; shown: number; reads: number }>;
+  /** The agents whose role file it belongs in. */
+  for: string[];
+}
+
 // The project map (W2), as `/api/map` returns it. Mirrors `packages/supervisor/src/map-api.ts`.
 
 export type MapType = 'code' | 'website' | 'campaign';

@@ -1,22 +1,25 @@
-import { BookOpen, Hash, Link2, Search } from 'lucide-react';
+import { Archive, BookOpen, Hash, Link2, Search, Sparkles } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { Nav } from '../App';
-import { q, useData } from '../api';
-import { Empty, ErrorLine, Input, Section, Who, cx } from '../components';
+import { api, q, refreshSoon, useData } from '../api';
+import { Button, Empty, ErrorLine, Input, Section, Who, cx, toast, useAction } from '../components';
 import { ago, noteTaskRef } from '../lib/format';
 import { hashColor } from '../lib/identity';
 import { renderMarkdown } from '../lib/markdown';
-import type { KbNote } from '../types';
+import type { KbCandidate, KbNote } from '../types';
 import { RefText } from '../ui/refs';
 import { ProjectName } from '../ui/project-label';
 
 /**
  * Learn notes from `kb/` across every root: topics on the left, search with the same matching
- * as `swarmup kb` (every word must match), the note on the right.
+ * as `swarmup kb` (every word must match), the note on the right. **Promote candidates** lists
+ * the notes that keep mattering (W6), which the improver can fold into a role file; a person
+ * archives a note once a role file states it.
  */
 export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
   const [text, setText] = useState('');
   const [topic, setTopic] = useState('');
+  const [promoting, setPromoting] = useState(false);
   // `<root>/<topic>/<slug>` from a search result opens that note.
   const [picked, setPicked] = useState<string | null>(selected ?? null);
   const words = text.trim();
@@ -31,8 +34,13 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
     for (const n of all.data ?? []) counts.set(n.topic, (counts.get(n.topic) ?? 0) + 1);
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [all.data]);
-  const notes = data ?? [];
-  const key = (n: KbNote): string => `${n.root}/${n.ref}`;
+  const key = (n: { root: string; ref: string }): string => `${n.root}/${n.ref}`;
+  const promote = useData<{ candidates?: KbCandidate[] }>('/api/kb/promote');
+  const candidates = useMemo(
+    () => new Map((promote.data?.candidates ?? []).map((c) => [key(c.note), c])),
+    [promote.data],
+  );
+  const notes = promoting ? (all.data ?? []).filter((n) => candidates.has(key(n))) : (data ?? []);
   const note = notes.find((n) => key(n) === picked) ?? notes[0];
 
   return (
@@ -65,12 +73,31 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
       ) : (
         <div className="flex h-full min-h-0">
           <nav className="w-52 shrink-0 overflow-y-auto border-r border-white/6 p-3">
-            <TopicButton active={!topic} onClick={() => setTopic('')} label="All topics" />
+            <TopicButton
+              active={!topic && !promoting}
+              onClick={() => {
+                setTopic('');
+                setPromoting(false);
+              }}
+              label="All topics"
+            />
+            {(candidates.size > 0 || promoting) && (
+              <TopicButton
+                active={promoting}
+                onClick={() => setPromoting(true)}
+                label="Promote candidates"
+                count={candidates.size}
+                icon={Sparkles}
+              />
+            )}
             {topics.map(([t, n]) => (
               <TopicButton
                 key={t}
-                active={topic === t}
-                onClick={() => setTopic(t)}
+                active={!promoting && topic === t}
+                onClick={() => {
+                  setTopic(t);
+                  setPromoting(false);
+                }}
                 label={t}
                 count={n}
                 color={hashColor(t)}
@@ -79,7 +106,9 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
           </nav>
           <div className="w-80 shrink-0 overflow-y-auto border-r border-white/6">
             {data && notes.length === 0 && (
-              <div className="p-6 text-sm text-fg-4">No note matches every word.</div>
+              <div className="p-6 text-sm text-fg-4">
+                {promoting ? 'No note keeps mattering right now.' : 'No note matches every word.'}
+              </div>
             )}
             {notes.map((n) => (
               <div
@@ -106,6 +135,11 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
                   <span>·</span>
                   <span>{ago(n.created_at)}</span>
                 </button>
+                {promoting && candidates.get(key(n)) && (
+                  <div className="mt-1 text-xs text-fg-3">
+                    {candidates.get(key(n))!.why.join('; ')}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -137,6 +171,11 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
                     </span>
                   ))}
                 </div>
+                <NoteActions
+                  note={note}
+                  candidate={candidates.get(key(note))}
+                  onArchived={() => setPicked(null)}
+                />
                 <div
                   className="md mt-6 text-sm leading-relaxed"
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(note.body) }}
@@ -150,13 +189,117 @@ export function Knowledge({ nav, selected }: { nav: Nav; selected?: string }) {
   );
 }
 
+/**
+ * Why a note keeps mattering, **Fold into role** for each agent it belongs to (an improvement
+ * task for the improver), and **Archive** for a person, with why.
+ */
+function NoteActions(props: {
+  note: KbNote;
+  candidate: KbCandidate | undefined;
+  onArchived: () => void;
+}) {
+  const { note, candidate } = props;
+  const [archiving, setArchiving] = useState(false);
+  const [why, setWhy] = useState('');
+  const act = useAction();
+  const fold = (agent: string): void =>
+    act.run(
+      () =>
+        api<{ id: string }>('POST', '/api/improve', { agent, kind: 'notes' }).then((t) =>
+          toast(`Filed ${t.id} for the improver`),
+        ),
+      refreshSoon,
+    );
+  const archive = (): void => {
+    if (!why.trim()) return;
+    act.run(
+      () =>
+        api('POST', '/api/kb/archive', {
+          refs: [`${note.root}/${note.ref}`],
+          message: why.trim(),
+        }).then(() => toast(`Archived ${note.ref}`)),
+      () => {
+        setArchiving(false);
+        setWhy('');
+        props.onArchived();
+        refreshSoon();
+      },
+    );
+  };
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      {candidate && (
+        <div className="rounded-lg bg-signal/6 px-3 py-2 text-xs text-fg-2 ring-1 ring-signal/15 ring-inset">
+          <div>Keeps mattering: {candidate.why.join('; ')}.</div>
+          {candidate.for.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="text-fg-3">Belongs in the role of</span>
+              {candidate.for.map((agent) => (
+                <Button
+                  key={agent}
+                  size="sm"
+                  icon={Sparkles}
+                  disabled={act.busy}
+                  title={`File an improvement task: the improver folds the candidate notes of ${agent} into its role file`}
+                  onClick={() => fold(agent)}
+                >
+                  Fold into role: {agent}
+                </Button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {archiving ? (
+          <>
+            <Input
+              value={why}
+              onChange={setWhy}
+              placeholder="Why archive it, such as: folded into the engineer role"
+              className="w-96"
+              autoFocus
+              onEnter={archive}
+            />
+            <Button
+              size="sm"
+              kind="danger"
+              icon={Archive}
+              disabled={act.busy || !why.trim()}
+              onClick={archive}
+            >
+              Archive
+            </Button>
+            <Button size="sm" kind="ghost" onClick={() => setArchiving(false)}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="sm"
+            kind="ghost"
+            icon={Archive}
+            title="Move the note to kb/.archive/: search and run prompts skip it; its text stays"
+            onClick={() => setArchiving(true)}
+          >
+            Archive
+          </Button>
+        )}
+      </div>
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
 function TopicButton(props: {
   active: boolean;
   onClick: () => void;
   label: string;
   count?: number;
   color?: string;
+  icon?: typeof Hash;
 }) {
+  const Icon = props.icon ?? Hash;
   return (
     <button
       type="button"
@@ -166,7 +309,7 @@ function TopicButton(props: {
         props.active ? 'bg-signal/10 text-signal' : 'text-fg-3 hover:bg-white/5 hover:text-fg',
       )}
     >
-      <Hash size={13} style={props.color ? { color: props.color } : undefined} />
+      <Icon size={13} style={props.color ? { color: props.color } : undefined} />
       <span className="truncate">{props.label}</span>
       {props.count !== undefined && (
         <span className="ml-auto text-xs text-fg-4">{props.count}</span>
