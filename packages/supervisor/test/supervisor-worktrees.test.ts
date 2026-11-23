@@ -541,7 +541,13 @@ describe('task worktrees (AO-0168)', () => {
     await sup.housekeep();
     expect(existsSync(wt(repo, 'T-0001'))).toBe(true);
     expect(existsSync(wt(repo, 'T-0002'))).toBe(true);
-    sup.kill(live.id);
+    // The clock jump can end the hanging run on its own (its budget) once housekeeping is done;
+    // under the full suite that sometimes lands before this line. Either way it ends.
+    try {
+      sup.kill(live.id);
+    } catch (err) {
+      if (!/is not live/.test((err as Error).message)) throw err;
+    }
     await ended(sup, live.id);
   });
 
