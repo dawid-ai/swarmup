@@ -269,11 +269,31 @@ export function readBenchSet(file: string): BenchSet {
   }
   let doc: unknown;
   try {
-    doc = YAML.parse(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src);
+    doc = parseSetYaml(src.charCodeAt(0) === 0xfeff ? src.slice(1) : src);
   } catch (err) {
     bad(`${resolve(file)} is not valid YAML: ${(err as Error).message.split('\n')[0]}`);
   }
   return parseBenchSet(doc, file);
+}
+
+/**
+ * A set file's YAML, with every `ref` kept as written. An unquoted commit sha such as
+ * `8e1234...` (digits after one `e`) or one of digits only is a number to YAML, which turns it
+ * into `Infinity` or a rounded float; the source text is the sha.
+ */
+export function parseSetYaml(src: string): unknown {
+  const doc = YAML.parseDocument(src);
+  if (doc.errors.length > 0) throw doc.errors[0];
+  YAML.visit(doc, {
+    Pair(_key, pair) {
+      if (!YAML.isScalar(pair.key) || pair.key.value !== 'ref' || !YAML.isScalar(pair.value)) {
+        return;
+      }
+      const v = pair.value;
+      if (typeof v.value !== 'string' && v.source !== undefined) v.value = String(v.source);
+    },
+  });
+  return doc.toJS();
 }
 
 /** The prompt an agent gets for an entry: the prompt as written, or the task's title and body. */
