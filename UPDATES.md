@@ -3,6 +3,24 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.20 (2026-11-23)
+
+- **Publish from SwarmUp.** Set up a publish adapter (a command of yours or a publishing tool
+  your MCP server offers), and **Publish** in a publish task sends the approved text out once and
+  records the link. **Preview** shows the page first. Only you can publish; agents never can.
+- **More checks for writing.** **Done when** can require a reading level (`readability`) and,
+  after publishing, check the live page shows what it should (`page-contains`).
+- **See how much you edit.** A new score shows how much you changed approved text before
+  publishing, so a writer agent whose drafts always need work stands out.
+- **Agents learn for good.** Notes agents keep needing can be folded into their role file as a
+  proposal you approve, and you can archive notes nobody reads from the **Knowledge** view.
+- **Safer improvements.** A proposed change to an agent can be required to beat the current one
+  on a benchmark before you promote it, and `swarmup defs rollback` undoes a promote.
+- **Benchmarks.** Codex runs show an estimated cost, runs with repeats show how much results vary,
+  and **Run benchmark** takes a cost cap.
+- **Better scores.** Reviewers are scored on whether they check every criterion, and an agent's
+  question to you counts as right when it names a reason only you can decide.
+
 ## v0.3.0-beta.19 (2026-11-22)
 
 - **Workflows you can repeat.** Start a feature, a bug fix, a content piece or a campaign launch

@@ -6,6 +6,67 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.20 (2026-11-23)
+
+### Added
+
+- `swarmup ask --reason direction|access|irreversible|external` says why only a person can answer.
+  The `escalation-correctness` score counts such an ask as right, and now scores each agent by the
+  share of its asks that were right instead of all or nothing.
+- **Run benchmark** in the app takes a **Cost cap (USD)**. The **Benchmarks** view marks costs
+  estimated from tokens with `~`, shows the pass-rate spread over repeats, and says whether the
+  cost cap stopped a run.
+- `swarmup bench run` estimates the cost of Codex attempts from their tokens at the model's price per million tokens, with built-in prices for `gpt-5.6-sol`, `gpt-5.6-terra` and `gpt-5.6-luna` that `swarmupd.bench.prices` overrides. Estimated costs show with a `~` in `summary.md` and `bench compare`; a model with no price leaves the cost empty and the summary says so.
+- With `--repeat` above 1, the bench summary reports the spread over attempts: the lowest and highest pass rate, its standard deviation, and the standard deviation of cost, per entry and over repeats.
+- `swarmup bench run --max-usd X` starts no further attempt once the run's agent and judge cost reaches `X`. The summary lists the attempts it did not start and says the cap was reached; attempts with unknown cost are not counted, with a warning.
+- `swarmup defs rollback NAME -m WHY` puts back the agent and workflow files a promote changed,
+  and records it on the proposal's task. It refuses when a file changed after the promote, unless
+  you pass `--force`.
+- A new finding whose title nearly matches another task of the store, open or closed, names that
+  task as a possible duplicate in its body, and `swarmup finding` prints a note. The finding is
+  filed either way, and the PM decides.
+- `improvement.requires` in `swarm.yaml` is now active: with `benchmark: true`, `swarmup defs
+  promote` waits for swarmupd's benchmark of the variant as proposed, and refuses it when the
+  benchmark failed, the variant changed since, or the pass rate gained less than `min_delta`.
+  `--force` promotes it anyway and records that on the task.
+- Learn notes that keep mattering can become rules in a role file. `swarmup kb --promote` lists
+  the notes shown in many run prompts, read often or learned again, with why and the agents they
+  are for. With `swarmupd.improve.notes: true`, swarmupd files an `improve` task for the improver
+  to fold them into the agent's role file as a proposal; **Fold into role** in the Knowledge view
+  files it on request. After `swarmup defs promote`, a person archives the folded notes with
+  `swarmup kb archive TOPIC/SLUG... -m "why"` (or **Archive** in the app), which moves them to
+  `kb/.archive/`, where search and run prompts skip them.
+- A `page-contains` check fetches the published page after `swarmup published` and checks it
+  holds every string of `contains` and none of `absent`:
+  `{ check: page-contains, args: { from: published, contains: github.com/you/repo }, when: publish }`.
+  It takes `url` for another page, waits 15 seconds at most, reads the first 2 MB, and is refused
+  without `when: publish`. It never fetches a loopback, private or link-local address, checked
+  again at each of at most 5 redirects.
+- A `post-approval-edits` score: the share of words you changed between the approved text and
+  what you published, counted for the writer of the approved task and pointing at its role file.
+  Publish records now carry these `edits`.
+- Publish adapters: define `swarmupd.publish.<root>.<name>` (`manual`, `command` or `mcp`), give a
+  publish task the label `publish:<name>`, and run `swarmup publish ID` or **Publish** in the task
+  panel. The adapter gets the approved files, runs once for the same files and blobs unless
+  `--again`, and the `url: <URL>` it prints becomes the publish record. A `command` adapter gets
+  the files and `SWARMUP_PUBLISH_*` variables; an `mcp` adapter calls a tool on a `publish: true`
+  MCP server. Agents and runs can never start one.
+- `swarmup preview ID` renders a publish task's approved Markdown, with the images it names
+  from the workspace, into one local HTML page that runs no script, for a last look before
+  publishing. The task panel's **Preview** shows the same files (`GET /api/tasks/:id/preview`).
+- A `readability` check scores the prose of Markdown files with the Flesch-Kincaid grade level:
+  `{ check: readability, args: { path: 'posts/*.md', max_grade: 9 } }`, with `min_grade` for a
+  floor. The formula and the syllable rule are pinned, so every machine gets the same grade. The
+  desktop criteria builder has **Max grade** and **Min grade** fields for it.
+- A `verdict-completeness` score grades each agent reviewer by the share of a task's prose
+  criteria its approval marks `pass`, `fail` or `na`, and names the ones it left unmarked.
+
+### Changed
+
+- The PM role template now tells the PM to write a goal brief for each milestone and parent task
+  and to refresh the ones its inbox run lists. Stores you set up before keep their PM file; copy
+  the **Goal briefs** section from the template to adopt it.
+
 ## 0.3.0-beta.19 (2026-11-22)
 
 ### Added
