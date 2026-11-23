@@ -1612,7 +1612,15 @@ export interface BenchOverall {
   costPerAttempt: number | null;
   wallMs: number | null;
   toolCallsBeforeEdit: number | null;
+  /** Some cost is estimated from tokens (Codex): shown with `~`. */
+  costEstimated?: boolean;
+  /** With `--repeat`: the spread over repeats. */
+  passRateSd?: number | null;
+  costSdUsd?: number | null;
 }
+
+/** The figures every run's overall has, which `bench compare` subtracts. */
+export type BenchFigure = Exclude<keyof BenchOverall, 'costEstimated' | 'passRateSd' | 'costSdUsd'>;
 
 /** One entry of `summary.json` (`EntrySummary`). */
 export interface BenchEntrySummary {
@@ -1626,6 +1634,25 @@ export interface BenchEntrySummary {
   toolCallsBeforeEdit: number | null;
   timedOut: number;
   errors: number;
+  costEstimated?: boolean;
+  /** Models with no price, so their attempts have no cost. */
+  unpriced?: string[];
+  /** With more than one attempt: the pass-rate spread and the cost's standard deviation. */
+  passRateMin?: number | null;
+  passRateMax?: number | null;
+  passRateSd?: number | null;
+  costSdUsd?: number | null;
+}
+
+/** `--max-usd`: the cap, what the attempts cost, and whether it stopped the run. */
+export interface BenchCap {
+  maxUsd: number;
+  /** Agent cost, estimates included, plus judge cost, over the attempts that ran. */
+  spentUsd: number;
+  /** `spentUsd` reached `maxUsd`, so later attempts were skipped. */
+  hit: boolean;
+  /** Attempts whose cost is unknown, which the cap could not count. */
+  uncounted: number;
 }
 
 /** A run in the runs list (`BenchRunView`). */
@@ -1663,6 +1690,7 @@ export interface BenchAttempt {
   run: { exitCode: number | null; timedOut: boolean; wallMs: number; error?: string };
   metrics: {
     costUsd: number | null;
+    costEstimated?: boolean;
     turns: number | null;
     toolCalls: number | null;
     toolCallsBeforeEdit: number | null;
@@ -1692,7 +1720,13 @@ export interface BenchAttempt {
 /** `GET /api/bench/runs/:id`. */
 export interface BenchRunDetail {
   run: BenchRunView;
-  summary?: { entries: BenchEntrySummary[]; overall: BenchOverall; repo: string };
+  summary?: {
+    entries: BenchEntrySummary[];
+    overall: BenchOverall;
+    repo: string;
+    cap?: BenchCap;
+    skipped?: unknown[];
+  };
   request?: { repo: string; hidden_dir?: string; reference_dir?: string; entries?: string[] };
   attempts: BenchAttempt[];
   log?: string;
@@ -1714,6 +1748,8 @@ export interface BenchPlan {
   attempts: Array<{ entry: string; attempt: number; base: string; budgetMin: number }>;
   skipped: string[];
   maxMinutes: number;
+  /** The `--max-usd` cap, when set. */
+  maxUsd?: number;
   spends: boolean;
   lines: string[];
 }
@@ -1726,7 +1762,9 @@ export interface BenchComparison {
   overall: {
     a: BenchOverall;
     b: BenchOverall;
-    delta: Record<keyof BenchOverall, number | null>;
+    /** Variant minus base per figure; the spread figures only with `--repeat`. */
+    delta: Record<BenchFigure, number | null> &
+      Partial<Record<'passRateSd' | 'costSdUsd', number | null>>;
   };
 }
 

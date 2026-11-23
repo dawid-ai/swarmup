@@ -84,6 +84,8 @@ export interface BenchRunRequest {
   effort?: string;
   repeat?: number;
   budget_min?: number;
+  /** `--max-usd`: no attempt starts once the attempts so far cost this much. */
+  max_usd?: number;
   hidden_dir?: string;
   mode: BenchMode;
   reference_dir?: string;
@@ -115,6 +117,8 @@ export interface BenchPlanView {
   skipped: string[];
   /** The most minutes the agents may run in all: the sum of the attempts' budgets. */
   maxMinutes: number;
+  /** The `--max-usd` cap, when set. */
+  maxUsd?: number;
   /** Whether the run starts an agent, which spends tokens. */
   spends: boolean;
   /** The plan as `swarmup bench run --dry-run` prints it. */
@@ -478,6 +482,12 @@ export class BenchRuns {
     }
     if (req.mode === 'reference' && !req.reference_dir)
       bad('reference_dir: name the patches folder');
+    if (
+      req.max_usd !== undefined &&
+      (typeof req.max_usd !== 'number' || !Number.isFinite(req.max_usd) || req.max_usd <= 0)
+    ) {
+      bad('max_usd: use a dollar amount above 0');
+    }
     if (req.mode === 'agent' && (req.role_file || req.variant) && !req.root) {
       bad('root: name the store the role file is in');
     }
@@ -495,6 +505,7 @@ export class BenchRuns {
       ...(req.mode === 'agent' && req.effort ? { effort: req.effort } : {}),
       ...(req.repeat !== undefined ? { repeat: req.repeat } : {}),
       ...(req.budget_min !== undefined ? { budgetMin: req.budget_min } : {}),
+      ...(req.mode === 'agent' && req.max_usd !== undefined ? { maxUsd: req.max_usd } : {}),
       ...(req.hidden_dir ? { hiddenDir: resolve(req.hidden_dir) } : {}),
       ...(req.mode === 'reference' ? { referenceDir: resolve(req.reference_dir!) } : {}),
       dryRun: true,
@@ -526,6 +537,7 @@ export class BenchRuns {
         req.mode === 'agent'
           ? planned.attempts.reduce((n, a) => n + (a.budgetMin ?? DEFAULT_BENCH_BUDGET_MIN), 0)
           : 0,
+      ...(opts.maxUsd !== undefined ? { maxUsd: opts.maxUsd } : {}),
       spends: req.mode === 'agent',
       lines: planLines(planned, opts),
     };
@@ -550,6 +562,7 @@ export class BenchRuns {
       ...(opts.effort ? ['--effort', opts.effort] : []),
       ...(req.repeat !== undefined ? ['--repeat', String(req.repeat)] : []),
       ...(req.budget_min !== undefined ? ['--budget-min', String(req.budget_min)] : []),
+      ...(opts.maxUsd !== undefined ? ['--max-usd', String(opts.maxUsd)] : []),
       ...(opts.hiddenDir ? ['--hidden-dir', opts.hiddenDir] : []),
       ...(opts.referenceDir ? ['--reference-dir', opts.referenceDir] : []),
       ...(req.mode === 'agent' && (req.role_file || req.variant) && req.root

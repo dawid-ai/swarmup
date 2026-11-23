@@ -470,13 +470,19 @@ the command line.
   and over the entries both have, with B minus A.
 
 **Run benchmark** asks for the set, the entries (none picked runs all), the mode, the repo under
-test and the hidden tests folder; for **Agent** mode, the agent, model, effort, repeats and the
-budget per attempt; for **Reference** mode, the patches folder. **Review plan** makes a dry run
+test and the hidden tests folder; for **Agent** mode, the agent, model, effort, repeats, the
+budget per attempt and an optional **Cost cap (USD)** (`--max-usd`); for **Reference** mode, the
+patches folder. **Review plan** makes a dry run
 and shows its plan: entries × repeats, the agent and the budget. An agent run shows how many
 sessions it starts and the most agent time they may take, and starts only after you tick that it
 spends tokens on your account. **Reference** and **No agent** modes say they cost nothing. The run
 is `swarmup bench run` in a background process with no window; closing the app does not stop it.
 The form remembers the last values for each set on this PC.
+
+A cost estimated from tokens, which is how Codex runs get one, shows with `~`, such as `~$0.31`.
+With more than one repeat, the entries table adds **Spread** (the pass-rate range and its
+standard deviation), and a run with a cost cap says what it spent and whether the cap stopped
+it.
 
 ## Add project
 
