@@ -395,6 +395,11 @@ export interface OpsdConfig {
   agents: Record<string, AgentRunConfig>;
   schedules: ScheduleConfig[];
   /**
+   * Per root name, whether this machine runs the root's git triggers (`triggers/*.yaml`, W5).
+   * Off unless set to true: git never starts runs on a machine without its consent.
+   */
+  triggers: Record<string, boolean>;
+  /**
    * Create tasks from the roots' repeats (`repeats/*.md`) each tick. On by default; set it to
    * false on every PC but one that shares a task store, so two PCs never fire the same slot.
    */
@@ -578,6 +583,7 @@ export function opsdConfig(
     // `claude:qa:` with nothing after it names the agent with no settings of its own.
     agents: Object.fromEntries(Object.entries(raw.agents ?? {}).map(([id, a]) => [id, a ?? {}])),
     schedules: raw.schedules ?? [],
+    triggers: checkRootFlags((raw as { triggers?: unknown }).triggers, 'triggers'),
     repeats: raw.repeats ?? true,
     notify: checkNotify((raw as { notify?: unknown }).notify),
     chat: {
@@ -936,13 +942,18 @@ export function checkImprove(raw: unknown): ImproveConfig {
 }
 
 function checkPushBranches(raw: unknown): Record<string, boolean> {
+  return checkRootFlags(raw, 'push_branches');
+}
+
+/** A map of root names to true or false, such as `swarmupd.triggers`. */
+function checkRootFlags(raw: unknown, key: string): Record<string, boolean> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new OpsError('swarmupd.push_branches: use one entry per root name, true or false', 2);
+    throw new OpsError(`swarmupd.${key}: use one entry per root name, true or false`, 2);
   }
   for (const [root, on] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof on !== 'boolean') {
-      throw new OpsError(`swarmupd.push_branches.${root}: use true or false`, 2);
+      throw new OpsError(`swarmupd.${key}.${root}: use true or false`, 2);
     }
   }
   return { ...(raw as Record<string, boolean>) };

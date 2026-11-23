@@ -47,6 +47,7 @@ export const DEFAULT_FROZEN: readonly string[] = [
   'scorers/**',
   'benchmarks/**',
   'rubrics/**',
+  'triggers/**',
   'swarm.yaml',
 ];
 

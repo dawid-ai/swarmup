@@ -40,6 +40,7 @@ import {
   assertActor,
   loadDefinitions,
   SCRATCH_WRITER_ROLES,
+  TRIGGER_ACTOR,
   VARIANTS_DIR,
   canClaimType,
   editUserConfig,
@@ -95,6 +96,8 @@ import type { ImproveState } from './improve.js';
 import { Improver } from './improve.js';
 import type { ScoreResult } from './scores.js';
 import { scorerSettings } from './scores.js';
+import type { DueTrigger } from './triggers.js';
+import { dueTriggers, TRIGGERS_STATE } from './triggers.js';
 import { Merger } from './merger.js';
 import type { MergeAttempt, MergeCount, RunRow } from './state-db.js';
 import { isMergeConflictBack, resolutionNote } from './merge-conflict.js';
@@ -6364,6 +6367,7 @@ export class Supervisor extends EventEmitter {
   }
 
   private runSchedules(): void {
+    this.safe(() => this.runTriggers());
     if (this.config.schedules.length === 0) return;
     const last = this.store.readJson<Record<string, number>>('schedules.json', {});
     const now = this.now();
@@ -6386,6 +6390,75 @@ export class Supervisor extends EventEmitter {
       });
     }
     if (changed) this.store.writeJson('schedules.json', last);
+  }
+
+  /**
+   * Fires the git triggers due on this machine (W5 phase 4): those of the roots it turned triggers
+   * on for (`swarmupd.triggers.<root>`) whose `runs_on` names it. Paused swarmupd fires none; on
+   * resume each fires once for the latest time it missed. A `run` trigger is recorded once its run
+   * started, so one that waits for room starts later; a `workflow` or `repeat` trigger is recorded
+   * before it acts, so a failure never repeats it every tick.
+   */
+  private runTriggers(): void {
+    if (this.config.paused || this.stopping) return;
+    if (!Object.values(this.config.triggers).some(Boolean)) return;
+    const state = this.store.readJson<Record<string, number>>(TRIGGERS_STATE, {});
+    const now = this.now();
+    const { due, baselines } = dueTriggers(
+      this.defsRoots(),
+      this.config,
+      this.user.machine,
+      state,
+      now,
+    );
+    const record = (key: string): void => {
+      state[key] = now;
+      this.store.writeJson(TRIGGERS_STATE, state);
+    };
+    if (baselines.length > 0) {
+      for (const key of baselines) state[key] = now;
+      this.store.writeJson(TRIGGERS_STATE, state);
+    }
+    for (const t of due) {
+      if (this.stopping) return;
+      if (t.def.action === 'run') {
+        this.safe(() => {
+          if (this.fireRunTrigger(t)) record(t.key);
+        });
+        continue;
+      }
+      record(t.key);
+      this.safe(() => this.fireTrigger(t));
+    }
+  }
+
+  /** Starts a `run` trigger's run under the usual limits; false when it cannot start now. */
+  private fireRunTrigger(t: DueTrigger): boolean {
+    const agent = t.def.agent!;
+    const task = t.def.task && !t.def.task.includes('/') ? `${t.root}/${t.def.task}` : t.def.task;
+    const ws = this.ws(agent);
+    const s: ScheduleConfig = { name: t.key, agent, ...(task ? { task } : {}) };
+    if (this.scheduleBlocker(ws, s)) return false;
+    if (task && this.liveRecords().some((r) => r.task === ws.resolve(task).id)) return false;
+    this.launch({ agent, task, extra: t.def.prompt || undefined, schedule: `trigger ${t.key}` });
+    return true;
+  }
+
+  /** Starts a `workflow` trigger's workflow, or creates a `repeat` trigger's task. */
+  private fireTrigger(t: DueTrigger): void {
+    const ws = this.ws(TRIGGER_ACTOR);
+    if (t.def.action === 'workflow') {
+      const res = ws.workflowStart(t.def.workflow!, {
+        root: t.root,
+        ...(t.def.params ? { params: t.def.params } : {}),
+        ...(t.def.title ? { title: t.def.title } : {}),
+        message: `Started by trigger \`${t.key}\`.`,
+      });
+      this.emit('trigger', { key: t.key, action: 'workflow', task: res.milestone.id });
+      return;
+    }
+    const meta = ws.runRepeat(`${t.root}/${t.def.repeat!}`, { trigger: t.key });
+    this.emit('trigger', { key: t.key, action: 'repeat', task: meta.id });
   }
 
   /**

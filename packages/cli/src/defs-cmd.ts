@@ -8,6 +8,7 @@ import {
   assertNoSecret,
   checkDefinitionText,
   daemonKeyIn,
+  DEF_FOLDERS,
   definitionHash,
   editUserConfig,
   formatProblem,
@@ -20,11 +21,14 @@ import {
   applyMigration,
   OpsError,
   ROOT_DIR_NAME,
+  scheduleTriggerText,
   schemaFiles,
   setSwarmValues,
   shortHash,
   sortProblems,
   SWARM_FILE,
+  TRIGGER_NAME_RE,
+  TRIGGERS_DIR,
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
 import { importableConfig, lineDiff, opsdConfig, withDefinitions } from '@swarmup/supervisor';
@@ -196,9 +200,9 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs import-schedules [--root NAME] [--apply] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME]',
   summary:
-    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
+    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move swarmupd.schedules into triggers/ (import-schedules prints the files; --apply writes them, --remove also takes the schedules out of the user config and turns the root's triggers on here); move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
   options: {
     remove: { type: 'boolean' },
     apply: { type: 'boolean' },
@@ -221,6 +225,8 @@ export const defsCommand = {
         return defsDiff(ctx, rest[0] ?? 'HEAD');
       case 'import-config':
         return importConfig(ctx);
+      case 'import-schedules':
+        return importSchedules(ctx);
       case 'migrate':
         return migrate(ctx);
       case 'propose':
@@ -339,7 +345,7 @@ function gitIn(dir: string, args: string[]): string {
 function filesAt(dir: string, ref: string): Map<string, string> {
   let names: string[];
   try {
-    names = gitIn(dir, ['ls-tree', '-r', '--name-only', ref, '--', SWARM_FILE, 'agents'])
+    names = gitIn(dir, ['ls-tree', '-r', '--name-only', ref, '--', SWARM_FILE, ...DEF_FOLDERS])
       .split('\n')
       .filter(Boolean);
   } catch (err) {
@@ -428,6 +434,98 @@ function importConfig(ctx: DefsCtx): number {
     if (empty([key, 'roles'])) d.deleteIn([key, 'roles']);
   });
   ctx.io.out(`removed ${imported.length} key(s) from the user config: ${imported.join(', ')}`);
+  return 0;
+}
+
+/**
+ * `swarmup defs import-schedules`: each `swarmupd.schedules` entry as `triggers/<name>.yaml` in the
+ * root (`--root`, else the default root), with `runs_on` this machine when it has a name. Prints
+ * the files; `--apply` writes them (never over a different file), and `--remove` then takes the
+ * schedules out of the user config and turns the root's triggers on, so nothing fires twice.
+ */
+function importSchedules(ctx: DefsCtx): number {
+  const ws = ctx.ws();
+  const name = str(ctx.opts.root);
+  const root = name ? ws.roots.find((r) => r.name === name) : ws.defaultRoot();
+  if (!root) throw new OpsError(`no root named '${name}'`, 2);
+  const machine = machineOf(ws.user);
+  if (!machine) throw new OpsError('the swarmupd section of the user config does not check', 2);
+  if (machine.schedules.length === 0) {
+    ctx.io.out('nothing to import: the user config has no swarmupd.schedules');
+    return 0;
+  }
+  const apply = Boolean(ctx.opts.apply);
+  if (ctx.opts.remove && !apply) throw new OpsError('--remove needs --apply', 2);
+  const files: Array<{ name: string; file: string; text: string; same: boolean }> = [];
+  for (const s of machine.schedules) {
+    if (!TRIGGER_NAME_RE.test(s.name)) {
+      throw new OpsError(
+        `schedule '${s.name}' is no trigger name (lowercase letters, digits and -); rename it first`,
+        2,
+      );
+    }
+    const file = join(root.dir, TRIGGERS_DIR, `${s.name}.yaml`);
+    const text = scheduleTriggerText({ ...s, machine: ws.user.machine });
+    const problems = checkDefinitionText(file, text).filter((p) => p.severity === 'error');
+    if (problems.length > 0) {
+      for (const p of problems) ctx.io.err(show(ctx, p));
+      throw new OpsError(
+        `schedule '${s.name}' does not make a valid trigger; nothing was written`,
+        1,
+      );
+    }
+    assertNoSecret(text);
+    const before = existsSync(file) ? normalText(readFileSync(file, 'utf8')) : null;
+    if (before !== null && before !== text) {
+      throw new OpsError(
+        `${relative(ctx.io.cwd, file) || file} exists with other content; nothing was written`,
+        2,
+      );
+    }
+    files.push({ name: s.name, file, text, same: before === text });
+  }
+  for (const f of files) {
+    const rel = relative(ctx.io.cwd, f.file) || f.file;
+    if (!apply) {
+      ctx.io.out(`# ${rel}${f.same ? ' (already there)' : ''}`);
+      for (const l of f.text.trimEnd().split('\n')) ctx.io.out(l);
+      continue;
+    }
+    if (!f.same) {
+      mkdirSync(join(root.dir, TRIGGERS_DIR), { recursive: true });
+      writeFileSync(f.file, f.text);
+    }
+    ctx.io.out(`${f.same ? 'kept' : 'wrote'} ${rel}`);
+  }
+  if (!apply) {
+    ctx.io.out(
+      `nothing written; --apply writes the files, --remove also moves the schedules out of the user config`,
+    );
+    return 0;
+  }
+  if (!ctx.opts.remove) {
+    ctx.io.out(
+      `the user config keeps swarmupd.schedules; with swarmupd.triggers.${root.name} on, both would fire, so --remove takes them out`,
+    );
+    return 0;
+  }
+  const names = new Set(files.map((f) => f.name));
+  editUserConfig(ctx.io.env, (d) => {
+    const key = daemonKeyIn(d);
+    const list =
+      (d.getIn([key, 'schedules']) as { items?: unknown[]; toJSON?: () => unknown }) ?? {};
+    const items = (list.toJSON?.() ?? []) as Array<{ name?: string }>;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (names.has(String(items[i]?.name))) d.deleteIn([key, 'schedules', i]);
+    }
+    if ((d.getIn([key, 'schedules']) as { items?: unknown[] } | undefined)?.items?.length === 0) {
+      d.deleteIn([key, 'schedules']);
+    }
+    d.setIn([key, 'triggers', root.name], true);
+  });
+  ctx.io.out(
+    `removed ${names.size} schedule(s) from the user config and turned on swarmupd.triggers.${root.name}; restart swarmupd or change a setting in the app for it to read them`,
+  );
   return 0;
 }
 

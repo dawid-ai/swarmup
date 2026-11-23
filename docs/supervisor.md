@@ -88,6 +88,7 @@ State lives in `~/.swarmup/swarmupd/` (or `SWARMUP_STATE_DIR`) and is never comm
 | `runs/<id>.json`     | one record per run: agent, task, pid, budget, tokens, outcome                                                                                                                                                                                    |
 | `logs/<id>.log`      | the run's output (Claude `stream-json`, Codex `--json`)                                                                                                                                                                                          |
 | `schedules.json`     | when each schedule last ran                                                                                                                                                                                                                      |
+| `triggers.json`      | when each git trigger (`<root>/<name>`) last fired on this machine, or when this machine first saw it                                                                                                                                            |
 | `wake.json`          | which inbox items each waking agent was last started for                                                                                                                                                                                         |
 
 ## State on this PC
@@ -1154,6 +1155,8 @@ swarmupd:
       agent: claude:pm
       prompt: Write the daily digest of open tasks and post it to the swarmup channel.
       paused: false # true keeps it without starting runs
+  triggers: # per root: run the root's git triggers (triggers/*.yaml) on this machine; off by default
+    v2: true
   repeats: true # create the tasks of due repeats; false on every PC but one that shares a store
   test_changes: # per root: the test and check configuration files a review prompt lists changes of
     v2: { tests: ['**/test/**', '*.test.*'], checks: [package.json, 'vitest.config.*'] }
@@ -1180,6 +1183,10 @@ swarmupd:
   reads it, or once a run works on the task it is about.
 - **Schedules** start their agent when due and the limits have room. The desktop **Schedules**
   view and `/api/schedules` add, change, pause, run and delete them in the user config.
+- **Git triggers** (`triggers/<name>.yaml` in a task store, see
+  [Triggers](definitions.md#triggers)) fire in the same step as schedules, on a machine whose
+  `swarmupd.triggers.<root>` is true and that their `runs_on` names. `triggers.json` records when
+  each last fired here, so each fire time starts once, across restarts.
 - **Repeats** (repeating tasks, see [the protocol](protocol.md#repeating-tasks)) create their
   task each tick when a slot is due or a condition holds, before the wake plan, so the new task
   can start in the same tick. A schedule starts an agent run; a repeat creates a task. Paused

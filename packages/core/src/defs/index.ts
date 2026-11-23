@@ -1,10 +1,11 @@
 /**
- * Definitions as code (W5): `swarm.yaml`, the agent files and the workflows in a task store,
+ * Definitions as code (W5): `swarm.yaml`, the agent files, the workflows and the triggers in a task store,
  * checked against schemas, hashed, and merged under the machine's settings by swarmupd.
  */
 import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { toJsonSchema } from './schema.js';
 import { SWARM_SCHEMA } from './swarm.js';
+import { TRIGGER_SCHEMA } from './trigger.js';
 import { WORKFLOW_SCHEMA } from './workflow.js';
 
 export { ADDENDUM_SCHEMA, AGENT_SCHEMA, agentRuntimeValues, FOLDER_AGENT_SCHEMA } from './agent.js';
@@ -125,6 +126,25 @@ export {
   workflowParams,
   WORKFLOWS_DIR,
 } from './workflow.js';
+export type { Cron } from './cron.js';
+export { CRON_HINT, cronMatches, nextCron, parseCron } from './cron.js';
+export type { TriggerAction, TriggerDef, TriggerInfo } from './trigger.js';
+export {
+  checkTriggerText,
+  nextTriggerFire,
+  scheduleTriggerText,
+  TRIGGER_ACTIONS,
+  TRIGGER_ACTOR,
+  TRIGGER_NAME_RE,
+  TRIGGER_SCHEMA,
+  triggerCron,
+  triggerDue,
+  triggerNameOf,
+  triggerRunsOn,
+  TRIGGERS_DIR,
+  triggerTarget,
+  triggerWhen,
+} from './trigger.js';
 export type { ValidateInput } from './validate.js';
 export { secretProblems, validateDefinitions } from './validate.js';
 export {
@@ -170,6 +190,12 @@ export function schemaFiles(): Record<string, string> {
       id: `${SCHEMA_BASE}workflow.schema.json`,
       title: 'Workflow',
       description: 'A SwarmUp workflow (`workflows/<id>.yaml`): a repeatable milestone plan.',
+    }),
+    'trigger.schema.json': toJsonSchema(TRIGGER_SCHEMA, {
+      id: `${SCHEMA_BASE}trigger.schema.json`,
+      title: 'Trigger',
+      description:
+        'A SwarmUp git trigger (`triggers/<name>.yaml`): when swarmupd starts something.',
     }),
   };
   return Object.fromEntries(

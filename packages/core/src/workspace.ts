@@ -6087,10 +6087,12 @@ export class Workspace {
   /**
    * Creates the repeat's task now, whether or not a slot is due, paused or not. A time rule counts
    * it as the slot of this minute, so a slot that passed before it does not fire as well.
+   * `trigger` names the git trigger swarmupd fires it for (W5): any actor may then, since the
+   * machine turned that store's triggers on.
    */
-  runRepeat(ref: string): TaskMeta {
+  runRepeat(ref: string, opts: { trigger?: string } = {}): TaskMeta {
     const actor = this.requireActor();
-    if (!privileged(actor)) {
+    if (!opts.trigger && !privileged(actor)) {
       throw new OpsError(`${actor} cannot run repeats: a human or the orchestrator does`);
     }
     const { root, name } = this.resolveRepeat(ref);

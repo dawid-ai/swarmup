@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { OpsError } from '../ids.js';
 import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
@@ -7,6 +7,8 @@ import { AGENT_FOLDER_FILE } from '../agents.js';
 import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { ROLE_NAME_RE, RUNTIME_NAME_RE } from './values.js';
 import { parseDoneWhen } from '../criteria.js';
+import type { TriggerInfo } from './trigger.js';
+import { checkTriggerText, TRIGGERS_DIR, triggerNameOf } from './trigger.js';
 import type { WorkflowInfo } from './workflow.js';
 import { checkWorkflowText, WORKFLOWS_DIR, workflowIdOf } from './workflow.js';
 import type { DefFile } from './hash.js';
@@ -58,6 +60,11 @@ export interface DefinitionSet {
   baseHash?: string;
   /** The store's workflows (W5 phase 3), each with its problems. */
   workflows: WorkflowInfo[];
+  /**
+   * The store's triggers (W5 phase 4), each with its problems. A trigger whose file has an error,
+   * its own or across files (a workflow it names is missing), has a null `def`.
+   */
+  triggers: TriggerInfo[];
 }
 
 export interface LoadOptions {
@@ -275,6 +282,23 @@ function checkSet(
     problems.push(...w.problems);
     workflows.push(w);
   }
+  // Triggers (W5 phase 4): each file against its schema; their targets are checked below.
+  const triggers: TriggerInfo[] = [];
+  for (const [path, text] of texts) {
+    if (!path.startsWith(`${TRIGGERS_DIR}/`)) continue;
+    const name = triggerNameOf(path);
+    if (!name) {
+      warnAt(
+        fileOf(path),
+        'a trigger is triggers/<name>.yaml, with a name of lowercase letters, digits and dashes; this file is not read',
+      );
+      continue;
+    }
+    const t = checkTriggerText(name, text, { file: fileOf(path), strict: opts.strict });
+    problems.push(...t.problems);
+    triggers.push(t);
+  }
+  problems.push(...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -325,7 +349,58 @@ function checkSet(
     problems: sortProblems(problems),
     ok: !problems.some((p) => p.severity === 'error'),
     workflows,
+    // A trigger with an error anywhere in its file never fires.
+    triggers: triggers.map((t) =>
+      t.def && problems.some((p) => p.file === t.file && p.severity === 'error')
+        ? { ...t, def: null }
+        : t,
+    ),
   };
+}
+
+/**
+ * The targets of each trigger exist: a workflow in this store (an error), a repeat in this
+ * store's `repeats/` (an error), and an agent this store or the machine defines (a warning: the
+ * machine that runs the trigger may define it).
+ */
+function triggerTargetProblems(
+  rootDir: string,
+  triggers: readonly TriggerInfo[],
+  workflows: readonly WorkflowInfo[],
+  agents: readonly AgentDef[],
+  opts: LoadOptions,
+): DefProblem[] {
+  const out: DefProblem[] = [];
+  const add = (t: TriggerInfo, path: string, severity: DefProblem['severity'], message: string) =>
+    out.push({ file: t.file, path, line: 1, col: 1, severity, message });
+  for (const t of triggers) {
+    const d = t.def;
+    if (!d) continue;
+    if (d.action === 'workflow' && d.workflow) {
+      const w = workflows.find((x) => x.id === d.workflow);
+      if (!w) add(t, 'workflow', 'error', `no workflows/${d.workflow}.yaml in this store`);
+      else if (!w.def) add(t, 'workflow', 'error', `workflows/${d.workflow}.yaml has errors`);
+    }
+    if (
+      d.action === 'repeat' &&
+      d.repeat &&
+      !existsSync(join(rootDir, 'repeats', `${d.repeat}.md`))
+    ) {
+      add(t, 'repeat', 'error', `no repeats/${d.repeat}.md in this store`);
+    }
+    if (d.action === 'run' && d.agent) {
+      const known = agents.some((a) => a.id === d.agent) || opts.machineAgents?.includes(d.agent);
+      if (!known) {
+        add(
+          t,
+          'agent',
+          'warning',
+          `${d.agent} has no agent file in this store${opts.machineAgents ? " and is not in this machine's swarmupd.agents" : ''}`,
+        );
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -337,7 +412,7 @@ function checkSet(
 export function checkDefinitionText(
   file: string,
   text: string,
-  opts: { strict?: boolean; kind?: 'swarm' | 'agent' | 'workflow' } = {},
+  opts: { strict?: boolean; kind?: 'swarm' | 'agent' | 'workflow' | 'trigger' } = {},
 ): DefProblem[] {
   const src = normalText(text);
   const parts = file.replace(/\\/g, '/').split('/');
@@ -347,9 +422,14 @@ export function checkDefinitionText(
       ? 'agent'
       : parts.at(-2) === WORKFLOWS_DIR && /\.ya?ml$/i.test(file)
         ? 'workflow'
-        : 'swarm');
+        : parts.at(-2) === TRIGGERS_DIR && /\.ya?ml$/i.test(file)
+          ? 'trigger'
+          : 'swarm');
   const problems: DefProblem[] = [];
-  if (kind === 'workflow') {
+  if (kind === 'trigger') {
+    const name = (parts.at(-1) ?? '').replace(/\.ya?ml$/i, '');
+    problems.push(...checkTriggerText(name, src, { file, strict: opts.strict }).problems);
+  } else if (kind === 'workflow') {
     const name = (parts.at(-1) ?? '').replace(/\.ya?ml$/i, '');
     problems.push(...checkWorkflowText(name, src, { file, strict: opts.strict }).problems);
   } else if (kind === 'agent') {

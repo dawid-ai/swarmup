@@ -17,11 +17,13 @@ nothing new.
   agents/<role>/<runtime>.md  # optional: what one runtime of the role does differently
   agents/<runtime>-<role>.md  # a legacy agent file, still read
   workflows/<id>.yaml         # repeatable milestone plans: see Workflows in the protocol
+  triggers/<name>.yaml        # when swarmupd starts something: see Triggers
   variants/<name>/            # sparse overlays: see Variants
   .schemas/*.schema.json      # optional: `swarmup validate --write-schemas` writes them for editors
 ```
 
-The definition hash covers `swarm.yaml` and every file under `agents/` and `workflows/`. It is `d:` and the SHA-256
+The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/` and
+`triggers/`. It is `d:` and the SHA-256
 of a header line plus one line per file, its path and the SHA-256 of its text, sorted by path. The
 text is read with the BOM removed and CRLF turned into LF, so line ends and file order never change
 the hash. `swarmup defs hash` prints it.
@@ -149,6 +151,58 @@ its legacy file, and refuses a legacy file that does not read.
 The template `packages/core/templates/swarm.yaml` is a commented example.
 `swarmup defs import-config` starts a `swarm.yaml` from your user config.
 
+## Triggers
+
+A trigger in `triggers/<name>.yaml` says when swarmupd starts something, and what. It is the git
+form of a machine's `swarmupd.schedules`, with cron times, workflows and repeats besides runs:
+
+```yaml
+# triggers/standup.yaml
+cron: '0 9 * * mon-fri' # or every: 30m, or at: '09:00'
+action: run # run | workflow | repeat
+agent: claude:pm
+prompt: Post the standup in the channel.
+runs_on: [desk] # optional: machine names; unset means every machine that turned triggers on
+enabled: true # optional; false keeps the file and fires nothing
+```
+
+- **When:** exactly one of `every` (a duration such as `30m` or `1d`), `at` (a daily local time
+  such as `09:00`) and `cron`. `cron` takes five fields, minute, hour, day of month, month and
+  day of week, in the local time of the machine that runs it. Each field takes `*`, a value, a
+  range `a-b`, a step `*/s`, `a-b/s` or `a/s`, and lists joined by commas; months take `jan` to
+  `dec` and days of the week `sun` to `sat` (0 or 7 is Sunday). When both day fields are
+  restricted, a day that matches either one fires, as in Vixie cron.
+- **What:** `action: run` starts `agent` with `prompt` (the standard prompt without one) on
+  `task` (`ID` in this store, or `root/ID`), under the usual limits, as a schedule does.
+  `action: workflow` starts `workflow` with `params` and an optional milestone `title`, through
+  the same path as `swarmup workflow start`. `action: repeat` creates the task of
+  `repeats/<repeat>.md` now, as `swarmup repeat run` does. swarmupd starts workflows and repeats
+  as `opsd:trigger`, never as a person, so a `starter` workflow still waits for a person's
+  approval.
+- **Where:** a machine runs a store's triggers only after it turns them on, per root:
+  `swarmupd.triggers.<root>: true` in its user config, or `swarmup triggers on --root NAME`. Git
+  never starts runs on a machine without its consent. `runs_on` then narrows a trigger to the
+  machines it names (`machine` in each user config). When several machines turn on the same
+  store, give each trigger a `runs_on`, or one fire time starts on each of them.
+- **Once per fire time:** swarmupd records in `triggers.json`, in its state folder, when each
+  trigger last fired on this machine, so a restart never fires one fire time twice. A new
+  `every` trigger fires at once; a new `at` or `cron` trigger fires first at its next time after
+  this machine first sees it. After a pause or a stop, each trigger fires once for the latest time
+  it missed. A `run` trigger that waits for room starts once there is room; a `workflow` or
+  `repeat` trigger is recorded before it acts, so one that fails is not tried again every tick.
+- **webhook:** accepted and listed, with a warning; webhook triggers come in W8 phase 4, and a
+  trigger with only `webhook` never fires.
+
+`swarmup validate` checks each trigger's schema and its targets: the workflow and the repeat must
+exist in the store (errors), and the agent should have an agent file or a machine entry (a
+warning). A trigger with an error never fires. `swarmup triggers list` prints each trigger, what
+it does, and whether and when it fires next on this machine.
+
+`swarmup defs import-schedules [--root NAME]` prints each `swarmupd.schedules` entry as a trigger
+file, with `runs_on` set to this machine when the user config names it. `--apply` writes the
+files, never over a different one, and `--remove` also takes the schedules out of the user config
+and turns on `swarmupd.triggers.<root>`, so nothing fires twice.
+
 ## Precedence
 
 More specific beats less specific, and at equal specificity the machine beats git:
@@ -268,7 +322,7 @@ Runs can't edit `agents/` or `variants/`: they change definitions only through `
 improvement:
   agent: claude:improver # who writes proposals
   may_change: ['agents/*.md', 'agents/*/*.md', 'workflows/**'] # the default
-  frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'swarm.yaml'] # the default
+  frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'triggers/**', 'swarm.yaml'] # the default
   max_open_proposals: 2
   requires:
     benchmark: true # a finished benchmark of the variant before promote; default false
@@ -299,6 +353,10 @@ improvement:
   default, with both hashes.
 - `swarmup defs migrate [--apply] [--prune]` moves legacy agent files into agent folders; see
   [Migrate legacy files](#migrate-legacy-files).
+- `swarmup triggers list [--root NAME] [--json]` lists the triggers, with whether and when each
+  fires next on this machine; `swarmup triggers on|off --root NAME` turns a root's triggers on or
+  off here. `swarmup defs import-schedules [--apply] [--remove]` moves `swarmupd.schedules` into
+  `triggers/`; see [Triggers](#triggers).
 - `swarmup workflow list|show|start` lists, shows and starts the store's workflows; see
   [Workflows](protocol.md#workflows).
 - `swarmup defs import-config` writes the user config's `swarmupd.runtimes.*.{model, effort}` and
