@@ -33,8 +33,22 @@ export function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? '–' : `${Math.round(v * 100)}%`;
 }
 
-export function usd(v: number | null | undefined): string {
-  return v === null || v === undefined ? '–' : `$${v.toFixed(2)}`;
+/** `$1.23`; `~$1.23` for a cost estimated from tokens (Codex reports no dollar figure). */
+export function usd(v: number | null | undefined, estimated?: boolean): string {
+  return v === null || v === undefined ? '–' : `${estimated ? '~' : ''}$${v.toFixed(2)}`;
+}
+
+/** A pass-rate spread over repeats: `60–80% ±8`; empty without one. */
+export function spread(e: {
+  passRateMin?: number | null;
+  passRateMax?: number | null;
+  passRateSd?: number | null;
+}): string {
+  if (e.passRateSd === undefined || e.passRateSd === null) return '';
+  const p = (x: number | null | undefined): string =>
+    x === null || x === undefined ? '?' : `${Math.round(x * 100)}`;
+  const range = e.passRateMin !== undefined ? `${p(e.passRateMin)}–${p(e.passRateMax)}% ` : '';
+  return `${range}±${Math.round(e.passRateSd * 100)}`;
 }
 
 /** `42s`, `3m 05s`, `1h 12m`. */
@@ -388,9 +402,14 @@ export function overallBits(o: BenchOverall | undefined): Array<[string, string]
   return [
     ['Pass rate', pct(o.passRate)],
     ['Hidden pass', pct(o.hiddenPassRate)],
-    ['Cost', usd(o.costUsd)],
+    ['Cost', usd(o.costUsd, o.costEstimated)],
     ['Time per attempt', dur(o.wallMs)],
     ['Attempts', String(o.attempts)],
+    ...(o.passRateSd !== undefined && o.passRateSd !== null
+      ? ([['Pass rate spread', `±${Math.round(o.passRateSd * 100)} pts`]] as Array<
+          [string, string]
+        >)
+      : []),
   ];
 }
 
@@ -405,6 +424,7 @@ interface RunForm {
   effort: string;
   repeat: string;
   budget: string;
+  maxUsd: string;
   repo: string;
   hidden: string;
   reference: string;
@@ -444,6 +464,7 @@ function formFor(set: BenchSetView | undefined): RunForm {
     effort: '',
     repeat: '',
     budget: '',
+    maxUsd: '',
     repo: '',
     hidden: set?.hiddenDir ?? '',
     reference: '',
@@ -464,6 +485,7 @@ export function runBody(f: RunForm, dryRun: boolean): Record<string, unknown> {
     ...(f.mode === 'agent' && f.effort.trim() ? { effort: f.effort.trim() } : {}),
     ...(f.mode === 'agent' && f.repeat.trim() ? { repeat: Number(f.repeat) } : {}),
     ...(f.mode === 'agent' && f.budget.trim() ? { budget_min: Number(f.budget) } : {}),
+    ...(f.mode === 'agent' && f.maxUsd.trim() ? { max_usd: Number(f.maxUsd) } : {}),
     ...(f.hidden.trim() ? { hidden_dir: f.hidden.trim() } : {}),
     ...(f.mode === 'reference' ? { reference_dir: f.reference.trim() } : {}),
     dry_run: dryRun,
@@ -640,6 +662,14 @@ export function RunDialog({
                 placeholder={String(set?.defaults?.budget ?? 30)}
               />
             </Field>
+            <Field label="Cost cap (USD)" hint="No attempt starts once the run cost this much">
+              <Input
+                value={form.maxUsd}
+                type="number"
+                onChange={(v) => put({ maxUsd: v })}
+                placeholder="none"
+              />
+            </Field>
           </div>
         )}
         <Field label="Hidden tests folder" hint="Outside the repo under test">
@@ -723,6 +753,12 @@ export function PlanBox({ plan }: { plan: BenchPlan }) {
               <div className="text-xs text-fg-4">Agent time at most</div>
               <div>{plan.maxMinutes} min</div>
             </div>
+            {plan.maxUsd !== undefined && (
+              <div data-testid="bench-plan-cap">
+                <div className="text-xs text-fg-4">Cost cap</div>
+                <div>{usd(plan.maxUsd)}</div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -740,8 +776,11 @@ export function PlanBox({ plan }: { plan: BenchPlan }) {
           <span>
             This run starts {plan.attempts.length} {plan.agent} session
             {plan.attempts.length === 1 ? '' : 's'}, one at a time. Each spends tokens until it ends
-            or its budget runs out, up to {plan.maxMinutes} minutes of agent time in all. Try two or
-            three entries and one repeat first.
+            or its budget runs out, up to {plan.maxMinutes} minutes of agent time in all
+            {plan.maxUsd !== undefined
+              ? `, and no attempt starts once the run cost ${usd(plan.maxUsd)}`
+              : ''}
+            . Try two or three entries and one repeat first.
           </span>
         </div>
       ) : (

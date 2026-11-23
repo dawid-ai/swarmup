@@ -35,6 +35,7 @@ import {
   num,
   overallBits,
   pct,
+  spread,
   usd,
   whoRan,
 } from '../ui/bench';
@@ -281,7 +282,9 @@ function RunsList({
                 <td className="px-2 py-2 text-right tabular-nums">
                   {pct(r.overall?.hiddenPassRate)}
                 </td>
-                <td className="px-2 py-2 text-right tabular-nums">{usd(r.overall?.costUsd)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">
+                  {usd(r.overall?.costUsd, r.overall?.costEstimated)}
+                </td>
                 <td className="px-2 py-2 text-right tabular-nums">
                   {r.startedAt && r.finishedAt
                     ? dur(Date.parse(r.finishedAt) - Date.parse(r.startedAt))
@@ -363,6 +366,8 @@ function RunView({ id, nav, onChanged }: { id: string; nav: Nav; onChanged: () =
   if (!data) return <div className="text-sm text-fg-3">Reading the run…</div>;
   const r = data.run;
   const entries = entriesOf(data);
+  const spreads = entries.some((e) => spread(e) !== '');
+  const cap = data.summary?.cap;
   return (
     <div className="flex flex-col gap-4" data-testid="bench-run">
       <div>{back}</div>
@@ -415,6 +420,17 @@ function RunView({ id, nav, onChanged }: { id: string; nav: Nav; onChanged: () =
           ))}
         </div>
       )}
+      {cap && (
+        <div className={cx('text-sm', cap.hit ? 'text-warn' : 'text-fg-3')} data-testid="bench-cap">
+          Cost cap {usd(cap.maxUsd)}: spent {usd(cap.spentUsd, r.overall?.costEstimated)}
+          {cap.hit
+            ? `; reached, so ${data.summary?.skipped?.length ?? 0} attempt(s) didn't start`
+            : '; not reached'}
+          {cap.uncounted > 0
+            ? `; ${cap.uncounted} attempt(s) with no known cost weren't counted`
+            : ''}
+        </div>
+      )}
       {entries.length > 0 && (
         <div className="panel overflow-x-auto" data-testid="bench-entries-table">
           <div className="label-caps border-b border-white/6 px-4 py-2.5">Entries</div>
@@ -426,6 +442,7 @@ function RunView({ id, nav, onChanged }: { id: string; nav: Nav; onChanged: () =
                 <th className="px-2 py-2 text-right font-normal">Pass rate</th>
                 <th className="px-2 py-2 text-right font-normal">Hidden pass</th>
                 <th className="px-2 py-2 text-right font-normal">Pending</th>
+                {spreads && <th className="px-2 py-2 text-right font-normal">Spread</th>}
                 <th className="px-2 py-2 text-right font-normal">Cost</th>
                 <th className="px-2 py-2 text-right font-normal">Time</th>
                 <th className="px-4 py-2 text-right font-normal">Tools before edit</th>
@@ -441,7 +458,20 @@ function RunView({ id, nav, onChanged }: { id: string; nav: Nav; onChanged: () =
                     {e.hiddenPass ? `${e.hiddenPass.passed}/${e.hiddenPass.attempts}` : '–'}
                   </td>
                   <td className="px-2 py-2 text-right tabular-nums">{e.pending}</td>
-                  <td className="px-2 py-2 text-right tabular-nums">{usd(e.costUsd)}</td>
+                  {spreads && (
+                    <td
+                      className="px-2 py-2 text-right tabular-nums"
+                      title="Pass rate over repeats"
+                    >
+                      {spread(e) || '–'}
+                    </td>
+                  )}
+                  <td
+                    className="px-2 py-2 text-right tabular-nums"
+                    title={e.unpriced?.length ? `No price for ${e.unpriced.join(', ')}` : undefined}
+                  >
+                    {usd(e.costUsd, e.costEstimated)}
+                  </td>
                   <td className="px-2 py-2 text-right tabular-nums">{dur(e.wallMs)}</td>
                   <td className="px-4 py-2 text-right tabular-nums">
                     {num(e.toolCallsBeforeEdit)}
@@ -493,7 +523,7 @@ function AttemptCard({ a, onOpen }: { a: BenchAttempt; onOpen: (file: 'diff' | '
           </span>
         )}
         {s.pending > 0 && <span className="text-warn">{s.pending} pending</span>}
-        <span className="text-fg-3">{usd(a.metrics.costUsd)}</span>
+        <span className="text-fg-3">{usd(a.metrics.costUsd, a.metrics.costEstimated)}</span>
         <span className="text-fg-3">{dur(a.run.wallMs)}</span>
         <span className="text-fg-3" title="Tool calls before the first edit">
           orientation {num(a.metrics.toolCallsBeforeEdit)}

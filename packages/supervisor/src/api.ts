@@ -1797,5 +1797,7 @@ function benchRequest(body: Json): BenchRunRequest {
   if (repeat !== undefined) out.repeat = repeat;
   const budget = number('budget_min', false);
   if (budget !== undefined) out.budget_min = budget;
+  const cap = number('max_usd', false);
+  if (cap !== undefined) out.max_usd = cap;
   return out;
 }

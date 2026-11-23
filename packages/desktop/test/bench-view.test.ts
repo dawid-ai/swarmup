@@ -345,6 +345,52 @@ describe('Benchmarks run page', () => {
     expect(button('Stop', box)).toBeTruthy();
   });
 
+  it('marks estimated costs, shows the spread over repeats and the cost cap', async () => {
+    const codexAttempt: BenchAttempt = {
+      ...attempt,
+      agent: 'codex:engineer',
+      metrics: { ...attempt.metrics, costUsd: 0.31, costEstimated: true },
+    };
+    answers['/api/bench/runs/tally-1'] = {
+      run: { ...RUNS[1]!, overall: { ...overall(0.7), costEstimated: true, passRateSd: 0.1 } },
+      summary: {
+        repo: 'r',
+        overall: { ...overall(0.7), costEstimated: true, passRateSd: 0.1 },
+        entries: [
+          {
+            entry: 'TB-02',
+            attempts: 3,
+            passRate: 0.7,
+            hiddenPass: null,
+            pending: 0,
+            costUsd: 0.31,
+            costEstimated: true,
+            wallMs: 1000,
+            toolCallsBeforeEdit: 2,
+            timedOut: 0,
+            errors: 0,
+            passRateMin: 0.6,
+            passRateMax: 0.8,
+            passRateSd: 0.1,
+            costSdUsd: 0.05,
+          },
+        ],
+        cap: { maxUsd: 1, spentUsd: 1.02, hit: true, uncounted: 0 },
+        skipped: [{ entry: 'TB-08', attempt: 1 }],
+      },
+      attempts: [codexAttempt],
+    };
+    await render('tally-1');
+    const row = box.querySelector('[data-entry="TB-02"]')!;
+    expect(row.textContent).toContain('60–80% ±10');
+    expect(row.textContent).toContain('~$0.31');
+    expect(box.querySelector('[data-attempt="TB-02#1"]')?.textContent).toContain('~$0.31');
+    expect(box.textContent).toContain('Pass rate spread');
+    expect(box.querySelector('[data-testid="bench-cap"]')?.textContent).toBe(
+      "Cost cap $1.00: spent ~$1.02; reached, so 1 attempt(s) didn't start",
+    );
+  });
+
   it('compares two runs per entry with deltas', async () => {
     const e = (passRate: number, costUsd: number) => ({
       entry: 'TB-02',

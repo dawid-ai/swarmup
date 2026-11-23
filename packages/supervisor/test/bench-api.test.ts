@@ -167,6 +167,26 @@ describe('bench API', () => {
         spends: true,
       });
       expect((agent.data.plan as { attempts: unknown[] }).attempts).toHaveLength(2);
+      // A dollar cap goes into the plan and its dry-run lines; a bad one is refused.
+      const capped = await call('POST', '/api/bench/run', {
+        set: demo,
+        repo: under,
+        mode: 'agent',
+        entries: ['E-2'],
+        max_usd: 2.5,
+        dry_run: true,
+      });
+      expect(capped.data.plan).toMatchObject({ maxUsd: 2.5 });
+      expect((capped.data.plan as { lines: string[] }).lines.join('\n')).toContain('cost cap');
+      const badCap = await call('POST', '/api/bench/run', {
+        set: demo,
+        repo: under,
+        mode: 'agent',
+        max_usd: 0,
+        dry_run: true,
+      });
+      expect(badCap.status).toBe(400);
+      expect(badCap.data.error).toMatch(/max_usd/);
       const none = await call('POST', '/api/bench/run', {
         set: demo,
         repo: under,
