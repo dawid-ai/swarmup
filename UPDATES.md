@@ -3,6 +3,14 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.22 (2026-11-23)
+
+- **Updates that wait their turn.** Installing an update no longer fails with "swarmupd did not stop in time" while SwarmUp finishes syncing your projects; it waits up to 2 minutes for that.
+- **Readable update notes.** What's new now shows as whole bullets instead of broken lines.
+- **Try a change on part of the work.** A project can run a proposed agent change on a share of its tasks and compare the scores of both sides before you decide.
+- **Quality scores from a judge.** A project's rubric scorers now score finished work, on one PC per project and within a daily token budget you set.
+- **Benchmark history.** Every benchmark attempt is kept, and `swarmup bench history` lists them by set, agent or variant.
+
 ## v0.3.0-beta.21 (2026-11-23)
 
 - **Scheduled work from the project.** A project can keep its schedules in git: run an agent, start

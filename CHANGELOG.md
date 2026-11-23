@@ -6,6 +6,38 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.22 (2026-11-23)
+
+### Added
+
+- swarmupd keeps every attempt of a finished bench run (set, entry, agent, model, variant,
+  definition hash, pass rate, hidden criteria, cost, wall time) in `state.db`, and
+  `swarmup bench history [--set S] [--agent A] [--variant V]` lists them.
+- `swarm.yaml` `experiments` run a variant on a share of matching task runs (`id`, `variant`,
+  `share`, `scope`, `until`). The side is fixed per task by `sha256("experiment:" + id + task)` and kept across
+  runs, the run record and `run-start` event name the experiment, and a machine opts out with
+  `swarmupd.experiments: false`.
+- `swarmup scores --by-variant` splits each agent's task and run scores by variant, and score rows
+  carry `defs_hash`, `variant` and `experiment`. `swarmup launch --variant NAME` runs one run with
+  a variant.
+- `swarmup launch --defs-ref REF` and `swarmup bench run --defs-ref REF --root ROOT` run with the
+  store's definitions as a git ref had them, read with `git show` into a snapshot and never checked
+  out. The run is stamped with the ref, its commit and the snapshot's hash.
+- Rubric scorers in `scorers/<id>.yaml` now run. The one machine that judges a store
+  (`swarmupd.judge.scorers`: `true` for the roots it merges, or a list of roots; `scoring.runs_on`
+  in `swarm.yaml` names it) has the LLM judge score a deterministic sample of the closed tasks each
+  one applies to, blind by default, within `swarm.yaml` `scoring.daily_judge_tokens` per day (a
+  machine may lower it with `swarmupd.judge.daily_tokens`). The scores show in `swarmup scores`
+  like the built-in scorers', with the work's definition hash and variant.
+- The definition hash now covers `rubrics/`, so a run's stamp names the rubrics it was judged by.
+
+### Fixed
+
+- Installing an update no longer fails with "swarmupd did not stop in time" while swarmupd
+  finishes a store sync or a merge: it waits up to 2 minutes for that work instead of 15 seconds.
+- Release notes in **Settings > Updates** read as whole bullets and paragraphs instead of breaking
+  each one at the source file's line wraps.
+
 ## 0.3.0-beta.21 (2026-11-23)
 
 ### Added
