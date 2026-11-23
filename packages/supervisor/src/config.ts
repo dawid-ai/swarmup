@@ -20,6 +20,8 @@ import { checkBenchPrices } from './bench-cost.js';
 import type { MergeCheck } from './merge-checks.js';
 import type { NotifyConfig } from './notify.js';
 import { checkNotify } from './notify.js';
+import type { PublishConfig } from './publish.js';
+import { checkPublishConfig } from './publish.js';
 
 /** How to start one runtime. `{prompt}` is not used: the prompt always goes on stdin. */
 export interface RuntimeConfig {
@@ -472,6 +474,8 @@ export interface OpsdConfig {
   improve: ImproveConfig;
   /** MCP servers runs may get (W8): `swarmupd.mcp`, with values from `secrets.yml`. */
   mcp: McpConfig;
+  /** Publish adapters (W8 phase 3): `swarmupd.publish.<root>.<name>`, see `publish.ts`. */
+  publish: PublishConfig;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -599,6 +603,7 @@ export function opsdConfig(
     judge: checkJudge((raw as { judge?: unknown }).judge),
     improve: checkImprove((raw as { improve?: unknown }).improve),
     mcp: checkMcpConfig((raw as { mcp?: unknown }).mcp),
+    publish: checkPublishConfig((raw as { publish?: unknown }).publish),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {

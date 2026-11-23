@@ -180,6 +180,7 @@ import {
   PLAN_FIX_ROUNDS,
   PRIORITIES,
   PUBLISH_TYPE,
+  type PublishEdits,
   GATE_TYPE,
   PERSON_TYPES,
 } from './model.js';
@@ -679,6 +680,8 @@ export const RECORD_INBOX_DAYS = 7;
 /** Events that a `coordinated` root pushes at once; others wait for the batched sync. */
 const IMMEDIATE_SYNC = new Set([
   'claim',
+  // Another machine must see that a publish adapter ran before it could start the same one.
+  'publish-attempt',
   'handoff',
   'delegate',
   'verdict',
@@ -955,7 +958,29 @@ export interface PublishInput {
   blob?: string;
   /** The tag put on `commit`, such as `published/LC-0004`. */
   tag?: string;
+  /** The publish adapter that published it, when one did. */
+  adapter?: string;
+  /** What the person changed between the approval and the publish. */
+  edits?: PublishEdits;
   message?: string;
+}
+
+/** What a person hands a publish adapter (W8 phase 3): the commit and the files at it. */
+export interface PublishAttemptInput {
+  adapter: string;
+  commit: string;
+  /** The files, as `file` or `image` artifacts with their blobs at `commit`. */
+  artifacts: ReviewArtifact[];
+  /** Run again for content an earlier attempt already had, or on a closed task. */
+  again?: boolean;
+}
+
+/** The files of an attempt as one key: `path:blob` pairs, sorted. */
+export function publishContentKey(artifacts: readonly ReviewArtifact[] | undefined): string {
+  return (artifacts ?? [])
+    .map((a) => `${a.ref}:${a.blob ?? ''}`)
+    .sort()
+    .join('\n');
 }
 
 /** The most artifacts one review names. */
@@ -2739,6 +2764,8 @@ export class Workspace {
         ...(input.path ? { path: input.path } : {}),
         ...(input.blob ? { blob: input.blob.toLowerCase() } : {}),
         ...(input.tag ? { tag: input.tag } : {}),
+        ...(input.adapter ? { adapter: input.adapter } : {}),
+        ...(input.edits ? { edits: input.edits } : {}),
         body: input.message?.trim() || `Published at ${url}`,
       };
       if (v.meta.type !== PUBLISH_TYPE || !OPEN_STATUSES.has(v.status)) return [event];
@@ -2746,6 +2773,62 @@ export class Workspace {
         ctx.needPrivilege(`${v.meta.id} is owned by ${v.owner}`);
       }
       return [event, { type: 'done', body: `Published at ${url}` }];
+    });
+  }
+
+  /**
+   * Records that a person starts a publish adapter on a `publish` task (W8 phase 3), before it
+   * runs: a `publish-attempt` event with the adapter, the commit and the files. Refuses, under the
+   * task's lock, a second attempt for the same files and blobs, or one on a closed task, unless
+   * `again`; so an adapter runs once per content. Only a person outside any run may start one.
+   */
+  publishAttempt(ref: string, input: PublishAttemptInput): ActResult {
+    const actor = this.requireActor();
+    if (!isHuman(actor) || this.run) {
+      throw new OpsError(
+        `only a person publishes, outside any run; ${this.run ? `run ${this.run}` : actor} cannot`,
+      );
+    }
+    if (!/^[0-9a-f]{7,64}$/i.test(input.commit)) {
+      throw new OpsError(`'${input.commit}' is no commit id`, 2);
+    }
+    if (input.artifacts.length === 0) throw new OpsError('a publish needs at least one file', 2);
+    const { root, id } = this.resolve(ref);
+    return this.act(ref, (v, ctx) => {
+      if (v.meta.type !== PUBLISH_TYPE) {
+        throw new OpsError(
+          `${id} is a ${v.meta.type} task: publish adapters run on publish tasks`,
+          2,
+        );
+      }
+      if (v.owner && !ownerMatches(v.owner, ctx.actor)) {
+        ctx.needPrivilege(`${id} is owned by ${v.owner}`);
+      }
+      if (!input.again) {
+        if (!OPEN_STATUSES.has(v.status)) {
+          throw new OpsError(`${id} is ${v.status}; pass --again to publish it again`, 2);
+        }
+        const key = publishContentKey(input.artifacts);
+        const prior = root
+          .readEvents(id)
+          .find((e) => e.type === 'publish-attempt' && publishContentKey(e.artifacts) === key);
+        if (prior) {
+          throw new OpsError(
+            `${id}: adapter ${prior.adapter ?? '?'} already ran on these files (${prior.id} by ${prior.actor}, ${prior.at}); pass --again to run it again`,
+            2,
+          );
+        }
+      }
+      const files = input.artifacts.map((a) => a.ref).join(', ');
+      return [
+        {
+          type: 'publish-attempt',
+          adapter: input.adapter,
+          commit: input.commit.toLowerCase(),
+          artifacts: input.artifacts,
+          body: `Publishing ${files} at ${input.commit.slice(0, 10)} with adapter ${input.adapter}${input.again ? ' (again)' : ''}`,
+        },
+      ];
     });
   }
 

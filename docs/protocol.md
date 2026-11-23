@@ -253,6 +253,25 @@ Any kind may carry `text` as a description. The built-in checks are:
 - `image-size`: each PNG or JPEG at `path` is exactly `width` by `height` pixels, read from its
   header, and with `max_kb` at most that many kilobytes (1 KB is 1,024 bytes). Any other file
   fails. Social cards are `{ path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }`.
+- `readability`: the prose at `path` scores a Flesch-Kincaid grade level of at most `max_grade`
+  and at least `min_grade` (either or both), with the grade
+  `0.39 * words / sentences + 11.8 * syllables / words - 15.59` rounded to one decimal. Front matter, fenced and inline code, HTML tags, images and
+  link addresses are left out; a link keeps its text. Each paragraph, heading, list item and
+  table row is its own unit, and a sentence ends at `.`, `!` or `?` before a space or the end of
+  the unit. A word is a run of letters (`don't` is one, numbers are none), and syllables come
+  from a fixed rule, not a dictionary (`syllables` in `packages/core/src/readability.ts`), so
+  every machine gets the same grade. A file with no prose fails. Grade 8 to 9 reads as plain
+  English: `{ path: 'posts/*.md', max_grade: 9 }`.
+- `page-contains`: the page at `url`, or with `from: published` the URL the task's `publish`
+  event records, answers 2xx and holds every string of `contains` and none of `absent` (one or a
+  list each). A string counts when it is in the HTML or in its text with scripts, styles and tags
+  removed and entities decoded; case is ignored unless `case-sensitive: true`. It follows
+  at most 5 redirects, waits 15 seconds at most and reads the first 2 MB. It refuses a host
+  that is or resolves to a loopback, private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`),
+  link-local (`169.254/16`, `fe80::/10`) or unspecified address, checked again at every
+  redirect. It reads the published page, so
+  it takes `when: publish` and is refused without it:
+  `{ check: page-contains, args: { from: published, contains: github.com/you/repo }, when: publish }`.
 
 Every `path` takes one path, a list, or globs (`posts/*.md`, `assets/**/*.png`): `*` and `?`
 stay inside one folder and `**` crosses folders. The check runs on every file that matches, and a
@@ -261,7 +280,7 @@ glob that matches no file fails it, as a missing file does.
 A criterion with `when: publish` holds after the work is published, not at merge: the merge and
 `swarmup criteria check` leave it out, and `swarmup published` runs it, with `{url}` in a check's
 arguments read as the published URL, such as `{ check: url-ok, args: { url: '{url}' }, when:
-publish }`.
+publish }`. `page-contains` is valid only there.
 
 - **Set it** with `swarmup new TITLE --done-when "CHECK"`, once per criterion. A value in braces
   is a typed criterion in YAML: `--done-when '{id: tests, kind: command, run: npm test}'`. A text
@@ -397,6 +416,16 @@ work, not live work: publishing is a separate step that only a person takes. See
   criteria. swarmupd merges nothing for a `publish` task. In the desktop app, **Mark published**
   in the task panel of a `publish` task a person owns does the same through
   `POST /api/tasks/:id/published`, which answers a run token with 403.
+- **Publish adapters.** A `publish` task with the label `publish:<name>` names an adapter that
+  `swarmupd.publish.<root>.<name>` defines on the machine (`manual`, `command` or `mcp`). A
+  person runs it with `swarmup publish ID` (or **Publish** in the app). A `publish-attempt`
+  event (`adapter`, `commit`, and the files as `artifacts` with blobs) is written before it runs,
+  and a second attempt for the same files and blobs is refused unless `--again`, so an adapter
+  posts once. On success the URL it reports becomes the `publish` event, with `adapter`. See
+  [Publish adapters](supervisor.md#publish-adapters).
+- **Edits after approval.** Every `publish` event of approved work records `edits`: how many
+  words the person changed between each approved file and what was published. The
+  `post-approval-edits` score reads it.
 
 ## Milestones and plans
 
@@ -1051,7 +1080,8 @@ question blocks nothing; it is its own task.
 - A `publish` task is a person's (W8): `swarmup new` gives one without `--to` to the root's
   `human`, and `new`, `assign`, `handoff` and `claim` refuse an agent as its owner or claimer.
   `--force` lets it through and records it: `forced: true` on the event, or `owner_forced: true`
-  in `task.md`. Only a person outside any run records a publish with `swarmup published`.
+  in `task.md`. Only a person outside any run records a publish with `swarmup published` or runs
+  a publish adapter with `swarmup publish`.
 - `--force` lets anyone through and records `forced: true` in the event.
 - `swarmup review` records where the work is as fields of the review event (AO-0384, AO-0396):
   `commit` and `branch`, and `repo` (`code`, or `store` for a task store's own repo). In a code

@@ -7,7 +7,7 @@ import YAML from 'yaml';
 import { run } from '../src/cli.js';
 
 // A content project end to end through the CLI (W8): `new-project --template campaign --store`,
-// `review --artifact`, `swarmup artifact` and `swarmup published`.
+// `review --artifact`, `swarmup artifact`, `swarmup published` and `swarmup publish` (phase 3).
 
 const dirs: string[] = [];
 
@@ -218,4 +218,49 @@ describe('review artifacts and publish through the CLI', () => {
     };
     expect(after.task.status).toBe('done');
   });
+});
+
+describe('swarmup publish', () => {
+  it('runs the adapter the label names once, for a person only, and records its URL', async () => {
+    const { config, ws } = await campaign();
+    const as = (actor: string, argv: string[]) => swarmup(config, ws, actor, argv);
+    mkdirSync(join(ws, 'posts'), { recursive: true });
+    writeFileSync(join(ws, 'posts', 'hello.md'), '# Hello\n');
+    writeFileSync(
+      join(ws, 'pub.mjs'),
+      'console.log(`url: https://blog.example/${process.env.SWARMUP_PUBLISH_TASK}`);\n',
+    );
+    git(ws, 'add', '-A');
+    git(ws, 'commit', '-qm', 'approved post');
+    const cfg = YAML.parse(readFileSync(config, 'utf8')) as Record<string, unknown>;
+    cfg.swarmupd = { publish: { launch: { blog: { kind: 'command', run: 'node pub.mjs' } } } };
+    writeFileSync(config, YAML.stringify(cfg));
+    const pub = (
+      await as('human:dawid', ['new', 'Post hello', '--type', 'publish', '--label', 'publish:blog'])
+    ).out.trim();
+    const page = join(ws, '..', 'preview.html');
+    const preview = await as('claude:writer', [
+      'preview',
+      pub,
+      '--artifact',
+      'posts/hello.md',
+      '--out',
+      page,
+    ]);
+    expect(preview.code).toBe(0);
+    expect(preview.out).toContain(`wrote ${page}`);
+    expect(readFileSync(page, 'utf8')).toContain('<h1>Hello</h1>');
+    const agent = await as('claude:writer', ['publish', pub, '--artifact', 'posts/hello.md']);
+    expect(agent.code).toBe(1);
+    expect(agent.err).toMatch(/only a person publishes/);
+    const done = await as('human:dawid', ['publish', pub, '--artifact', 'posts/hello.md']);
+    expect(done.err).toBe('');
+    expect(done.code).toBe(0);
+    expect(done.out).toMatch(
+      new RegExp(`${pub} published at https://blog.example/${pub} by adapter blog: posts/hello.md`),
+    );
+    const again = await as('human:dawid', ['publish', pub, '--artifact', 'posts/hello.md']);
+    expect(again.code).toBe(2);
+    expect(again.err).toMatch(/pass --again/);
+  }, 60_000);
 });

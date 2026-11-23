@@ -35,6 +35,9 @@ describe('IPC allowlist', () => {
       allowedCall('GET', '/api/tasks/demo%2FLC-0004/artifact?path=posts%2Fx.md&commit=abc1234'),
     ).toBe(true);
     expect(allowedCall('POST', '/api/tasks/LC-0004/artifact')).toBe(false);
+    // A publish task's adapter: read which, and run it (W8 phase 3).
+    expect(allowedCall('GET', '/api/tasks/demo%2FLC-0004/publish')).toBe(true);
+    expect(allowedCall('POST', '/api/tasks/demo%2FLC-0004/publish')).toBe(true);
     // A milestone's plan (AO-0321): read it, approve it, send it back; progress for the board.
     expect(allowedCall('GET', '/api/tasks/demo%2FAO-0001/plan')).toBe(true);
     expect(allowedCall('POST', '/api/tasks/demo%2FAO-0001/plan-approve')).toBe(true);

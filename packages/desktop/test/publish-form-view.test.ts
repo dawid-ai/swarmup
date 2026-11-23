@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // W8 phase 2 in the task panel and the criteria builder: Mark published on a publish task a
 // person owns, which records the URL through the person-only endpoint, and the builder entries
-// of image-alt, image-size and char-count's urls_as.
+// of image-alt, image-size and char-count's urls_as; phase 3's readability and page-contains.
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -154,6 +154,60 @@ describe('Mark published', () => {
   });
 });
 
+describe('Publish with an adapter', () => {
+  it('runs the adapter the publish:<name> label names, once more only with Again', async () => {
+    detail = { ...detail, task: task({ labels: ['publish:blog'] }) };
+    await mount();
+    expect(button('Mark published')).toBeDefined();
+    await click(button('Publish')!);
+    const form = box.querySelector('[data-publish-adapter]')!;
+    expect(form.textContent).toContain('blog');
+    await click(button('Publish now')!);
+    expect(posts).toEqual([{ path: `${TASK_PATH}/publish`, body: { as: 'human:dawid' } }]);
+    expect(box.querySelector('[data-publish-adapter]')).toBeNull();
+    await click(button('Publish')!);
+    const again = box.querySelector<HTMLInputElement>('[data-publish-adapter] input')!;
+    await click(again);
+    await click(button('Publish now')!);
+    expect(posts[1]!.body).toEqual({ as: 'human:dawid', again: true });
+  });
+
+  it('is not offered without the label', async () => {
+    await mount();
+    expect(button('Publish')).toBeUndefined();
+  });
+});
+
+describe('Preview', () => {
+  it('renders the approved files the preview route returns', async () => {
+    const call = window.swarmup!.call;
+    window.swarmup!.call = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+      path === `${TASK_PATH}/preview`
+        ? Promise.resolve({
+            ok: true,
+            data: {
+              commit: 'abcdef1234567890',
+              files: [
+                {
+                  path: 'posts/x.md',
+                  kind: 'markdown',
+                  text: '# Launch\n\nThe **approved** words.',
+                },
+              ],
+            },
+          })
+        : call(method, path, body);
+    await mount();
+    await click(button('Preview')!);
+    await settle();
+    const panel = box.querySelector('[data-publish-preview]')!;
+    expect(panel.textContent).toContain('at abcdef1234');
+    expect(panel.querySelector('[data-preview-file="posts/x.md"] strong')?.textContent).toBe(
+      'approved',
+    );
+  });
+});
+
 describe('the builders of the phase 2 checks', () => {
   it('round-trips image-alt and image-size, and needs a width and a height', () => {
     const alt = {
@@ -178,6 +232,45 @@ describe('the builders of the phase 2 checks', () => {
     });
     expect(entryOf(d)).toEqual(size);
     expect(draftProblem({ ...d, args: { ...d.args, height: '' } })).toBe('Height is required');
+  });
+
+  it('round-trips readability, and needs a grade bound', () => {
+    const spec = {
+      id: 'grade',
+      kind: 'check' as const,
+      check: 'readability',
+      args: { path: 'posts/*.md', max_grade: 9, min_grade: 6 },
+    };
+    const d = draftOf(spec, 0);
+    expect(d.args).toEqual({ path: 'posts/*.md', max_grade: '9', min_grade: '6' });
+    expect(entryOf(d)).toEqual(spec);
+    expect(draftProblem({ ...d, args: { path: 'posts/*.md' } })).toBe('Set Max grade or Min grade');
+    expect(draftProblem({ ...d, args: { ...d.args, min_grade: '10' } })).toBe(
+      'Min grade is above Max grade',
+    );
+  });
+
+  it('round-trips page-contains, after publish only', () => {
+    const spec = {
+      id: 'live',
+      kind: 'check' as const,
+      check: 'page-contains',
+      args: { from: 'published', contains: ['github.com/you/repo', 'Launch'], absent: 'TODO' },
+      when: 'publish' as const,
+    };
+    const d = draftOf(spec, 0);
+    expect(d.args).toEqual({
+      from: 'published',
+      contains: 'github.com/you/repo, Launch',
+      absent: 'TODO',
+    });
+    expect(entryOf(d)).toEqual(spec);
+    expect(draftProblem(d)).toBeNull();
+    expect(draftProblem({ ...d, when: '' })).toMatch(/check it after publish/);
+    expect(draftProblem({ ...d, args: { from: '', contains: 'x' } })).toBe(
+      'Set URL, or check the published URL',
+    );
+    expect(draftProblem({ ...d, args: { from: 'published' } })).toBe('Set Contains or Absent');
   });
 
   it('round-trips char-count urls_as', () => {

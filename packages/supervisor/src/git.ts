@@ -216,7 +216,7 @@ function collect(stream: Readable, limit: number, onOverflow: () => void): { tex
  * Stops `pid` and every process under it, while `pid` still runs. Resolves to why the stop
  * failed, or to `undefined` when it went through; the caller kills git itself in any case.
  */
-const stopTree: TreeStop = (pid) => {
+export const stopTree: TreeStop = (pid) => {
   if (process.platform !== 'win32') {
     try {
       process.kill(-pid, 'SIGKILL');

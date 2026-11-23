@@ -73,8 +73,16 @@ The stages, by hand or from the workflow:
    swarmup published LC-0010 --url https://x.com/you/status/1 --artifact posts/x-thread.md
    ```
 
-   This tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
-   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}`. In the desktop
+   `swarmup preview LC-0010` renders the approved Markdown to an HTML page first, for a last
+   look (**Preview** in the task panel).
+
+   With an adapter on this machine (`swarmupd.publish.<root>.<name>`) and the label
+   `publish:<name>` on the task, `swarmup publish LC-0010` posts it for you instead, once, and
+   records the URL the adapter prints. See [Publish adapters](supervisor.md#publish-adapters).
+
+   Recording a publish tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
+   and runs its `when: publish` criteria, such as a `url-ok` check on `{url}` or a
+   `page-contains` check that the live page holds the repo link. In the desktop
    app, **Mark published** in the task panel records the same: the URL and, optionally, the
    file.
 
@@ -106,6 +114,10 @@ done_when:
     kind: check
     check: image-size
     args: { path: 'assets/og/*.png', width: 1200, height: 630, max_kb: 500 }
+  - id: plain
+    kind: check
+    check: readability
+    args: { path: 'posts/*.md', max_grade: 9 }
   - id: voice
     kind: rubric
     rubric: rubrics/brand-voice.md
@@ -113,7 +125,8 @@ done_when:
 ```
 
 `urls_as: 23` counts each link as 23 characters, as X does, so a long repo URL does not push a
-post over 280.
+post over 280. `readability` scores each post's Flesch-Kincaid grade level with a pinned
+formula and syllable rule, so the grade is the same on every machine.
 
 ## Tools through MCP
 

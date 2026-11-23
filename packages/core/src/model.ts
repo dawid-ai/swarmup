@@ -28,8 +28,9 @@ export type Priority = (typeof PRIORITIES)[number];
  * (AO-0110). `criteria` replaces a task's `done_when` list and `criteria-check` records check
  * results. `defs-propose`, `defs-promote`, `defs-reject` and `defs-rollback` record a change to the
  * definitions proposed as a variant, and what a person did with it (W6). `publish` records that a person
- * published the work (W8). Unknown types from newer versions are
- * kept and ignored.
+ * published the work (W8), and `publish-attempt` that a person started a publish adapter, written
+ * before it runs so it runs once per content. Unknown types from newer versions are kept and
+ * ignored.
  */
 export const EVENT_TYPES = [
   'claim',
@@ -71,6 +72,7 @@ export const EVENT_TYPES = [
   'defs-reject',
   'defs-rollback',
   'publish',
+  'publish-attempt',
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -191,6 +193,16 @@ export interface ReviewArtifact {
   /** doc: the document's revision, when its service names one. */
   rev?: string;
   label?: string;
+}
+
+/** What `publish` events record of the edits between approval and publishing (W8 phase 3). */
+export interface PublishEdits {
+  /** Words taken out plus words put in, over every file. */
+  changed: number;
+  /** Words of the approved text plus words of the published text, over every file. */
+  total: number;
+  /** Per file: the task whose approval it comes from, and its approving verdict. */
+  files: Array<{ path: string; task: string; verdict: string; changed: number; total: number }>;
 }
 
 /** The kinds a review artifact may have. */
@@ -369,6 +381,18 @@ export interface OpsEvent {
   blob?: string;
   /** publish: the tag swarmupd put on `commit` in the workspace, `published/<ID>`. */
   tag?: string;
+  /**
+   * publish-attempt: the publish adapter (`swarmupd.publish.<root>.<name>`) a person started, with
+   * the workspace `commit` and the files (`artifacts`, with blobs) it was given. publish: the
+   * adapter that published, when one did.
+   */
+  adapter?: string;
+  /**
+   * publish: how much the person changed the approved work before publishing it (W8 phase 3):
+   * words, from the approved blob of each published file to its blob at `commit`. The
+   * `post-approval-edits` scorer reads it.
+   */
+  edits?: PublishEdits;
   /**
    * comment by swarmupd (`opsd:merge`): it has nothing to merge for the approved task, so tasks
    * blocked on it stop waiting for a merge (AO-0228). A note on a merge that failed has none.

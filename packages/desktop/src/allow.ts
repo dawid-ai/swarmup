@@ -12,6 +12,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `tasks/${SEG}/diff`,
     // One file of a task's review at the reviewed commit, for the Work section (W8).
     `tasks/${SEG}/artifact`,
+    // The adapter a publish task names, for its Publish button, and the preview of what it
+    // would publish (W8 phase 3).
+    `tasks/${SEG}/(publish|preview)`,
     `tasks/${SEG}/plan`,
     `tasks/${SEG}/criteria-check`,
     `tasks/${SEG}/criteria-judge`,
@@ -70,6 +73,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `tasks/${SEG}/(criteria|criteria-check|criteria-judge|brief)`,
     // Mark published (W8): a person records where a publish task's work went live.
     `tasks/${SEG}/published`,
+    // Publish (W8 phase 3): a person runs a publish task's adapter.
+    `tasks/${SEG}/publish`,
     'runs',
     `runs/${SEG}/kill`,
     `runs/${SEG}/procs`,

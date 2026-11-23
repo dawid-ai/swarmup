@@ -248,6 +248,29 @@ describe('publish and artifact routes', () => {
     expect(event.blob).toBe(git(repo, 'rev-parse', 'HEAD:posts/x.md'));
   });
 
+  it('names a publish task adapter, and refuses a run that asks to publish with 403', async () => {
+    const { call, as, registerRun } = await apiSetup();
+    as('human:dawid').newTask({ title: 'Post it', type: 'publish', labels: ['publish:blog'] });
+    const info = await call('full-token', 'GET', '/api/tasks/T-0001/publish');
+    expect(info).toEqual({ status: 200, data: { adapter: { name: 'blog', kind: null } } });
+    registerRun('run-token');
+    const refused = await call('run-token', 'POST', '/api/tasks/T-0001/publish', {});
+    expect(refused.status).toBe(403);
+    expect(String(refused.data.error)).toMatch(/publishing is for the human/);
+    const events = as('human:dawid').showEvents('1').events;
+    expect(events.some((e) => e.type === 'publish-attempt')).toBe(false);
+    // The preview reads the workspace for anyone, and writes nothing.
+    const preview = await call('run-token', 'GET', '/api/tasks/T-0001/preview?artifact=posts/x.md');
+    expect(preview.status).toBe(200);
+    expect(preview.data.files).toEqual([
+      expect.objectContaining({
+        path: 'posts/x.md',
+        kind: 'markdown',
+        html: '<p>Old words here.</p>',
+      }),
+    ]);
+  });
+
   it('serves a reviewed file at its commit with its base, an image as data, and refuses paths outside', async () => {
     const { repo, call, as } = await apiSetup();
     as('human:dawid').newTask({ title: 'Thread', type: 'content', owner: 'fake:engineer' });

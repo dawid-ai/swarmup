@@ -655,6 +655,57 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const { view, ...rest } = done;
         return send(res, 200, { ...rest, task: compact(view) });
       }
+      // What a publish of the task would hand over, rendered (W8 phase 3): `?artifact=` (one or
+      // more) and `?commit=` narrow it. Read-only.
+      if (method === 'GET' && action === 'preview') {
+        const paths = q.getAll('artifact').filter(Boolean);
+        const commit = q.get('commit');
+        try {
+          return send(
+            res,
+            200,
+            await sup.previewTask(ref, {
+              ...(paths.length > 0 ? { paths } : {}),
+              ...(commit ? { commit } : {}),
+            }),
+          );
+        } catch (err) {
+          if (err instanceof NoArtifact) throw new HttpError(404, err.message);
+          throw err;
+        }
+      }
+      // A person publishes a publish task with its adapter (W8 phase 3); never a run. The GET
+      // names the adapter, for the app's Publish button.
+      if (action === 'publish') {
+        if (method === 'GET') return send(res, 200, { adapter: sup.publishAdapterOf(ref) });
+        if (method === 'POST') {
+          humanOnly('publishing');
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const one = str(body.artifact);
+          const paths: string[] | undefined = Array.isArray(body.artifacts)
+            ? body.artifacts.filter((a: unknown): a is string => typeof a === 'string')
+            : one
+              ? [one]
+              : undefined;
+          const done = await sup.publishTask(ref, ws.actor, {
+            ...(str(body.adapter) ? { adapter: str(body.adapter) } : {}),
+            ...(body.again === true ? { again: true } : {}),
+            ...(paths?.length ? { paths } : {}),
+            ...(str(body.commit) ? { commit: str(body.commit) } : {}),
+          });
+          if (!done.ok) {
+            // The attempt and a comment on what to do next are on the task.
+            throw new HttpError(
+              502,
+              `adapter ${done.adapter} failed (${done.why ?? 'no reason'}); it will not run again for these files without again: if it went live, record the URL with Mark published`,
+            );
+          }
+          // Published: a step of recording it that failed is in `problems`, never a reason to
+          // run the adapter again.
+          const { view, ...rest } = done;
+          return send(res, 200, { ...rest, task: view ? compact(view) : null });
+        }
+      }
       // A milestone's plan as `swarmup plan show` reports it (AO-0110).
       if (method === 'GET' && action === 'plan') return send(res, 200, ws.planShow(ref));
       if (method === 'GET' && !action) {

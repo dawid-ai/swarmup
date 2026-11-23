@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import type {
@@ -131,6 +132,9 @@ import {
   costText,
   judgeMessage,
   judgeTask,
+  editsOfPublish,
+  publishWithAdapter,
+  taskPreview,
 } from '@swarmup/supervisor';
 import { envVar, reviewSources } from '@swarmup/core';
 import type { ReviewSourceFields } from '@swarmup/core';
@@ -614,12 +618,14 @@ async function publishedCommand(ctx: Ctx): Promise<number | void> {
     rev: str(ctx.opts.commit) ?? baseOf(ctx, root.name) ?? 'HEAD',
     ...(artifact ? { path: relative(top, resolve(ctx.io.cwd, artifact)) } : {}),
   });
+  const edits = await editsOfPublish(ws, ref, async (args) => syncGit(args), target);
   const res = ws.published(ref, {
     url,
     commit: target.commit,
     path: target.path,
     blob: target.blob,
     tag: target.tag,
+    ...(edits ? { edits } : {}),
     message: str(ctx.opts.message),
   });
   const results = await ws.publishChecks(ref, url, { cwd: top });
@@ -640,6 +646,118 @@ async function publishedCommand(ctx: Ctx): Promise<number | void> {
     );
   }
   return ids.some((cid) => results[cid]!.result === 'fail') ? 1 : 0;
+}
+
+/**
+ * `swarmup publish ID`: a person publishes a `publish` task with its adapter (W8 phase 3), the
+ * one its `publish:<name>` label names or `--adapter`. The attempt is recorded first, so the
+ * adapter runs once for the same files unless `--again`; on success the URL it printed becomes
+ * the `publish` event and the post-publish criteria run.
+ */
+async function publishCommand(ctx: Ctx): Promise<number | void> {
+  const ws = ctx.ws();
+  const ref = arg(ctx, 0, 'task id');
+  const actor = ws.requireActor();
+  if (!isHuman(actor) || ws.run) {
+    throw new OpsError('only a person publishes, outside any run', 1);
+  }
+  const { root } = ws.resolve(ref);
+  const top = workspaceTopOf(ctx, root.name);
+  if (!top)
+    throw new OpsError(`the workspace of ${root.name} is in no git checkout here: pass --cwd`, 1);
+  const cfg = opsdConfig(ws.user);
+  const syncGit = gitRunIn(top, ctx.io.env);
+  const paths = texts(ctx.opts.artifact).map((a) => relative(top, resolve(ctx.io.cwd, a)));
+  const base = baseOf(ctx, root.name);
+  const adapter = str(ctx.opts.adapter);
+  const commit = str(ctx.opts.commit);
+  const done = await publishWithAdapter({
+    ws,
+    ref,
+    publish: cfg.publish,
+    mcp: cfg.mcp,
+    top,
+    git: async (args) => syncGit(args),
+    env: ctx.io.env,
+    ...(base ? { base } : {}),
+    opts: {
+      ...(adapter ? { adapter } : {}),
+      ...(ctx.opts.again === true ? { again: true } : {}),
+      ...(paths.length > 0 ? { paths } : {}),
+      ...(commit ? { commit } : {}),
+    },
+  });
+  if (ctx.opts.json) {
+    const { view, ...rest } = done;
+    ctx.io.out(JSON.stringify({ ...rest, status: view?.status ?? null }, null, 2));
+    return done.ok && !done.problems ? 0 : 1;
+  }
+  const what = `${done.files.join(', ')} at ${done.commit.slice(0, 10)}`;
+  if (!done.ok) {
+    ctx.io.err(`${ref}: adapter ${done.adapter} failed on ${what}: ${done.why ?? 'no reason'}`);
+    if (done.output) ctx.io.err(done.output);
+    ctx.io.err(
+      `attempt ${done.attempt} stands: if it went live, run swarmup published ${ref} --url URL; else fix the adapter and pass --again`,
+    );
+    return 1;
+  }
+  ctx.io.out(
+    `${ref} published at ${done.url} by adapter ${done.adapter}: ${what}, tagged ${done.target?.tag ?? '-'}`,
+  );
+  if (done.problems) {
+    // The work is live: say what was not recorded, never to run the adapter again.
+    ctx.io.err(`${ref} IS published at ${done.url}, but some of recording it failed:`);
+    for (const p of done.problems) ctx.io.err(`- ${p}`);
+    return 1;
+  }
+  const results = done.results ?? {};
+  for (const cid of Object.keys(results)) {
+    const r = results[cid]!;
+    ctx.io.out(
+      `${pad(cid, 12)} ${pad(r.result, 4)}  ${(r.note ?? r.evidence ?? '').split('\n')[0]}`,
+    );
+  }
+  return Object.values(results).some((r) => r.result === 'fail') ? 1 : 0;
+}
+
+/**
+ * `swarmup preview ID`: renders what a publish of the task would hand over (W8 phase 3), the
+ * approved files at the commit, into one HTML page that runs no script, and prints its path.
+ */
+async function previewCommand(ctx: Ctx): Promise<number | void> {
+  const ws = ctx.ws();
+  const ref = arg(ctx, 0, 'task id');
+  const { root, id } = ws.resolve(ref);
+  const top = workspaceTopOf(ctx, root.name);
+  if (!top)
+    throw new OpsError(`the workspace of ${root.name} is in no git checkout here: pass --cwd`, 1);
+  const syncGit = gitRunIn(top, ctx.io.env);
+  const paths = texts(ctx.opts.artifact).map((a) => relative(top, resolve(ctx.io.cwd, a)));
+  const base = baseOf(ctx, root.name);
+  const commit = str(ctx.opts.commit);
+  const preview = await taskPreview({
+    ws,
+    ref,
+    top,
+    git: async (args) => syncGit(args),
+    env: ctx.io.env,
+    ...(base ? { base } : {}),
+    opts: { ...(paths.length > 0 ? { paths } : {}), ...(commit ? { commit } : {}) },
+  });
+  const out = str(ctx.opts.out);
+  const file = out
+    ? resolve(ctx.io.cwd, out)
+    : join(mkdtempSync(join(tmpdir(), 'swarmup-preview-')), `${root.name}-${id}.html`);
+  writeFileSync(file, preview.page);
+  if (ctx.opts.json) {
+    // The page is in the file; the answer keeps each file's parts.
+    const { task, commit: at, files } = preview;
+    return void ctx.io.out(JSON.stringify({ task, commit: at, files, file }, null, 2));
+  }
+  ctx.io.out(
+    `${id}: ${preview.files.map((f) => f.path).join(', ')} at ${preview.commit.slice(0, 10)}`,
+  );
+  ctx.io.out(`wrote ${file}`);
 }
 
 /**
@@ -2398,6 +2516,31 @@ const COMMANDS: Record<string, Command> = {
       message: { type: 'string', short: 'm' },
     },
     run: (ctx) => publishedCommand(ctx),
+  },
+  publish: {
+    usage: 'publish ID [--adapter NAME] [--again] [--artifact PATH]... [--commit REV] [--cwd DIR]',
+    summary:
+      'a person publishes a publish task with its adapter (the publish:<name> label, or --adapter) from swarmupd.publish.<root>.<name>: records the attempt, hands the adapter the approved files at the commit (the merge base, or --commit), and records the URL it prints; once per files and blobs unless --again',
+    options: {
+      adapter: { type: 'string' },
+      again: { type: 'boolean' },
+      artifact: { type: 'string', multiple: true },
+      commit: { type: 'string' },
+      cwd: { type: 'string' },
+    },
+    run: (ctx) => publishCommand(ctx),
+  },
+  preview: {
+    usage: 'preview ID [--artifact PATH]... [--commit REV] [--out FILE] [--cwd DIR]',
+    summary:
+      'render what a publish of the task would hand over, its approved Markdown (or --artifact) at the commit (the merge base, or --commit), into one HTML page that runs no script; prints its path (--out, else a temp file)',
+    options: {
+      artifact: { type: 'string', multiple: true },
+      commit: { type: 'string' },
+      out: { type: 'string' },
+      cwd: { type: 'string' },
+    },
+    run: (ctx) => previewCommand(ctx),
   },
   verdict: {
     usage: `verdict ID approve|changes MESSAGE [--criteria-file F|-] [--pass ID[:NOTE]]... [--fail ID[:NOTE]]... [--na ID[:NOTE]]... ${MARK_USAGE}`,

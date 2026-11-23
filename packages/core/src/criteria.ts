@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import YAML from 'yaml';
 import { doneWhenLines, OpsError } from './ids.js';
 import type { OpsEvent, TaskMeta } from './model.js';
+import { readability } from './readability.js';
 
 /**
  * What kind of check a criterion is:
@@ -36,8 +37,13 @@ export const CHECK_NAMES = [
   'front-matter',
   'image-alt',
   'image-size',
+  'readability',
+  'page-contains',
 ] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
+
+/** The checks that read the published page: valid only with `when: publish`. */
+export const POST_PUBLISH_CHECKS: ReadonlySet<CheckName> = new Set(['page-contains']);
 
 /** The kinds the merge and `swarmup criteria check` run; a reviewer leaves them alone. */
 export const RUN_KINDS: ReadonlySet<CriterionKind> = new Set(['command', 'check']);
@@ -210,6 +216,42 @@ function checkArgs(name: CheckName, args: Record<string, unknown>, where: string
       }
       num('max_kb');
       break;
+    case 'readability': {
+      need('path');
+      for (const f of ['min_grade', 'max_grade']) {
+        const v = args[f];
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v))) {
+          bad(`${where}: args.${f} must be a number`);
+        }
+      }
+      if (args.min_grade === undefined && args.max_grade === undefined) {
+        bad(`${where}: check readability needs args.max_grade or args.min_grade`);
+      }
+      if (
+        typeof args.min_grade === 'number' &&
+        typeof args.max_grade === 'number' &&
+        args.min_grade > args.max_grade
+      ) {
+        bad(`${where}: args.min_grade is above args.max_grade`);
+      }
+      break;
+    }
+    case 'page-contains': {
+      if ((args.url === undefined) === (args.from === undefined)) {
+        bad(`${where}: check page-contains needs args.url or args.from: published, not both`);
+      }
+      if (args.url !== undefined) need('url');
+      if (args.from !== undefined && args.from !== 'published') {
+        bad(`${where}: args.from must be published, the URL the task's publish event records`);
+      }
+      if (args.contains !== undefined) need('contains');
+      if (args.absent !== undefined) need('absent');
+      if (args.contains === undefined && args.absent === undefined) {
+        bad(`${where}: check page-contains needs args.contains or args.absent`);
+      }
+      bool('case-sensitive');
+      break;
+    }
     case 'contains':
       need('path');
       need('text');
@@ -288,6 +330,12 @@ function readSpec(raw: Record<string, unknown>, where: string): CriterionSpec {
       const args = raw.args ?? {};
       if (typeof args !== 'object' || Array.isArray(args)) bad(`${where}: args must be a mapping`);
       checkArgs(spec.check, args as Record<string, unknown>, where);
+      // A page exists to check only once the work is published.
+      if (POST_PUBLISH_CHECKS.has(spec.check) && spec.when !== 'publish') {
+        bad(
+          `${where}: check ${spec.check} reads the published page, so it runs only after publishing: add when: publish`,
+        );
+      }
       spec.args = args as Record<string, unknown>;
       break;
     }
@@ -423,7 +471,7 @@ export const TYPE_CRITERIA: Readonly<
   },
   publish: {
     defaults: [],
-    hint: 'a `check` criterion with `when: publish`, such as url-ok on {url}',
+    hint: 'a `check` criterion with `when: publish`, such as url-ok on {url} or page-contains',
   },
 };
 
@@ -601,6 +649,11 @@ export interface CheckDeps {
   cwd: string;
   /** The HTTP status of a GET of `url`; throws when it cannot connect or times out. */
   fetchStatus?: (url: string, timeoutMs: number) => Promise<number>;
+  /**
+   * A GET of `url` for `page-contains`: its status and up to `maxBytes` of its body as text;
+   * throws when it cannot connect or times out. Default: {@link defaultFetchPage}.
+   */
+  fetchPage?: (url: string, opts: { timeoutMs: number; maxBytes: number }) => Promise<FetchedPage>;
   /** Runs one command criterion. Default: a shell in `cwd`, 10 minutes at most. */
   runCommand?: (command: string, cwd: string) => Promise<CommandOutcome>;
   /** Runs a `map` criterion; without one, a map criterion is `na`. */
@@ -616,6 +669,18 @@ export interface CheckDeps {
 
 /** How long `url-ok` waits for an answer. */
 export const URL_TIMEOUT_MS = 10_000;
+/** How long `page-contains` waits for the whole page. */
+export const PAGE_TIMEOUT_MS = 15_000;
+/** How much of a page `page-contains` reads; the rest is not searched. */
+export const PAGE_MAX_BYTES = 2 * 1024 * 1024;
+
+/** What `page-contains` fetched. */
+export interface FetchedPage {
+  status: number;
+  text: string;
+  /** True when the page was longer than the cap and was cut. */
+  truncated?: boolean;
+}
 /** How long a command criterion may run under the default runner. */
 export const COMMAND_TIMEOUT_MS = 10 * 60_000;
 /** How much of a command's output a result keeps as evidence. */
@@ -630,6 +695,141 @@ export async function defaultFetchStatus(url: string, timeoutMs: number): Promis
   });
   await res.body?.cancel().catch(() => undefined);
   return res.status;
+}
+
+/** The most redirects `page-contains` follows. */
+export const PAGE_MAX_REDIRECTS = 5;
+
+/**
+ * True for an address `page-contains` never fetches: unspecified (`0.0.0.0/8`, `::`), loopback
+ * (`127/8`, `::1`), private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`) and link-local
+ * (`169.254/16`, `fe80::/10`), and an IPv4-mapped IPv6 address of any of them.
+ */
+export function blockedAddress(ip: string): boolean {
+  const v6 = ip
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/%.*$/, '');
+  const mapped = /^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
+  const v4 = mapped ? mapped[1]! : v6;
+  const parts = v4.split('.');
+  if (parts.length === 4 && parts.every((x) => /^\d{1,3}$/.test(x))) {
+    const [a, b] = parts.map(Number) as [number, number];
+    return (
+      a === 0 ||
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  if (!v6.includes(':')) return false;
+  if (/^[0:]*$/.test(v6) || /^[0:]*:0*1$/.test(v6)) return true;
+  const first = parseInt(v6.split(':')[0] || '0', 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
+/** Resolves a host name to every address it has. */
+export type HostLookup = (host: string) => Promise<string[]>;
+
+async function lookupAll(host: string): Promise<string[]> {
+  const { lookup } = await import('node:dns/promises');
+  return (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+}
+
+/**
+ * Refuses a `page-contains` target that is no http(s) URL, or whose host is, or resolves to, an
+ * address {@link blockedAddress} names, so a criterion cannot read this machine or its network.
+ */
+export async function checkPageTarget(url: string, lookup: HostLookup = lookupAll): Promise<URL> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error(`'${url}' is no URL`);
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`'${url}' is no http(s) URL`);
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const addresses = /^[\d.]+$/.test(host) || host.includes(':') ? [host] : await lookup(host);
+  if (addresses.length === 0 || addresses.some(blockedAddress)) {
+    throw new Error(
+      `refusing ${u.host}: it is or resolves to a loopback, private or link-local address`,
+    );
+  }
+  return u;
+}
+
+/**
+ * A GET of `url` that reads at most `maxBytes` of the body, all within `timeoutMs`. Redirects
+ * are followed by hand, at most {@link PAGE_MAX_REDIRECTS}, and every hop's host is checked with
+ * {@link checkPageTarget} first.
+ */
+export async function defaultFetchPage(
+  url: string,
+  opts: { timeoutMs: number; maxBytes: number },
+  deps: { fetch?: typeof fetch; lookup?: HostLookup } = {},
+): Promise<FetchedPage> {
+  const get = deps.fetch ?? fetch;
+  const signal = AbortSignal.timeout(opts.timeoutMs);
+  let at = url;
+  let res: Response;
+  for (let hop = 0; ; hop++) {
+    const target = await checkPageTarget(at, deps.lookup);
+    res = await get(target.href, { method: 'GET', redirect: 'manual', signal });
+    const next = res.headers.get('location');
+    if (res.status < 300 || res.status >= 400 || !next) break;
+    await res.body?.cancel().catch(() => undefined);
+    if (hop >= PAGE_MAX_REDIRECTS) {
+      throw new Error(`more than ${PAGE_MAX_REDIRECTS} redirects from ${url}`);
+    }
+    at = new URL(next, target).href;
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let truncated = false;
+  const reader = res.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value));
+    size += value.byteLength;
+    if (size > opts.maxBytes) {
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+  }
+  const text = Buffer.concat(chunks).subarray(0, opts.maxBytes).toString('utf8');
+  return { status: res.status, text, ...(truncated ? { truncated } : {}) };
+}
+
+const ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/** A page's visible text, roughly: scripts, styles and tags dropped, common entities decoded. */
+export function pageText(html: string): string {
+  return html
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e.startsWith('#')) {
+        const hex = e[1] === 'x' || e[1] === 'X';
+        const n = parseInt(e.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+      }
+      return ENTITIES[e.toLowerCase()] ?? m;
+    })
+    .replace(/\s+/g, ' ');
 }
 
 /** Runs `command` in a shell, without a window, and keeps the end of its output. */
@@ -1182,6 +1382,19 @@ async function checkFile(c: Criterion, path: string, deps: CheckDeps): Promise<F
         ? { ok: false, what: `${path}: ${problems.join('; ')}` }
         : { ok: true, what: `${path}: ${dim.type} ${dim.width}x${dim.height}, ${kb} KB` };
     }
+    case 'readability': {
+      const r = readability(readFile(cwd, path));
+      const min = typeof args.min_grade === 'number' ? args.min_grade : undefined;
+      const max = typeof args.max_grade === 'number' ? args.max_grade : undefined;
+      const wants = `wants grade ${rangeText(min, max)}`;
+      if (r.grade === null) return { ok: false, what: `${path}: no prose to score; ${wants}` };
+      const ok = !((min !== undefined && r.grade < min) || (max !== undefined && r.grade > max));
+      const spw = (r.syllables / r.words).toFixed(2);
+      return {
+        ok,
+        what: `${path}: Flesch-Kincaid grade ${r.grade} (${r.words} words, ${r.sentences} sentences, ${spw} syllables per word); ${wants}`,
+      };
+    }
     case 'links-resolve': {
       const file = resolve(cwd, path);
       const base = dirname(file);
@@ -1250,6 +1463,8 @@ async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict
           ? fail(broken.join('; '))
           : pass(`${urls.join(', ')} answered 2xx or 3xx`);
       }
+      case 'page-contains':
+        return await pageContains(c, deps);
       case 'file-exists': {
         const { paths, unmatched } = expandPaths(cwd, args.path);
         const missing = [...unmatched, ...paths.filter((p) => !existsSync(resolve(cwd, p)))];
@@ -1289,6 +1504,57 @@ async function runCheck(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict
   } catch (err) {
     return fail((err as Error).message);
   }
+}
+
+/**
+ * `page-contains`: fetches the page (`url`, or with `from: published` the URL the task's
+ * `publish` event records) and checks that it holds every string of `contains` and none of
+ * `absent`. A string counts as on the page when it is in the HTML or in its text
+ * ({@link pageText}). Case is ignored unless `case-sensitive: true`.
+ */
+async function pageContains(c: Criterion, deps: CheckDeps): Promise<CriterionVerdict> {
+  const args = c.args ?? {};
+  const url = args.from === 'published' ? deps.url : strings(args.url)[0];
+  if (!url) {
+    return {
+      result: 'fail',
+      evidence: 'no published URL: page-contains with from: published runs after a publish',
+    };
+  }
+  if (!URL_RE.test(url)) return { result: 'fail', evidence: `'${url}' is no http(s) URL` };
+  const fetchPage = deps.fetchPage ?? defaultFetchPage;
+  let page: FetchedPage;
+  try {
+    page = await fetchPage(url, { timeoutMs: PAGE_TIMEOUT_MS, maxBytes: PAGE_MAX_BYTES });
+  } catch (err) {
+    return { result: 'fail', evidence: `${url}: ${(err as Error).message || 'no answer'}` };
+  }
+  if (page.status < 200 || page.status >= 300) {
+    return { result: 'fail', evidence: `${url} answered ${page.status}` };
+  }
+  const sensitive = args['case-sensitive'] === true;
+  const norm = (t: string): string => (sensitive ? t : t.toLowerCase());
+  const html = norm(page.text);
+  const text = norm(pageText(page.text));
+  const on = (s: string): boolean => html.includes(norm(s)) || text.includes(norm(s));
+  const quote = (l: string[]): string => l.map((w) => `"${w}"`).join(', ');
+  const wanted = strings(args.contains);
+  const banned = strings(args.absent);
+  const missing = wanted.filter((s) => !on(s));
+  const present = banned.filter((s) => on(s));
+  const cut = page.truncated ? ` (only the first ${PAGE_MAX_BYTES / 1024 / 1024} MB read)` : '';
+  const problems = [
+    ...(missing.length > 0 ? [`lacks ${quote(missing)}`] : []),
+    ...(present.length > 0 ? [`has ${quote(present)}`] : []),
+  ];
+  if (problems.length > 0) {
+    return { result: 'fail', evidence: `${url} ${problems.join('; ')}${cut}` };
+  }
+  const held = [
+    ...(wanted.length > 0 ? [`has ${quote(wanted)}`] : []),
+    ...(banned.length > 0 ? [`has none of ${quote(banned)}`] : []),
+  ];
+  return { result: 'pass', evidence: `${url} ${held.join('; ')}${cut}` };
 }
 
 /** The start of a check's evidence, cut at the evidence length. */
