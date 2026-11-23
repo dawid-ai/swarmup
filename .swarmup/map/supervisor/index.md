@@ -20,7 +20,7 @@ covers:
   - packages/supervisor/src/doctor.ts
   - packages/supervisor/src/notify.ts
   - packages/supervisor/test
-links: [wake, runs, prompts, merge, chat, stats, /core/sync, /core/defs]
+links: [wake, runs, prompts, merge, chat, stats, hooks, /core/sync, /core/defs]
 ---
 
 # swarmupd
