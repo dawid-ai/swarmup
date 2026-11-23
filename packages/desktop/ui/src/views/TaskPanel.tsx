@@ -1526,7 +1526,9 @@ export function publishAdapterLabel(labels: readonly string[] | undefined): stri
 /**
  * Publishes the task with its adapter (W8 phase 3): swarmupd records the attempt, hands the
  * adapter the approved files and records the URL it prints. It runs once for the same files;
- * **Again** runs it once more.
+ * **Again** runs it once more. The form lists the files and commit the preview reads, and the
+ * publish sends that commit, those paths and this adapter, so a base branch that moved, a
+ * changed label or a new `blocked_by` since can't change what goes out.
  */
 export function PublishAdapterForm({
   id,
@@ -1542,12 +1544,24 @@ export function PublishAdapterForm({
   const [again, setAgain] = useState(false);
   const act = useAction();
   const done = useRef<{ url?: string; problems?: string[] } | null>(null);
+  const preview = useData<{ commit: string; files: PreviewFile[] }>(`/api/tasks/${q(id)}/preview`);
+  const what = preview.data;
   return (
     <div data-publish-adapter className="panel animate-rise mt-3 flex flex-col gap-3 p-4">
       <p className="text-sm text-fg-2">
         Runs the adapter <span className="font-mono">{adapter}</span> on the approved files at the
         approved commit. It publishes for real, once for these files, and records the URL it prints.
       </p>
+      {!what && !preview.error && (
+        <span className="text-xs text-fg-4">Reading the approved files…</span>
+      )}
+      <ErrorLine error={preview.error} />
+      {what && (
+        <div data-publish-files className="text-xs text-fg-3">
+          At <span className="font-mono">{what.commit.slice(0, 10)}</span>:{' '}
+          {what.files.map((f) => f.path).join(', ') || 'no files'}
+        </div>
+      )}
       <label className="flex items-center gap-2 text-xs text-fg-3">
         <input type="checkbox" checked={again} onChange={(e) => setAgain(e.target.checked)} />
         Again: run it even though it ran on these files before
@@ -1556,12 +1570,15 @@ export function PublishAdapterForm({
         <Button
           kind="primary"
           icon={Rocket}
-          disabled={act.busy}
+          disabled={act.busy || !what || what.files.length === 0}
           onClick={() =>
             act.run(
               async () => {
                 done.current = (await api('POST', `/api/tasks/${q(id)}/publish`, {
                   as: nav.me,
+                  adapter,
+                  commit: what!.commit,
+                  artifacts: what!.files.map((f) => f.path),
                   ...(again ? { again: true } : {}),
                 })) as { url?: string; problems?: string[] };
               },
