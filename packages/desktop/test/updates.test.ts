@@ -282,6 +282,18 @@ describe('release notes', () => {
       plainNotes('<ul><li><strong>Search</strong> &amp; more</li><li>Tray</li></ul><p>Done</p>'),
     ).toBe('- Search & more\n- Tray\nDone');
   });
+
+  it('joins the wrapped lines of a bullet or paragraph, and keeps bullets and blank lines', () => {
+    const html =
+      '<ul>\n<li><strong>Scheduled work.</strong> A project can keep\nits schedules in git, and\nany change waits.</li>\n<li>Team checks\nin git.</li>\n</ul>\n<p>One more\nline.</p>';
+    expect(plainNotes(html)).toBe(
+      '- Scheduled work. A project can keep its schedules in git, and any change waits.\n- Team checks in git.\nOne more line.',
+    );
+    // Plain Markdown, as a release body without HTML: bullets stay, wraps join.
+    expect(plainNotes('- One\n  two\n- Three\n\nFour\nfive')).toBe(
+      '- One two\n- Three\n\nFour five',
+    );
+  });
 });
 
 describe('relaunch after an update', () => {
