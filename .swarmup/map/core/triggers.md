@@ -4,10 +4,13 @@ summary: 'Definitions as code, phase 4: git triggers with a cron parser; checks 
 covers:
   - packages/core/src/defs/trigger.ts
   - packages/core/src/defs/cron.ts
+  - packages/core/src/defs/checks.ts
   - packages/supervisor/src/triggers.ts
   - packages/cli/src/triggers-cmd.ts
   - packages/core/test/triggers.test.ts
   - packages/supervisor/test/triggers.test.ts
+  - packages/supervisor/test/defs-checks.test.ts
+  - packages/cli/test/defs-trust.test.ts
 links: [defs, repeats, /supervisor/wake, /cli]
 ---
 
@@ -30,9 +33,16 @@ true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires t
 - `cli/src/triggers-cmd.ts` is `swarmup triggers list|on|off`; `defs import-schedules` in
   `defs-cmd.ts` writes `swarmupd.schedules` as trigger files.
 
+- `checks.ts`: `swarm.yaml` `checks.<name>` and `checksHash` (name, command, paths).
+  `withDefinitions` puts them under `merge.<root>.checks` only when `trusted_defs.<root>` is
+  their hash and the machine sets no checks of its own; `DefsState` warns once per untrusted set
+  and the merger logs it at each merge. `swarmup defs trust` (a person, outside runs) writes the
+  hash.
+
 ## Invariants
 
 - Git triggers fire only on a machine whose `swarmupd.triggers.<root>` is true; workflows and
   repeats they start act as `opsd:trigger`, never as a person.
+- Git checks never run without a person's trust of their exact hash on that machine.
 - One fire time starts once per machine: a `run` trigger is recorded after its launch, a
   `workflow` or `repeat` trigger before it acts.

@@ -3,6 +3,7 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpConfig, UserConfig } from '@swarmup/core';
 import {
+  CHECKS_HASH_RE,
   checkEffort,
   checkMcpConfig,
   checkModel,
@@ -400,6 +401,11 @@ export interface OpsdConfig {
    */
   triggers: Record<string, boolean>;
   /**
+   * Per root name, the hash of the `swarm.yaml` merge checks a person trusted on this machine
+   * (`swarmup defs trust`, W5). Git checks run only while the root's set has this hash.
+   */
+  trusted_defs: Record<string, string>;
+  /**
    * Create tasks from the roots' repeats (`repeats/*.md`) each tick. On by default; set it to
    * false on every PC but one that shares a task store, so two PCs never fire the same slot.
    */
@@ -584,6 +590,7 @@ export function opsdConfig(
     agents: Object.fromEntries(Object.entries(raw.agents ?? {}).map(([id, a]) => [id, a ?? {}])),
     schedules: raw.schedules ?? [],
     triggers: checkRootFlags((raw as { triggers?: unknown }).triggers, 'triggers'),
+    trusted_defs: checkTrustedDefs((raw as { trusted_defs?: unknown }).trusted_defs),
     repeats: raw.repeats ?? true,
     notify: checkNotify((raw as { notify?: unknown }).notify),
     chat: {
@@ -943,6 +950,25 @@ export function checkImprove(raw: unknown): ImproveConfig {
 
 function checkPushBranches(raw: unknown): Record<string, boolean> {
   return checkRootFlags(raw, 'push_branches');
+}
+
+function checkTrustedDefs(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError(
+      'swarmupd.trusted_defs: use one entry per root name; swarmup defs trust writes them',
+      2,
+    );
+  }
+  for (const [root, hash] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof hash !== 'string' || !CHECKS_HASH_RE.test(hash)) {
+      throw new OpsError(
+        `swarmupd.trusted_defs.${root}: use the hash swarmup defs trust writes (c: and 64 hex digits)`,
+        2,
+      );
+    }
+  }
+  return { ...(raw as Record<string, string>) };
 }
 
 /** A map of root names to true or false, such as `swarmupd.triggers`. */

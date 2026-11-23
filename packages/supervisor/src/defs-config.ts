@@ -4,7 +4,7 @@
  * machine key that overrode a git value is recorded.
  */
 import type { SwarmDefs } from '@swarmup/core';
-import { POLICY_KEYS } from '@swarmup/core';
+import { checksHash, checksTrust, gitMergeChecks, POLICY_KEYS } from '@swarmup/core';
 
 import type { OpsdConfig, RoleConfig, RuntimeConfig } from './config.js';
 
@@ -18,6 +18,20 @@ export interface DefsSource {
    * `swarm.yaml`, and a machine value wins over both.
    */
   roleWrites?: Record<string, boolean>;
+}
+
+/** Where a root's `swarm.yaml` merge checks stand on this machine (W5 phase 4). */
+export interface DefsChecks {
+  root: string;
+  count: number;
+  hash: string;
+  trust: 'trusted' | 'untrusted' | 'changed';
+  /**
+   * What the merge runs: `git` (trusted, and this machine sets no checks of its own), `machine`
+   * (`swarmupd.merge.<root>.checks` wins), `skipped` (not trusted) or `no-merge` (this machine
+   * does not merge the root).
+   */
+  use: 'git' | 'machine' | 'skipped' | 'no-merge';
 }
 
 /** A machine value that won over a git value for the same key. */
@@ -63,6 +77,8 @@ export interface DefsMerge {
   conflicts: DefsConflict[];
   /** Every key the git definitions set, with its effective value and source, sorted by key. */
   values: DefsValue[];
+  /** Each root with merge checks in its `swarm.yaml`, and what the merge does with them. */
+  checks: DefsChecks[];
 }
 
 const ROLE_KEYS = [
@@ -88,8 +104,9 @@ const machineSets = (cfg: OpsdConfig, k: string): boolean =>
  * the machine values of `cfg`, and the team policy (W5 phase 2): `policy.*` under the top-level
  * keys the machine does not set itself (`cfg.explicit`), with `defaults.budget_min` before
  * `policy.budget_minutes`, and `policy.test_changes` of each root under
- * `test_changes.<root>`. An agent file's `writes` wins over its role's in `swarm.yaml`.
- * `sources` come in root order: for a key two roots set, the first one wins and the pair is
+ * `test_changes.<root>`. An agent file's `writes` wins over its role's in `swarm.yaml`. A root's
+ * `checks` go under `merge.<root>.checks` only when `trusted_defs.<root>` is their hash, the
+ * machine merges the root, and it sets no checks of its own (W5 phase 4). `sources` come in root order: for a key two roots set, the first one wins and the pair is
  * named in `conflicts`. Git never adds a runtime: commands are machine-only, so a runtime this
  * machine lacks is skipped. Without sources, `cfg` comes back as it is.
  */
@@ -98,7 +115,8 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
   const overrides: DefsOverride[] = [];
   const conflicts: DefsConflict[] = [];
   const values: DefsValue[] = [];
-  if (sources.length === 0) return { config: cfg, applied, overrides, conflicts, values };
+  const checks: DefsChecks[] = [];
+  if (sources.length === 0) return { config: cfg, applied, overrides, conflicts, values, checks };
 
   // The git value of each key: from the first root that sets it.
   const git = new Map<string, { value: unknown; root: string }>();
@@ -220,6 +238,40 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
     values.push({ key, value: g, source: 'git', git: g, root });
   }
 
+  // `checks` are the root's merge checks: under `merge.<root>.checks`, only when a person trusted
+  // this exact set here (Decision 7) and the machine merges the root without checks of its own.
+  let merge = cfg.merge;
+  for (const { root, swarm } of sources) {
+    const trust = checksTrust(swarm.checks, cfg.trusted_defs?.[root]);
+    if (trust === 'none') continue;
+    const list = gitMergeChecks(swarm.checks);
+    const key = `merge.${root}.checks`;
+    const machine = cfg.merge[root];
+    const entry = { root, count: list.length, hash: checksHash(swarm.checks!), trust };
+    if (trust !== 'trusted') {
+      checks.push({ ...entry, use: 'skipped' });
+      values.push({ key, value: list, source: 'unused', git: list, root });
+      continue;
+    }
+    if (!machine) {
+      checks.push({ ...entry, use: 'no-merge' });
+      values.push({ key, value: list, source: 'unused', git: list, root });
+      continue;
+    }
+    if (machine.checks !== undefined) {
+      if (!same(machine.checks, list)) {
+        overrides.push({ key, machine: machine.checks, git: list, root });
+      }
+      checks.push({ ...entry, use: 'machine' });
+      values.push({ key, value: machine.checks, source: 'machine', git: list, root });
+      continue;
+    }
+    merge = { ...merge, [root]: { ...machine, checks: list } };
+    checks.push({ ...entry, use: 'git' });
+    applied.push({ key, root });
+    values.push({ key, value: list, source: 'git', git: list, root });
+  }
+
   // Git keys of runtimes this machine lacks, and defaults no runtime took: set, but in no effect.
   const seen = new Set(values.map((v) => v.key));
   for (const [key, g] of git) {
@@ -249,11 +301,12 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
   }
   values.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   return {
-    config: { ...cfg, ...policy, runtimes, roles, test_changes: testChanges },
+    config: { ...cfg, ...policy, runtimes, roles, test_changes: testChanges, merge },
     applied,
     overrides,
     conflicts,
     values,
+    checks,
   };
 }
 

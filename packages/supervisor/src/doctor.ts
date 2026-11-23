@@ -15,8 +15,10 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { UserConfig } from '@swarmup/core';
 import {
+  checksTrustProblem,
   formatProblem,
   loadDefinitions,
+  SWARM_FILE,
   mcpSecretRefs,
   readSecrets,
   secretsExposure,
@@ -537,18 +539,28 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
       continue;
     }
     if (!set.present) continue;
-    const errors = set.problems.filter((p) => p.severity === 'error');
-    const warnings = set.problems.length - errors.length;
+    // Merge checks in git that this machine has not trusted, or that changed since (W5 phase 4).
+    const trust = set.swarm
+      ? checksTrustProblem(
+          join(r.dir, SWARM_FILE),
+          r.name,
+          set.swarm.checks,
+          cfg?.trusted_defs[r.name],
+        )
+      : null;
+    const problems = trust ? [...set.problems, trust] : set.problems;
+    const errors = problems.filter((p) => p.severity === 'error');
+    const warnings = problems.length - errors.length;
     add({
       id: `defs:${r.dir}`,
       label: `Definitions of ${r.name}`,
       status: errors.length > 0 ? 'fail' : warnings > 0 ? 'warn' : 'ok',
       detail:
-        set.problems.length === 0
+        problems.length === 0
           ? `swarm.yaml and ${set.agents.length} agent file(s) are valid`
-          : set.problems.slice(0, 5).map(formatProblem).join('\n') +
-            (set.problems.length > 5 ? `\n... and ${set.problems.length - 5} more` : ''),
-      ...(set.problems.length > 0
+          : problems.slice(0, 5).map(formatProblem).join('\n') +
+            (problems.length > 5 ? `\n... and ${problems.length - 5} more` : ''),
+      ...(problems.length > 0
         ? {
             fix:
               errors.length > 0

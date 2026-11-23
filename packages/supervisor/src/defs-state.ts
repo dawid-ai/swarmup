@@ -10,9 +10,10 @@ import {
   loadDefinitions,
   shortHash,
   SWARM_FILE,
+  untrustedChecksText,
 } from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
-import type { DefsMerge, DefsSource } from './defs-config.js';
+import type { DefsChecks, DefsMerge, DefsSource } from './defs-config.js';
 import { overridesFor, withDefinitions } from './defs-config.js';
 import { gitAsync } from './git.js';
 import type { RunDefs } from './runs.js';
@@ -56,6 +57,8 @@ export interface DefsView {
   conflicts: DefsMerge['conflicts'];
   /** Each key the git definitions set: the value in effect and its source (git or machine). */
   values: DefsMerge['values'];
+  /** Each root's `swarm.yaml` merge checks: trusted here or not, and what the merge runs. */
+  checks: DefsChecks[];
 }
 
 interface RootDefs extends DefsRoot {
@@ -138,6 +141,13 @@ export class DefsState {
       return { ...r, set, stale };
     });
     this.merge = withDefinitions(machine, sources);
+    for (const c of this.merge.checks) {
+      if (c.trust === 'trusted') continue;
+      const told = `checks\0${c.root}\0${c.hash}`;
+      if (this.warned.has(told)) continue;
+      this.warned.add(told);
+      this.opts.warn(untrustedChecksText(c.root, c.trust, c.count));
+    }
     for (const c of this.merge.conflicts) {
       const told = `conflict\0${c.key}\0${c.roots.join(',')}`;
       if (this.warned.has(told)) continue;
@@ -226,6 +236,11 @@ export class DefsState {
     };
   }
 
+  /** Where root `root`'s `swarm.yaml` merge checks stand here; undefined when it names none. */
+  checks(root: string): DefsChecks | undefined {
+    return this.merge?.checks.find((c) => c.root === root);
+  }
+
   /** Every root's definitions and what they changed in the config, for the API. */
   view(): DefsView {
     return {
@@ -250,6 +265,7 @@ export class DefsState {
       overrides: this.merge?.overrides ?? [],
       conflicts: this.merge?.conflicts ?? [],
       values: this.merge?.values ?? [],
+      checks: this.merge?.checks ?? [],
     };
   }
 }

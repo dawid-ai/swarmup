@@ -203,6 +203,34 @@ file, with `runs_on` set to this machine when the user config names it. `--apply
 files, never over a different one, and `--remove` also takes the schedules out of the user config
 and turns on `swarmupd.triggers.<root>`, so nothing fires twice.
 
+## Merge checks in git
+
+`swarm.yaml` can keep the commands swarmupd runs on approved work before it moves the base, the
+git half of `swarmupd.merge.<root>.checks`:
+
+```yaml
+checks:
+  test: pnpm test # runs on every merge
+  lint:
+    run: pnpm lint
+    paths: ['**/*.ts', '!docs/**'] # runs only when the merge changes one of these
+    description: Lint the code
+```
+
+Git never names a command swarmupd runs without the machine's trust (Decision 7):
+
+- The checks run on a machine only after a person runs `swarmup defs trust [--root NAME]` there,
+  outside any run. It prints the commands and keeps the hash of the exact set, each check's name,
+  command and paths, in the user config as `swarmupd.trusted_defs.<root>`. An agent, or anyone
+  inside a run, cannot trust them.
+- Any change to a command or its paths untrusts the set: merges skip the git checks, and
+  `swarmup validate`, `swarmup doctor`, `swarmup defs show`, swarmupd's log and each merge's line
+  in `opsd.log` say so, until a person trusts the new set. A change to a `description` keeps the
+  trust. `swarmup defs trust --revoke` takes the trust back.
+- The machine still wins: a machine that sets `swarmupd.merge.<root>.checks` runs its own list,
+  and the git list is recorded as overridden. The git checks need a `swarmupd.merge.<root>` entry
+  on the machine, since `base`, `checkout`, `build` and `install` stay machine-only.
+
 ## Precedence
 
 More specific beats less specific, and at equal specificity the machine beats git:
@@ -218,6 +246,8 @@ More specific beats less specific, and at equal specificity the machine beats gi
   `policy.budget_minutes`, then 180.
 - **Policy:** a top-level key the user config sets, then `swarm.yaml` `policy`, then the built-in
   default.
+- **Merge checks:** `swarmupd.merge.<root>.checks` when the user config sets it, then the trusted
+  `swarm.yaml` `checks`, then none.
 
 With several roots, swarmupd merges their `swarm.yaml` files in root order: for a key two roots
 set, the first wins and swarmupd warns once. A root whose `swarm.yaml` has errors keeps its last
@@ -349,6 +379,8 @@ improvement:
 - `swarmup defs show` prints each root's hash and what its `swarm.yaml` sets under this machine's
   config, with the machine keys that overrode it.
 - `swarmup defs hash` prints the full hash of each root.
+- `swarmup defs trust [--root NAME] [--revoke]` trusts the merge checks of each root's
+  `swarm.yaml` on this machine; see [Merge checks in git](#merge-checks-in-git).
 - `swarmup defs diff [REF]` lists the definition files that changed since a git ref, `HEAD` by
   default, with both hashes.
 - `swarmup defs migrate [--apply] [--prune]` moves legacy agent files into agent folders; see

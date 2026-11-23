@@ -86,6 +86,7 @@ import {
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
+import type { DefsChecks } from './defs-config.js';
 import { DefsState } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
@@ -1191,6 +1192,11 @@ export class Supervisor extends EventEmitter {
   /** The roots' definitions, what they set in the config and which machine keys overrode them. */
   defsView(): DefsView {
     return this.defsState.view();
+  }
+
+  /** Where root `root`'s `swarm.yaml` merge checks stand on this machine; undefined for none. */
+  defsChecks(root: string): DefsChecks | undefined {
+    return this.defsState.checks(root);
   }
 
   /** Resolves when the definition commit lookups started so far have ended. */

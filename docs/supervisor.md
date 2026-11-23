@@ -1476,6 +1476,13 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Checks in git.** A store's `swarm.yaml` can keep the merge checks too (`checks.<name>`, see
+  [Merge checks in git](definitions.md#merge-checks-in-git)). They run only on a machine where a
+  person ran `swarmup defs trust`, which keeps the hash of the exact set in
+  `swarmupd.trusted_defs.<root>`; any change to a command or its paths skips them again until a
+  person trusts the new set, and each merge says so in `opsd.log`. A machine that sets
+  `swarmupd.merge.<root>.checks` runs its own list instead. `base`, `checkout`, `build` and
+  `install` stay in the user config.
 - **Rubric criteria.** With `swarmupd.judge.at_merge: true`, after the task's `command` and
   `check` criteria pass, swarmupd judges its `rubric` criteria against the diff of the rebased
   work from the base, with the judge of `swarmupd.judge`. A score below a criterion's `pass` sends

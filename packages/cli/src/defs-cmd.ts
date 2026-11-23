@@ -7,6 +7,11 @@ import type { DefinitionSet, DefProblem, Root, UserConfig, Workspace } from '@sw
 import {
   assertNoSecret,
   checkDefinitionText,
+  checksHash,
+  checksTrust,
+  checksTrustProblem,
+  gitMergeChecks,
+  isHuman,
   daemonKeyIn,
   DEF_FOLDERS,
   definitionHash,
@@ -31,7 +36,14 @@ import {
   TRIGGERS_DIR,
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
-import { importableConfig, lineDiff, opsdConfig, withDefinitions } from '@swarmup/supervisor';
+import {
+  daemonCall,
+  importableConfig,
+  lineDiff,
+  opsdConfig,
+  readDaemon,
+  withDefinitions,
+} from '@swarmup/supervisor';
 
 /** What `swarmup validate` and `swarmup defs` need of the CLI's context. */
 interface DefsCtx {
@@ -152,11 +164,24 @@ function validate(ctx: DefsCtx): number {
   const variant = str(ctx.opts.variant);
   const opts = { ...loadOpts(ctx, strict), ...(variant ? { variant } : {}) };
   const sets: DefinitionSet[] = [];
+  const machine = machineOf(ctx.ws().user);
   for (const dir of stores) {
     const set = loadDefinitions(dir, opts);
     sets.push(set);
     problems.push(...set.problems);
     checked.push(...set.files.map((f) => join(dir, f.path)));
+    // Merge checks in git run only where a person trusted them (W5 phase 4).
+    const root = ctx.ws().roots.find((r) => resolve(r.dir) === resolve(dir));
+    const trust =
+      root && set.swarm
+        ? checksTrustProblem(
+            join(dir, SWARM_FILE),
+            root.name,
+            set.swarm.checks,
+            machine?.trusted_defs[root.name],
+          )
+        : null;
+    if (trust) problems.push(trust);
   }
   if (ctx.opts['write-schemas']) {
     for (const dir of stores) {
@@ -200,11 +225,12 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs import-schedules [--root NAME] [--apply] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs trust [--root NAME] [--revoke] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs import-schedules [--root NAME] [--apply] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME]',
   summary:
-    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move swarmupd.schedules into triggers/ (import-schedules prints the files; --apply writes them, --remove also takes the schedules out of the user config and turns the root's triggers on here); move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
+    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, trust the merge checks of a root's swarm.yaml on this machine (a person, outside runs; --revoke takes the trust back), diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move swarmupd.schedules into triggers/ (import-schedules prints the files; --apply writes them, --remove also takes the schedules out of the user config and turns the root's triggers on here); move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
   options: {
     remove: { type: 'boolean' },
+    revoke: { type: 'boolean' },
     apply: { type: 'boolean' },
     prune: { type: 'boolean' },
     dir: { type: 'string' },
@@ -214,9 +240,11 @@ export const defsCommand = {
     message: { type: 'string', short: 'm' },
     'body-file': { type: 'string' },
   } satisfies NonNullable<ParseArgsConfig['options']>,
-  run: (ctx: DefsCtx): number => {
+  run: (ctx: DefsCtx): number | Promise<number> => {
     const [sub, ...rest] = ctx.args;
     switch (sub) {
+      case 'trust':
+        return trust(ctx);
       case 'show':
         return defsShow(ctx);
       case 'hash':
@@ -271,6 +299,7 @@ function defsShow(ctx: DefsCtx): number {
           applied: merged?.applied ?? [],
           overrides: merged?.overrides ?? [],
           conflicts: merged?.conflicts ?? [],
+          checks: merged?.checks ?? [],
         },
         null,
         2,
@@ -306,6 +335,81 @@ function defsShow(ctx: DefsCtx): number {
   for (const c of merged.conflicts) {
     ctx.io.out(`  ${c.key}: ${c.roots.join(' and ')} differ; ${c.roots[0]} wins`);
   }
+  for (const c of merged.checks) {
+    const use = {
+      git: 'the merge runs them',
+      machine: `swarmupd.merge.${c.root}.checks wins`,
+      skipped: `skipped until a person runs swarmup defs trust --root ${c.root}`,
+      'no-merge': 'this machine does not merge the root',
+    }[c.use];
+    ctx.io.out(`  ${c.root}: ${c.count} merge check(s), ${c.trust}; ${use}`);
+  }
+  return 0;
+}
+
+/**
+ * `swarmup defs trust`: a person, outside runs, trusts the merge checks of each root's
+ * `swarm.yaml` on this machine: the user config keeps the hash of the exact set
+ * (`swarmupd.trusted_defs.<root>`), and any change to a command or its paths needs a new trust.
+ * `--revoke` takes the trust back.
+ */
+async function trust(ctx: DefsCtx): Promise<number> {
+  const ws = ctx.ws();
+  const actor = ws.actor;
+  if (ws.run || !actor || !isHuman(actor)) {
+    throw new OpsError(
+      `only a person trusts merge checks, outside runs${actor ? `; ${actor}${ws.run ? ` in run ${ws.run}` : ''} cannot` : ''}`,
+      2,
+    );
+  }
+  const revoke = Boolean(ctx.opts.revoke);
+  const changes: Array<{ root: string; hash: string | null }> = [];
+  for (const root of rootsOf(ctx)) {
+    const set = loadDefinitions(root.dir);
+    const checks = set.swarm?.checks;
+    if (revoke) {
+      changes.push({ root: root.name, hash: null });
+      ctx.io.out(`${root.name}: merge checks no longer trusted on this machine`);
+      continue;
+    }
+    if (set.present && !set.swarm) {
+      throw new OpsError(
+        `${root.name}: swarm.yaml has errors; fix them first (swarmup validate --root ${root.name})`,
+        1,
+      );
+    }
+    if (!checks) {
+      ctx.io.out(`${root.name}: swarm.yaml names no merge checks; nothing to trust`);
+      continue;
+    }
+    const hash = checksHash(checks);
+    const before = machineOf(ws.user)?.trusted_defs[root.name];
+    const state = checksTrust(checks, before);
+    ctx.io.out(
+      `${root.name}: ${state === 'trusted' ? 'already trusts' : 'trusts'} these merge checks (${hash.slice(0, 14)}):`,
+    );
+    for (const c of gitMergeChecks(checks)) {
+      ctx.io.out(
+        typeof c === 'string' ? `  ${c}` : `  ${c.run}  (when it changes ${c.paths.join(', ')})`,
+      );
+    }
+    if (state !== 'trusted') changes.push({ root: root.name, hash });
+  }
+  if (changes.length === 0) return 0;
+  editUserConfig(
+    ctx.io.env,
+    (d) => {
+      const key = daemonKeyIn(d);
+      for (const c of changes) {
+        if (c.hash) d.setIn([key, 'trusted_defs', c.root], c.hash);
+        else if (d.hasIn([key, 'trusted_defs', c.root])) d.deleteIn([key, 'trusted_defs', c.root]);
+      }
+    },
+    (next) => void opsdConfig(next),
+  );
+  // A running swarmupd reads the user config again at once.
+  const info = readDaemon(ctx.io.env);
+  if (info) await daemonCall(info, 'POST', '/api/settings', { patch: {} }).catch(() => undefined);
   return 0;
 }
 

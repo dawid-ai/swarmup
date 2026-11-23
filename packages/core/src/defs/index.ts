@@ -35,7 +35,18 @@ export {
   JSON_SCHEMA_DIALECT,
   toJsonSchema,
 } from './schema.js';
+export type { ChecksTrust, GitMergeCheck } from './checks.js';
+export {
+  CHECKS_HASH_PREFIX,
+  CHECKS_HASH_RE,
+  checksHash,
+  checksTrust,
+  checksTrustProblem,
+  gitMergeChecks,
+  untrustedChecksText,
+} from './checks.js';
 export type {
+  SwarmCheck,
   SwarmDefs,
   SwarmImport,
   SwarmImprovement,
