@@ -689,6 +689,7 @@ async function publishCommand(ctx: Ctx): Promise<number | void> {
     top,
     git: async (args) => syncGit(args),
     env: ctx.io.env,
+    stateDir: stateDir(ctx.io.env),
     ...(base ? { base } : {}),
     opts: {
       ...(adapter ? { adapter } : {}),

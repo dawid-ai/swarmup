@@ -6530,6 +6530,7 @@ export class Supervisor extends EventEmitter {
       env,
       ...(cfg?.base ? { base: cfg.base } : {}),
       opts,
+      stateDir: this.store.dir,
     });
   }
 

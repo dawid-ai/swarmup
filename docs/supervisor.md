@@ -720,7 +720,10 @@ swarmupd:
 - **`mcp`** starts the `publish: true` server with its secrets in its environment, as the run
   proxy does, and calls the tool once as an MCP client. The server's `tools` rules apply. The URL
   is the answer's `structuredContent.url`, else the last `url: <URL>` line of its text. `{path}`
-  and `{content}` need exactly one file.
+  and `{content}` need exactly one file. Each call goes in `publish-mcp.log` in swarmupd's state
+  folder, one JSON line in the shape of a run's `mcp.log`: the time, the server, the tool, a
+  SHA-256 of the arguments, the task, the adapter, the attempt, `ok` (the tool answered without an
+  error) and, for a failure, the first line of the reason. No argument value or secret is logged.
 - **On success** swarmupd writes the `publish` event with the URL and `adapter` (closing the
   task), then tags the commit `published/<ID>`, then runs its `when: publish` criteria, as
   `swarmup published` does. The work is live by then, so a step that fails (the task's lock, the

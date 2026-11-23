@@ -5,7 +5,7 @@
 // URL it reports becomes the task's `publish` event, as `swarmup published` writes it.
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import type {
@@ -32,6 +32,7 @@ import {
   isHuman,
   markdownToHtml,
   MCP_NAME_RE,
+  mcpArgsHash,
   mcpToolAllowed,
   OpsError,
   previewPage,
@@ -39,6 +40,7 @@ import {
   PUBLISH_TYPE,
   publishTarget,
   readSecrets,
+  redactSecrets,
   resolveMcpEnv,
   secretKind,
   workspacePath,
@@ -557,6 +559,38 @@ export function urlFromTool(answer: ToolAnswer): string | null {
   return urlFromOutput(answer.text);
 }
 
+/**
+ * The log of the tool calls `mcp` publish adapters make, in swarmupd's state folder: one JSON line
+ * per call, in the shape of a run's `mcp.log` with the task, adapter, attempt and outcome. Never
+ * the arguments (only their SHA-256) and never a secret.
+ */
+export const PUBLISH_MCP_LOG = 'publish-mcp.log';
+
+/** One line of {@link PUBLISH_MCP_LOG}. */
+export interface PublishMcpLogEntry {
+  at: string;
+  server: string;
+  tool: string;
+  args_sha256: string;
+  /** `root/ID`. */
+  task: string;
+  adapter: string;
+  attempt: string;
+  ok: boolean;
+  /** Why the call failed: the first line, with anything that looks like a secret redacted. */
+  error?: string;
+}
+
+/** Appends one entry to {@link PUBLISH_MCP_LOG} in `dir`; the log never stops a publish. */
+function logPublishCall(dir: string, entry: PublishMcpLogEntry): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, PUBLISH_MCP_LOG), `${JSON.stringify(entry)}\n`);
+  } catch {
+    // A log that cannot be written leaves the publish as it is.
+  }
+}
+
 /** Injectable runners, for tests. */
 export interface PublishRunners {
   command?: typeof runCommandAdapter;
@@ -805,6 +839,8 @@ export async function publishWithAdapter(o: {
   readBlob?: (blob: string) => Promise<Buffer>;
   opts?: PublishOptions;
   runners?: PublishRunners;
+  /** swarmupd's state folder, where {@link PUBLISH_MCP_LOG} goes; nothing is logged without it. */
+  stateDir?: string;
 }): Promise<PublishOutcome> {
   const { ws } = o;
   const opts = o.opts ?? {};
@@ -909,18 +945,36 @@ export async function publishWithAdapter(o: {
   } else {
     const call = o.runners?.mcp ?? callMcpTool;
     const one = files.length === 1 ? files[0]! : undefined;
+    const args = mcpArguments(adapter.arguments, {
+      task: id,
+      root: root.name,
+      commit,
+      ...(one ? { path: one.path, content: one.data.toString('utf8') } : {}),
+    });
+    const logged = {
+      server: adapter.server!,
+      tool: adapter.tool!,
+      args_sha256: mcpArgsHash(args),
+      task: `${root.name}/${id}`,
+      adapter: name,
+      attempt: attempt.id,
+    };
+    const log = (ok: boolean, error?: string): void => {
+      if (o.stateDir === undefined) return;
+      logPublishCall(o.stateDir, {
+        at: new Date().toISOString(),
+        ...logged,
+        ok,
+        ...(error ? { error: redactSecrets(error.split('\n')[0]!).slice(0, 300) } : {}),
+      });
+    };
     try {
       const answer = await call({
         command: server!.command,
         args: server!.args ?? [],
         env: childEnv(o.env, resolveMcpEnv(server!, secrets).env),
         tool: adapter.tool!,
-        arguments: mcpArguments(adapter.arguments, {
-          task: id,
-          root: root.name,
-          commit,
-          ...(one ? { path: one.path, content: one.data.toString('utf8') } : {}),
-        }),
+        arguments: args,
         timeoutMs,
       });
       const url = answer.isError ? null : urlFromTool(answer);
@@ -933,9 +987,11 @@ export async function publishWithAdapter(o: {
               output: tailOf(answer.text),
               why: 'the tool reported no URL (structuredContent.url or a `url: <URL>` line)',
             };
+      log(!answer.isError, answer.isError ? outcome.why : undefined);
     } catch (err) {
       const stderr = err instanceof McpCallError ? err.stderr : '';
       outcome = { ok: false, output: stderr, why: (err as Error).message };
+      log(false, outcome.why);
     }
   }
   const base = { adapter: name, commit, files: paths, attempt: attempt.id, output: outcome.output };

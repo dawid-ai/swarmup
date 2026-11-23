@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -362,13 +362,51 @@ describe('publishWithAdapter', () => {
     await expect(
       publishWithAdapter({ ws: s.as('human:dawid'), ...base, publish: adapter('plain') }),
     ).rejects.toThrow(/plain is not a publish server; set publish: true/);
+    const state = temp();
     const done = await publishWithAdapter({
       ws: s.as('human:dawid'),
       ...base,
       publish: adapter('poster'),
+      stateDir: state,
     });
     expect(done).toMatchObject({ ok: true, url: 'https://x.example/T-0002' });
     expect(done.output).toBe('posted 30 chars as tok');
+    // Each tool call goes in publish-mcp.log: what was called and how it went, never with what.
+    const lines = (): Array<Record<string, unknown>> =>
+      readFileSync(join(state, 'publish-mcp.log'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines()).toEqual([
+      {
+        at: expect.any(String),
+        server: 'poster',
+        tool: 'post',
+        args_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        task: 'test/T-0002',
+        adapter: 'blog',
+        attempt: done.attempt,
+        ok: true,
+      },
+    ]);
+    const raw = readFileSync(join(state, 'publish-mcp.log'), 'utf8');
+    expect(raw).not.toContain('tok');
+    expect(raw).not.toContain('Launch');
+    // A failed call logs the first line of its reason.
+    const failed = await publishWithAdapter({
+      ws: s.as('human:dawid'),
+      ...base,
+      publish: adapter('poster'),
+      stateDir: state,
+      opts: { again: true },
+      runners: { mcp: () => Promise.reject(new Error('the server exited (1)\nmore')) },
+    });
+    expect(failed.ok).toBe(false);
+    expect(lines()[1]).toMatchObject({
+      ok: false,
+      attempt: failed.attempt,
+      error: 'the server exited (1)',
+    });
   }, 30_000);
 });
 
