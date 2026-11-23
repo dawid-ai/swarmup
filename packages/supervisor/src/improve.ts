@@ -1,8 +1,8 @@
-// The self-improvement loop (W6): scorer failures become tasks for the improver, whose proposals
-// (variant overlays recorded with `swarmup defs propose`) swarmupd benchmarks, base against
-// variant, before a person promotes or rejects them. Nothing here changes a definition file: only
-// a person's `swarmup defs promote` does.
-import type { TaskMeta, VariantInfo, Workspace } from '@swarmup/core';
+// The self-improvement loop (W6): scorer failures, and learn notes that keep mattering, become
+// tasks for the improver, whose proposals (variant overlays recorded with `swarmup defs propose`)
+// swarmupd benchmarks, base against variant, before a person promotes or rejects them. Nothing
+// here changes a definition file: only a person's `swarmup defs promote` does.
+import type { PromoteCandidate, TaskMeta, VariantInfo, Workspace } from '@swarmup/core';
 import { IMPROVE_BENCH_ACTOR, isHuman, OPEN_STATUSES, shortHash } from '@swarmup/core';
 import type { BenchRunRequest, BenchRunView } from './bench-runs.js';
 import type { Comparison, SummaryOverall } from './bench.js';
@@ -100,6 +100,49 @@ export function improveTaskBody(f: AgentFailures, opts: { maxAgeDays?: number } 
     '   `agents/<role>/<runtime>.md`), and check it with `swarmup validate`.',
     '4. Record it: `swarmup defs propose ID --dir DIR --name NAME -m "why"`, then send this task to',
     '   the person for review.',
+  ];
+  return lines.join('\n');
+}
+
+/** A promotion candidate as `Workspace.kbPromote` lists it, with the ref `kb --read` takes. */
+export type NoteCandidate = PromoteCandidate & { ref: string };
+
+/**
+ * The body of a learn-note improvement task (W6): the notes that keep mattering to `agent`, with
+ * why, the `Agent:` and `Notes:` lines `swarmup defs propose` and `defs promote` read, and the
+ * steps: fold the notes into the role file as short rules, then name them in the proposal.
+ */
+export function improveNotesBody(
+  agent: string,
+  notes: readonly NoteCandidate[],
+  opts: { days?: number } = {},
+): string {
+  const cell = (s: string): string => s.replace(/\|/g, '\\|').replace(/\s+/g, ' ');
+  const lines = [
+    `swarmupd found ${notes.length} learn note(s) that keep mattering to ${agent}` +
+      (opts.days ? ` in the last ${opts.days} days.` : '.') +
+      ' A rule in the role file reaches every run of the role; a note reaches only the runs whose' +
+      ' prompt lists it.',
+    '',
+    `Agent: ${agent}`,
+    `Notes: ${notes.map((n) => n.ref).join(', ')}`,
+    '',
+    '| Note | Title | Why |',
+    '| --- | --- | --- |',
+    ...notes.map((n) => `| \`${n.ref}\` | ${cell(n.note.title)} | ${cell(n.why.join('; '))} |`),
+    '',
+    'Steps:',
+    '1. Read each note: `swarmup kb --read REF`.',
+    `2. Read ${agent}'s role file and check which lessons it already states.`,
+    '3. Fold each lesson that still holds into the role file as one short rule the agent acts on,',
+    '   in an overlay in your scratch folder (`agents/<runtime>-<role>.md`, or',
+    '   `agents/<role>/agent.md` with addenda `agents/<role>/<runtime>.md`), and check it with',
+    '   `swarmup validate`. Leave out a note that no longer holds or that a tool or check should',
+    '   enforce, and say why.',
+    '4. Record it: `swarmup defs propose ID --dir DIR --name NAME -m "why"`, with a line',
+    '   `Notes: REF, REF` in the message naming the notes the change folds in, then send this task',
+    '   to the person for review. After the promote, the person archives those notes with',
+    '   `swarmup kb archive REF... -m "folded into NAME"`.',
   ];
   return lines.join('\n');
 }
@@ -252,15 +295,70 @@ export class Improver {
     );
   }
 
+  /** Files the learn-note improvement task for `agent` (W6) as the acting id of `ws`. */
+  private fileNotes(ws: Workspace, agent: string, notes: NoteCandidate[], days?: number): TaskMeta {
+    const cfg = this.host.config();
+    const counts = new Map<string, number>();
+    for (const n of notes) counts.set(n.note.root, (counts.get(n.note.root) ?? 0) + 1);
+    const own = ws.roots.filter((r) => !r.isMirror);
+    const best = [...counts]
+      .filter(([r]) => own.some((o) => o.name === r))
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
+    return ws.newTask(
+      {
+        title: `Improve ${agent}: fold ${notes.length} learn note(s) into the role`,
+        type: 'task',
+        owner: cfg.agent,
+        labels: [IMPROVE_LABEL],
+        body: improveNotesBody(agent, notes, days ? { days } : {}),
+      },
+      own.find((r) => r.name === best) ?? own[0],
+    );
+  }
+
+  /** The note refs on `Notes:` lines of improvement tasks of `agent`, open or closed. */
+  private notedRefs(ws: Workspace, agent: string): Set<string> {
+    const out = new Set<string>();
+    for (const v of ws.views()) {
+      if (!(v.meta.labels ?? []).includes(IMPROVE_LABEL)) continue;
+      if (!v.meta.title.startsWith(`Improve ${agent}:`)) continue;
+      let body = '';
+      try {
+        body = ws.roots.find((r) => r.name === v.root)?.readTask(v.meta.id).body ?? '';
+      } catch {
+        continue;
+      }
+      for (const m of body.matchAll(/^Notes: (.+)$/gm)) {
+        for (const ref of m[1]!.split(/[,\s]+/)) if (ref) out.add(ref);
+      }
+    }
+    return out;
+  }
+
+  /** Learn-note candidates by the agents they are for; people and the improver are left out. */
+  private notesByAgent(ws: Workspace): { days: number; by: Map<string, NoteCandidate[]> } {
+    const cfg = this.host.config();
+    const by = new Map<string, NoteCandidate[]>();
+    const res = ws.kbPromote();
+    for (const c of res.candidates) {
+      for (const agent of c.for) {
+        if (agent === cfg.agent || isHuman(agent) || agent.startsWith('opsd:')) continue;
+        by.set(agent, [...(by.get(agent) ?? []), c]);
+      }
+    }
+    return { days: res.days, by };
+  }
+
   /**
    * The trigger: at most every `check_hours`, files one improvement task for each agent with at
    * least `threshold` distinct failing task and run scores in the last `max_age_days` days, when
-   * it has no open improvement task and no open proposal. Off unless `enabled`. Returns the tasks
-   * it filed.
+   * it has no open improvement task and no open proposal (off unless `enabled`); and with
+   * `notes`, one for each agent with learn-note promotion candidates that no improvement task of
+   * the agent named yet, on the same conditions. Returns the tasks it filed.
    */
   triggerTick(force = false): TaskMeta[] {
     const cfg = this.host.config();
-    if (!cfg.enabled) return [];
+    if (!cfg.enabled && !cfg.notes) return [];
     const state = this.state();
     const now = this.host.now();
     if (!force && state.checkedAt && now - state.checkedAt < cfg.check_hours * 3_600_000) return [];
@@ -269,12 +367,20 @@ export class Improver {
     try {
       const ws = this.host.ws(IMPROVE_ACTOR);
       const proposed = ws.variants().filter((v) => v.status === 'proposed');
-      for (const f of failingByAgent(this.host.scores(), { now, maxAgeDays: cfg.max_age_days })) {
+      // `*:<role>` is a change to an agent folder's agent.md, which every runtime reads (W5).
+      const busy = (agent: string): boolean => {
+        const role = `*:${agent.slice(agent.indexOf(':') + 1)}`;
+        return (
+          proposed.some((v) => v.agents.includes(agent) || v.agents.includes(role)) ||
+          this.openTask(ws, agent) !== undefined
+        );
+      };
+      const failing = cfg.enabled
+        ? failingByAgent(this.host.scores(), { now, maxAgeDays: cfg.max_age_days })
+        : [];
+      for (const f of failing) {
         if (f.subjects.length < cfg.threshold || f.agent === cfg.agent) continue;
-        // `*:<role>` is a change to an agent folder's agent.md, which every runtime reads (W5).
-        const role = `*:${f.agent.slice(f.agent.indexOf(':') + 1)}`;
-        if (proposed.some((v) => v.agents.includes(f.agent) || v.agents.includes(role))) continue;
-        if (this.openTask(ws, f.agent)) continue;
+        if (busy(f.agent)) continue;
         try {
           filed.push(this.file(ws, f, cfg.max_age_days));
         } catch (err) {
@@ -284,6 +390,7 @@ export class Improver {
           );
         }
       }
+      if (cfg.notes) filed.push(...this.notesTrigger(ws, busy));
     } finally {
       this.host.writeState(state);
     }
@@ -304,6 +411,53 @@ export class Improver {
     );
     if (!f) throw new Error(`${agent} has no failing task or run score to improve on`);
     return this.file(ws, f);
+  }
+
+  /** The learn-note half of the trigger: one task per agent with candidates no task named yet. */
+  private notesTrigger(ws: Workspace, busy: (agent: string) => boolean): TaskMeta[] {
+    let found: { days: number; by: Map<string, NoteCandidate[]> };
+    try {
+      found = this.notesByAgent(ws);
+    } catch (err) {
+      this.warnOnce(
+        'notes',
+        `improve: cannot list learn-note candidates: ${(err as Error).message}`,
+      );
+      return [];
+    }
+    const filed: TaskMeta[] = [];
+    for (const [agent, all] of [...found.by].sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (busy(agent)) continue;
+      // A note an earlier task named was folded in already, or a person turned the change down.
+      const named = this.notedRefs(ws, agent);
+      const notes = all.filter((c) => !named.has(c.ref));
+      if (notes.length === 0) continue;
+      try {
+        filed.push(this.fileNotes(ws, agent, notes, found.days));
+      } catch (err) {
+        this.warnOnce(
+          `notes\0${agent}`,
+          `improve: cannot file a learn-note task for ${agent}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return filed;
+  }
+
+  /**
+   * Files the learn-note improvement task for `agent` now (W6), as `actor` (a person), with every
+   * promotion candidate for the agent, named before or not, whatever `notes` says. Refuses an
+   * agent with no candidate or with an open improvement task.
+   */
+  requestNotes(agent: string, actor: string): TaskMeta {
+    const ws = this.host.ws(actor);
+    const open = this.openTask(ws, agent);
+    if (open) throw new Error(`${agent} already has an open improvement task: ${open}`);
+    const res = ws.kbPromote({ agent });
+    if (res.candidates.length === 0) {
+      throw new Error(`${agent} has no learn note to fold in; see \`swarmup kb --promote\``);
+    }
+    return this.fileNotes(ws, agent, res.candidates, res.days);
   }
 
   /**

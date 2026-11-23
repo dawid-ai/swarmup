@@ -271,6 +271,12 @@ export interface ImproveBenchConfig {
 export interface ImproveConfig {
   /** File improvement tasks on its own. Off unless set to true. */
   enabled: boolean;
+  /**
+   * File an improvement task for an agent with learn-note promotion candidates (W6): fold the
+   * notes that keep mattering into its role file. Off unless set to true; independent of
+   * `enabled`.
+   */
+  notes: boolean;
   /** Distinct failing task and run scores of one agent that file a task. Default 10. */
   threshold: number;
   /** Only scores of the last this many days count. Default 7. */
@@ -285,6 +291,7 @@ export interface ImproveConfig {
 
 export const DEFAULT_IMPROVE: ImproveConfig = {
   enabled: false,
+  notes: false,
   threshold: 10,
   max_age_days: 7,
   agent: 'claude:improver',
@@ -835,7 +842,15 @@ export function checkJudge(raw: unknown): JudgeConfig {
   return out;
 }
 
-const IMPROVE_KEYS = ['enabled', 'threshold', 'max_age_days', 'agent', 'check_hours', 'benchmark'];
+const IMPROVE_KEYS = [
+  'enabled',
+  'notes',
+  'threshold',
+  'max_age_days',
+  'agent',
+  'check_hours',
+  'benchmark',
+];
 const IMPROVE_BENCH_KEYS = ['set', 'repo', 'hidden_dir', 'entries', 'repeat', 'budget_min'];
 
 /**
@@ -856,6 +871,10 @@ export function checkImprove(raw: unknown): ImproveConfig {
   if (r.enabled !== undefined && r.enabled !== null) {
     if (typeof r.enabled !== 'boolean') fail('.enabled: use true or false');
     out.enabled = r.enabled as boolean;
+  }
+  if (r.notes !== undefined && r.notes !== null) {
+    if (typeof r.notes !== 'boolean') fail('.notes: use true or false');
+    out.notes = r.notes as boolean;
   }
   const whole = (v: unknown, k: string): number | undefined => {
     if (v === undefined || v === null) return undefined;

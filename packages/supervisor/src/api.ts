@@ -869,12 +869,21 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (defs !== undefined) return send(res, 200, defs);
     }
     // **Propose an improvement** on an agent's failing scorer: the improvement task, now (W6).
+    // `{ kind: 'notes' }` files the one that folds the agent's learn-note candidates in.
     if (method === 'POST' && area === 'improve' && !id) {
       humanOnly('filing an improvement task');
       const ws = wsAs();
       if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+      const kind = str(body.kind) ?? 'scores';
+      if (kind !== 'scores' && kind !== 'notes') {
+        throw new HttpError(400, "kind: use 'scores' or 'notes'");
+      }
       try {
-        const meta = sup.improver.request(need(body.agent, 'agent'), ws.actor);
+        const agent = need(body.agent, 'agent');
+        const meta =
+          kind === 'notes'
+            ? sup.improver.requestNotes(agent, ws.actor)
+            : sup.improver.request(agent, ws.actor);
         return send(res, 201, meta);
       } catch (err) {
         if (err instanceof OpsError) throw err;
@@ -1225,6 +1234,36 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       const text = (q.get('q') ?? '').slice(0, 500);
       const limit = Math.min(Math.max(Number(q.get('limit')) || 50, 1), 200);
       return send(res, 200, wsAs().searchResult(text, { limit }));
+    }
+    // Learn-note promotion candidates (W6), as `swarmup kb --promote --json` lists them.
+    if (method === 'GET' && area === 'kb' && id === 'promote' && !action) {
+      const days = q.get('days');
+      const found = wsAs().kbPromote({
+        ...(days ? { days: Number(days) } : {}),
+        ...(q.get('agent') ? { agent: q.get('agent')! } : {}),
+      });
+      return send(res, 200, {
+        since: found.since,
+        days: found.days,
+        candidates: found.candidates.map(
+          ({ note: { file: _file, body: _body, ...note }, ...c }) => ({
+            ...c,
+            note,
+          }),
+        ),
+      });
+    }
+    // **Archive** learn notes (W6): a person only, as `swarmup kb archive`.
+    if (method === 'POST' && area === 'kb' && id === 'archive' && !action) {
+      humanOnly('archiving learn notes');
+      const refs = Array.isArray(body.refs) ? body.refs.map(String) : [];
+      const done = wsAs().kbArchive(refs, str(body.message) ?? '');
+      await sup.tick();
+      return send(
+        res,
+        200,
+        done.map(({ file: _file, ...a }) => a),
+      );
     }
     if (method === 'GET' && area === 'kb') {
       const ws = wsAs();
