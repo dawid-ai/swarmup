@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -689,8 +689,8 @@ async function publishCommand(ctx: Ctx): Promise<number | void> {
   });
   if (ctx.opts.json) {
     const { view, ...rest } = done;
-    ctx.io.out(JSON.stringify({ ...rest, status: view.status }, null, 2));
-    return done.ok ? 0 : 1;
+    ctx.io.out(JSON.stringify({ ...rest, status: view?.status ?? null }, null, 2));
+    return done.ok && !done.problems ? 0 : 1;
   }
   const what = `${done.files.join(', ')} at ${done.commit.slice(0, 10)}`;
   if (!done.ok) {
@@ -704,6 +704,12 @@ async function publishCommand(ctx: Ctx): Promise<number | void> {
   ctx.io.out(
     `${ref} published at ${done.url} by adapter ${done.adapter}: ${what}, tagged ${done.target?.tag ?? '-'}`,
   );
+  if (done.problems) {
+    // The work is live: say what was not recorded, never to run the adapter again.
+    ctx.io.err(`${ref} IS published at ${done.url}, but some of recording it failed:`);
+    for (const p of done.problems) ctx.io.err(`- ${p}`);
+    return 1;
+  }
   const results = done.results ?? {};
   for (const cid of Object.keys(results)) {
     const r = results[cid]!;
@@ -741,7 +747,7 @@ async function previewCommand(ctx: Ctx): Promise<number | void> {
   const out = str(ctx.opts.out);
   const file = out
     ? resolve(ctx.io.cwd, out)
-    : join(tmpdir(), `swarmup-preview-${root.name}-${id}.html`);
+    : join(mkdtempSync(join(tmpdir(), 'swarmup-preview-')), `${root.name}-${id}.html`);
   writeFileSync(file, preview.page);
   if (ctx.opts.json) {
     // The page is in the file; the answer keeps each file's parts.

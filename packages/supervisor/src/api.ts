@@ -700,8 +700,10 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
               `adapter ${done.adapter} failed (${done.why ?? 'no reason'}); it will not run again for these files without again: if it went live, record the URL with Mark published`,
             );
           }
+          // Published: a step of recording it that failed is in `problems`, never a reason to
+          // run the adapter again.
           const { view, ...rest } = done;
-          return send(res, 200, { ...rest, task: compact(view) });
+          return send(res, 200, { ...rest, task: view ? compact(view) : null });
         }
       }
       // A milestone's plan as `swarmup plan show` reports it (AO-0110).

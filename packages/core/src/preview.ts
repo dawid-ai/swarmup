@@ -24,7 +24,9 @@ export interface PreviewOptions {
 
 /** A link or image target that may be written: http(s), mailto, or one without a scheme. */
 function safeUrl(url: string): boolean {
-  const u = url.replace(/&amp;/g, '&').trim();
+  const u = url.replace(/&amp;/g, '&');
+  // No space or control character anywhere: a browser drops them, so `java\tscript:` would pass.
+  if ([...u].some((ch) => ch.charCodeAt(0) <= 0x20)) return false;
   if (/^(https?:\/\/|mailto:)/i.test(u)) return true;
   return !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith('//');
 }

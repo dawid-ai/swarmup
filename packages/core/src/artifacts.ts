@@ -201,12 +201,12 @@ export interface PublishTarget {
  * Finds what `swarmup published ID` records and tags it: the commit of `rev` (default `HEAD`),
  * the blob of `path` there (refused with exit 2 when the commit lacks it), and a new tag
  * `published/<ID>` on that commit, or `published/<ID>-2` and up when the task was published
- * before at another commit.
+ * before at another commit. With `create: false` it names the tag without putting it on.
  */
 export async function publishTarget(
   git: GitRun,
   id: string,
-  opts: { rev?: string; path?: string } = {},
+  opts: { rev?: string; path?: string; create?: boolean } = {},
 ): Promise<PublishTarget> {
   const rev = opts.rev ?? 'HEAD';
   const commit = await commitOf(git, rev);
@@ -231,7 +231,7 @@ export async function publishTarget(
     if ((await commitOf(git, `refs/tags/${tag}`)) === commit) return { commit, path, blob, tag };
     tag = `${base}-${n}`;
   }
-  await git(['tag', tag, commit]);
+  if (opts.create !== false) await git(['tag', tag, commit]);
   return { commit, ...(path ? { path } : {}), ...(blob ? { blob } : {}), tag };
 }
 

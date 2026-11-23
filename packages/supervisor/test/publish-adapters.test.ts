@@ -11,6 +11,7 @@ import {
   mcpArguments,
   opsdConfig,
   publishWithAdapter,
+  recordableUrl,
   taskAdapter,
   taskApprovedFiles,
   taskPreview,
@@ -181,7 +182,7 @@ describe('publishWithAdapter', () => {
       url: 'https://blog.example/launch',
       files: ['posts/x.md'],
     });
-    expect(done.view.status).toBe('done');
+    expect(done.view?.status).toBe('done');
     expect(fake.calls).toEqual([{ files: ['posts/x.md'], commit: done.commit, task: 'T-0002' }]);
     const events = s.as('human:dawid').showEvents('2').events;
     const attempt = events.find((e) => e.type === 'publish-attempt')!;
@@ -226,7 +227,7 @@ describe('publishWithAdapter', () => {
     };
     const failed = await publishWithAdapter({ ws: s.as('human:dawid'), ref: '2', ...opts });
     expect(failed).toMatchObject({ ok: false, why: 'exit 1' });
-    expect(failed.view.status).not.toBe('done');
+    expect(failed.view?.status).not.toBe('done');
     const last = s.as('human:dawid').showEvents('2').events.at(-1)!;
     expect(last.type).toBe('comment');
     expect(last.body).toMatch(/swarmup published T-0002 --url URL/);
@@ -432,4 +433,76 @@ describe('edits after approval', () => {
       files: [{ path: 'posts/x.md', task: 'T-0001', verdict: verdict.id, changed: 2, total: 10 }],
     });
   });
+});
+
+describe('after the adapter published', () => {
+  it('keeps the URL when recording fails, and says the work is published', async () => {
+    const s = setup();
+    const ws = s.as('human:dawid');
+    ws.published = () => {
+      throw new Error('the task lock is held');
+    };
+    const done = await publishWithAdapter({
+      ws,
+      ref: '2',
+      publish: PUBLISH,
+      mcp: checkMcpConfig(undefined),
+      top: s.repo,
+      git: s.gitRun,
+      env: s.env,
+      runners: fakeCommand({ ok: true, url: 'https://blog.example/1', output: '' }).runners,
+    });
+    expect(done).toMatchObject({ ok: true, url: 'https://blog.example/1' });
+    expect(done.problems).toEqual([
+      expect.stringMatching(
+        /^recording the publish \(record it with `swarmup published T-0002 --url URL`; do not run the adapter again\) failed: the task lock is held$/,
+      ),
+    ]);
+    // Not recorded, so not tagged either.
+    expect(git(s.repo, 'tag', '--list')).toBe('');
+  });
+
+  it('records a URL whose query looks like a secret without the query', async () => {
+    const token = `gh${'p_'}${'a'.repeat(36)}`;
+    expect(recordableUrl(`https://blog.example/p/1?token=${token}#x`)).toBe(
+      'https://blog.example/p/1',
+    );
+    expect(recordableUrl('https://blog.example/p/1?id=2')).toBe('https://blog.example/p/1?id=2');
+    const s = setup();
+    const done = await publishWithAdapter({
+      ws: s.as('human:dawid'),
+      ref: '2',
+      publish: PUBLISH,
+      mcp: checkMcpConfig(undefined),
+      top: s.repo,
+      git: s.gitRun,
+      env: s.env,
+      runners: fakeCommand({ ok: true, url: `https://blog.example/p/1?token=${token}`, output: '' })
+        .runners,
+    });
+    expect(done.problems).toBeUndefined();
+    const event = s
+      .as('human:dawid')
+      .showEvents('2')
+      .events.find((e) => e.type === 'publish')!;
+    expect(event.url).toBe('https://blog.example/p/1');
+    expect(git(s.repo, 'rev-parse', 'published/T-0002')).toBe(git(s.repo, 'rev-parse', 'HEAD'));
+  });
+
+  it('stops a command adapter that outlives its timeout, with what it started', async () => {
+    const s = setup();
+    commit(s.repo, { 'slow.mjs': 'setTimeout(() => {}, 60_000);\n' }, 'slow');
+    const started = Date.now();
+    const done = await publishWithAdapter({
+      ws: s.as('human:dawid'),
+      ref: '2',
+      publish: { test: { blog: { kind: 'command', run: 'node slow.mjs', timeout_minutes: 0.02 } } },
+      mcp: checkMcpConfig(undefined),
+      top: s.repo,
+      git: s.gitRun,
+      env: s.env,
+    });
+    expect(done).toMatchObject({ ok: false, why: 'timed out' });
+    expect(Date.now() - started).toBeLessThan(20_000);
+  }, 30_000);
 });

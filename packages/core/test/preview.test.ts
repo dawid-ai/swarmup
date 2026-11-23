@@ -61,6 +61,10 @@ describe('markdownToHtml', () => {
     expect(html).toContain('<a href="../other.md">rel</a>');
     expect(html).toContain('<span class="image-missing">[image: pic]</span>');
     expect(html).toContain('<img src="assets/card.png" alt="ok">');
+    // A control character inside a URL never passes, whatever follows it.
+    expect(markdownToHtml('[x](java\u0001script:void) [y](a\u007fb)')).toBe(
+      '<p>x <a href="a\u007fb">y</a></p>',
+    );
     expect(html).not.toContain('');
   });
 

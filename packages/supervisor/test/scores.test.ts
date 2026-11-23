@@ -834,6 +834,20 @@ describe('post-approval-edits', () => {
       pass: false,
       note: 'posts/0.md 0.3, posts/1.md 0.3',
     });
+    // A file approved in another root names its task `root/ID`.
+    const other = task('T-1', draft.events, { root: 'drafts' });
+    const cross = task('T-2', [
+      ev(20, 'publish', 'human:dawid', {
+        edits: {
+          changed: 1,
+          total: 10,
+          files: [{ path: 'a.md', task: 'drafts/T-1', verdict: 'V', changed: 1, total: 10 }],
+        },
+      }),
+    ]);
+    expect(
+      only(computeScores({ tasks: [other, cross], runs: [] }), 'post-approval-edits')[0],
+    ).toMatchObject({ agent: ENG, value: 0.1 });
     // No publish with edits, no score.
     expect(only(computeScores({ tasks: [draft], runs: [] }), 'post-approval-edits')).toEqual([]);
   });

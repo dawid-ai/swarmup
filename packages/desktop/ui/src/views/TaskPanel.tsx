@@ -1541,6 +1541,7 @@ export function PublishAdapterForm({
 }) {
   const [again, setAgain] = useState(false);
   const act = useAction();
+  const done = useRef<{ url?: string; problems?: string[] } | null>(null);
   return (
     <div data-publish-adapter className="panel animate-rise mt-3 flex flex-col gap-3 p-4">
       <p className="text-sm text-fg-2">
@@ -1558,13 +1559,20 @@ export function PublishAdapterForm({
           disabled={act.busy}
           onClick={() =>
             act.run(
-              () =>
-                api('POST', `/api/tasks/${q(id)}/publish`, {
+              async () => {
+                done.current = (await api('POST', `/api/tasks/${q(id)}/publish`, {
                   as: nav.me,
                   ...(again ? { again: true } : {}),
-                }),
+                })) as { url?: string; problems?: string[] };
+              },
               () => {
-                toast(`Published with ${adapter}: the task is done`);
+                const r = done.current;
+                // Live either way; a step of recording it that failed is named, never retried.
+                toast(
+                  r?.problems?.length
+                    ? `Published at ${r.url}, but ${r.problems.join('; ')}`
+                    : `Published with ${adapter}: the task is done`,
+                );
                 onDone();
               },
             )

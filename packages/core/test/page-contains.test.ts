@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckDeps, Criterion, FetchedPage } from '../src/index.js';
 import {
+  blockedAddress,
+  checkPageTarget,
   criteriaOf,
+  defaultFetchPage,
   PAGE_MAX_BYTES,
   PAGE_TIMEOUT_MS,
   pageText,
@@ -128,5 +131,78 @@ describe('page-contains', () => {
   it('reads a page as text without scripts, tags or entities', () => {
     expect(pageText(PAGE)).toBe(' Launch SwarmUp & friends Read it on GitHub . ');
     expect(pageText('a&#39;b&#x41;&nbsp;&bogus;')).toBe("a'bA &bogus;");
+  });
+});
+
+describe('page-contains targets', () => {
+  it('names loopback, private, link-local and unspecified addresses', () => {
+    for (const ip of [
+      '127.0.0.1',
+      '10.1.2.3',
+      '172.16.0.1',
+      '172.31.255.255',
+      '192.168.1.1',
+      '169.254.169.254',
+      '0.0.0.0',
+      '::1',
+      '::',
+      'fc00::1',
+      'fd12::3',
+      'fe80::1',
+      'febf::1',
+      '::ffff:127.0.0.1',
+      '[::1]',
+    ]) {
+      expect([ip, blockedAddress(ip)]).toEqual([ip, true]);
+    }
+    for (const ip of ['8.8.8.8', '172.32.0.1', '192.169.0.1', '2606:4700::1111', 'fec0::1']) {
+      expect([ip, blockedAddress(ip)]).toEqual([ip, false]);
+    }
+  });
+
+  it('refuses a host that resolves to such an address, and any other scheme', async () => {
+    const lookup = async (host: string) =>
+      host === 'inside.example' ? ['10.0.0.5'] : ['93.184.215.14'];
+    await expect(checkPageTarget('https://inside.example/x', lookup)).rejects.toThrow(
+      /refusing inside.example: it is or resolves to a loopback, private or link-local address/,
+    );
+    await expect(checkPageTarget('http://127.0.0.1:8080/', lookup)).rejects.toThrow(/refusing/);
+    await expect(checkPageTarget('http://[::1]/', lookup)).rejects.toThrow(/refusing/);
+    await expect(checkPageTarget('file:///etc/passwd', lookup)).rejects.toThrow(/no http\(s\) URL/);
+    expect((await checkPageTarget('https://example.com/a', lookup)).host).toBe('example.com');
+  });
+
+  it('checks every redirect by hand, and stops after five', async () => {
+    const lookup = async (host: string) =>
+      host === 'inside.example' ? ['192.168.0.2'] : ['93.184.215.14'];
+    const seen: string[] = [];
+    const redirect = (to: string) => async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return new Response(null, { status: 302, headers: { location: to } });
+    };
+    const opts = { timeoutMs: 1000, maxBytes: 100 };
+    await expect(
+      defaultFetchPage('https://example.com/a', opts, {
+        lookup,
+        fetch: redirect('http://inside.example/admin') as typeof fetch,
+      }),
+    ).rejects.toThrow(/refusing inside.example/);
+    expect(seen).toEqual(['https://example.com/a']);
+    seen.length = 0;
+    await expect(
+      defaultFetchPage('https://example.com/a', opts, {
+        lookup,
+        fetch: redirect('/again') as typeof fetch,
+      }),
+    ).rejects.toThrow(/more than 5 redirects/);
+    expect(seen).toHaveLength(6);
+    const ok = await defaultFetchPage('https://example.com/a', opts, {
+      lookup,
+      fetch: (async (url: string | URL | Request) =>
+        String(url).endsWith('/b')
+          ? new Response('hello', { status: 200 })
+          : new Response(null, { status: 301, headers: { location: '/b' } })) as typeof fetch,
+    });
+    expect(ok).toEqual({ status: 200, text: 'hello' });
   });
 });

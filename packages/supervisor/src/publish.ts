@@ -12,6 +12,7 @@ import type {
   ApprovedFile,
   CriteriaResults,
   GitRun,
+  OpsEvent,
   McpConfig,
   McpEnvValue,
   PublishEdits,
@@ -39,8 +40,10 @@ import {
   publishTarget,
   readSecrets,
   resolveMcpEnv,
+  secretKind,
   workspacePath,
 } from '@swarmup/core';
+import { stopTree } from './git.js';
 import { quoteBatch, resolveCommand } from './proc.js';
 
 export const PUBLISH_KINDS = ['manual', 'command', 'mcp'] as const;
@@ -231,6 +234,8 @@ export interface AdapterInput {
   files: PublishFile[];
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+  /** command: the files already written to a temporary folder, which the caller removes. */
+  staged?: StagedFiles;
 }
 
 const OUTPUT_KEEP = 64 * 1024;
@@ -249,51 +254,109 @@ function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): NodeJ
   return env;
 }
 
+/** The approved files written to a new temporary folder, for a `command` adapter. */
+export interface StagedFiles {
+  dir: string;
+  /** Each file in `dir`, in the order of the input. */
+  paths: string[];
+}
+
 /**
- * Runs a `command` adapter: the approved files are written to a new temporary folder, and the
- * command runs in a shell in the workspace with `SWARMUP_PUBLISH_TASK`, `SWARMUP_PUBLISH_ROOT`,
- * `SWARMUP_PUBLISH_COMMIT`, `SWARMUP_PUBLISH_DIR` (that folder), `SWARMUP_PUBLISH_FILES` (the
- * files in it, one per line), `SWARMUP_PUBLISH_FILE` (the first), `SWARMUP_PUBLISH_PATHS` (their
- * workspace paths, one per line) and `SWARMUP_PUBLISH_WORKSPACE`, plus the adapter's `env`. It
- * must exit 0 and print `url: <URL>` as its last such line.
+ * Writes `files` to a new temporary folder. A failure removes what it wrote and throws, so the
+ * caller can stage before it records an attempt.
+ */
+export function stageFiles(files: readonly PublishFile[]): StagedFiles {
+  const dir = mkdtempSync(join(tmpdir(), 'swarmup-publish-'));
+  try {
+    const paths = files.map((f) => {
+      const p = join(dir, ...f.path.split('/'));
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, f.data);
+      return p;
+    });
+    return { dir, paths };
+  } catch (err) {
+    removeStaged(dir);
+    throw err;
+  }
+}
+
+/** Removes a staged folder; a file still held open (Windows) is left to the OS's temp cleanup. */
+export function removeStaged(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    // Left behind: never a reason to fail a publish.
+  }
+}
+
+/** How long a command adapter's output may stay open after its shell exits. */
+const EXIT_GRACE_MS = 500;
+
+/**
+ * Runs a `command` adapter: the approved files are in a temporary folder (`input.staged`, else
+ * staged here and removed after), and the command runs in a shell in the workspace with
+ * `SWARMUP_PUBLISH_TASK`, `SWARMUP_PUBLISH_ROOT`, `SWARMUP_PUBLISH_COMMIT`, `SWARMUP_PUBLISH_DIR`
+ * (that folder), `SWARMUP_PUBLISH_FILES` (the files in it, one per line), `SWARMUP_PUBLISH_FILE`
+ * (the first), `SWARMUP_PUBLISH_PATHS` (their workspace paths, one per line) and
+ * `SWARMUP_PUBLISH_WORKSPACE`, plus the adapter's `env`. It must exit 0 and print `url: <URL>` as
+ * its last such line. On a timeout the whole process tree is stopped (`taskkill /T` on Windows,
+ * the process group elsewhere). The call settles when the shell exits, after a short grace for
+ * its output, even when a process it started keeps that output open.
  */
 export function runCommandAdapter(
   adapter: PublishAdapterConfig,
   input: AdapterInput,
   secrets: Record<string, string>,
 ): Promise<AdapterOutcome> {
-  const dir = mkdtempSync(join(tmpdir(), 'swarmup-publish-'));
-  const abs = input.files.map((f) => {
-    const p = join(dir, ...f.path.split('/'));
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, f.data);
-    return p;
-  });
-  const own = resolveMcpEnv({ command: '', ...(adapter.env ? { env: adapter.env } : {}) }, secrets);
+  const own = input.staged === undefined;
+  let staged: StagedFiles;
+  try {
+    staged = input.staged ?? stageFiles(input.files);
+  } catch (err) {
+    return Promise.resolve({ ok: false, output: '', why: (err as Error).message });
+  }
+  const vars = resolveMcpEnv(
+    { command: '', ...(adapter.env ? { env: adapter.env } : {}) },
+    secrets,
+  );
   const env = childEnv(input.env, {
-    ...own.env,
+    ...vars.env,
     SWARMUP_PUBLISH_TASK: input.task,
     SWARMUP_PUBLISH_ROOT: input.root,
     SWARMUP_PUBLISH_COMMIT: input.commit,
-    SWARMUP_PUBLISH_DIR: dir,
-    SWARMUP_PUBLISH_FILES: abs.join('\n'),
-    SWARMUP_PUBLISH_FILE: abs[0] ?? '',
+    SWARMUP_PUBLISH_DIR: staged.dir,
+    SWARMUP_PUBLISH_FILES: staged.paths.join('\n'),
+    SWARMUP_PUBLISH_FILE: staged.paths[0] ?? '',
     SWARMUP_PUBLISH_PATHS: input.files.map((f) => f.path).join('\n'),
     SWARMUP_PUBLISH_WORKSPACE: input.top,
   });
   return new Promise<AdapterOutcome>((done) => {
     let out = '';
     let err = '';
+    let settled = false;
+    let timedOut = false;
+    let grace: NodeJS.Timeout | undefined;
     const child = spawn(adapter.run ?? '', {
       cwd: input.top,
       env,
       shell: true,
       windowsHide: true,
+      // Off Windows the shell leads its own process group, so a timeout reaches what it started.
+      detached: process.platform !== 'win32',
     });
-    let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      const pid = child.pid;
+      const kill = (): void => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Gone.
+        }
+      };
+      if (pid) void stopTree(pid).finally(kill);
+      else kill();
     }, input.timeoutMs);
     child.stdout?.on('data', (c: Buffer) => {
       out = (out + c.toString('utf8')).slice(-OUTPUT_KEEP);
@@ -302,22 +365,29 @@ export function runCommandAdapter(
       err = (err + c.toString('utf8')).slice(-OUTPUT_KEEP);
     });
     const end = (o: AdapterOutcome): void => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      rmSync(dir, { recursive: true, force: true });
+      if (grace) clearTimeout(grace);
+      if (own) removeStaged(staged.dir);
       done(o);
     };
-    child.on('error', (e) => end({ ok: false, output: tailOf(err), why: e.message }));
-    child.on('close', (code) => {
+    const finish = (code: number | null): void => {
       const output = tailOf([out, err].filter((s) => s.trim()).join('\n'));
       if (timedOut) return end({ ok: false, output, why: 'timed out' });
-      if (code !== 0) return end({ ok: false, output, why: `exit ${code}` });
+      if (code !== 0) return end({ ok: false, output, why: `exit ${code ?? 'killed'}` });
       const url = urlFromOutput(out);
       end(
         url
           ? { ok: true, url, output }
           : { ok: false, output, why: 'it printed no `url: <URL>` line' },
       );
+    };
+    child.on('error', (e) => end({ ok: false, output: tailOf(err), why: e.message }));
+    child.on('exit', (code) => {
+      grace ??= setTimeout(() => finish(code), EXIT_GRACE_MS);
     });
+    child.on('close', (code) => finish(code));
   });
 }
 
@@ -363,6 +433,16 @@ function startServer(command: string, args: string[], env: NodeJS.ProcessEnv): C
     });
   }
   return spawn(file, args, opts);
+}
+
+/** A tool call that failed, with what the server wrote to stderr kept apart from the message. */
+export class McpCallError extends Error {
+  constructor(
+    message: string,
+    readonly stderr: string,
+  ) {
+    super(message);
+  }
 }
 
 /**
@@ -423,9 +503,11 @@ export function callMcpTool(o: {
       );
     };
     child.on('error', (e) => finish(() => rejectCall(e)));
+    // The server's stderr stays with the caller's answer (`McpCallError.stderr`): it may hold
+    // anything the server logs, so it never goes into a task event.
     child.on('exit', (code) =>
       finish(() =>
-        rejectCall(new Error(`the server exited (${code ?? 'killed'}) ${tailOf(err, 500)}`.trim())),
+        rejectCall(new McpCallError(`the server exited (${code ?? 'killed'})`, tailOf(err, 2000))),
       ),
     );
     child.stdin?.on('error', () => {});
@@ -494,7 +576,13 @@ export interface PublishOutcome {
   output: string;
   target?: PublishTarget;
   results?: CriteriaResults;
-  view: TaskView;
+  /**
+   * After a publish that went live: the steps of recording it that failed. The work is published
+   * all the same; never run the adapter again for them.
+   */
+  problems?: string[];
+  /** The task after it; missing only when reading it failed after a publish. */
+  view?: TaskView;
 }
 
 /** Options of one publish. */
@@ -718,7 +806,7 @@ export async function publishWithAdapter(o: {
   opts?: PublishOptions;
   runners?: PublishRunners;
 }): Promise<PublishOutcome> {
-  const { ws, git } = o;
+  const { ws } = o;
   const opts = o.opts ?? {};
   const actor = ws.requireActor();
   if (!isHuman(actor) || ws.run) {
@@ -788,21 +876,36 @@ export async function publishWithAdapter(o: {
     ref: f.path,
     blob: f.blob,
   }));
-  const attempt = ws.publishAttempt(o.ref, {
-    adapter: name,
-    commit,
-    artifacts,
-    ...(opts.again ? { again: true } : {}),
-  }).events[0]!;
+  // A command adapter's files are written before the attempt is recorded, so a failure to write
+  // them leaves neither an attempt nor a folder.
+  const staged = adapter.kind === 'command' ? stageFiles(files) : undefined;
+  let attempt: OpsEvent;
+  try {
+    attempt = ws.publishAttempt(o.ref, {
+      adapter: name,
+      commit,
+      artifacts,
+      ...(opts.again ? { again: true } : {}),
+    }).events[0]!;
+  } catch (err) {
+    if (staged) removeStaged(staged.dir);
+    throw err;
+  }
   const timeoutMs = (adapter.timeout_minutes ?? PUBLISH_TIMEOUT_MINUTES) * 60_000;
   let outcome: AdapterOutcome;
   if (adapter.kind === 'command') {
     const run = o.runners?.command ?? runCommandAdapter;
-    outcome = await run(
-      adapter,
-      { root: root.name, task: id, commit, top: o.top, files, env: o.env, timeoutMs },
-      secrets,
-    );
+    try {
+      outcome = await run(
+        adapter,
+        { root: root.name, task: id, commit, top: o.top, files, env: o.env, timeoutMs, staged },
+        secrets,
+      );
+    } catch (err) {
+      outcome = { ok: false, output: '', why: (err as Error).message };
+    } finally {
+      removeStaged(staged!.dir);
+    }
   } else {
     const call = o.runners?.mcp ?? callMcpTool;
     const one = files.length === 1 ? files[0]! : undefined;
@@ -831,7 +934,8 @@ export async function publishWithAdapter(o: {
               why: 'the tool reported no URL (structuredContent.url or a `url: <URL>` line)',
             };
     } catch (err) {
-      outcome = { ok: false, output: '', why: (err as Error).message };
+      const stderr = err instanceof McpCallError ? err.stderr : '';
+      outcome = { ok: false, output: stderr, why: (err as Error).message };
     }
   }
   const base = { adapter: name, commit, files: paths, attempt: attempt.id, output: outcome.output };
@@ -848,18 +952,109 @@ export async function publishWithAdapter(o: {
     );
     return { ...base, ok: false, why, view: res.view };
   }
-  const target = await publishTarget(git, id, {
-    rev: commit,
-    ...(paths.length === 1 ? { path: paths[0] } : {}),
-  });
-  const edits = await publishEdits(git, taskApprovedFiles(ws, o.ref), commit, paths);
-  ws.published(o.ref, {
-    url: outcome.url,
-    ...target,
-    adapter: name,
-    ...(edits ? { edits } : {}),
-    message: `Published at ${outcome.url} with adapter ${name}`,
-  });
-  const results = await ws.publishChecks(o.ref, outcome.url, { cwd: o.top });
-  return { ...base, ok: true, url: outcome.url, target, results, view: ws.view(o.ref) };
+  return recordAdapterPublish({ ...o, id, name, commit, paths, url: outcome.url, base });
+}
+
+/**
+ * A URL safe to write into an event: as given, else without its query and fragment when those
+ * look like a secret (a token in a link), else only its origin.
+ */
+export function recordableUrl(url: string): string {
+  if (!secretKind(url)) return url;
+  const bare = url.replace(/[?#].*$/, '');
+  if (!secretKind(bare)) return bare;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return bare;
+  }
+}
+
+/**
+ * After an adapter published: writes the `publish` event first, then tags the commit, then runs
+ * the post-publish criteria. The work is live by now, so nothing here throws: each step that
+ * fails is named in `problems`, and the URL is always in the answer.
+ */
+async function recordAdapterPublish(o: {
+  ws: Workspace;
+  ref: string;
+  git: GitRun;
+  top: string;
+  id: string;
+  name: string;
+  commit: string;
+  paths: string[];
+  url: string;
+  base: Omit<PublishOutcome, 'ok' | 'view'>;
+}): Promise<PublishOutcome> {
+  const { ws, git, id } = o;
+  const problems: string[] = [];
+  const say = (step: string, err: unknown): void => {
+    problems.push(`${step} failed: ${err instanceof Error ? err.message : String(err)}`);
+  };
+  let target: PublishTarget | undefined;
+  try {
+    target = await publishTarget(git, id, {
+      rev: o.commit,
+      ...(o.paths.length === 1 ? { path: o.paths[0] } : {}),
+      create: false,
+    });
+  } catch (err) {
+    say('finding the tag', err);
+  }
+  let edits: PublishEdits | undefined;
+  try {
+    edits = await publishEdits(git, taskApprovedFiles(ws, o.ref), o.commit, o.paths);
+  } catch (err) {
+    say('measuring the edits', err);
+  }
+  const url = recordableUrl(o.url);
+  let recorded = false;
+  try {
+    ws.published(o.ref, {
+      url,
+      commit: o.commit,
+      ...(target ?? {}),
+      adapter: o.name,
+      ...(edits ? { edits } : {}),
+      message: `Published at ${url} with adapter ${o.name}`,
+    });
+    recorded = true;
+  } catch (err) {
+    say(
+      `recording the publish (record it with \`swarmup published ${id} --url URL\`; do not run the adapter again)`,
+      err,
+    );
+  }
+  if (recorded && target) {
+    try {
+      const at = (await git(['tag', '--list', target.tag])).trim();
+      if (!at) await git(['tag', target.tag, o.commit]);
+    } catch (err) {
+      say(`tagging ${target.tag}`, err);
+    }
+  }
+  let results: CriteriaResults | undefined;
+  if (recorded) {
+    try {
+      results = await ws.publishChecks(o.ref, url, { cwd: o.top });
+    } catch (err) {
+      say('the post-publish checks', err);
+    }
+  }
+  let view: TaskView | undefined;
+  try {
+    view = ws.view(o.ref);
+  } catch (err) {
+    say('reading the task', err);
+  }
+  return {
+    ...o.base,
+    ok: true,
+    url: o.url,
+    ...(target ? { target } : {}),
+    ...(results ? { results } : {}),
+    ...(problems.length > 0 ? { problems } : {}),
+    ...(view ? { view } : {}),
+  };
 }

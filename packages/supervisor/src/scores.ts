@@ -349,14 +349,16 @@ const postApprovalEdits: Scorer = {
   lever: "the writer's role file (the approved task's author), and the brief it worked from",
   score(ctx, pass) {
     const out: ScoreResult[] = [];
-    const byId = new Map(ctx.tasks.map((t) => [`${t.root}/${t.id}`, t] as const));
+    const byId = new Map<string, ScoreTask>(ctx.tasks.map((t) => [`${t.root}/${t.id}`, t]));
     for (const t of ctx.tasks) {
       const publish = [...t.events].reverse().find((e) => e.type === 'publish' && e.edits);
       const edits = publish?.edits;
       if (!publish || !edits || edits.total <= 0) continue;
       // The writer: the author of the task whose approval the first file comes from.
       const first = edits.files[0];
-      const source = first ? byId.get(`${t.root}/${first.task}`) : undefined;
+      // A task in another root is already named `root/ID`.
+      const key = first ? (first.task.includes('/') ? first.task : `${t.root}/${first.task}`) : '';
+      const source = first ? byId.get(key) : undefined;
       const agent = source ? ctx.facts(source).author : ctx.facts(t).author;
       const value = round(edits.changed / edits.total);
       const many = edits.files.length > 1;

@@ -704,14 +704,25 @@ swarmupd:
   `SWARMUP_PUBLISH_DIR` (the folder), `SWARMUP_PUBLISH_FILES` (the files in it, one per line),
   `SWARMUP_PUBLISH_FILE` (the first), `SWARMUP_PUBLISH_PATHS` (their workspace paths) and
   `SWARMUP_PUBLISH_WORKSPACE`, plus its `env`; never a run's token. It must exit 0 and print a
-  line `url: <URL>`; the last such line is the URL.
+  line `url: <URL>`; the last such line is the URL. Read the variables inside the script
+  (`process.env.SWARMUP_PUBLISH_FILE`, `$SWARMUP_PUBLISH_FILE` in a shell script); never write
+  them into `run:` itself. The file names come from the approved work, which an agent wrote, and
+  `cmd.exe` expands `%VAR%` in `run:` before it runs, so a crafted name could add a command.
+  On a timeout swarmupd stops the whole process tree (`taskkill /T` on Windows, the process group
+  elsewhere), and it stops waiting for output shortly after the shell exits.
 - **`mcp`** starts the `publish: true` server with its secrets in its environment, as the run
   proxy does, and calls the tool once as an MCP client. The server's `tools` rules apply. The URL
   is the answer's `structuredContent.url`, else the last `url: <URL>` line of its text. `{path}`
   and `{content}` need exactly one file.
-- **On success** swarmupd tags the commit `published/<ID>`, writes the `publish` event with the
-  URL and `adapter`, closes the task and runs its `when: publish` criteria, as
-  `swarmup published` does.
+- **On success** swarmupd writes the `publish` event with the URL and `adapter` (closing the
+  task), then tags the commit `published/<ID>`, then runs its `when: publish` criteria, as
+  `swarmup published` does. The work is live by then, so a step that fails (the task's lock, the
+  tag, a check) does not lose the URL: `swarmup publish` prints the URL, says the work is
+  published and names the step, and the API answers 200 with `problems`. If the event was not
+  written, record it with `swarmup published ID --url URL`; never run the adapter again. A URL
+  whose query looks like a secret is recorded without its query.
+- **`mcp` server output.** What the server writes to stderr comes back in the command's or the
+  API's answer only; it never goes into a task event or comment.
 - **Preview first.** `swarmup preview ID [--artifact PATH]... [--commit REV] [--out FILE]`
   renders the same files at the same commit into one HTML page (a temp file unless `--out`) and
   prints its path; **Preview** in the task panel shows them (`GET /api/tasks/:id/preview`). The

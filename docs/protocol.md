@@ -264,7 +264,10 @@ Any kind may carry `text` as a description. The built-in checks are:
   event records, answers 2xx and holds every string of `contains` and none of `absent` (one or a
   list each). A string counts when it is in the HTML or in its text with scripts, styles and tags
   removed and entities decoded; case is ignored unless `case-sensitive: true`. It follows
-  redirects, waits 15 seconds at most and reads the first 2 MB. It reads the published page, so
+  at most 5 redirects, waits 15 seconds at most and reads the first 2 MB. It refuses a host
+  that is or resolves to a loopback, private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`),
+  link-local (`169.254/16`, `fe80::/10`) or unspecified address, checked again at every
+  redirect. It reads the published page, so
   it takes `when: publish` and is refused without it:
   `{ check: page-contains, args: { from: published, contains: github.com/you/repo }, when: publish }`.
 

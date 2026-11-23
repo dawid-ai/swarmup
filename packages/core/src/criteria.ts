@@ -697,19 +697,96 @@ export async function defaultFetchStatus(url: string, timeoutMs: number): Promis
   return res.status;
 }
 
+/** The most redirects `page-contains` follows. */
+export const PAGE_MAX_REDIRECTS = 5;
+
 /**
- * A GET of `url` that follows redirects and reads at most `maxBytes` of the body, all within
- * `timeoutMs`.
+ * True for an address `page-contains` never fetches: unspecified (`0.0.0.0/8`, `::`), loopback
+ * (`127/8`, `::1`), private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`) and link-local
+ * (`169.254/16`, `fe80::/10`), and an IPv4-mapped IPv6 address of any of them.
+ */
+export function blockedAddress(ip: string): boolean {
+  const v6 = ip
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/%.*$/, '');
+  const mapped = /^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
+  const v4 = mapped ? mapped[1]! : v6;
+  const parts = v4.split('.');
+  if (parts.length === 4 && parts.every((x) => /^\d{1,3}$/.test(x))) {
+    const [a, b] = parts.map(Number) as [number, number];
+    return (
+      a === 0 ||
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  if (!v6.includes(':')) return false;
+  if (/^[0:]*$/.test(v6) || /^[0:]*:0*1$/.test(v6)) return true;
+  const first = parseInt(v6.split(':')[0] || '0', 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
+/** Resolves a host name to every address it has. */
+export type HostLookup = (host: string) => Promise<string[]>;
+
+async function lookupAll(host: string): Promise<string[]> {
+  const { lookup } = await import('node:dns/promises');
+  return (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+}
+
+/**
+ * Refuses a `page-contains` target that is no http(s) URL, or whose host is, or resolves to, an
+ * address {@link blockedAddress} names, so a criterion cannot read this machine or its network.
+ */
+export async function checkPageTarget(url: string, lookup: HostLookup = lookupAll): Promise<URL> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error(`'${url}' is no URL`);
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`'${url}' is no http(s) URL`);
+  }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const addresses = /^[\d.]+$/.test(host) || host.includes(':') ? [host] : await lookup(host);
+  if (addresses.length === 0 || addresses.some(blockedAddress)) {
+    throw new Error(
+      `refusing ${u.host}: it is or resolves to a loopback, private or link-local address`,
+    );
+  }
+  return u;
+}
+
+/**
+ * A GET of `url` that reads at most `maxBytes` of the body, all within `timeoutMs`. Redirects
+ * are followed by hand, at most {@link PAGE_MAX_REDIRECTS}, and every hop's host is checked with
+ * {@link checkPageTarget} first.
  */
 export async function defaultFetchPage(
   url: string,
   opts: { timeoutMs: number; maxBytes: number },
+  deps: { fetch?: typeof fetch; lookup?: HostLookup } = {},
 ): Promise<FetchedPage> {
-  const res = await fetch(url, {
-    method: 'GET',
-    redirect: 'follow',
-    signal: AbortSignal.timeout(opts.timeoutMs),
-  });
+  const get = deps.fetch ?? fetch;
+  const signal = AbortSignal.timeout(opts.timeoutMs);
+  let at = url;
+  let res: Response;
+  for (let hop = 0; ; hop++) {
+    const target = await checkPageTarget(at, deps.lookup);
+    res = await get(target.href, { method: 'GET', redirect: 'manual', signal });
+    const next = res.headers.get('location');
+    if (res.status < 300 || res.status >= 400 || !next) break;
+    await res.body?.cancel().catch(() => undefined);
+    if (hop >= PAGE_MAX_REDIRECTS) {
+      throw new Error(`more than ${PAGE_MAX_REDIRECTS} redirects from ${url}`);
+    }
+    at = new URL(next, target).href;
+  }
   const chunks: Buffer[] = [];
   let size = 0;
   let truncated = false;
