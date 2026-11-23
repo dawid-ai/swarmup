@@ -1144,7 +1144,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (area === 'scores') {
       // The scores swarmupd keeps in state.db (scores.ts): per agent, each scorer's mean, pass
       // rate and worst subjects; `agent=ID` for one agent, `task=root/ID` adds that task's
-      // scores with evidence. Task and run scores count from `since` (ISO), agent scores over all
+      // scores with evidence; `by_variant=1` splits them by variant. Task and run scores count from `since` (ISO), agent scores over all
       // time. The report carries the scores of its own window. `POST /api/scores/refresh`
       // computes them all again.
       if (method === 'POST' && id === 'refresh') {
@@ -1188,7 +1188,11 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           );
         }
         return send(res, 200, {
-          agents: summarizeScores(results, { settings }).filter((a) => !agent || a.agent === agent),
+          // `by_variant=1`: one block per agent and variant, to read an experiment (W5).
+          agents: summarizeScores(results, {
+            settings,
+            byVariant: q.get('by_variant') === '1',
+          }).filter((a) => !agent || a.agent === agent),
           scorers: scorerCatalog({ settings }),
           ...(task ? { results: mine } : {}),
         });

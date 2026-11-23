@@ -135,6 +135,11 @@ export interface RunRecord {
   mcp?: string[];
   /** The variant of the definitions the run started with (W5); unset for the base. */
   variant?: string;
+  /**
+   * The `swarm.yaml` experiment that chose the run's side (W5 phase 5); without `variant`, the
+   * run is on the base side of it.
+   */
+  experiment?: string;
 }
 
 /** Which definitions a run started with (`RunRecord.defs`). */

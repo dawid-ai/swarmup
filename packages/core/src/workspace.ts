@@ -2291,7 +2291,16 @@ export class Workspace {
     type: 'run-start' | 'run-end',
     fields: Pick<
       OpsEvent,
-      'run' | 'exit' | 'reason' | 'minutes' | 'tokens' | 'session' | 'defs' | 'variant'
+      | 'run'
+      | 'exit'
+      | 'reason'
+      | 'minutes'
+      | 'tokens'
+      | 'session'
+      | 'defs'
+      | 'variant'
+      | 'experiment'
+      | 'defs_ref'
     >,
     message = '',
   ): ActResult {

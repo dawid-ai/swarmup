@@ -482,6 +482,11 @@ export interface OpsdConfig {
   resume_on_changes: boolean;
   /** Hours after a run ended that its session may still be resumed. */
   resume_max_hours: number;
+  /**
+   * Give task runs the variant a store's `swarm.yaml` experiment picks for them (W5 phase 5). On
+   * unless set to false: then every run this machine starts without `--variant` runs the base.
+   */
+  experiments: boolean;
   bench: BenchConfig;
   judge: JudgeConfig;
   improve: ImproveConfig;
@@ -613,6 +618,7 @@ export function opsdConfig(
     review_checks: raw.review_checks ?? false,
     remove_stale_temp: raw.remove_stale_temp ?? false,
     resume_on_changes: raw.resume_on_changes ?? true,
+    experiments: raw.experiments ?? true,
     resume_max_hours: raw.resume_max_hours ?? 24,
     bench: checkBench((raw as { bench?: unknown }).bench),
     judge: checkJudge((raw as { judge?: unknown }).judge),
@@ -651,6 +657,9 @@ export function opsdConfig(
   }
   if (typeof cfg.resume_on_changes !== 'boolean') {
     throw new OpsError('swarmupd.resume_on_changes: use true or false', 2);
+  }
+  if (typeof cfg.experiments !== 'boolean') {
+    throw new OpsError('swarmupd.experiments: use true or false', 2);
   }
   amount(cfg.resume_max_hours, 'resume_max_hours');
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');

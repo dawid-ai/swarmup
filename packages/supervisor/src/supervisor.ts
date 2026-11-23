@@ -20,11 +20,13 @@ import { basename, delimiter, dirname, join, relative, resolve } from 'node:path
 import type {
   AgentDef,
   CriteriaResults,
+  ExperimentPick,
   Criterion,
   OpsEvent,
   Priority,
   Root,
   Route,
+  SwarmExperiment,
   TaskView,
   UserConfig,
 } from '@swarmup/core';
@@ -39,6 +41,7 @@ import {
   agentText,
   assertActor,
   loadDefinitions,
+  pickExperiment,
   SCRATCH_WRITER_ROLES,
   TRIGGER_ACTOR,
   untrustedTriggersText,
@@ -3510,6 +3513,60 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * The experiment of the task's store that takes this run, with the side it puts the task on
+   * (W5 phase 5). A variant that does not check, or has no usable role file for the agent, puts
+   * the run outside the experiment, with a warning, rather than stop it.
+   */
+  private experimentFor(
+    ws: Workspace,
+    rootName: string,
+    ref: string,
+    agent: string,
+    type: string | undefined,
+    labels: string[] | undefined,
+  ): ExperimentPick | null {
+    const root = ws.roots.find((r) => r.name === rootName);
+    if (!root || root.isMirror) return null;
+    let experiments: SwarmExperiment[] | undefined;
+    try {
+      experiments = loadDefinitions(root.dir).swarm?.experiments;
+    } catch {
+      return null;
+    }
+    if (!experiments?.length) return null;
+    let events: OpsEvent[] = [];
+    try {
+      events = ws.showEvents(ref).events;
+    } catch {
+      // A task whose events do not read has no earlier side.
+    }
+    const pick = pickExperiment(
+      experiments,
+      { agent, ref, ...(type ? { type } : {}), ...(labels ? { labels } : {}) },
+      { now: new Date(this.now()), events },
+    );
+    if (!pick?.variant) return pick;
+    let why: string | null = null;
+    try {
+      const set = loadDefinitions(root.dir, { variant: pick.variant });
+      const vdef = set.agents.find((a) => a.id === agent);
+      why = !set.ok
+        ? 'does not check'
+        : !vdef
+          ? `has no role file for ${agent}`
+          : roleInactive(vdef);
+    } catch (err) {
+      why = err instanceof Error ? err.message : String(err);
+    }
+    if (!why) return pick;
+    this.warnOnce(
+      `experiment:${rootName}:${pick.experiment}:${agent}`,
+      `experiment ${pick.experiment} of ${rootName}: variant ${pick.variant} ${why}; ${ref} runs the base outside the experiment`,
+    );
+    return null;
+  }
+
+  /**
    * Starts a run. With `defer`, a task worktree that is not there yet is not made here: the
    * launch starts making it off the event loop and throws {@link WorktreePending}.
    */
@@ -3536,6 +3593,7 @@ export class Supervisor extends EventEmitter {
     let check: MilestoneCheckPrompt | undefined;
     let criteria: Criterion[] | undefined;
     let taskType: string | undefined;
+    let taskLabels: string[] | undefined;
     const parent = req.parent ? this.live.get(req.parent)?.record : undefined;
     if (req.parent) {
       if (!parent) throw new OpsError(`parent run ${req.parent} is not live`);
@@ -3564,6 +3622,7 @@ export class Supervisor extends EventEmitter {
       const v = ws.view(ref);
       delegation = v.delegation;
       taskType = v.meta.type;
+      taskLabels = v.meta.labels;
       if (!req.review && v.meta.type === QUESTION_TYPE) question = questionPrompt(ws, ref, v);
       if (!req.review) check = milestoneCheckPrompt(ws, ref, v);
       criteria = v.criteria;
@@ -3585,27 +3644,37 @@ export class Supervisor extends EventEmitter {
         }
       }
     }
+    // Without a variant named, an experiment of the task's store may pick one (W5 phase 5).
+    let variant = req.variant;
+    let experiment: string | undefined;
+    if (variant === undefined && ref && rootName && !req.chat && this.config.experiments) {
+      const pick = this.experimentFor(ws, rootName, ref, agent, taskType, taskLabels);
+      if (pick) {
+        experiment = pick.experiment;
+        variant = pick.variant;
+      }
+    }
     // A run of a variant reads its role file from the variant's definitions: the store's files with
     // the overlay on top (W5).
     let variantRole: { text: string; hash: string; root: string } | undefined;
-    if (req.variant !== undefined) {
+    if (variant !== undefined) {
       if (req.chat) throw new OpsError('a chat turn runs no variant', 2);
       const vroot = rootName
         ? ws.roots.find((r) => r.name === rootName)
         : ws.roots.find((r) => !r.isMirror);
       if (!vroot) throw new OpsError('a variant run needs a task store', 2);
-      const set = loadDefinitions(vroot.dir, { variant: req.variant });
+      const set = loadDefinitions(vroot.dir, { variant });
       if (!set.ok) {
         const first = set.problems.find((p) => p.severity === 'error');
         throw new OpsError(
-          `variant ${req.variant} does not check` +
+          `variant ${variant} does not check` +
             (first ? `: ${first.path}: ${first.message}` : '') +
-            `; \`swarmup validate --root ${vroot.name} --variant ${req.variant}\` lists the problems`,
+            `; \`swarmup validate --root ${vroot.name} --variant ${variant}\` lists the problems`,
         );
       }
       const vdef = set.agents.find((a) => a.id === agent);
       if (!vdef)
-        throw new OpsError(`variant ${req.variant} of ${vroot.name} has no role file for ${agent}`);
+        throw new OpsError(`variant ${variant} of ${vroot.name} has no role file for ${agent}`);
       const why = roleInactive(vdef);
       if (why) throw new OpsError(why);
       const norm = vdef.file.replace(/\\/g, '/');
@@ -3782,7 +3851,7 @@ export class Supervisor extends EventEmitter {
       ? {
           root: variantRole.root,
           hash: variantRole.hash,
-          variant: req.variant!,
+          variant: variant!,
           ...(baseStamp?.local ? { local: baseStamp.local } : {}),
         }
       : baseStamp;
@@ -4032,7 +4101,8 @@ export class Supervisor extends EventEmitter {
         around,
         resumed: resumed?.session,
         resumed_from: resumed?.from,
-        ...(req.variant ? { variant: req.variant } : {}),
+        ...(variant ? { variant } : {}),
+        ...(experiment ? { experiment } : {}),
         ...(defsStamp ? { defs: defsStamp, model: invModel, effort: invEffort } : {}),
         ...(mcp.grant.granted.length > 0 ? { mcp: mcp.grant.granted } : {}),
       };
@@ -4093,10 +4163,12 @@ export class Supervisor extends EventEmitter {
             run: id,
             ...(resumed ? { session: resumed.session } : {}),
             ...(defsStamp ? { defs: shortHash(defsStamp.hash) } : {}),
-            ...(req.variant ? { variant: req.variant } : {}),
+            ...(variant ? { variant } : {}),
+            ...(experiment ? { experiment } : {}),
           },
           `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
-            (req.variant ? `, variant ${req.variant}` : '') +
+            (variant ? `, variant ${variant}` : '') +
+            (experiment ? `, experiment ${experiment}${variant ? '' : ' (base)'}` : '') +
             (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),
       );

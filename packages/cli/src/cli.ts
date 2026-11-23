@@ -3618,14 +3618,17 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   launch: {
-    usage: 'launch AGENT [--task ID] [--budget 2h] [--tokens 400k] [--prompt-file F] [--cwd DIR]',
-    summary: 'start an agent run through swarmupd (claims --task for the agent first)',
+    usage:
+      'launch AGENT [--task ID] [--budget 2h] [--tokens 400k] [--prompt-file F] [--cwd DIR] [--variant NAME]',
+    summary:
+      "start an agent run through swarmupd (claims --task for the agent first); --variant runs it with a variant of the store's definitions instead of the one an experiment picks",
     options: {
       task: { type: 'string' },
       budget: { type: 'string' },
       tokens: { type: 'string' },
       'prompt-file': { type: 'string' },
       cwd: { type: 'string' },
+      variant: { type: 'string' },
     },
     run: async (ctx) => {
       const info =
@@ -3638,8 +3641,13 @@ const COMMANDS: Record<string, Command> = {
         tokens: str(ctx.opts.tokens),
         cwd: str(ctx.opts.cwd),
         prompt: file ? readFileSync(file, 'utf8') : undefined,
+        variant: str(ctx.opts.variant),
       });
-      ctx.io.out(ctx.opts.json ? JSON.stringify(r, null, 2) : `${r.id} ${r.agent} pid ${r.pid}`);
+      const side = r.variant ? `, variant ${r.variant}` : '';
+      const exp = r.experiment ? `, experiment ${r.experiment}` : '';
+      ctx.io.out(
+        ctx.opts.json ? JSON.stringify(r, null, 2) : `${r.id} ${r.agent} pid ${r.pid}${side}${exp}`,
+      );
     },
   },
   spawn: {
@@ -3828,13 +3836,14 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   scores: {
-    usage: 'scores [--agent ID] [--task ID] [--since DATE] [--refresh] [--json]',
+    usage: 'scores [--agent ID] [--task ID] [--since DATE] [--by-variant] [--refresh] [--json]',
     summary:
-      "scores per agent (criteria passed, review rounds, merge failures, cost per merged task, human touches, escalations, recommendations taken, stuck runs, orientation) with each scorer's mean, pass rate and worst tasks; --task lists one task's scores with evidence; --refresh computes them again and keeps them in state.db",
+      "scores per agent (criteria passed, review rounds, merge failures, cost per merged task, human touches, escalations, recommendations taken, stuck runs, orientation) with each scorer's mean, pass rate and worst tasks; --task lists one task's scores with evidence; --by-variant splits each agent's task and run scores by the variant its work ran with, to read an experiment; --refresh computes them again and keeps them in state.db",
     options: {
       agent: { type: 'string' },
       task: { type: 'string' },
       since: { type: 'string' },
+      'by-variant': { type: 'boolean' },
       refresh: { type: 'boolean' },
     },
     run: async (ctx) => {
@@ -3881,9 +3890,11 @@ const COMMANDS: Record<string, Command> = {
         return void ctx.io.out(subjectScoresText(subject, mine));
       }
       const agent = str(ctx.opts.agent);
-      const summary = summarizeScores(results, { settings, worst: agent ? 10 : 3 }).filter(
-        (a) => !agent || a.agent === agent,
-      );
+      const summary = summarizeScores(results, {
+        settings,
+        worst: agent ? 10 : 3,
+        byVariant: ctx.opts['by-variant'] === true,
+      }).filter((a) => !agent || a.agent === agent);
       if (ctx.opts.json) {
         return void ctx.io.out(JSON.stringify({ since: sinceIso ?? null, agents: summary }));
       }

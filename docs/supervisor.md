@@ -1130,6 +1130,7 @@ swarmupd:
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   resume_on_changes: true # a task back with changes resumes its last run's session
   resume_max_hours: 24 # how long after its run ended a session may be resumed
+  experiments: true # false: runs started here ignore swarm.yaml experiments and run the base
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
     claude: { command: claude, model: opus, effort: medium } # effort: --effort for Claude
@@ -1311,8 +1312,14 @@ swarmup scores                          # per agent: each scorer's mean, pass ra
 swarmup scores --agent claude:engineer  # one agent, with its 10 worst tasks per scorer
 swarmup scores --task AO-0300           # one task's scores, each with its evidence
 swarmup scores --since 2026-11-01       # tasks and runs from that date; agent scores too
+swarmup scores --by-variant             # each agent's task and run scores per variant, base first
 swarmup scores --refresh                # compute again and keep them in state.db
 ```
+
+A task or run score carries the definitions its work started with, when swarmupd ran it:
+`defs_hash` (the short hash), `variant` and `experiment`, from the run record or, for a task,
+the newest `run-start` of the agent the score counts for. `--by-variant` groups by `variant`, which
+is how you read an [experiment](definitions.md#experiments).
 
 | Scorer                      | Level | Value                                                                                                                                                          | Pass by default |
 | --------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |

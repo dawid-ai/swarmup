@@ -57,6 +57,11 @@ phases 1 to 3; see `docs/definitions.md` and `docs/protocol.md` ("Workflows").
   per variant. `proposals.ts`: the `improvement` policy of `swarm.yaml`, `policyProblems`,
   `proposal.json`, `listVariants` and `applyVariantToBase`; `defs-cmd.ts` adds
   `defs propose|promote|reject|variants` and `validate --variant` (see `/improve`).
+- `experiments.ts`: `swarm.yaml` `experiments` (W5 phase 5). `pickExperiment` takes the first
+  active experiment whose scope matches a task run and deals the task by
+  `sha256(id + ref) < share`, keeping the side an earlier `run-start.experiment` records. The
+  supervisor's `experimentFor` calls it in `launch` when no variant is named and
+  `swarmupd.experiments` is on; `load.ts` checks that each experiment's variant exists.
 - W5 phase 4 (triggers, checks, scorers in git) is in the `triggers` node.
 - `desktop/ui/src/ui/defs.tsx` is **Settings > Definitions**: a card per root with the hash and
   commit, effective values, problems, the YAML with problem lines marked, and in-place edits.

@@ -237,7 +237,88 @@
       "description": "Accepted but not active yet: variants come in phase 5."
     },
     "experiments": {
-      "description": "Accepted but not active yet: experiments come in phase 5."
+      "description": "A/B experiments: the first one that takes a task run gives it the variant or the base, the same for every run of the task. A machine with `swarmupd.experiments: false` runs the base, and an explicit `--variant` or `--defs-ref` wins.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "description": "One experiment: a share of the task runs it takes run a variant.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The experiment id. With the task it fixes which side a task lands on: a new id deals the tasks again.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "variant": {
+            "description": "The variant the chosen share of task runs gets: `variants/<name>/` in this store.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+          },
+          "share": {
+            "description": "The share of matching tasks that run the variant, from 0 to 1 (0.5 is half). The rest run the base definitions.",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "scope": {
+            "description": "Which task runs it takes; every list that is set must match. Every task run when unset.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "agents": {
+                "description": "Agent ids.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$"
+                }
+              },
+              "roles": {
+                "description": "Roles, such as engineer.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*$"
+                }
+              },
+              "types": {
+                "description": "Task types.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "labels": {
+                "description": "Labels, of which a task carries one.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "until": {
+            "description": "The last day it runs, in UTC. Open-ended when unset.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "description": {
+            "description": "What the experiment tests.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "variant",
+          "share"
+        ],
+        "additionalProperties": false
+      }
     },
     "improvement": {
       "description": "The self-improvement policy (W6): what `swarmup defs propose` may change.",

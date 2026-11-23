@@ -59,8 +59,8 @@ roles: # as swarmupd.roles takes them
   [Team policy](#team-policy)). `defaults.budget_min` is the run budget for agents that set none.
 - `work_types` give a new task without criteria its default ones (see
   [Work types](#work-types)).
-- `scoring`, `checks`, `variants` and `experiments` are accepted with a warning that they are not
-  active yet.
+- `experiments` give a share of task runs a variant (see [Experiments](#experiments)).
+- `scoring`, `checks` and `variants` are accepted with a warning that they are not active yet.
 - Agent files keep their fields. They also take `runtimes.<rt>.{model, effort}`, which wins over the
   file's own `model` and `effort` for that runtime, and `role`, `providers`, `writes` and
   `scorers`; see [Agent folders](#agent-folders).
@@ -361,6 +361,38 @@ lowercase letters, digits and dashes.
   Its run record and `run-start` event carry `variant`, and its definition stamp the variant's hash.
 - `swarmup bench run ... --variant NAME --root ROOT` replays a benchmark set with the variant's
   role file for the agent; see [benchmarks](benchmarks.md#role-files-and-variants).
+
+### Experiments
+
+An experiment runs a variant on a share of the real work, so you can compare it with the base on
+the same kind of tasks:
+
+```yaml
+experiments:
+  - id: tests-first-trial # with the task, fixes which side a task lands on
+    variant: engineer-tests-first # variants/engineer-tests-first/ must exist
+    share: 0.5 # the share of matching tasks that run the variant, 0 to 1
+    scope: { roles: [engineer], types: [bug], labels: [api] } # optional; every list must match
+    until: 2026-12-31 # optional: the last day it runs, in UTC
+    description: Does writing the test first cut review rounds?
+```
+
+- swarmupd picks a task run's definitions in this order: the variant named with `--variant`
+  (`swarmup launch`, `variant` in `POST /api/runs`) or a `--defs-ref`, then the first active
+  experiment whose `scope` takes the run, then the base. `scope` takes `agents`, `roles`, `types`
+  and `labels` (a task carries one of them).
+- The side is deterministic: the task lands on the variant when `sha256(id + "root/ID")`, read as
+  a fraction from 0 to 1, is under `share`. It is also sticky: a task whose earlier `run-start`
+  names the experiment keeps the side it had, even after `share` changes.
+- The run record and the `run-start` event carry `experiment` on both sides, and `variant` on the
+  variant side, so the base side of an experiment is the work it took that ran without a variant.
+- A variant that does not check, or that has no active role file for the agent, puts the run
+  outside the experiment on the base, and swarmupd warns once.
+- A machine with `swarmupd.experiments: false` runs the base for every run it starts without
+  `--variant`.
+- `swarmup scores --by-variant` (and `GET /api/scores?by_variant=1`) splits each agent's task and
+  run scores by the variant its work ran with, the base first, so you can read an experiment.
+  Agent-level scores count all of an agent's work and stay out of the split.
 
 ## Proposals
 

@@ -46,9 +46,19 @@ export {
   gitMergeChecks,
   untrustedChecksText,
 } from './checks.js';
+export type { ExperimentPick, ExperimentSubject } from './experiments.js';
+export {
+  experimentActive,
+  experimentFraction,
+  experimentTakes,
+  pickExperiment,
+  priorSide,
+} from './experiments.js';
 export type {
   SwarmCheck,
   SwarmDefs,
+  SwarmExperiment,
+  SwarmExperimentScope,
   SwarmImport,
   SwarmImprovement,
   SwarmImprovementRequires,
@@ -60,6 +70,7 @@ export type {
 } from './swarm.js';
 export {
   DEFS_FORMAT,
+  EXPERIMENT_ID_RE,
   POLICY_KEYS,
   setSwarmValues,
   SWARM_FILE,

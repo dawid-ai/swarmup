@@ -342,6 +342,27 @@ function checkSet(
       }
     });
   }
+  // Experiments name variants of this store, once each, and real days.
+  if (swarm?.experiments) {
+    const swarmFile = fileOf(SWARM_FILE);
+    const at = (path: string, severity: DefProblem['severity'], message: string): void => {
+      const pos = locate.get(swarmFile)?.(path.split('.')) ?? { line: 1, col: 1 };
+      problems.push({ file: swarmFile, path, ...pos, severity, message });
+    };
+    const variants = listVariantNames(rootDir);
+    const seen = new Set<string>();
+    swarm.experiments.forEach((e, i) => {
+      if (seen.has(e.id)) at(`experiments.${i}.id`, 'error', `experiment ${e.id} is named twice`);
+      seen.add(e.id);
+      if (!variants.includes(e.variant)) {
+        at(`experiments.${i}.variant`, 'error', `no variants/${e.variant}/ in this store`);
+      }
+      const day = e.until ? Date.parse(`${e.until}T00:00:00Z`) : 0;
+      if (e.until && (Number.isNaN(day) || new Date(day).toISOString().slice(0, 10) !== e.until)) {
+        at(`experiments.${i}.until`, 'error', `${e.until} is no day`);
+      }
+    });
+  }
   problems.push(
     ...validateDefinitions({
       root: rootDir,
