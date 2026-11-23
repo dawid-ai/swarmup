@@ -300,6 +300,9 @@ export interface BenchRoleInfo {
   /** The definition hash: the base's, or the variant's (base with its overlay). */
   defs: string;
   variant?: string;
+  /** The git ref the definitions were read at (`--defs-ref`), and the commit it named. */
+  ref?: string;
+  commit?: string;
 }
 
 /** The role file a bench run puts in each prompt: its instructions, and where they came from. */
@@ -1400,7 +1403,7 @@ export function planLines(plan: ReturnType<typeof planBench>, opts: BenchRunOpti
   if (opts.role) {
     lines.push(
       `role file: ${opts.role.agent} from ${opts.role.root}` +
-        `${opts.role.variant ? `, variant ${opts.role.variant}` : ''} (${opts.role.defs.slice(0, 14)})`,
+        `${opts.role.variant ? `, variant ${opts.role.variant}` : ''}${opts.role.ref ? `, at ${opts.role.ref}` : ''} (${opts.role.defs.slice(0, 14)})`,
     );
   }
   const cmd = plan.attempts.find((a) => a.command)?.command;
@@ -1746,6 +1749,8 @@ export async function runBench(opts: BenchRunOptions): Promise<BenchSummary | nu
               root: opts.role.root,
               defs: opts.role.defs,
               ...(opts.role.variant ? { variant: opts.role.variant } : {}),
+              ...(opts.role.ref ? { ref: opts.role.ref } : {}),
+              ...(opts.role.commit ? { commit: opts.role.commit } : {}),
             },
           }
         : {}),

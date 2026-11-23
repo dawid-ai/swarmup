@@ -221,3 +221,56 @@ describe('swarmup defs propose, variants, promote and reject', () => {
     expect(res.code).toBe(0);
   });
 });
+
+describe('swarmup bench run --defs-ref', () => {
+  it('puts the role file as a git ref had it in bench prompts, never checking it out', async () => {
+    const { store, cli, dir } = project();
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], {
+        cwd: dir,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'base');
+    // The working file moves on; the ref keeps `model: opus`.
+    put(store, 'agents/claude-engineer.md', ENGINEER.replace('opus', 'sonnet'));
+    const set = join(temp(), 'set.yaml');
+    writeFileSync(
+      set,
+      'id: demo\nentries:\n  - id: E1\n    base: { ref: HEAD }\n    prompt: Add a test.\n    done_when: [Tests pass]\n',
+    );
+    const args = ['bench', 'run', set, '--repo', dir, '--agent', 'claude:engineer'];
+    const res = await cli(
+      'human:dawid',
+      ...args,
+      '--defs-ref',
+      'HEAD',
+      '--root',
+      store,
+      '--out',
+      join(temp(), 'out'),
+      '--dry-run',
+    );
+    expect(res.err.join('\n')).toMatch(
+      /role file: claude:engineer from .*, at HEAD \(d:[0-9a-f]{12}\)/,
+    );
+    expect(res.err.join('\n')).toMatch(/--model opus/);
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(store, 'agents', 'claude-engineer.md'), 'utf8')).toContain('sonnet');
+    const bad = await cli('human:dawid', ...args, '--defs-ref', 'no-such-ref', '--root', store);
+    expect(bad.code).toBe(2);
+    expect(bad.err.join('\n')).toContain('git cannot read no-such-ref');
+    const both = await cli(
+      'human:dawid',
+      ...args,
+      '--defs-ref',
+      'HEAD',
+      '--variant',
+      'x',
+      '--root',
+      store,
+    );
+    expect(both.code).toBe(2);
+  });
+});

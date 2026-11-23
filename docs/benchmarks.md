@@ -193,9 +193,15 @@ swarmup bench run tally.yaml --repo C:\dev\swarmup-testbed --agent claude:engine
 swarmup bench compare base variant
 ```
 
+`--defs-ref REF --root ROOT` does the same with the store's definitions as git ref `REF` had them,
+such as last week's commit or a tag, to measure a regression. The files are read with `git show`
+into a snapshot and never checked out, so the store's working files and branch stay as they are.
+`--variant` and `--defs-ref` don't go together.
+
 The run writes the resolved role file to `role.md` in its out folder, and `summary.json` records
-`role`: the agent, the store, the definition hash and the variant. `bench compare` names the
-variant in its header.
+`role`: the agent, the store, the definition hash, and the variant or the `ref` and the `commit` it
+named. `bench compare` names the variant in its header. From the app, `POST /api/bench/run` takes
+`defs_ref` with `root`.
 
 ## Results
 

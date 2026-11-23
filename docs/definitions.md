@@ -362,6 +362,21 @@ lowercase letters, digits and dashes.
 - `swarmup bench run ... --variant NAME --root ROOT` replays a benchmark set with the variant's
   role file for the agent; see [benchmarks](benchmarks.md#role-files-and-variants).
 
+### Definitions at a git ref
+
+A run or a benchmark can also use the store's definitions as a git ref had them, such as a tag or
+last week's commit: `swarmup launch AGENT --task ID --defs-ref REF` (`defs_ref` in
+`POST /api/runs`) or `swarmup bench run ... --defs-ref REF --root ROOT`. The definition files are
+read with `git show` into a snapshot, the way a variant's overlay is put together; nothing is
+checked out, and swarmupd reads the ref off the event loop before the launch.
+
+- The run gets the role file as the ref had it in its scratch folder, like a variant run.
+- Its definition stamp holds the snapshot's hash, `ref` and the `commit` the ref named, and its
+  `run-start` event carries `defs_ref`. swarmupd keeps the snapshot's files in the `definitions`
+  table of `state.db` under that hash.
+- A run takes `--variant` or `--defs-ref`, not both, and an experiment never picks a variant for a
+  run with a ref.
+
 ### Experiments
 
 An experiment runs a variant on a share of the real work, so you can compare it with the base on

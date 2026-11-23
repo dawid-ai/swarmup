@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
@@ -13,7 +12,6 @@ import {
   effectiveSample,
   gitMergeChecks,
   daemonKeyIn,
-  DEF_FOLDERS,
   definitionHash,
   editUserConfig,
   formatProblem,
@@ -23,6 +21,7 @@ import {
   migrationLogDir,
   normalText,
   planMigration,
+  readDefsAtRef,
   applyMigration,
   OpsError,
   ROOT_DIR_NAME,
@@ -520,30 +519,9 @@ function defsHash(ctx: DefsCtx): number {
   return 0;
 }
 
-function gitIn(dir: string, args: string[]): string {
-  return execFileSync('git', args, {
-    cwd: dir,
-    encoding: 'utf8',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 64 * 1024 * 1024,
-  });
-}
-
 /** The definition files of the store in `dir` at git `ref`, as path to text. */
 function filesAt(dir: string, ref: string): Map<string, string> {
-  let names: string[];
-  try {
-    names = gitIn(dir, ['ls-tree', '-r', '--name-only', ref, '--', SWARM_FILE, ...DEF_FOLDERS])
-      .split('\n')
-      .filter(Boolean);
-  } catch (err) {
-    const why = ((err as { stderr?: string }).stderr ?? (err as Error).message).split('\n')[0];
-    throw new OpsError(`git cannot read ${ref} in ${dir}: ${why}`, 2);
-  }
-  const out = new Map<string, string>();
-  for (const name of names) out.set(name, normalText(gitIn(dir, ['show', `${ref}:./${name}`])));
-  return out;
+  return readDefsAtRef(dir, ref).texts;
 }
 
 const sha = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');

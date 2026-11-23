@@ -15,6 +15,7 @@ import { checkTriggerText, TRIGGERS_DIR, triggerNameOf } from './trigger.js';
 import type { WorkflowInfo } from './workflow.js';
 import { checkWorkflowText, WORKFLOWS_DIR, workflowIdOf } from './workflow.js';
 import type { DefFile } from './hash.js';
+import type { DefsRefSnapshot } from './ref.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
 
@@ -61,6 +62,9 @@ export interface DefinitionSet {
   overlay?: Record<string, string>;
   /** A variant's base hash: the store's own definitions. */
   baseHash?: string;
+  /** The git ref these definitions were read at (`--defs-ref`), and the commit it named. */
+  ref?: string;
+  commit?: string;
   /** The store's workflows (W5 phase 3), each with its problems. */
   workflows: WorkflowInfo[];
   /**
@@ -190,6 +194,27 @@ function loadVariant(rootDir: string, name: string, opts: LoadOptions): Definiti
   };
   cache.set(key, out);
   return out;
+}
+
+/**
+ * The definitions of the store in `rootDir` as a git ref had them: `snap`'s texts, read with
+ * `git show` (see `readDefsAtRef`), checked as the working files would be. Agents' `file` paths
+ * name where each file sits in the store; the text comes from the snapshot. Not cached.
+ */
+export function loadDefinitionsAtRef(
+  rootDir: string,
+  snap: DefsRefSnapshot,
+  opts: LoadOptions = {},
+): DefinitionSet {
+  const set = checkSet(
+    rootDir,
+    textFiles(snap.texts),
+    snap.texts,
+    agentFilesFromTexts(rootDir, snap.texts),
+    `ref ${snap.commit}`,
+    opts,
+  );
+  return { ...set, ref: snap.ref, commit: snap.commit };
 }
 
 /** Checks one set of definition texts: each file against its schema, then across files. */

@@ -3619,9 +3619,9 @@ const COMMANDS: Record<string, Command> = {
   },
   launch: {
     usage:
-      'launch AGENT [--task ID] [--budget 2h] [--tokens 400k] [--prompt-file F] [--cwd DIR] [--variant NAME]',
+      'launch AGENT [--task ID] [--budget 2h] [--tokens 400k] [--prompt-file F] [--cwd DIR] [--variant NAME | --defs-ref REF]',
     summary:
-      "start an agent run through swarmupd (claims --task for the agent first); --variant runs it with a variant of the store's definitions instead of the one an experiment picks",
+      "start an agent run through swarmupd (claims --task for the agent first); --variant runs it with a variant of the store's definitions instead of the one an experiment picks, --defs-ref with the store's definitions as a git ref had them (read with git show, never checked out)",
     options: {
       task: { type: 'string' },
       budget: { type: 'string' },
@@ -3629,6 +3629,7 @@ const COMMANDS: Record<string, Command> = {
       'prompt-file': { type: 'string' },
       cwd: { type: 'string' },
       variant: { type: 'string' },
+      'defs-ref': { type: 'string' },
     },
     run: async (ctx) => {
       const info =
@@ -3642,8 +3643,13 @@ const COMMANDS: Record<string, Command> = {
         cwd: str(ctx.opts.cwd),
         prompt: file ? readFileSync(file, 'utf8') : undefined,
         variant: str(ctx.opts.variant),
+        defs_ref: str(ctx.opts['defs-ref']),
       });
-      const side = r.variant ? `, variant ${r.variant}` : '';
+      const side = r.variant
+        ? `, variant ${r.variant}`
+        : r.defs?.ref
+          ? `, definitions at ${r.defs.ref}`
+          : '';
       const exp = r.experiment ? `, experiment ${r.experiment}` : '';
       ctx.io.out(
         ctx.opts.json ? JSON.stringify(r, null, 2) : `${r.id} ${r.agent} pid ${r.pid}${side}${exp}`,

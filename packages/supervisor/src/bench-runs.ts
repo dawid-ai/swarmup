@@ -17,7 +17,14 @@ import {
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BenchSet } from '@swarmup/core';
-import { benchCheckable, benchJudged, envVar, OpsError, readBenchSet } from '@swarmup/core';
+import {
+  benchCheckable,
+  benchJudged,
+  checkDefsRef,
+  envVar,
+  OpsError,
+  readBenchSet,
+} from '@swarmup/core';
 import type {
   AttemptResult,
   BenchMode,
@@ -94,6 +101,8 @@ export interface BenchRunRequest {
   role_file?: boolean;
   /** The variant whose role file goes in each prompt; implies `role_file`. */
   variant?: string;
+  /** The git ref of the store whose definitions give the role file (`--defs-ref`); implies `role_file`. */
+  defs_ref?: string;
   /** The store the role file comes from: a folder or a root name. */
   root?: string;
 }
@@ -144,6 +153,8 @@ export interface BenchRunView {
   overall?: SummaryOverall;
   /** The variant whose role file the prompts carried. */
   variant?: string;
+  /** The git ref whose definitions gave the role file the prompts carried. */
+  defs_ref?: string;
   /** Started from the app (it has the request), not from the command line. */
   fromApp: boolean;
 }
@@ -359,6 +370,9 @@ export class BenchRuns {
       ...((summary?.role?.variant ?? request?.variant)
         ? { variant: summary?.role?.variant ?? request?.variant }
         : {}),
+      ...((summary?.role?.ref ?? request?.defs_ref)
+        ? { defs_ref: summary?.role?.ref ?? request?.defs_ref }
+        : {}),
       fromApp: request !== undefined,
     };
   }
@@ -488,9 +502,11 @@ export class BenchRuns {
     ) {
       bad('max_usd: use a dollar amount above 0');
     }
-    if (req.mode === 'agent' && (req.role_file || req.variant) && !req.root) {
+    if (req.mode === 'agent' && (req.role_file || req.variant || req.defs_ref) && !req.root) {
       bad('root: name the store the role file is in');
     }
+    if (req.variant && req.defs_ref) bad('variant and defs_ref: name one of them');
+    if (req.defs_ref) checkDefsRef(req.defs_ref);
     const agent =
       req.mode === 'none' ? 'none' : req.mode === 'reference' ? undefined : req.agent || undefined;
     const id = this.newId(set.id);
@@ -565,10 +581,11 @@ export class BenchRuns {
       ...(opts.maxUsd !== undefined ? ['--max-usd', String(opts.maxUsd)] : []),
       ...(opts.hiddenDir ? ['--hidden-dir', opts.hiddenDir] : []),
       ...(opts.referenceDir ? ['--reference-dir', opts.referenceDir] : []),
-      ...(req.mode === 'agent' && (req.role_file || req.variant) && req.root
+      ...(req.mode === 'agent' && (req.role_file || req.variant || req.defs_ref) && req.root
         ? ['--role-file', '--root', req.root]
         : []),
       ...(req.mode === 'agent' && req.variant ? ['--variant', req.variant] : []),
+      ...(req.mode === 'agent' && req.defs_ref ? ['--defs-ref', req.defs_ref] : []),
     ];
     const fd = openSync(join(out, 'run.log'), 'a');
     // Inside Electron, execPath is the app: ELECTRON_RUN_AS_NODE makes it a plain Node process.

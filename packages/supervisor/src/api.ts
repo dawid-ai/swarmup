@@ -561,6 +561,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           tokens: str(body.tokens),
           parent,
           ...(str(body.variant) ? { variant: str(body.variant) } : {}),
+          ...(str(body.defs_ref) ? { defsRef: str(body.defs_ref) } : {}),
         });
         return send(res, 201, launched);
       }
@@ -1881,6 +1882,7 @@ function benchRequest(body: Json): BenchRunRequest {
     'hidden_dir',
     'reference_dir',
     'variant',
+    'defs_ref',
     'root',
   ] as const) {
     const v = text(k);

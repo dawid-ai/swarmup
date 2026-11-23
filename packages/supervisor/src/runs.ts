@@ -156,6 +156,11 @@ export interface RunDefs {
   local?: string[];
   /** The variant whose overlay `hash` includes (W5). */
   variant?: string;
+  /**
+   * The git ref the definitions were read at (`--defs-ref`, W5 phase 5); `commit` is then the
+   * commit it named and `hash` the snapshot's.
+   */
+  ref?: string;
 }
 
 /** A commit of what a run left, in the checkout `top`; `into` is the branch to merge it into. */

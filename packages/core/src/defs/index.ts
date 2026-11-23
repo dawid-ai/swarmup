@@ -26,8 +26,18 @@ export {
   checkDefinitionText,
   clearDefinitionsCache,
   loadDefinitions,
+  loadDefinitionsAtRef,
   sortProblems,
 } from './load.js';
+export type { DefsRefSnapshot } from './ref.js';
+export {
+  checkDefsRef,
+  DEFS_REF_RE,
+  defsRefGit,
+  gitWhy,
+  readDefsAtRef,
+  snapshotTexts,
+} from './ref.js';
 export type { Checked, CheckOptions, DefProblem, Locate, Schema, Severity } from './schema.js';
 export {
   checkValue,

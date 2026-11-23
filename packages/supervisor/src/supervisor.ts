@@ -20,6 +20,8 @@ import { basename, delimiter, dirname, join, relative, resolve } from 'node:path
 import type {
   AgentDef,
   CriteriaResults,
+  DefinitionSet,
+  DefsRefSnapshot,
   ExperimentPick,
   Criterion,
   OpsEvent,
@@ -40,7 +42,9 @@ import {
   agentRuntimeValues,
   agentText,
   assertActor,
+  checkDefsRef,
   loadDefinitions,
+  loadDefinitionsAtRef,
   pickExperiment,
   SCRATCH_WRITER_ROLES,
   TRIGGER_ACTOR,
@@ -91,7 +95,7 @@ import {
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
 import type { DefsChecks } from './defs-config.js';
-import { DefsState } from './defs-state.js';
+import { DefsState, readDefsAtRefAsync } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
 import { ScoreKeeper } from './score-keeper.js';
@@ -144,7 +148,7 @@ import {
 } from './proc.js';
 import type { KillResult, ProcEntry, ProcInfo, ProcLedger, ProcLister, ProcView } from './procs.js';
 import { applyKills, startMs, survivors, systemLister, track, viewLedger } from './procs.js';
-import type { Leftovers, RunRecord } from './runs.js';
+import type { Leftovers, RunDefs, RunRecord } from './runs.js';
 import { RunStore } from './runs.js';
 import type { RunFailure } from './stuck.js';
 import {
@@ -726,6 +730,13 @@ export interface LaunchRequest {
    * role file into the run's scratch folder and points the prompt at it.
    */
   variant?: string;
+  /**
+   * Run with the task store's definitions as git ref `defsRef` had them (W5 phase 5), read with
+   * `git show` into a snapshot and never checked out; the role file goes in the scratch folder as
+   * a variant's does. {@link Supervisor.launchFresh} reads the snapshot into `defsSnapshot`.
+   */
+  defsRef?: string;
+  defsSnapshot?: DefsRefSnapshot & { root: string };
 }
 
 interface LiveRun {
@@ -3441,6 +3452,7 @@ export class Supervisor extends EventEmitter {
       }
     }
     if (needsReleases(req.agent)) await this.releasesTick();
+    if (req.defsRef !== undefined && !req.defsSnapshot) req = await this.withDefsSnapshot(req);
     await this.learnLaunchCheckouts(req);
     // A task worktree that is not there yet is made and installed off the event loop, and the
     // launch runs again once it is (AO-0380). The second launch makes it in place if it must.
@@ -3510,6 +3522,24 @@ export class Supervisor extends EventEmitter {
     } catch {
       // The launch names what is wrong, or reads the checkout itself.
     }
+  }
+
+  /**
+   * `req` with the snapshot of its `defsRef`: the definition files of the task's store (or the
+   * first store) at that ref, read with git off the event loop.
+   */
+  private async withDefsSnapshot(req: LaunchRequest): Promise<LaunchRequest> {
+    const ws = this.ws();
+    let root: Root | undefined;
+    if (req.task && !req.parent) root = ws.resolve(req.task).root;
+    else if (req.parent) {
+      const p = this.live.get(req.parent)?.record.root;
+      root = ws.roots.find((r) => r.name === p);
+    }
+    root ??= ws.roots.find((r) => !r.isMirror);
+    if (!root) throw new OpsError('a --defs-ref run needs a task store', 2);
+    const snap = await readDefsAtRefAsync(root.dir, checkDefsRef(req.defsRef));
+    return { ...req, defsSnapshot: { ...snap, root: root.name } };
   }
 
   /**
@@ -3644,10 +3674,21 @@ export class Supervisor extends EventEmitter {
         }
       }
     }
-    // Without a variant named, an experiment of the task's store may pick one (W5 phase 5).
+    if (req.defsRef !== undefined && req.variant !== undefined) {
+      throw new OpsError('a run takes --variant or --defs-ref, not both', 2);
+    }
+    // Without a variant or a ref named, an experiment of the task's store may pick a variant (W5
+    // phase 5).
     let variant = req.variant;
     let experiment: string | undefined;
-    if (variant === undefined && ref && rootName && !req.chat && this.config.experiments) {
+    if (
+      variant === undefined &&
+      req.defsRef === undefined &&
+      ref &&
+      rootName &&
+      !req.chat &&
+      this.config.experiments
+    ) {
       const pick = this.experimentFor(ws, rootName, ref, agent, taskType, taskLabels);
       if (pick) {
         experiment = pick.experiment;
@@ -3655,26 +3696,38 @@ export class Supervisor extends EventEmitter {
       }
     }
     // A run of a variant reads its role file from the variant's definitions: the store's files with
-    // the overlay on top (W5).
-    let variantRole: { text: string; hash: string; root: string } | undefined;
-    if (variant !== undefined) {
-      if (req.chat) throw new OpsError('a chat turn runs no variant', 2);
+    // the overlay on top (W5). A run at a git ref reads it from the store's definitions as that
+    // ref had them, a snapshot `launchFresh` read with `git show`.
+    let variantRole:
+      { text: string; hash: string; root: string; ref?: string; commit?: string } | undefined;
+    if (variant !== undefined || req.defsRef !== undefined) {
+      const what = variant !== undefined ? `variant ${variant}` : `definitions at ${req.defsRef}`;
+      if (req.chat) throw new OpsError(`a chat turn runs no ${variant ? 'variant' : 'ref'}`, 2);
       const vroot = rootName
         ? ws.roots.find((r) => r.name === rootName)
         : ws.roots.find((r) => !r.isMirror);
-      if (!vroot) throw new OpsError('a variant run needs a task store', 2);
-      const set = loadDefinitions(vroot.dir, { variant });
+      if (!vroot) throw new OpsError(`a run with ${what} needs a task store`, 2);
+      let set: DefinitionSet;
+      if (variant !== undefined) set = loadDefinitions(vroot.dir, { variant });
+      else {
+        const snap = req.defsSnapshot;
+        if (!snap || snap.ref !== req.defsRef || snap.root !== vroot.name) {
+          throw new OpsError('a --defs-ref run starts through swarmupd, which reads the ref', 2);
+        }
+        set = loadDefinitionsAtRef(vroot.dir, snap);
+      }
       if (!set.ok) {
         const first = set.problems.find((p) => p.severity === 'error');
         throw new OpsError(
-          `variant ${variant} does not check` +
+          `${what} does not check` +
             (first ? `: ${first.path}: ${first.message}` : '') +
-            `; \`swarmup validate --root ${vroot.name} --variant ${variant}\` lists the problems`,
+            (variant !== undefined
+              ? `; \`swarmup validate --root ${vroot.name} --variant ${variant}\` lists the problems`
+              : ''),
         );
       }
       const vdef = set.agents.find((a) => a.id === agent);
-      if (!vdef)
-        throw new OpsError(`variant ${variant} of ${vroot.name} has no role file for ${agent}`);
+      if (!vdef) throw new OpsError(`${what} of ${vroot.name} has no role file for ${agent}`);
       const why = roleInactive(vdef);
       if (why) throw new OpsError(why);
       const norm = vdef.file.replace(/\\/g, '/');
@@ -3685,7 +3738,26 @@ export class Supervisor extends EventEmitter {
         text: vdef.folder ? agentText(vdef) : path ? set.texts[path]! : vdef.body,
         hash: set.hash,
         root: vroot.name,
+        ...(set.ref ? { ref: set.ref } : {}),
+        ...(set.commit ? { commit: set.commit } : {}),
       };
+      // The snapshot of a ref's files goes in state.db, as the base's do, under its hash.
+      if (set.ref) {
+        const snapSet = set;
+        this.safe(() =>
+          this.state?.saveDefinitions({
+            hash: snapSet.hash,
+            root: vroot.name,
+            commit: snapSet.commit ?? null,
+            created_at: new Date(this.now()).toISOString(),
+            files: snapSet.files.map((f) => ({
+              path: f.path,
+              sha256: f.sha256,
+              text: snapSet.texts[f.path] ?? '',
+            })),
+          }),
+        );
+      }
     }
     const project = parent
       ? (parent.project ?? parent.root ?? this.projectOf(ws))
@@ -3846,12 +3918,15 @@ export class Supervisor extends EventEmitter {
     // The definitions the run starts with, when a task store has a swarm.yaml (W5). The commit
     // comes from a lookup off the event loop: a run before it ends records the hash alone.
     const baseStamp = this.defsState.stamp(rootName, agent, localAgentKeys(agent, agentCfg, def));
-    // A variant run is stamped with the variant's hash: the commit and dirty flag are the base's.
-    const defsStamp = variantRole
+    // A variant run is stamped with the variant's hash, and no commit: the files are not one. A run
+    // at a git ref is stamped with the snapshot's hash, the ref and the commit it named.
+    const defsStamp: RunDefs | undefined = variantRole
       ? {
           root: variantRole.root,
           hash: variantRole.hash,
-          variant: variant!,
+          ...(variant !== undefined ? { variant } : {}),
+          ...(variantRole.ref ? { ref: variantRole.ref } : {}),
+          ...(variantRole.commit ? { commit: variantRole.commit } : {}),
           ...(baseStamp?.local ? { local: baseStamp.local } : {}),
         }
       : baseStamp;
@@ -4165,9 +4240,13 @@ export class Supervisor extends EventEmitter {
             ...(defsStamp ? { defs: shortHash(defsStamp.hash) } : {}),
             ...(variant ? { variant } : {}),
             ...(experiment ? { experiment } : {}),
+            ...(variantRole?.ref ? { defs_ref: variantRole.ref } : {}),
           },
           `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
             (variant ? `, variant ${variant}` : '') +
+            (variantRole?.ref
+              ? `, definitions at ${variantRole.ref} (${(variantRole.commit ?? '').slice(0, 12)})`
+              : '') +
             (experiment ? `, experiment ${experiment}${variant ? '' : ' (base)'}` : '') +
             (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),

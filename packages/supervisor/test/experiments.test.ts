@@ -1,9 +1,12 @@
-// Experiments (W5 phase 5): swarmupd gives a share of matching task runs a variant, the same
-// side for every run of a task, records the experiment, and the scores split by variant.
-import { mkdirSync, writeFileSync } from 'node:fs';
+// Experiments and refs (W5 phase 5): swarmupd gives a share of matching task runs a variant, the
+// same side for every run of a task, and records the experiment; the scores split by variant; a
+// run can read its definitions at a git ref of the store.
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { OpsEvent } from '@swarmup/core';
+import { readDefsAtRef, loadDefinitionsAtRef, shortHash } from '@swarmup/core';
 import type { RunRecord, ScoreTask } from '../src/index.js';
 import { computeScores, opsdConfig, scoresText, summarizeScores } from '../src/index.js';
 import { ended, FAKE_AGENT, setupAsync, temp } from './supervisor-setup.js';
@@ -202,5 +205,47 @@ describe('scores by variant', () => {
     expect(text).toContain('claude:engineer [base]');
     expect(text).toContain('claude:engineer [variant tests-first]');
     expect(summarizeScores(results)[0]!.variant).toBeUndefined();
+  });
+});
+
+describe('definitions at a git ref', () => {
+  it('runs with the role file as the ref had it and stamps the ref, commit and hash', async () => {
+    const { sup, as, store, repo } = await project();
+    put(store, 'swarm.yaml', 'swarmup_defs: 1\n');
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        cwd: repo,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'defs');
+    const commit = git('rev-parse', 'HEAD').trim();
+    put(store, 'agents/claude-engineer.md', ENGINEER.replace('Write the code.', 'Changed since.'));
+    await sup.tick();
+    as('human:dawid').newTask({ title: 'a', owner: 'claude:engineer' });
+    const r = await ended(
+      sup,
+      (await sup.launchFresh({ agent: 'claude:engineer', task: 'T-0001', defsRef: 'HEAD' })).id,
+    );
+    const hash = loadDefinitionsAtRef(store, readDefsAtRef(store, 'HEAD')).hash;
+    expect(r.defs).toMatchObject({ root: 'test', hash, ref: 'HEAD', commit });
+    expect(r.variant).toBeUndefined();
+    const role = readFileSync(join(r.scratch!, 'role-claude-engineer.md'), 'utf8');
+    expect(role).toContain('Write the code.');
+    expect(role).not.toContain('Changed since.');
+    const start = as('human:dawid')
+      .showEvents('1')
+      .events.find((e) => e.type === 'run-start')!;
+    expect(start).toMatchObject({ defs_ref: 'HEAD', defs: shortHash(hash) });
+    expect(start.body).toContain(`definitions at HEAD (${commit.slice(0, 12)})`);
+    expect(sup.state?.definitions(hash)?.commit).toBe(commit);
+    await expect(
+      sup.launchFresh({ agent: 'claude:engineer', defsRef: 'no-such-ref' }),
+    ).rejects.toThrow(/git cannot read no-such-ref/);
+    await expect(
+      sup.launchFresh({ agent: 'claude:engineer', defsRef: 'HEAD', variant: 'tests-first' }),
+    ).rejects.toThrow(/--variant or --defs-ref, not both/);
+    await sup.defsSettled();
   });
 });
