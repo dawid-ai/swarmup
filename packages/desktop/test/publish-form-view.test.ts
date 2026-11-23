@@ -178,6 +178,36 @@ describe('Publish with an adapter', () => {
   });
 });
 
+describe('Preview', () => {
+  it('renders the approved files the preview route returns', async () => {
+    const call = window.swarmup!.call;
+    window.swarmup!.call = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+      path === `${TASK_PATH}/preview`
+        ? Promise.resolve({
+            ok: true,
+            data: {
+              commit: 'abcdef1234567890',
+              files: [
+                {
+                  path: 'posts/x.md',
+                  kind: 'markdown',
+                  text: '# Launch\n\nThe **approved** words.',
+                },
+              ],
+            },
+          })
+        : call(method, path, body);
+    await mount();
+    await click(button('Preview')!);
+    await settle();
+    const panel = box.querySelector('[data-publish-preview]')!;
+    expect(panel.textContent).toContain('at abcdef1234');
+    expect(panel.querySelector('[data-preview-file="posts/x.md"] strong')?.textContent).toBe(
+      'approved',
+    );
+  });
+});
+
 describe('the builders of the phase 2 checks', () => {
   it('round-trips image-alt and image-size, and needs a width and a height', () => {
     const alt = {

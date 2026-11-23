@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
 import type {
@@ -132,6 +133,7 @@ import {
   judgeMessage,
   judgeTask,
   publishWithAdapter,
+  taskPreview,
 } from '@swarmup/supervisor';
 import { envVar, reviewSources } from '@swarmup/core';
 import type { ReviewSourceFields } from '@swarmup/core';
@@ -707,6 +709,46 @@ async function publishCommand(ctx: Ctx): Promise<number | void> {
     );
   }
   return Object.values(results).some((r) => r.result === 'fail') ? 1 : 0;
+}
+
+/**
+ * `swarmup preview ID`: renders what a publish of the task would hand over (W8 phase 3), the
+ * approved files at the commit, into one HTML page that runs no script, and prints its path.
+ */
+async function previewCommand(ctx: Ctx): Promise<number | void> {
+  const ws = ctx.ws();
+  const ref = arg(ctx, 0, 'task id');
+  const { root, id } = ws.resolve(ref);
+  const top = workspaceTopOf(ctx, root.name);
+  if (!top)
+    throw new OpsError(`the workspace of ${root.name} is in no git checkout here: pass --cwd`, 1);
+  const syncGit = gitRunIn(top, ctx.io.env);
+  const paths = texts(ctx.opts.artifact).map((a) => relative(top, resolve(ctx.io.cwd, a)));
+  const base = baseOf(ctx, root.name);
+  const commit = str(ctx.opts.commit);
+  const preview = await taskPreview({
+    ws,
+    ref,
+    top,
+    git: async (args) => syncGit(args),
+    env: ctx.io.env,
+    ...(base ? { base } : {}),
+    opts: { ...(paths.length > 0 ? { paths } : {}), ...(commit ? { commit } : {}) },
+  });
+  const out = str(ctx.opts.out);
+  const file = out
+    ? resolve(ctx.io.cwd, out)
+    : join(tmpdir(), `swarmup-preview-${root.name}-${id}.html`);
+  writeFileSync(file, preview.page);
+  if (ctx.opts.json) {
+    // The page is in the file; the answer keeps each file's parts.
+    const { task, commit: at, files } = preview;
+    return void ctx.io.out(JSON.stringify({ task, commit: at, files, file }, null, 2));
+  }
+  ctx.io.out(
+    `${id}: ${preview.files.map((f) => f.path).join(', ')} at ${preview.commit.slice(0, 10)}`,
+  );
+  ctx.io.out(`wrote ${file}`);
 }
 
 /**
@@ -2380,6 +2422,18 @@ const COMMANDS: Record<string, Command> = {
       cwd: { type: 'string' },
     },
     run: (ctx) => publishCommand(ctx),
+  },
+  preview: {
+    usage: 'preview ID [--artifact PATH]... [--commit REV] [--out FILE] [--cwd DIR]',
+    summary:
+      'render what a publish of the task would hand over, its approved Markdown (or --artifact) at the commit (the merge base, or --commit), into one HTML page that runs no script; prints its path (--out, else a temp file)',
+    options: {
+      artifact: { type: 'string', multiple: true },
+      commit: { type: 'string' },
+      out: { type: 'string' },
+      cwd: { type: 'string' },
+    },
+    run: (ctx) => previewCommand(ctx),
   },
   verdict: {
     usage: `verdict ID approve|changes MESSAGE [--criteria-file F|-] [--pass ID[:NOTE]]... [--fail ID[:NOTE]]... [--na ID[:NOTE]]... ${MARK_USAGE}`,

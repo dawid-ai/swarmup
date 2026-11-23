@@ -323,6 +323,10 @@ choose **Record publish**. It does what `swarmup published ID --url URL --artifa
 tags the commit, writes the `publish` event, closes the task and runs its `when: publish`
 criteria (`POST /api/tasks/ID/published`, never a run's token).
 
+**Preview.** A publish task shows **Preview**: the approved files a publish hands over, at the
+approved commit, with Markdown rendered as any text in the app is
+(`GET /api/tasks/ID/preview`, as `swarmup preview ID` renders it).
+
 **Publish.** A publish task with the label `publish:<name>` also shows **Publish**, which runs
 that adapter on this machine (see [Publish adapters](supervisor.md#publish-adapters)). **Publish
 now** does what `swarmup publish ID` does: it records the attempt, hands the adapter the approved

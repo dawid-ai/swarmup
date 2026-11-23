@@ -4,6 +4,7 @@ summary: Content projects (W8); campaign and content templates, review artifacts
 covers:
   - packages/core/src/content-templates.ts
   - packages/core/src/artifacts.ts
+  - packages/core/src/preview.ts
   - packages/supervisor/src/artifact-api.ts
   - packages/supervisor/src/publish.ts
   - docs/content-projects.md
@@ -39,8 +40,10 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
   of the task, else of its `blocked_by`), writes `publish-attempt` through
   `Workspace.publishAttempt` (refused for the same files and blobs unless `again`), runs the
   command (files in a temp folder, `SWARMUP_PUBLISH_*`) or calls the MCP tool as a client, and
-  records the `publish` event with the `url:` it reports. `swarmup publish`, `POST
-/api/tasks/:id/publish` and the task panel's **Publish** call it.
+  records the `publish` event with the `url:` it reports. `swarmup publish`,
+  `POST /api/tasks/:id/publish` and the task panel's **Publish** call it. `taskPreview` renders
+  the same files with `preview.ts` (core: escape everything, then a fixed set of tags; workspace
+  images as `data:` URLs) for `swarmup preview`, `GET /api/tasks/:id/preview` and **Preview**.
 - `artifact-api.ts`: `GET /api/tasks/:id/artifact`, a file at the reviewed commit with its
   merge-base text, or an image as a data URL.
 - The desktop task panel's **Mark published** (on an open `publish` task a person owns) posts

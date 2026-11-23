@@ -238,6 +238,18 @@ describe('swarmup publish', () => {
     const pub = (
       await as('human:dawid', ['new', 'Post hello', '--type', 'publish', '--label', 'publish:blog'])
     ).out.trim();
+    const page = join(ws, '..', 'preview.html');
+    const preview = await as('claude:writer', [
+      'preview',
+      pub,
+      '--artifact',
+      'posts/hello.md',
+      '--out',
+      page,
+    ]);
+    expect(preview.code).toBe(0);
+    expect(preview.out).toContain(`wrote ${page}`);
+    expect(readFileSync(page, 'utf8')).toContain('<h1>Hello</h1>');
     const agent = await as('claude:writer', ['publish', pub, '--artifact', 'posts/hello.md']);
     expect(agent.code).toBe(1);
     expect(agent.err).toMatch(/only a person publishes/);

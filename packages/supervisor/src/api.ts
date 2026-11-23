@@ -655,6 +655,25 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const { view, ...rest } = done;
         return send(res, 200, { ...rest, task: compact(view) });
       }
+      // What a publish of the task would hand over, rendered (W8 phase 3): `?artifact=` (one or
+      // more) and `?commit=` narrow it. Read-only.
+      if (method === 'GET' && action === 'preview') {
+        const paths = q.getAll('artifact').filter(Boolean);
+        const commit = q.get('commit');
+        try {
+          return send(
+            res,
+            200,
+            await sup.previewTask(ref, {
+              ...(paths.length > 0 ? { paths } : {}),
+              ...(commit ? { commit } : {}),
+            }),
+          );
+        } catch (err) {
+          if (err instanceof NoArtifact) throw new HttpError(404, err.message);
+          throw err;
+        }
+      }
       // A person publishes a publish task with its adapter (W8 phase 3); never a run. The GET
       // names the adapter, for the app's Publish button.
       if (action === 'publish') {

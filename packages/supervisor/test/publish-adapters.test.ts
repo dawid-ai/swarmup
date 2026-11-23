@@ -13,6 +13,7 @@ import {
   publishWithAdapter,
   taskAdapter,
   taskApprovedFiles,
+  taskPreview,
   urlFromOutput,
 } from '../src/index.js';
 
@@ -368,4 +369,39 @@ describe('publishWithAdapter', () => {
     expect(done).toMatchObject({ ok: true, url: 'https://x.example/T-0002' });
     expect(done.output).toBe('posted 30 chars as tok');
   }, 30_000);
+});
+
+describe('taskPreview', () => {
+  it('renders the approved Markdown with workspace images embedded, and writes nothing', async () => {
+    const s = setup();
+    const base = { ws: s.as('human:dawid'), ref: '2', top: s.repo, git: s.gitRun, env: s.env };
+    const approved = await taskPreview(base);
+    expect(approved.files.map((f) => [f.path, f.kind])).toEqual([['posts/x.md', 'markdown']]);
+    expect(approved.files[0]!.html).toBe('<h1>Launch</h1>\n<p>The approved words.</p>');
+    expect(approved.page).toContain("default-src 'none'");
+    commit(
+      s.repo,
+      {
+        'posts/y.md': '![card](../assets/card.png) ![gone](none.png) ![remote](https://a.b/c.png)',
+        'assets/card.png': 'PNGDATA',
+      },
+      'card',
+    );
+    const named = await taskPreview({
+      ...base,
+      opts: { paths: ['posts/y.md', 'assets/card.png'] },
+    });
+    const data = `data:image/png;base64,${Buffer.from('PNGDATA').toString('base64')}`;
+    expect(named.files.map((f) => f.kind)).toEqual(['markdown', 'image']);
+    expect(named.files[0]!.html).toBe(
+      `<p><img src="${data}" alt="card"> <span class="image-missing">[image: gone]</span> <span class="image-missing">[image: remote]</span></p>`,
+    );
+    expect(named.files[1]!.data).toBe(data);
+    expect(
+      s
+        .as('human:dawid')
+        .showEvents('2')
+        .events.some((e) => e.type.startsWith('publish')),
+    ).toBe(false);
+  });
 });

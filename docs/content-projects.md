@@ -73,6 +73,9 @@ The stages, by hand or from the workflow:
    swarmup published LC-0010 --url https://x.com/you/status/1 --artifact posts/x-thread.md
    ```
 
+   `swarmup preview LC-0010` renders the approved Markdown to an HTML page first, for a last
+   look (**Preview** in the task panel).
+
    With an adapter on this machine (`swarmupd.publish.<root>.<name>`) and the label
    `publish:<name>` on the task, `swarmup publish LC-0010` posts it for you instead, once, and
    records the URL the adapter prints. See [Publish adapters](supervisor.md#publish-adapters).

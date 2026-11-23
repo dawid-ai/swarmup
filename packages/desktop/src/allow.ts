@@ -12,8 +12,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `tasks/${SEG}/diff`,
     // One file of a task's review at the reviewed commit, for the Work section (W8).
     `tasks/${SEG}/artifact`,
-    // The adapter a publish task names, for its Publish button (W8 phase 3).
-    `tasks/${SEG}/publish`,
+    // The adapter a publish task names, for its Publish button, and the preview of what it
+    // would publish (W8 phase 3).
+    `tasks/${SEG}/(publish|preview)`,
     `tasks/${SEG}/plan`,
     `tasks/${SEG}/criteria-check`,
     `tasks/${SEG}/criteria-judge`,

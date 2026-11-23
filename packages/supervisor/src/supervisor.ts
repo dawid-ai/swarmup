@@ -31,8 +31,8 @@ import type {
 import type { PublishTarget, SyncResult } from '@swarmup/core';
 import type { TaskArtifact } from './artifact-api.js';
 import { NoArtifact, readArtifact } from './artifact-api.js';
-import type { PublishOptions, PublishOutcome } from './publish.js';
-import { publishWithAdapter, taskAdapter } from './publish.js';
+import type { PublishOptions, PublishOutcome, TaskPreview } from './publish.js';
+import { publishWithAdapter, taskAdapter, taskPreview } from './publish.js';
 import {
   actorSlug,
   agentRuntimeValues,
@@ -6238,6 +6238,31 @@ export class Supervisor extends EventEmitter {
       ref,
       publish: this.config.publish,
       mcp: this.config.mcp,
+      top,
+      git: (args) => gitAsync(top, args, { env, timeoutMs: 60_000 }),
+      env,
+      ...(cfg?.base ? { base: cfg.base } : {}),
+      opts,
+    });
+  }
+
+  /**
+   * A preview of a `publish` task's approved files (W8 phase 3), read from the root's workspace
+   * checkout off the event loop: see `taskPreview`. Writes nothing.
+   */
+  async previewTask(
+    ref: string,
+    opts: Pick<PublishOptions, 'paths' | 'commit'> = {},
+  ): Promise<TaskPreview> {
+    const ws = this.ws();
+    const { root } = ws.resolve(ref);
+    const cfg = this.config.merge[root.name];
+    const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+    if (!top) throw new NoArtifact(`The work of ${root.name} is in no git checkout on this PC.`);
+    const env = this.commandEnv();
+    return taskPreview({
+      ws,
+      ref,
       top,
       git: (args) => gitAsync(top, args, { env, timeoutMs: 60_000 }),
       env,

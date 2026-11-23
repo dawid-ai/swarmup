@@ -7,7 +7,7 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { execFile, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import type {
   ApprovedFile,
   CriteriaResults,
@@ -24,10 +24,15 @@ import {
   artifactKindOf,
   blobAt,
   commitOf,
+  escapeHtml,
+  imageRefs,
+  imageType,
   isHuman,
+  markdownToHtml,
   MCP_NAME_RE,
   mcpToolAllowed,
   OpsError,
+  previewPage,
   PUBLISH_TYPE,
   publishTarget,
   readSecrets,
@@ -530,6 +535,150 @@ export function taskApprovedFiles(ws: Workspace, ref: string): ApprovedFile[] {
 }
 
 /**
+ * The files a publish of the task hands over, and the commit they are read at: `opts.paths`,
+ * else the approved files ({@link taskApprovedFiles}), at `opts.commit`, else `base`, else HEAD.
+ * Refuses a task with no files, or a file the commit lacks, with exit 2.
+ */
+export async function publishFiles(o: {
+  ws: Workspace;
+  ref: string;
+  top: string;
+  git: GitRun;
+  env: NodeJS.ProcessEnv;
+  base?: string;
+  readBlob?: (blob: string) => Promise<Buffer>;
+  opts?: Pick<PublishOptions, 'paths' | 'commit'>;
+}): Promise<{ commit: string; files: PublishFile[] }> {
+  const opts = o.opts ?? {};
+  const rev = opts.commit ?? o.base ?? 'HEAD';
+  const commit = await commitOf(o.git, rev);
+  if (!commit) throw new OpsError(`the workspace has no commit ${rev}`, 2);
+  const paths = opts.paths?.length
+    ? [...new Set(opts.paths.map(workspacePath))]
+    : [...new Set(taskApprovedFiles(o.ws, o.ref).map((f) => f.path))];
+  if (paths.length === 0) {
+    throw new OpsError(
+      `${o.ws.resolve(o.ref).id} has no approved files: its review and the reviews of the tasks it waits on name none; pass --artifact PATH`,
+      2,
+    );
+  }
+  const read = o.readBlob ?? blobData(o.top, o.env);
+  const files: PublishFile[] = [];
+  for (const path of paths) {
+    const blob = await blobAt(o.git, commit, path);
+    if (!blob) throw new OpsError(`${path} is not in ${commit.slice(0, 10)}`, 2);
+    files.push({ path, blob, data: await read(blob) });
+  }
+  return { commit, files };
+}
+
+/** The largest image a preview embeds. */
+export const PREVIEW_IMAGE_MAX = 5 * 1024 * 1024;
+
+/** One file of a preview. */
+export interface PreviewFile {
+  path: string;
+  blob: string;
+  kind: 'markdown' | 'image' | 'text';
+  /** Safe HTML: rendered Markdown, an embedded image, or the text escaped. */
+  html: string;
+  /** markdown, text: the file, for a client that renders it itself. */
+  text?: string;
+  /** image: a `data:` URL, when it is small enough to embed. */
+  data?: string;
+}
+
+/** What `swarmup preview` and `GET /api/tasks/:id/preview` give. */
+export interface TaskPreview {
+  task: string;
+  commit: string;
+  files: PreviewFile[];
+  /** The whole preview as one HTML page that runs no script. */
+  page: string;
+}
+
+/**
+ * A preview of what a publish of the task would hand over (W8 phase 3): each file at the commit,
+ * Markdown rendered by `markdownToHtml` with the images it names from the workspace embedded as
+ * `data:` URLs, an image embedded, any other file as text. Writes nothing.
+ */
+export async function taskPreview(o: {
+  ws: Workspace;
+  ref: string;
+  top: string;
+  git: GitRun;
+  env: NodeJS.ProcessEnv;
+  base?: string;
+  readBlob?: (blob: string) => Promise<Buffer>;
+  opts?: Pick<PublishOptions, 'paths' | 'commit'>;
+}): Promise<TaskPreview> {
+  const read = o.readBlob ?? blobData(o.top, o.env);
+  const { commit, files } = await publishFiles({ ...o, readBlob: read });
+  const { root, id } = o.ws.resolve(o.ref);
+  const imageData = async (path: string): Promise<string | null> => {
+    if (artifactKindOf(path) !== 'image') return null;
+    const blob = await blobAt(o.git, commit, path);
+    if (!blob) return null;
+    const data = await read(blob);
+    if (data.length > PREVIEW_IMAGE_MAX) return null;
+    return `data:${imageType(path)};base64,${data.toString('base64')}`;
+  };
+  const out: PreviewFile[] = [];
+  for (const f of files) {
+    if (artifactKindOf(f.path) === 'image') {
+      const src = await imageData(f.path);
+      out.push({
+        path: f.path,
+        blob: f.blob,
+        kind: 'image',
+        ...(src ? { data: src } : {}),
+        html: src
+          ? `<img src="${src}" alt="${escapeHtml(f.path)}">`
+          : `<p class="image-missing">[image over ${PREVIEW_IMAGE_MAX / 1024 / 1024} MB]</p>`,
+      });
+      continue;
+    }
+    const text = f.data.toString('utf8');
+    if (!/\.(md|markdown|mdx)$/i.test(f.path)) {
+      out.push({
+        path: f.path,
+        blob: f.blob,
+        kind: 'text',
+        text,
+        html: `<pre>${escapeHtml(text)}</pre>`,
+      });
+      continue;
+    }
+    // The images the Markdown names, by their source as escaped text, from the workspace.
+    const images = new Map<string, string | null>();
+    for (const im of imageRefs(text)) {
+      const key = escapeHtml(im.src);
+      if (images.has(key) || !im.src || /^[a-z][a-z0-9+.-]*:/i.test(im.src)) continue;
+      let at: string | null = null;
+      try {
+        at = workspacePath(
+          posix.join(posix.dirname(f.path), decodeURI(im.src.replace(/[?#].*$/, ''))),
+        );
+      } catch {
+        at = null;
+      }
+      images.set(key, at ? await imageData(at) : null);
+    }
+    const html = markdownToHtml(text, {
+      // A remote image is never fetched, and one the workspace lacks shows its alt text.
+      image: (src) => images.get(src) ?? null,
+    });
+    out.push({ path: f.path, blob: f.blob, kind: 'markdown', text, html });
+  }
+  const page = previewPage(
+    `Preview of ${id}`,
+    `${root.name}/${id} at ${commit.slice(0, 10)}: what a publish would hand over. Remote images are not loaded.`,
+    out.map((f) => ({ path: f.path, html: f.html })),
+  );
+  return { task: `${root.name}/${id}`, commit, files: out, page };
+}
+
+/**
  * Publishes a `publish` task with its adapter (W8 phase 3), for a person outside any run:
  * checks the adapter and the files, records the `publish-attempt` (refused for files an earlier
  * attempt had, unless `again`), runs the adapter, and on success tags the commit, writes the
@@ -583,24 +732,8 @@ export async function publishWithAdapter(o: {
       2,
     );
   }
-  const rev = opts.commit ?? o.base ?? 'HEAD';
-  const commit = await commitOf(git, rev);
-  if (!commit) throw new OpsError(`the workspace has no commit ${rev}`, 2);
-  const paths = opts.paths?.length
-    ? [...new Set(opts.paths.map(workspacePath))]
-    : [...new Set(taskApprovedFiles(ws, o.ref).map((f) => f.path))];
-  if (paths.length === 0) {
-    throw new OpsError(
-      `${id} has no approved files: its review and the reviews of the tasks it waits on name none; pass --artifact PATH`,
-      2,
-    );
-  }
-  const files: PublishFile[] = [];
-  for (const path of paths) {
-    const blob = await blobAt(git, commit, path);
-    if (!blob) throw new OpsError(`${path} is not in ${commit.slice(0, 10)}`, 2);
-    files.push({ path, blob, data: await (o.readBlob ?? blobData(o.top, o.env))(blob) });
-  }
+  const { commit, files } = await publishFiles({ ...o, opts });
+  const paths = files.map((f) => f.path);
   const secrets = readSecrets(o.env);
   // Everything that can be checked before the attempt is recorded, so a typo costs no attempt.
   let server: McpConfig['servers'][string] | undefined;

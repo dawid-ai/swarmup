@@ -102,7 +102,7 @@ import { TriageActions, waitsOn } from '../ui/triage';
 import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 import { ProjectName } from '../ui/project-label';
 
-type Panel = 'delegate' | 'launch' | 'publish' | 'adapter' | null;
+type Panel = 'delegate' | 'launch' | 'publish' | 'adapter' | 'preview' | null;
 
 /** Types that wait for a person to turn them into work, with the shared triage actions. */
 const TRIAGED = new Set(['finding', 'idea']);
@@ -442,6 +442,15 @@ export function TaskPanel({
                   View changes
                 </Button>
               )}
+              {t.type === 'publish' && (
+                <Button
+                  icon={Eye}
+                  onClick={() => setPanel(panel === 'preview' ? null : 'preview')}
+                  title="The approved files a publish hands over, rendered"
+                >
+                  Preview
+                </Button>
+              )}
               {adapter && (
                 <Button
                   kind="primary"
@@ -508,6 +517,7 @@ export function TaskPanel({
                 />
               </div>
             )}
+          {t?.type === 'publish' && panel === 'preview' && <PublishPreview id={id} />}
           {adapter && panel === 'adapter' && (
             <PublishAdapterForm
               id={id}
@@ -1458,6 +1468,51 @@ function DelegateForm({
         </Button>
       </div>
       <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+/** One file of `GET /api/tasks/:id/preview`. */
+interface PreviewFile {
+  path: string;
+  kind: 'markdown' | 'image' | 'text';
+  text?: string;
+  data?: string;
+}
+
+/**
+ * **Preview** on a publish task (W8 phase 3): the approved files a publish hands over, at the
+ * approved commit, with Markdown rendered as the app renders any text.
+ */
+export function PublishPreview({ id }: { id: string }) {
+  const { data, error } = useData<{ commit: string; files: PreviewFile[] }>(
+    `/api/tasks/${q(id)}/preview`,
+  );
+  return (
+    <div data-publish-preview className="panel animate-rise mt-3 flex flex-col gap-4 p-4">
+      {!data && !error && <span className="text-xs text-fg-4">Reading the approved files…</span>}
+      <ErrorLine error={error} />
+      {data && (
+        <span className="text-[11px] text-fg-4">
+          What a publish hands over, at {data.commit.slice(0, 10)}
+        </span>
+      )}
+      {data?.files.map((f) => (
+        <section key={f.path} data-preview-file={f.path} className="flex flex-col gap-2">
+          <span className="font-mono text-[11px] text-fg-3">{f.path}</span>
+          {f.kind === 'image' ? (
+            f.data ? (
+              <img src={f.data} alt={f.path} className="max-w-full rounded-md" />
+            ) : (
+              <span className="text-xs text-fg-4">Too large to show</span>
+            )
+          ) : f.kind === 'markdown' ? (
+            <Markdown text={f.text ?? ''} />
+          ) : (
+            <pre className="overflow-x-auto text-xs">{f.text}</pre>
+          )}
+        </section>
+      ))}
     </div>
   );
 }
