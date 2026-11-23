@@ -54,6 +54,8 @@ export interface WorkflowStage {
   review?: string;
   type?: string;
   priority?: string;
+  /** Labels the task gets, such as `publish:{{adapter}}`. */
+  labels?: string[];
   body?: string;
   done_when?: unknown;
   gate?: WorkflowGate;
@@ -105,6 +107,9 @@ const STAGE_SCHEMA: Schema = obj(
     review: text('The reviewer: a concrete agent id or a person.'),
     type: text('The task type, such as task, bug, docs, content, publish or gate.'),
     priority: text('p0 to p3, or a parameter such as {{severity}}; default the milestone’s.'),
+    labels: list(text('A label; `{{param}}` fills in.'), {
+      doc: 'Labels the task gets besides `milestone:<id>`, such as `publish:blog`, which names the adapter `swarmup publish` runs.',
+    }),
     body: text('The task body.'),
     done_when: any({
       doc: 'The stage’s check: one line, or one typed criterion. Default `criteria.<type>`, then the title.',
@@ -474,6 +479,8 @@ export function compileWorkflow(def: WorkflowDef, opts: CompileOptions): Compile
       item.priority = s.priority as Priority;
     }
     if (s.review) item.review = s.review;
+    const labels = (s.labels ?? []).map((l) => l.trim()).filter(Boolean);
+    if (labels.length > 0) item.labels = [...new Set(labels)];
     const done =
       oneCriterion(s.done_when, at) ??
       oneCriterion(criteria[type ?? 'task'], `${where}, criteria.${type ?? 'task'}`) ??

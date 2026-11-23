@@ -17,6 +17,7 @@ import {
   readWorkflows,
   TEMPLATES_DIR,
   templateWorkflowIds,
+  parsePlan,
   validatePlan,
   Workspace,
 } from '../src/index.js';
@@ -321,6 +322,45 @@ describe('workflow start', () => {
     expect(
       res.events.some((e) => e.type === 'plan' && e.body.includes('Workflow demo (definitions d:')),
     ).toBe(true);
+  });
+});
+
+describe('stage labels', () => {
+  it('give the task labels, such as the publish adapter, with parameters filled in', () => {
+    const { h, rootDir } = world('starter');
+    put(
+      rootDir,
+      'workflows/post.yaml',
+      [
+        'params:',
+        '  where: {required: true}',
+        'milestone:',
+        "  title: 'Post to {{where}}'",
+        "  done_when: 'It is live on {{where}}'",
+        'approval: starter',
+        'stages:',
+        "  - {key: draft, title: 'Draft', owner: 'claude:engineer', estimate: 1h}",
+        "  - {key: ship, title: 'Publish it', owner: '{{human}}', estimate: 15m, type: publish, after: draft, labels: ['publish:{{where}}', 'launch']}",
+        '',
+      ].join('\n'),
+    );
+    const ms = h.workflowStart('post', { params: { where: 'blog' } }).milestone.id;
+    expect(taskOf(h, ms, 'ship').meta.labels).toEqual([
+      `milestone:${ms}`,
+      'publish:blog',
+      'launch',
+    ]);
+    expect(h.planShow(ms).items.find((i) => i.key === 'ship')).toMatchObject({
+      labels: ['publish:blog', 'launch'],
+    });
+    // A plan refuses a label with a space, or one that names a milestone.
+    const item = (labels: string) =>
+      `items:
+  - {key: a, title: A, owner: claude:engineer, estimate: 1h, labels: ${labels}}
+`;
+    expect(() => parsePlan(item("['two words']"))).toThrow(/bad label 'two words'/);
+    expect(() => parsePlan(item('[milestone:M-1]'))).toThrow(/added for you/);
+    expect(parsePlan(item('[publish:blog]')).items[0]!.labels).toEqual(['publish:blog']);
   });
 });
 
