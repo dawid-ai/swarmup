@@ -154,6 +154,30 @@ describe('Mark published', () => {
   });
 });
 
+describe('Publish with an adapter', () => {
+  it('runs the adapter the publish:<name> label names, once more only with Again', async () => {
+    detail = { ...detail, task: task({ labels: ['publish:blog'] }) };
+    await mount();
+    expect(button('Mark published')).toBeDefined();
+    await click(button('Publish')!);
+    const form = box.querySelector('[data-publish-adapter]')!;
+    expect(form.textContent).toContain('blog');
+    await click(button('Publish now')!);
+    expect(posts).toEqual([{ path: `${TASK_PATH}/publish`, body: { as: 'human:dawid' } }]);
+    expect(box.querySelector('[data-publish-adapter]')).toBeNull();
+    await click(button('Publish')!);
+    const again = box.querySelector<HTMLInputElement>('[data-publish-adapter] input')!;
+    await click(again);
+    await click(button('Publish now')!);
+    expect(posts[1]!.body).toEqual({ as: 'human:dawid', again: true });
+  });
+
+  it('is not offered without the label', async () => {
+    await mount();
+    expect(button('Publish')).toBeUndefined();
+  });
+});
+
 describe('the builders of the phase 2 checks', () => {
   it('round-trips image-alt and image-size, and needs a width and a height', () => {
     const alt = {

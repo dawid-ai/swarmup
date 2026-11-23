@@ -4,6 +4,7 @@
 import { isAbsolute } from 'node:path';
 import { OpsError } from './ids.js';
 import type { OpsEvent, ReviewArtifact } from './model.js';
+import { MERGE_ACTOR } from './model.js';
 
 /** Runs git in the workspace with `args` and resolves to its output; rejects when git fails. */
 export type GitRun = (args: string[]) => Promise<string>;
@@ -232,4 +233,55 @@ export async function publishTarget(
   }
   await git(['tag', tag, commit]);
   return { commit, ...(path ? { path } : {}), ...(blob ? { blob } : {}), tag };
+}
+
+/** A file of approved work (W8 phase 3): what a publish task publishes and previews. */
+export interface ApprovedFile {
+  /** From the top of the workspace. */
+  path: string;
+  /** Its blob at the reviewed commit. */
+  blob: string;
+  /** The task whose review was approved. */
+  task: string;
+  /** The reviewed commit, when the review named one. */
+  commit?: string;
+  /** The approving verdict. */
+  verdict: string;
+}
+
+/**
+ * The files of the approved work of each task, in order: the `file` and `image` artifacts (with
+ * blobs) of the latest review before each task's latest approving verdict (swarmupd's own
+ * verdicts aside). A task with no approval, or whose approved review names no files, adds
+ * none; a path a later task names again is left out.
+ */
+export function approvedFiles(
+  sources: ReadonlyArray<{ id: string; events: readonly OpsEvent[] }>,
+): ApprovedFile[] {
+  const out: ApprovedFile[] = [];
+  const seen = new Set<string>();
+  for (const s of sources) {
+    let review: OpsEvent | undefined;
+    let approved: { review?: OpsEvent; verdict: OpsEvent } | undefined;
+    for (const e of s.events) {
+      if (e.type === 'review') review = e;
+      if (e.type === 'verdict' && e.verdict === 'approve' && e.actor !== MERGE_ACTOR) {
+        approved = { review, verdict: e };
+      }
+      if (e.type === 'reopen') approved = undefined;
+    }
+    if (!approved?.review) continue;
+    for (const a of approved.review.artifacts ?? []) {
+      if ((a.kind !== 'file' && a.kind !== 'image') || !a.blob || seen.has(a.ref)) continue;
+      seen.add(a.ref);
+      out.push({
+        path: a.ref,
+        blob: a.blob,
+        task: s.id,
+        ...(approved.review.commit ? { commit: approved.review.commit } : {}),
+        verdict: approved.verdict.id,
+      });
+    }
+  }
+  return out;
 }

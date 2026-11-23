@@ -323,6 +323,12 @@ choose **Record publish**. It does what `swarmup published ID --url URL --artifa
 tags the commit, writes the `publish` event, closes the task and runs its `when: publish`
 criteria (`POST /api/tasks/ID/published`, never a run's token).
 
+**Publish.** A publish task with the label `publish:<name>` also shows **Publish**, which runs
+that adapter on this machine (see [Publish adapters](supervisor.md#publish-adapters)). **Publish
+now** does what `swarmup publish ID` does: it records the attempt, hands the adapter the approved
+files and records the URL it prints. It runs once for the same files; tick **Again** to run it
+once more. A failure shows under the button and leaves a comment on the task.
+
 **Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
 `GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what
 it measures, its threshold and what to change when it fails.

@@ -73,7 +73,11 @@ The stages, by hand or from the workflow:
    swarmup published LC-0010 --url https://x.com/you/status/1 --artifact posts/x-thread.md
    ```
 
-   This tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
+   With an adapter on this machine (`swarmupd.publish.<root>.<name>`) and the label
+   `publish:<name>` on the task, `swarmup publish LC-0010` posts it for you instead, once, and
+   records the URL the adapter prints. See [Publish adapters](supervisor.md#publish-adapters).
+
+   Recording a publish tags the commit `published/LC-0010`, writes a `publish` event, closes the `publish` task
    and runs its `when: publish` criteria, such as a `url-ok` check on `{url}` or a
    `page-contains` check that the live page holds the repo link. In the desktop
    app, **Mark published** in the task panel records the same: the URL and, optionally, the

@@ -664,6 +664,57 @@ GITHUB_PAT: github_pat_...
   resolve answer to a granted run. A run still runs as your operating-system user, so this keeps
   secrets out of what SwarmUp records and shares, not out of reach of a determined run.
 
+### Publish adapters
+
+A publish adapter publishes a `publish` task's approved files when a person starts it (W8 phase
+3). Each machine defines its adapters per root in `swarmupd.publish.<root>.<name>`, and a publish
+task names its adapter with the label `publish:<name>` (`swarmup new --label publish:blog`);
+`--adapter NAME` picks one for a task without the label, such as one a workflow filed.
+
+```yaml
+swarmupd:
+  publish:
+    launch: # the root
+      blog:
+        kind: command
+        run: node scripts/post-blog.mjs # a shell command, run in the root's workspace checkout
+        env: { BLOG_TOKEN: { secret: BLOG_TOKEN } } # text or {secret: NAME} from secrets.yml
+        timeout_minutes: 10 # default 10
+      x:
+        kind: mcp
+        server: x # a publish: true server of swarmupd.mcp.servers
+        tool: create_post
+        arguments: { text: '{content}' } # {task}, {root}, {commit}, {path}, {content}
+      hn:
+        kind: manual # post it yourself, then swarmup published
+```
+
+- **Start it** with `swarmup publish ID [--adapter NAME] [--artifact PATH]... [--commit REV]
+[--again]`, or **Publish** in the task panel (`POST /api/tasks/:id/publish`). Only a person
+  outside any run may: the CLI refuses an agent or a run, and the API answers a run token with 403.
+- **The files** are the approved work: the `file` and `image` artifacts of the review that the
+  task's latest approving verdict approved, else of each task it waits on (`blocked_by`), read at
+  the commit (the root's merge base, else `HEAD`, or `--commit`). `--artifact` names others.
+- **Once per content.** Before the adapter runs, a `publish-attempt` event records the adapter,
+  the commit and each file with its blob. A second attempt for the same files and blobs, or one on
+  a closed task, is refused unless `--again`. A failed attempt stays recorded, with a comment that
+  says to record the URL with `swarmup published` if the post went live anyway.
+- **`command`** gets the files in a new temporary folder and these variables:
+  `SWARMUP_PUBLISH_TASK`, `SWARMUP_PUBLISH_ROOT`, `SWARMUP_PUBLISH_COMMIT`,
+  `SWARMUP_PUBLISH_DIR` (the folder), `SWARMUP_PUBLISH_FILES` (the files in it, one per line),
+  `SWARMUP_PUBLISH_FILE` (the first), `SWARMUP_PUBLISH_PATHS` (their workspace paths) and
+  `SWARMUP_PUBLISH_WORKSPACE`, plus its `env`; never a run's token. It must exit 0 and print a
+  line `url: <URL>`; the last such line is the URL.
+- **`mcp`** starts the `publish: true` server with its secrets in its environment, as the run
+  proxy does, and calls the tool once as an MCP client. The server's `tools` rules apply. The URL
+  is the answer's `structuredContent.url`, else the last `url: <URL>` line of its text. `{path}`
+  and `{content}` need exactly one file.
+- **On success** swarmupd tags the commit `published/<ID>`, writes the `publish` event with the
+  URL and `adapter`, closes the task and runs its `when: publish` criteria, as
+  `swarmup published` does.
+- **`manual`**, or a task with no adapter, keeps the manual flow: `swarmup publish` says to post
+  it yourself and run `swarmup published ID --url URL`.
+
 ### Processes
 
 Every process starts with no console window. swarmupd stops only processes it started, and never
@@ -1726,6 +1777,7 @@ restart or another human-only action, use `swarmup ask`.
 | `GET /api/runs/:id/procs`, `POST /api/runs/:id/procs`        | the run's process ledger with `alive` for each; `POST` kills what an ended run left, or `pid` alone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `GET /api/tasks`, `GET /api/tasks/:id`                       | tasks (`?all` includes closed and archived), one task with its events                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `GET /api/tasks/:id/artifact?path=P&commit=C`                | one file of the task's work (W8), read off the event loop from the root's code checkout: at `commit`, else at the commit of the newest review that records artifacts, else from the checkout's files. Text comes as `text` with `base` (the file at the merge base with the root's base, `null` text when it is new); an image as a `data` URL (8 MB at most). A path outside the workspace is refused with 400, a missing file or commit is 404                                                                                                                                                         |
+| `GET /api/tasks/:id/publish`, `POST /api/tasks/:id/publish`  | the adapter a publish task's `publish:<name>` label names, with its kind on this machine; `POST` does what `swarmup publish` does (W8 phase 3), for a person only (a run token gets 403): optional `adapter`, `again`, `artifacts` and `commit`. A failed adapter answers 502.                                                                                                                                                                                                                                                                                                                           |
 | `POST /api/tasks/:id/published`                              | what `swarmup published` does (W8), for a person only (a run token gets 403): `url`, optional `artifact` (a path in the workspace), `commit` and `message`. Tags the commit (the root's merge base, else `HEAD`) `published/<ID>` off the event loop, writes the `publish` event and runs the post-publish criteria; answers the tag, commit, path, blob, `results` and the `task`                                                                                                                                                                                                                       |
 | `GET /api/mcp`                                               | Settings > MCP servers (W8), for a person only: `strict`, the `servers` with every setting and, for each secret an `env` entry reads, its name and whether it is `set`; the `secrets` names; and per agent whose role file names servers, `asked`, `missing` and `granted` by root. Never a secret value                                                                                                                                                                                                                                                                                                 |
 | `POST /api/mcp/servers`                                      | add a server, or replace the one `previous` names (renaming it): `name` and `server` with the keys of `swarmupd.mcp.servers.<name>`. A person only; answers as `GET /api/mcp`                                                                                                                                                                                                                                                                                                                                                                                                                            |

@@ -31,6 +31,8 @@ import type {
 import type { PublishTarget, SyncResult } from '@swarmup/core';
 import type { TaskArtifact } from './artifact-api.js';
 import { NoArtifact, readArtifact } from './artifact-api.js';
+import type { PublishOptions, PublishOutcome } from './publish.js';
+import { publishWithAdapter, taskAdapter } from './publish.js';
 import {
   actorSlug,
   agentRuntimeValues,
@@ -6214,6 +6216,46 @@ export class Supervisor extends EventEmitter {
     const res = ws.published(ref, { url: input.url, ...target, message: input.message });
     const results = await ws.publishChecks(ref, input.url, { cwd: top });
     return { ...target, url: input.url, results, view: res.view };
+  }
+
+  /**
+   * Publishes a `publish` task with its adapter for `actor`, a person (W8 phase 3): see
+   * `publishWithAdapter`. The adapter runs in the root's workspace checkout, off the event loop.
+   */
+  async publishTask(
+    ref: string,
+    actor: string,
+    opts: PublishOptions = {},
+  ): Promise<PublishOutcome> {
+    const ws = this.ws(actor);
+    const { root } = ws.resolve(ref);
+    const cfg = this.config.merge[root.name];
+    const top = cfg?.checkout ? resolve(cfg.checkout) : await this.codeTopAsync(root);
+    if (!top) throw new OpsError(`the workspace of ${root.name} is in no git checkout on this PC`);
+    const env = this.commandEnv();
+    return publishWithAdapter({
+      ws,
+      ref,
+      publish: this.config.publish,
+      mcp: this.config.mcp,
+      top,
+      git: (args) => gitAsync(top, args, { env, timeoutMs: 60_000 }),
+      env,
+      ...(cfg?.base ? { base: cfg.base } : {}),
+      opts,
+    });
+  }
+
+  /**
+   * The adapter a `publish` task names and this machine defines, for the app's **Publish**
+   * button: its name and kind, or null when the task names none.
+   */
+  publishAdapterOf(ref: string): { name: string; kind: string | null } | null {
+    const ws = this.ws();
+    const v = ws.view(ref);
+    const name = taskAdapter(v.meta.labels);
+    if (!name) return null;
+    return { name, kind: this.config.publish[v.root]?.[name]?.kind ?? null };
   }
 
   /**

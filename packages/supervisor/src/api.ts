@@ -655,6 +655,36 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         const { view, ...rest } = done;
         return send(res, 200, { ...rest, task: compact(view) });
       }
+      // A person publishes a publish task with its adapter (W8 phase 3); never a run. The GET
+      // names the adapter, for the app's Publish button.
+      if (action === 'publish') {
+        if (method === 'GET') return send(res, 200, { adapter: sup.publishAdapterOf(ref) });
+        if (method === 'POST') {
+          humanOnly('publishing');
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const one = str(body.artifact);
+          const paths: string[] | undefined = Array.isArray(body.artifacts)
+            ? body.artifacts.filter((a: unknown): a is string => typeof a === 'string')
+            : one
+              ? [one]
+              : undefined;
+          const done = await sup.publishTask(ref, ws.actor, {
+            ...(str(body.adapter) ? { adapter: str(body.adapter) } : {}),
+            ...(body.again === true ? { again: true } : {}),
+            ...(paths?.length ? { paths } : {}),
+            ...(str(body.commit) ? { commit: str(body.commit) } : {}),
+          });
+          if (!done.ok) {
+            // The attempt and a comment on what to do next are on the task.
+            throw new HttpError(
+              502,
+              `adapter ${done.adapter} failed (${done.why ?? 'no reason'}); it will not run again for these files without again: if it went live, record the URL with Mark published`,
+            );
+          }
+          const { view, ...rest } = done;
+          return send(res, 200, { ...rest, task: compact(view) });
+        }
+      }
       // A milestone's plan as `swarmup plan show` reports it (AO-0110).
       if (method === 'GET' && action === 'plan') return send(res, 200, ws.planShow(ref));
       if (method === 'GET' && !action) {

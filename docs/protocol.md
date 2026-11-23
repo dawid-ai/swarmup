@@ -411,6 +411,13 @@ work, not live work: publishing is a separate step that only a person takes. See
   criteria. swarmupd merges nothing for a `publish` task. In the desktop app, **Mark published**
   in the task panel of a `publish` task a person owns does the same through
   `POST /api/tasks/:id/published`, which answers a run token with 403.
+- **Publish adapters.** A `publish` task with the label `publish:<name>` names an adapter that
+  `swarmupd.publish.<root>.<name>` defines on the machine (`manual`, `command` or `mcp`). A
+  person runs it with `swarmup publish ID` (or **Publish** in the app). A `publish-attempt`
+  event (`adapter`, `commit`, and the files as `artifacts` with blobs) is written before it runs,
+  and a second attempt for the same files and blobs is refused unless `--again`, so an adapter
+  posts once. On success the URL it reports becomes the `publish` event, with `adapter`. See
+  [Publish adapters](supervisor.md#publish-adapters).
 
 ## Milestones and plans
 
@@ -1065,7 +1072,8 @@ question blocks nothing; it is its own task.
 - A `publish` task is a person's (W8): `swarmup new` gives one without `--to` to the root's
   `human`, and `new`, `assign`, `handoff` and `claim` refuse an agent as its owner or claimer.
   `--force` lets it through and records it: `forced: true` on the event, or `owner_forced: true`
-  in `task.md`. Only a person outside any run records a publish with `swarmup published`.
+  in `task.md`. Only a person outside any run records a publish with `swarmup published` or runs
+  a publish adapter with `swarmup publish`.
 - `--force` lets anyone through and records `forced: true` in the event.
 - `swarmup review` records where the work is as fields of the review event (AO-0384, AO-0396):
   `commit` and `branch`, and `repo` (`code`, or `store` for a task store's own repo). In a code

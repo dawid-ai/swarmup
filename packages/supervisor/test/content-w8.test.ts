@@ -248,6 +248,19 @@ describe('publish and artifact routes', () => {
     expect(event.blob).toBe(git(repo, 'rev-parse', 'HEAD:posts/x.md'));
   });
 
+  it('names a publish task adapter, and refuses a run that asks to publish with 403', async () => {
+    const { call, as, registerRun } = await apiSetup();
+    as('human:dawid').newTask({ title: 'Post it', type: 'publish', labels: ['publish:blog'] });
+    const info = await call('full-token', 'GET', '/api/tasks/T-0001/publish');
+    expect(info).toEqual({ status: 200, data: { adapter: { name: 'blog', kind: null } } });
+    registerRun('run-token');
+    const refused = await call('run-token', 'POST', '/api/tasks/T-0001/publish', {});
+    expect(refused.status).toBe(403);
+    expect(String(refused.data.error)).toMatch(/publishing is for the human/);
+    const events = as('human:dawid').showEvents('1').events;
+    expect(events.some((e) => e.type === 'publish-attempt')).toBe(false);
+  });
+
   it('serves a reviewed file at its commit with its base, an image as data, and refuses paths outside', async () => {
     const { repo, call, as } = await apiSetup();
     as('human:dawid').newTask({ title: 'Thread', type: 'content', owner: 'fake:engineer' });

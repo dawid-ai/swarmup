@@ -24,6 +24,7 @@ import {
   Pencil,
   Play,
   Reply,
+  Rocket,
   RotateCcw,
   Send,
   Undo2,
@@ -101,7 +102,7 @@ import { TriageActions, waitsOn } from '../ui/triage';
 import { Contradiction, DecisionMark, useDecisionMark } from '../ui/decision';
 import { ProjectName } from '../ui/project-label';
 
-type Panel = 'delegate' | 'launch' | 'publish' | null;
+type Panel = 'delegate' | 'launch' | 'publish' | 'adapter' | null;
 
 /** Types that wait for a person to turn them into work, with the shared triage actions. */
 const TRIAGED = new Set(['finding', 'idea']);
@@ -196,6 +197,8 @@ export function TaskPanel({
   const reviewForm = reviewsMe && criteria.length > 0;
   // A publish task is a person's (W8): they post the approved work, then record where it went.
   const publishable = Boolean(open && t?.type === 'publish' && t.owner?.startsWith('human:'));
+  // The adapter its `publish:<name>` label names, which swarmupd runs once on Publish (W8 phase 3).
+  const adapter = publishable ? publishAdapterLabel(t?.labels) : undefined;
   // A milestone, a parent, or a task that has a brief anyway.
   const briefShown = Boolean(t && (milestone || (data?.children?.length ?? 0) > 0 || data?.brief));
 
@@ -439,9 +442,19 @@ export function TaskPanel({
                   View changes
                 </Button>
               )}
-              {publishable && (
+              {adapter && (
                 <Button
                   kind="primary"
+                  icon={Rocket}
+                  onClick={() => setPanel(panel === 'adapter' ? null : 'adapter')}
+                  title={`Run the publish adapter ${adapter} on the approved files`}
+                >
+                  Publish
+                </Button>
+              )}
+              {publishable && (
+                <Button
+                  kind={adapter ? 'plain' : 'primary'}
                   icon={Send}
                   onClick={() => setPanel(panel === 'publish' ? null : 'publish')}
                   title="Record the URL where you published the approved work"
@@ -495,6 +508,18 @@ export function TaskPanel({
                 />
               </div>
             )}
+          {adapter && panel === 'adapter' && (
+            <PublishAdapterForm
+              id={id}
+              adapter={adapter}
+              nav={nav}
+              onDone={() => {
+                setPanel(null);
+                reload();
+                refreshSoon();
+              }}
+            />
+          )}
           {publishable && panel === 'publish' && (
             <PublishForm
               id={id}
@@ -1430,6 +1455,67 @@ function DelegateForm({
         </Button>
         <Button kind="ghost" onClick={onDone}>
           Cancel
+        </Button>
+      </div>
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+/** The adapter a `publish:<name>` label names, if any. */
+export function publishAdapterLabel(labels: readonly string[] | undefined): string | undefined {
+  const l = (labels ?? []).find((x) => x.startsWith('publish:'));
+  return l ? l.slice('publish:'.length).trim() || undefined : undefined;
+}
+
+/**
+ * Publishes the task with its adapter (W8 phase 3): swarmupd records the attempt, hands the
+ * adapter the approved files and records the URL it prints. It runs once for the same files;
+ * **Again** runs it once more.
+ */
+export function PublishAdapterForm({
+  id,
+  adapter,
+  nav,
+  onDone,
+}: {
+  id: string;
+  adapter: string;
+  nav: Nav;
+  onDone: () => void;
+}) {
+  const [again, setAgain] = useState(false);
+  const act = useAction();
+  return (
+    <div data-publish-adapter className="panel animate-rise mt-3 flex flex-col gap-3 p-4">
+      <p className="text-sm text-fg-2">
+        Runs the adapter <span className="font-mono">{adapter}</span> on the approved files at the
+        approved commit. It publishes for real, once for these files, and records the URL it prints.
+      </p>
+      <label className="flex items-center gap-2 text-xs text-fg-3">
+        <input type="checkbox" checked={again} onChange={(e) => setAgain(e.target.checked)} />
+        Again: run it even though it ran on these files before
+      </label>
+      <div className="flex items-center gap-2">
+        <Button
+          kind="primary"
+          icon={Rocket}
+          disabled={act.busy}
+          onClick={() =>
+            act.run(
+              () =>
+                api('POST', `/api/tasks/${q(id)}/publish`, {
+                  as: nav.me,
+                  ...(again ? { again: true } : {}),
+                }),
+              () => {
+                toast(`Published with ${adapter}: the task is done`);
+                onDone();
+              },
+            )
+          }
+        >
+          {act.busy ? 'Publishing…' : 'Publish now'}
         </Button>
       </div>
       <ErrorLine error={act.error} />

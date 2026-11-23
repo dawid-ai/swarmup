@@ -5,6 +5,7 @@ covers:
   - packages/core/src/content-templates.ts
   - packages/core/src/artifacts.ts
   - packages/supervisor/src/artifact-api.ts
+  - packages/supervisor/src/publish.ts
   - docs/content-projects.md
 links: [adopt, fold, workspace, /supervisor/merge, /supervisor/prompts, /desktop/ui]
 ---
@@ -32,6 +33,14 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
   directly and swarmupd off the event loop.
 - `Workspace.published` writes the `publish` event (a person outside a run only; a `publish`
   task closes with it); `publishChecks` runs `when: publish` criteria with `{url}`.
+- `publish.ts` (supervisor): publish adapters, `swarmupd.publish.<root>.<name>` (`manual`,
+  `command`, `mcp`), named by a task's `publish:<name>` label. `publishWithAdapter` checks the
+  adapter and the approved files (`approvedFiles` in `artifacts.ts`: the approved review's files
+  of the task, else of its `blocked_by`), writes `publish-attempt` through
+  `Workspace.publishAttempt` (refused for the same files and blobs unless `again`), runs the
+  command (files in a temp folder, `SWARMUP_PUBLISH_*`) or calls the MCP tool as a client, and
+  records the `publish` event with the `url:` it reports. `swarmup publish`, `POST
+/api/tasks/:id/publish` and the task panel's **Publish** call it.
 - `artifact-api.ts`: `GET /api/tasks/:id/artifact`, a file at the reviewed commit with its
   merge-base text, or an image as a data URL.
 - The desktop task panel's **Mark published** (on an open `publish` task a person owns) posts
@@ -39,6 +48,8 @@ commit, criteria at merge, and a publish step only a person takes. `main` means 
 
 ## Invariants
 
+- A publish adapter runs once per (task, files and blobs): the attempt is recorded under the
+  task's lock before it runs; never for an agent or a run token.
 - Publishing is never a criterion; `publish` tasks are owned and claimed by people unless
   `--force`, which is recorded.
 - Runs cannot edit the store's `rubrics/`, `workflows/` or `triggers/`.
