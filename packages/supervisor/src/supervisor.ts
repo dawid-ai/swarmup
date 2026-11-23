@@ -1166,13 +1166,7 @@ export class Supervisor extends EventEmitter {
       orientation: (r) => logOrientation(r.log),
       now: this.now,
       // The score rows rubric scorers gave (W5 phase 5), kept with the built-in ones.
-      extra: () => {
-        try {
-          return this.state?.rubricResults<ScoreResult>() ?? [];
-        } catch {
-          return [];
-        }
-      },
+      extra: () => this.rubricResults(),
     });
     this.bench = new BenchRuns(() => this.benchHost());
     this.improver = new Improver({
@@ -5793,6 +5787,15 @@ export class Supervisor extends EventEmitter {
       return n;
     } finally {
       clearInterval(watch);
+    }
+  }
+
+  /** The score rows rubric scorers gave (W5 phase 5), kept in state.db; none when it fails. */
+  rubricResults(): ScoreResult[] {
+    try {
+      return this.state?.rubricResults<ScoreResult>() ?? [];
+    } catch {
+      return [];
     }
   }
 

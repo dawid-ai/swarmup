@@ -405,8 +405,9 @@ swarmupd:
 - **The result:** each judgment is a row of `rubric_judgments` in `state.db`, with its tokens. One
   that gives a score is a task score row like a built-in scorer's: the scorer's id, the score as a
   share, `pass` against the scorer's `pass` (default 0.7), the criterion scores in `extra`, the
-  judge's reasons in `note`, and the work's `defs_hash`, `variant` and `experiment`. `swarmup
-scores` and the app list it after the built-in scorers, and `--by-variant` splits it.
+  judge's reasons in `note`, and the work's `defs_hash`, `variant` and `experiment`.
+  `swarmup scores`, `swarmup report` (the rows of the window's tasks, by the closing event's time)
+  and the app list it after the built-in scorers, and `--by-variant` splits it.
 - `swarmup defs scorers` shows a rubric scorer as `on`, or why it is off here.
 
 ## Precedence

@@ -151,6 +151,12 @@ import { banner, colorLevel } from './banner.js';
 import { VERSION } from './version.js';
 
 /** The git top level of `cwd`, or `cwd` itself outside a repo. */
+/** The score rows rubric scorers gave (W5 phase 5), which swarmupd keeps in state.db. */
+function rubricRows(dir: string): ScoreResult[] {
+  if (!existsSync(join(dir, 'state.db'))) return [];
+  return new StateDb(dir).rubricResults<ScoreResult>();
+}
+
 function gitTop(cwd: string): string {
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {
@@ -3829,10 +3835,11 @@ const COMMANDS: Record<string, Command> = {
         to: str(ctx.opts.to),
       });
       const ws = ctx.ws();
-      const runs = new RunStore(stateDir(ctx.io.env)).list();
-      const report = buildReport(ws, runs, w.from, w.to, {
+      const store = new RunStore(stateDir(ctx.io.env));
+      const report = buildReport(ws, store.list(), w.from, w.to, {
         project: str(ctx.opts.project),
         root: ws.scope,
+        rubric: rubricRows(store.dir),
       });
       const text = reportText(report);
       const channel = str(ctx.opts.post);
@@ -3885,14 +3892,11 @@ const COMMANDS: Record<string, Command> = {
         { tasks, runs, orientation: (r) => logOrientation(r.log) },
         { settings, stores: gitScorers(ws), ...(since !== undefined ? { from: since } : {}) },
       );
-      // The rows rubric scorers gave (W5 phase 5), which swarmupd keeps in state.db.
-      if (existsSync(join(store.dir, 'state.db'))) {
-        const scope = ws.scope;
-        for (const r of new StateDb(store.dir).rubricResults<ScoreResult>()) {
-          if (sinceIso && r.at < sinceIso) continue;
-          if (scope && !r.subject.startsWith(`${scope}/`)) continue;
-          results.push(r);
-        }
+      const scope = ws.scope;
+      for (const r of rubricRows(store.dir)) {
+        if (sinceIso && r.at < sinceIso) continue;
+        if (scope && !r.subject.startsWith(`${scope}/`)) continue;
+        results.push(r);
       }
       const task = str(ctx.opts.task);
       if (task) {

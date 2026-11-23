@@ -1182,6 +1182,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         project,
         root,
         events: reportEvents,
+        rubric: sup.rubricResults(),
       });
       return send(res, 200, report);
     }
@@ -1300,6 +1301,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         project,
         root,
         events: reportEvents,
+        rubric: sup.rubricResults(),
       });
       const named = { ...report, project: report.project ?? root ?? null };
       return send(res, 200, { ...timeline, wrapped: buildWrapped(named, timeline) });

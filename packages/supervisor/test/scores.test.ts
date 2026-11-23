@@ -707,6 +707,36 @@ describe('scores in the report and the API', () => {
     );
   });
 
+  it("lists the rubric scorers' rows of the window's tasks after the built-in scorers", () => {
+    const { as } = store();
+    as(REV).verdict('1', 'approve', 'good');
+    const now = Date.now();
+    const row = (subject: string, at: number, value: number): ScoreResult => ({
+      scorer: 'copy-quality',
+      level: 'task',
+      subject,
+      agent: ENG,
+      value,
+      unit: 'ratio',
+      pass: value >= 0.7,
+      n: 1,
+      evidence: [],
+      at: new Date(at).toISOString(),
+      rubric: { id: 'copy', pass: 0.7 },
+    });
+    const r = buildReport(as(HUMAN), [], now - 86_400_000, now + 1, {
+      rubric: [
+        row('test/T-0001', now - 60_000, 0.8),
+        // Outside the window, and a task the report does not cover.
+        row('test/T-0001', now - 2 * 86_400_000, 0.1),
+        row('other/T-0001', now - 60_000, 0.1),
+      ],
+    });
+    const eng = r.scores.find((a) => a.agent === ENG)!;
+    expect(eng.scorers.at(-1)).toMatchObject({ scorer: 'copy-quality', n: 1, mean: 0.8 });
+    expect(reportText(r)).toMatch(/^Scores of claude:engineer: .*review-rounds: .*copy-quality: /m);
+  });
+
   it('serves the kept scores and computes them again on request', async () => {
     const { repo, as } = store();
     as(REV).verdict('1', 'approve', 'good');

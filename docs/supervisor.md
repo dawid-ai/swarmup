@@ -1432,7 +1432,7 @@ that changed, reads each ended run's log once, and writes a row only for a score
 changed. `swarmup scores` computes them from the files, as `swarmup report` does; `--refresh` asks
 swarmupd to compute and keep them, or writes `state.db` itself when swarmupd is not running.
 `swarmup report` and the desktop **Reports** view show each agent's scores for the report's window,
-and the desktop **Agents** view shows each agent's scores with a trend. See
+rubric scorers' scores after the built-in ones, and the desktop **Agents** view shows each agent's scores with a trend. See
 [Scores in the app](desktop.md#scores-in-the-app).
 
 The desktop reads three shapes of the API:

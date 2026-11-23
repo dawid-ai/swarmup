@@ -22,8 +22,9 @@ cards.
 ## How it works
 
 - `report.ts` builds a window's report: tasks closed, runs, tokens, minutes, and what answers
-  and verdicts unblocked. `reportWindow` takes the last N whole days (default 7) or a `from`/`to`
-  range.
+  and verdicts unblocked, and each agent's scores, with the rubric scorers' rows from
+  `state.db` (passed in as `rubric`) for the window's tasks. `reportWindow` takes the last N
+  whole days (default 7) or a `from`/`to` range.
 - `loops.ts` adds loop figures: author and reviewer pairs, cost of a merged task over its runs,
   why runs stopped, how long people took to answer.
 - `scores.ts` holds the deterministic scorers over task events and run records, at run, task

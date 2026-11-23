@@ -1,0 +1,1 @@
+- `swarmup report` and the desktop **Reports** view list rubric scorers' scores for the report's window after the built-in scorers, as `swarmup scores` does.
