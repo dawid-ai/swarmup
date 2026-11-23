@@ -308,6 +308,7 @@ const views = [
   'runs',
   'standups',
   'schedules',
+  'automation',
   'decisions',
   // With a vote open, Decisions shows the votes: `decisions:log` opens the decision log.
   'decisions:log',

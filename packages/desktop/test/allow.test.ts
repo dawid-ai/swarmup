@@ -62,6 +62,15 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/defs/create')).toBe(true);
     expect(allowedCall('POST', '/api/defs/save')).toBe(true);
     expect(allowedCall('POST', '/api/defs/other')).toBe(false);
+    // Automation: read the view; a person's writes, and nothing else under it.
+    expect(allowedCall('GET', '/api/automation')).toBe(true);
+    for (const w of ['triggers', 'trust', 'revoke', 'hooks', 'direct']) {
+      expect(allowedCall('POST', `/api/automation/${w}`)).toBe(true);
+      expect(allowedCall('GET', `/api/automation/${w}`)).toBe(false);
+    }
+    expect(allowedCall('POST', '/api/automation')).toBe(false);
+    expect(allowedCall('POST', '/api/automation/other')).toBe(false);
+    expect(allowedCall('POST', '/api/automation/trust/x')).toBe(false);
     expect(allowedCall('GET', '/api/bench/sets')).toBe(true);
     expect(allowedCall('GET', '/api/bench/runs')).toBe(true);
     expect(allowedCall('GET', '/api/bench/runs/demo-20261121-120000')).toBe(true);

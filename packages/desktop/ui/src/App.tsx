@@ -29,6 +29,7 @@ import {
   Vote,
   X,
   Download,
+  Zap,
 } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -79,6 +80,7 @@ import { Reports } from './views/Reports';
 import { Runs } from './views/Runs';
 import { Repeating } from './views/Repeating';
 import { Schedules } from './views/Schedules';
+import { Automation } from './views/Automation';
 import { Settings } from './views/Settings';
 import { Setup } from './views/Setup';
 import { Search } from './views/Search';
@@ -101,6 +103,7 @@ export type View =
   | 'agents'
   | 'runs'
   | 'schedules'
+  | 'automation'
   | 'repeating'
   | 'decisions'
   | 'chat'
@@ -139,6 +142,7 @@ const GROUPS: Array<{
       ['agents', 'Agents', Bot],
       ['runs', 'Runs', Activity],
       ['schedules', 'Schedules', CalendarClock],
+      ['automation', 'Automation', Zap],
       ['repeating', 'Repeating', Repeat],
     ],
   },
@@ -899,6 +903,7 @@ export function App() {
             {view === 'agents' && <Agents nav={nav} selected={arg} />}
             {view === 'runs' && <Runs nav={nav} selected={arg} />}
             {view === 'schedules' && <Schedules nav={nav} selected={arg} />}
+            {view === 'automation' && <Automation nav={nav} />}
             {view === 'repeating' && <Repeating nav={nav} />}
             {view === 'decisions' && <Decisions key={arg ?? ''} nav={nav} selected={arg} />}
             {view === 'chat' && <Chat nav={nav} />}

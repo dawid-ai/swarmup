@@ -1850,3 +1850,81 @@ export interface McpView {
   agents: McpAgentView[];
   error?: string;
 }
+
+/** Where a root's trigger set or merge checks stand against what this machine trusts. */
+export type TrustState = 'none' | 'trusted' | 'untrusted' | 'changed';
+
+/** One git trigger in `GET /api/automation`. Never a secret value. */
+export interface AutomationTrigger {
+  root: string;
+  name: string;
+  file: string;
+  when: string;
+  target: string;
+  enabled: boolean;
+  runs_on?: string[];
+  consent: boolean;
+  trust: TrustState;
+  here: boolean;
+  hook?: 'finding' | 'direct';
+  why?: string;
+  last_fire: string | null;
+  next_fire: string | null;
+  /** The fields the trigger set's hash covers, as `[key, value]`. */
+  fields: Array<[string, string]>;
+  errors: string[];
+  webhook?: {
+    verify: string;
+    secret: string;
+    secret_ok: boolean;
+    secret_why?: string;
+    direct: boolean;
+  };
+}
+
+/** One root in `GET /api/automation`. */
+export interface AutomationRoot {
+  root: string;
+  on: boolean;
+  status: 'off' | TrustState;
+  trust: TrustState;
+  hash: string | null;
+  broken: number;
+  swarm_error?: string;
+  triggers: AutomationTrigger[];
+  checks: {
+    trust: TrustState;
+    hash: string;
+    checks: Array<{ name: string; run: string; paths: string[] }>;
+  } | null;
+}
+
+/** One line of `hooks.log`. */
+export interface HookLogLine {
+  at: string;
+  via: 'listener' | 'fire';
+  root?: string;
+  trigger?: string;
+  status: 'accepted' | 'refused';
+  code: number;
+  reason?: string;
+  delivery?: string;
+  effect?: string;
+  ref?: string;
+}
+
+/** `GET /api/automation`: git triggers, merge-check trust and the inbound listener here. */
+export interface AutomationView {
+  machine: string | null;
+  roots: AutomationRoot[];
+  hooks: {
+    enabled: boolean;
+    host: string;
+    port: number;
+    listener: 'off' | 'listening' | 'failed';
+    at?: { host: string; port: number };
+    error?: string;
+    restart: boolean;
+    log: HookLogLine[];
+  };
+}
