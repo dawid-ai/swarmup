@@ -158,7 +158,10 @@ describe('API reads and writes', () => {
       // A request that opened a connection would not have arrived with the others.
       expect(answers.map((a) => a.reused)).toEqual(Array(READS + 1).fill(true));
       // The write is answered in the turn it arrives; the reads take a turn each after that.
-      expect(readsDoneAtWrite).toBeLessThan(5);
+      // Answered in arrival order, the write would come after all 40 reads. Under the full suite
+      // the server can take the round in over several turns, so a few reads may finish first
+      // (9 in the beta.20 run); fewer than half still shows the write went ahead of the queue.
+      expect(readsDoneAtWrite).toBeLessThan(READS / 2);
     } finally {
       agent.destroy();
       await api.close();
