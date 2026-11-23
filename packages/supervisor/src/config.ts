@@ -5,6 +5,7 @@ import type { McpConfig, UserConfig } from '@swarmup/core';
 import {
   CHECKS_HASH_RE,
   TRIGGERS_HASH_RE,
+  TRIGGER_NAME_RE,
   checkEffort,
   checkMcpConfig,
   checkModel,
@@ -489,6 +490,29 @@ export interface OpsdConfig {
   mcp: McpConfig;
   /** Publish adapters (W8 phase 3): `swarmupd.publish.<root>.<name>`, see `publish.ts`. */
   publish: PublishConfig;
+  /** The inbound webhook listener (W8 phase 4): `swarmupd.hooks`, see `hooks.ts`. */
+  hooks: HooksConfig;
+}
+
+/** The default port of the inbound webhook listener, next to the API's {@link DEFAULT_PORT}. */
+export const DEFAULT_HOOKS_PORT = 4748;
+
+/**
+ * `swarmupd.hooks` (W8 phase 4): the inbound listener for webhook triggers. It is separate from
+ * the API: its own port, no API token, and only `POST /hooks/<root>/<trigger>`.
+ */
+export interface HooksConfig {
+  /** Off unless set to true. Turning it on or moving it applies at swarmupd's next start. */
+  enabled: boolean;
+  /** Default {@link DEFAULT_HOOKS_PORT}. */
+  port: number;
+  /** Default `127.0.0.1`: the public URL comes from the user's own tunnel to it. */
+  host: string;
+  /**
+   * Per root and trigger name, whether a delivery runs the trigger's action instead of filing a
+   * finding for triage. Off unless set to true; only a person sets it, in the user config.
+   */
+  direct: Record<string, Record<string, boolean>>;
 }
 
 export const DEFAULT_PORT = 4747;
@@ -619,6 +643,7 @@ export function opsdConfig(
     improve: checkImprove((raw as { improve?: unknown }).improve),
     mcp: checkMcpConfig((raw as { mcp?: unknown }).mcp),
     publish: checkPublishConfig((raw as { publish?: unknown }).publish),
+    hooks: checkHooks((raw as { hooks?: unknown }).hooks),
   };
   const count = (v: unknown, name: string, min: number): void => {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
@@ -990,6 +1015,60 @@ function checkTrustedDefs(raw: unknown): Record<string, TrustedDefs> {
       ...(checks !== undefined ? { checks: checks as string } : {}),
       ...(triggers !== undefined ? { triggers: triggers as string } : {}),
     };
+  }
+  return out;
+}
+
+function checkHooks(raw: unknown): HooksConfig {
+  const out: HooksConfig = {
+    enabled: false,
+    port: DEFAULT_HOOKS_PORT,
+    host: '127.0.0.1',
+    direct: {},
+  };
+  if (raw === undefined || raw === null) return out;
+  const usage = 'swarmupd.hooks: use enabled, port, host and direct';
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new OpsError(usage, 2);
+  const { enabled, port, host, direct, ...rest } = raw as Record<string, unknown>;
+  const extra = Object.keys(rest);
+  if (extra.length > 0)
+    throw new OpsError(`swarmupd.hooks: unknown key ${extra[0]}; ${usage.slice(16)}`, 2);
+  if (enabled !== undefined && enabled !== null) {
+    if (typeof enabled !== 'boolean')
+      throw new OpsError('swarmupd.hooks.enabled: use true or false', 2);
+    out.enabled = enabled;
+  }
+  if (port !== undefined && port !== null) {
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new OpsError('swarmupd.hooks.port: use a port from 1 to 65535', 2);
+    }
+    out.port = port;
+  }
+  if (host !== undefined && host !== null) {
+    if (typeof host !== 'string' || !/^[A-Za-z0-9.:[\]-]{1,253}$/.test(host)) {
+      throw new OpsError('swarmupd.hooks.host: use an address such as 127.0.0.1', 2);
+    }
+    out.host = host;
+  }
+  if (direct !== undefined && direct !== null) {
+    const bad = 'swarmupd.hooks.direct: map root names to trigger names, each true or false';
+    if (typeof direct !== 'object' || Array.isArray(direct)) throw new OpsError(bad, 2);
+    for (const [root, triggers] of Object.entries(direct as Record<string, unknown>)) {
+      if (triggers === null || typeof triggers !== 'object' || Array.isArray(triggers)) {
+        throw new OpsError(bad, 2);
+      }
+      const flags: Record<string, boolean> = {};
+      for (const [name, on] of Object.entries(triggers as Record<string, unknown>)) {
+        if (!TRIGGER_NAME_RE.test(name) || typeof on !== 'boolean') {
+          throw new OpsError(
+            `swarmupd.hooks.direct.${root}.${name}: use a trigger name and true or false`,
+            2,
+          );
+        }
+        flags[name] = on;
+      }
+      out.direct[root] = flags;
+    }
   }
   return out;
 }

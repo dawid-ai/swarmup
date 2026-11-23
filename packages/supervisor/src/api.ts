@@ -556,6 +556,8 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           agent,
           task: str(body.task),
           prompt: str(body.prompt),
+          // Instructions the standard prompt carries, such as a hook's fenced payload.
+          ...(str(body.extra) ? { extra: str(body.extra) } : {}),
           cwd: str(body.cwd),
           budget: str(body.budget),
           tokens: str(body.tokens),

@@ -34,7 +34,7 @@ export interface TriggerRoot {
 
 /** What of the machine config decides whether a trigger fires here. */
 export type TriggerConfig = Pick<OpsdConfig, 'triggers'> &
-  Partial<Pick<OpsdConfig, 'trusted_defs' | 'agents'>>;
+  Partial<Pick<OpsdConfig, 'trusted_defs' | 'agents' | 'hooks'>>;
 
 /** The key of a trigger in {@link TRIGGERS_STATE}: `<root>/<name>`. */
 export const triggerKey = (root: string, name: string): string => `${root}/${name}`;
@@ -67,6 +67,16 @@ function notHere(
   cfg: TriggerConfig,
   machine: string | undefined,
 ): string | null {
+  return gateBlocker(rt, def, cfg, machine) ?? (def ? runBlocker(rt, def, cfg) : null);
+}
+
+/** Why the machine's consent, its trust, `enabled` or `runs_on` stop a trigger here, or null. */
+function gateBlocker(
+  rt: RootTriggers,
+  def: TriggerDef | null,
+  cfg: TriggerConfig,
+  machine: string | undefined,
+): string | null {
   const root = rt.root;
   if (!def) return 'has errors (swarmup validate)';
   if (cfg.triggers[root] !== true) return `off here (swarmupd.triggers.${root} is not true)`;
@@ -75,12 +85,16 @@ function notHere(
   }
   if (rt.trust !== 'trusted') return `not trusted here (swarmup defs trust --root ${root})`;
   if (!def.enabled) return 'enabled: false';
-  if (!def.every && !def.at && !def.cron) return 'webhook triggers are not active yet';
   if (!triggerRunsOn(def, machine)) {
     return machine
       ? `runs_on does not name ${machine}`
       : 'runs_on names machines, and this machine sets no `machine` name in the user config';
   }
+  return null;
+}
+
+/** Why a `run` trigger's run may not start here (the agent does not wake, no active role), or null. */
+function runBlocker(rt: RootTriggers, def: TriggerDef, cfg: TriggerConfig): string | null {
   if (def.action === 'run' && def.agent) {
     if (cfg.agents?.[def.agent]?.wake !== true) {
       return `swarmupd.agents.${def.agent}.wake is not true on this machine`;
@@ -110,6 +124,11 @@ export interface TriggerView {
   trust: RootTriggers['trust'];
   /** It fires on this machine. */
   here: boolean;
+  /**
+   * For a trigger with a `webhook` section that fires here: what a delivery does, `finding` (a
+   * finding for triage) or `direct` (the action, as `swarmupd.hooks.direct` approves).
+   */
+  hook?: 'finding' | 'direct';
   /** Why it does not fire here. */
   why?: string;
   last_fire: string | null;
@@ -129,7 +148,12 @@ export function triggersView(
   for (const r of roots) {
     const rt = rootTriggers(r, cfg);
     for (const t of rt.set.triggers) {
-      const why = notHere(rt, t.def, cfg, machine);
+      const gate = gateBlocker(rt, t.def, cfg, machine);
+      const run = !gate && t.def ? runBlocker(rt, t.def, cfg) : null;
+      // A webhook-only trigger still files findings when its agent may not start here.
+      const hookOnly = !!t.def?.webhook && !t.def.every && !t.def.at && !t.def.cron;
+      const why = gate ?? (hookOnly ? null : run);
+      const direct = !run && cfg.hooks?.direct[r.name]?.[t.name] === true;
       const last = state[triggerKey(r.name, t.name)];
       let next: number | null = null;
       if (!why && t.def) next = nextTriggerFire(t.def, last, now);
@@ -145,6 +169,7 @@ export function triggersView(
         trust: rt.trust,
         here: !why,
         ...(why ? { why } : {}),
+        ...(!gate && t.def?.webhook ? { hook: direct ? 'direct' : 'finding' } : {}),
         last_fire: last !== undefined ? new Date(last).toISOString() : null,
         next_fire: next === null ? null : new Date(next).toISOString(),
       });
@@ -204,4 +229,51 @@ export function dueTriggers(
     }
   }
   return out;
+}
+
+/** A trigger a webhook delivery may fire on this machine (see {@link hookTarget}). */
+export interface HookTarget {
+  root: string;
+  dir: string;
+  def: TriggerDef & { webhook: NonNullable<TriggerDef['webhook']> };
+  /** A person approved direct actions for it here (`swarmupd.hooks.direct.<root>.<name>`). */
+  approved: boolean;
+  /**
+   * Why a delivery files a finding instead of running the action, or null when the machine
+   * approved direct actions for the trigger and the action may run here.
+   */
+  notDirect: string | null;
+}
+
+/**
+ * The trigger `root`/`name` a webhook delivery fires on this machine (W8 phase 4), or why none:
+ * the machine turned the root's triggers on, trusts its exact trigger set, and the trigger reads,
+ * has a `webhook` section, is enabled and runs here. The listener answers 404 for every `why`,
+ * so a caller learns nothing of which roots or triggers exist. Direct actions need
+ * `swarmupd.hooks.direct.<root>.<name>: true` and, for `run`, an agent that wakes here.
+ */
+export function hookTarget(
+  roots: readonly TriggerRoot[],
+  cfg: TriggerConfig,
+  machine: string | undefined,
+  root: string,
+  name: string,
+): HookTarget | { why: string } {
+  const r = roots.find((x) => x.name === root);
+  if (!r) return { why: `no root named ${root}` };
+  if (cfg.triggers[root] !== true)
+    return { why: `off here (swarmupd.triggers.${root} is not true)` };
+  const rt = rootTriggers(r, cfg);
+  const t = rt.set.triggers.find((x) => x.name === name);
+  if (!t) return { why: `${root} has no trigger named ${name}` };
+  if (t.def && !t.def.webhook) return { why: `${root}/${name} has no webhook section` };
+  // A finding needs no agent: the agent's wake and role decide only whether the action runs.
+  const why = gateBlocker(rt, t.def, cfg, machine);
+  if (why) return { why };
+  const def = t.def as HookTarget['def'];
+  const approved = cfg.hooks?.direct[root]?.[name] === true;
+  const notDirect = approved
+    ? runBlocker(rt, def, cfg)
+    : `direct actions are not approved here (swarmupd.hooks.direct.${root}.${name} is not true)`;
+  return { root, dir: r.dir, def, approved, notDirect };
 }

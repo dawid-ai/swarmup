@@ -44,3 +44,4 @@ export * from './improve.js';
 export * from './publish.js';
 export * from './triggers.js';
 export * from './git-scorers.js';
+export * from './hooks.js';
