@@ -17,6 +17,7 @@ export const SCORER_LABELS: Array<[string, string]> = [
   ['recommendation-acceptance', 'Recs taken'],
   ['stuck-runs', 'Stuck runs'],
   ['criteria-pass-rate', 'Criteria'],
+  ['verdict-completeness', 'Verdicts marked'],
   ['orientation', 'Calls to edit'],
 ];
 

@@ -6,6 +6,8 @@
 import type { OpsEvent, TaskMeta, UserConfig } from '@swarmup/core';
 import {
   ASK_REASONS,
+  criteriaOf,
+  currentDoneWhen,
   daemonSection,
   isHuman,
   MERGE_ACTOR,
@@ -47,7 +49,7 @@ export interface ScoreTask {
   root: string;
   id: string;
   title: string;
-  meta: Pick<TaskMeta, 'type' | 'labels' | 'owner'>;
+  meta: Pick<TaskMeta, 'type' | 'labels' | 'owner'> & Partial<Pick<TaskMeta, 'done_when'>>;
   status: string;
   events: OpsEvent[];
 }
@@ -209,6 +211,60 @@ const criteriaPassRate: Scorer = {
         evidence: [f.approval.id],
         at: f.approval.at,
         ...(failed.length ? { note: `failed: ${failed.join(', ')}` } : {}),
+      });
+    }
+    return out;
+  },
+};
+
+const verdictCompleteness: Scorer = {
+  id: 'verdict-completeness',
+  description:
+    "share of the task's prose criteria an agent reviewer's approval marks pass, fail or na",
+  level: 'task',
+  unit: 'ratio',
+  better: 'higher',
+  pass: 1,
+  lever: 'the reviewer role file and the review prompt',
+  score(ctx, pass) {
+    const out: ScoreResult[] = [];
+    for (const t of ctx.tasks) {
+      const f = ctx.facts(t);
+      const approval = f.approval;
+      if (!approval || !isAgent(approval.actor)) continue;
+      // The criteria in force at the approval: prose ones are the reviewer's to judge. Checks,
+      // commands and rubrics have their own runners, and `human` criteria are a person's.
+      const before = t.events.slice(0, t.events.indexOf(approval) + 1);
+      let prose: string[];
+      try {
+        prose = criteriaOf(currentDoneWhen(t.meta, before))
+          .filter((c) => c.kind === 'prose')
+          .map((c) => c.id);
+      } catch {
+        continue;
+      }
+      if (prose.length === 0) continue;
+      const raw = (approval as { criteria?: unknown }).criteria;
+      const marks =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Record<string, CriterionResult | null>)
+          : {};
+      const unmarked = prose.filter(
+        (id) => !['pass', 'fail', 'na'].includes(marks[id]?.result ?? ''),
+      );
+      const value = round((prose.length - unmarked.length) / prose.length);
+      out.push({
+        scorer: this.id,
+        level: 'task',
+        subject: ref(t),
+        agent: approval.actor,
+        value,
+        unit: this.unit,
+        pass: passes(this, value, pass),
+        n: prose.length,
+        evidence: [approval.id],
+        at: approval.at,
+        ...(unmarked.length ? { note: `unmarked: ${unmarked.join(', ')}` } : {}),
       });
     }
     return out;
@@ -584,6 +640,7 @@ const orientation: Scorer = {
 export function builtinScorers(now: () => number = Date.now): Scorer[] {
   return [
     criteriaPassRate,
+    verdictCompleteness,
     reviewRounds,
     mergeFailures,
     costScorer(now),
