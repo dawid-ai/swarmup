@@ -273,4 +273,46 @@ describe('swarmup bench run --defs-ref', () => {
     );
     expect(both.code).toBe(2);
   });
+
+  it('lists a from_ref variant with its description and benches it by name', async () => {
+    const { store, cli, dir } = project();
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], {
+        cwd: dir,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'base');
+    git('tag', 'v1');
+    put(store, 'agents/claude-engineer.md', ENGINEER.replace('opus', 'sonnet'));
+    put(
+      store,
+      'swarm.yaml',
+      'swarmup_defs: 1\nvariants:\n  as-v1: {from_ref: v1, description: The team as v1 had it}\n',
+    );
+    const listed = await cli('human:dawid', 'defs', 'variants');
+    expect(listed.out.slice(0, 3)).toEqual([
+      expect.stringMatching(/^demo\/as-v1 {2}d:[0-9a-f]{12} {2}draft {2}- {2}claude:engineer$/),
+      '  The team as v1 had it',
+      `  from ref v1 (${git('rev-parse', 'v1').trim().slice(0, 12)})`,
+    ]);
+    expect((await cli('human:dawid', 'validate')).code).toBe(0);
+    const set = join(temp(), 'set.yaml');
+    writeFileSync(
+      set,
+      'id: demo\nentries:\n  - id: E1\n    base: { ref: HEAD }\n    prompt: Add a test.\n    done_when: [Tests pass]\n',
+    );
+    const res = await cli(
+      'human:dawid',
+      ...['bench', 'run', set, '--repo', dir, '--agent', 'claude:engineer'],
+      ...['--variant', 'as-v1', '--root', store, '--out', join(temp(), 'out'), '--dry-run'],
+    );
+    expect(res.code).toBe(0);
+    expect(res.err.join('\n')).toMatch(/--model opus/);
+    put(store, 'swarm.yaml', 'swarmup_defs: 1\nvariants:\n  as-v1: {from_ref: no-such-ref}\n');
+    const bad = await cli('human:dawid', 'validate');
+    expect(bad.code).toBe(1);
+    expect(bad.out.join('\n')).toContain('variants.as-v1.from_ref: git cannot read no-such-ref');
+  });
 });

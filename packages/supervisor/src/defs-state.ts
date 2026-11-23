@@ -10,6 +10,8 @@ import {
   definitionsFingerprint,
   defsRefGit,
   gitWhy,
+  keepDefsSnapshot,
+  keptDefsSnapshot,
   loadDefinitions,
   OpsError,
   snapshotTexts,
@@ -53,6 +55,38 @@ export async function readDefsAtRefAsync(dir: string, ref: string): Promise<Defs
 export interface DefsRoot {
   name: string;
   dir: string;
+}
+
+/**
+ * Reads the snapshots of each root's `from_ref` variants (W5 phase 5) off the event loop and
+ * keeps them in core, so a launch or an experiment that picks one runs no git. A ref is read again
+ * only when the commit it names moved; one git cannot read is kept as an error the launch reports.
+ */
+export async function keepRefVariants(roots: readonly DefsRoot[]): Promise<void> {
+  for (const root of roots) {
+    let refs: string[];
+    try {
+      const variants = loadDefinitions(root.dir).swarm?.variants ?? {};
+      refs = [...new Set(Object.values(variants).flatMap((v) => (v.from_ref ? [v.from_ref] : [])))];
+    } catch {
+      continue;
+    }
+    for (const ref of refs) {
+      const kept = keptDefsSnapshot(root.dir, ref);
+      try {
+        checkDefsRef(ref);
+        const commit = (await gitAsync(root.dir, defsRefGit.commit(ref))).trim();
+        if (kept && !('error' in kept) && kept.commit === commit) continue;
+        keepDefsSnapshot(root.dir, ref, await readDefsAtRefAsync(root.dir, ref));
+      } catch (err) {
+        const error =
+          err instanceof OpsError
+            ? err.message
+            : `git cannot read ${ref} in ${root.dir}: ${gitWhy(err)}`;
+        keepDefsSnapshot(root.dir, ref, { error });
+      }
+    }
+  }
 }
 
 /** The store commit of a definition hash: the last commit that changed a definition file. */

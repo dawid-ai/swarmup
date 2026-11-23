@@ -12,6 +12,9 @@ export const EFFORT_RE = /^[a-z][a-z0-9_-]{0,19}$/;
 export const EFFORT_HINT =
   'name an effort level such as low, medium or high (lowercase letters, digits, _ and -)';
 
+/** A git ref as `--defs-ref` and a variant's `from_ref` take it: a branch, tag, commit or `HEAD~N`. */
+export const DEFS_REF_RE = /^(?!-)[A-Za-z0-9._/@{}~^:-]{1,200}$/;
+
 /** A runtime (provider) name, such as `claude` or `codex`: the part of an agent id before the colon. */
 export const RUNTIME_NAME_RE = /^[a-z][a-z0-9]*$/;
 

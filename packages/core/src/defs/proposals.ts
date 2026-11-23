@@ -232,7 +232,13 @@ export interface VariantFile {
 /** A variant as `swarmup defs variants` and the app list it. */
 export interface VariantInfo {
   name: string;
+  /** The variant's folder; for a `from_ref` variant, the folder it would have, which is not there. */
   dir: string;
+  /** `variants.<name>.description` in `swarm.yaml`. */
+  description?: string;
+  /** A variant of the definitions at a git ref: the ref `swarm.yaml` names, and its commit. */
+  from_ref?: string;
+  commit?: string;
   /** The variant's hash (base and overlay) and the base hash now. */
   hash: string;
   base: string;
@@ -265,6 +271,13 @@ export function variantInfo(rootDir: string, name: string): VariantInfo {
   for (const p of set?.problems ?? []) {
     if (p.severity === 'error') problems.push(`${p.file}:${p.line}: ${p.path}: ${p.message}`);
   }
+  // A ref variant changes what differs between the base and the ref, as an overlay would.
+  const fromRef = base.swarm?.variants?.[name]?.from_ref;
+  if (set && !set.overlay) {
+    for (const [path, text] of after) if (baseTexts.get(path) !== text) overlay.set(path, text);
+    for (const path of baseTexts.keys()) if (!after.has(path)) overlay.set(`${path}.delete`, '');
+  }
+  const description = base.swarm?.variants?.[name]?.description;
   const proposal = readProposal(rootDir, name);
   if (proposal) problems.push(...policyProblems(baseTexts, overlay, improvementPolicy(base.swarm)));
   const files: VariantFile[] = overlayTargets(overlay).map((path) => {
@@ -280,6 +293,9 @@ export function variantInfo(rootDir: string, name: string): VariantInfo {
   return {
     name,
     dir,
+    ...(description ? { description } : {}),
+    ...(fromRef && !existsSync(dir) ? { from_ref: fromRef } : {}),
+    ...(set?.commit ? { commit: set.commit } : {}),
     hash: set?.hash ?? '',
     base: base.hash,
     status: proposal ? 'proposed' : 'draft',
@@ -292,9 +308,17 @@ export function variantInfo(rootDir: string, name: string): VariantInfo {
   };
 }
 
-/** Every variant of a store. */
+/** Every variant of a store: its folders, and the `from_ref` variants `swarm.yaml` names. */
 export function listVariants(rootDir: string): VariantInfo[] {
-  return listVariantNames(rootDir).map((n) => variantInfo(rootDir, n));
+  return variantNames(rootDir).map((n) => variantInfo(rootDir, n));
+}
+
+/** The names of a store's variants: its folders and its `from_ref` variants, sorted. */
+export function variantNames(rootDir: string): string[] {
+  const refs = Object.entries(loadDefinitions(rootDir).swarm?.variants ?? {}).flatMap(([n, v]) =>
+    v.from_ref ? [n] : [],
+  );
+  return [...new Set([...listVariantNames(rootDir), ...refs])].sort();
 }
 
 /** Writes an overlay into `variants/<name>/`, which must not exist yet. */

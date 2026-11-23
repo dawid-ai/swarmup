@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { OpsEvent } from '@swarmup/core';
-import { readDefsAtRef, loadDefinitionsAtRef, shortHash } from '@swarmup/core';
+import { keptDefsSnapshot, loadDefinitionsAtRef, readDefsAtRef, shortHash } from '@swarmup/core';
 import type { RunRecord, ScoreTask } from '../src/index.js';
 import { computeScores, opsdConfig, scoresText, summarizeScores } from '../src/index.js';
 import { ended, FAKE_AGENT, setupAsync, temp } from './supervisor-setup.js';
@@ -265,6 +265,55 @@ describe('definitions at a git ref', () => {
     await expect(
       sup.launchFresh({ agent: 'claude:engineer', defsRef: 'HEAD', variant: 'tests-first' }),
     ).rejects.toThrow(/--variant or --defs-ref, not both/);
+    await sup.defsSettled();
+  });
+
+  it('runs a from_ref variant an experiment picks, with the store frozen keys', async () => {
+    const { sup, as, store, repo } = await project();
+    put(store, 'swarm.yaml', 'swarmup_defs: 1\n');
+    const git = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], {
+        cwd: repo,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'defs');
+    git('tag', 'v1');
+    const commit = git('rev-parse', 'HEAD').trim();
+    put(
+      store,
+      'agents/claude-engineer.md',
+      ENGINEER.replace('Write the code.', 'Changed since.').replace('[Read, Edit]', '[Read]'),
+    );
+    put(
+      store,
+      'swarm.yaml',
+      [
+        'swarmup_defs: 1',
+        'variants:',
+        '  as-v1: {from_ref: v1}',
+        'experiments:',
+        '  - {id: v1-trial, variant: as-v1, share: 1}',
+        '',
+      ].join('\n'),
+    );
+    await sup.tick();
+    // The tick read the ref off the event loop, so the launch reads no git for it.
+    expect(keptDefsSnapshot(store, 'v1')).toMatchObject({ ref: 'v1', commit });
+    const warnings: string[] = [];
+    sup.on('warn', (m: string) => warnings.push(m));
+    as('human:dawid').newTask({ title: 'a', owner: 'claude:engineer' });
+    const r = await ended(
+      sup,
+      (await sup.launchFresh({ agent: 'claude:engineer', task: 'T-0001' })).id,
+    );
+    expect(r).toMatchObject({ variant: 'as-v1', experiment: 'v1-trial' });
+    expect(r.defs).toMatchObject({ variant: 'as-v1', ref: 'v1', commit });
+    const role = readFileSync(join(r.scratch!, 'role-claude-engineer.md'), 'utf8');
+    expect(role).toContain('Write the code.');
+    expect(role).not.toContain('Edit');
+    expect(warnings.join('\n')).toContain('sets tools for claude:engineer differently');
     await sup.defsSettled();
   });
 });

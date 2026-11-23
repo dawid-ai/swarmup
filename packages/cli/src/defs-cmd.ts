@@ -168,7 +168,8 @@ function validate(ctx: DefsCtx): number {
     }
   } else stores.push(...rootsOf(ctx).map((r) => r.dir));
   const variant = str(ctx.opts.variant);
-  const opts = { ...loadOpts(ctx, strict), ...(variant ? { variant } : {}) };
+  // Each `variants.<name>.from_ref` must name a ref git reads.
+  const opts = { ...loadOpts(ctx, strict), checkRefs: true, ...(variant ? { variant } : {}) };
   const sets: DefinitionSet[] = [];
   const machine = machineOf(ctx.ws().user);
   for (const dir of stores) {
@@ -951,6 +952,10 @@ function variants(ctx: DefsCtx): number {
     ctx.io.out(
       `${v.root}/${v.name}  ${shortHash(v.hash)}  ${state}  ${v.proposal?.task ?? '-'}  ${v.agents.join(',') || '-'}`,
     );
+    if (v.description) ctx.io.out(`  ${v.description}`);
+    if (v.from_ref) {
+      ctx.io.out(`  from ref ${v.from_ref}${v.commit ? ` (${v.commit.slice(0, 12)})` : ''}`);
+    }
     for (const f of v.files) ctx.io.out(`  ${f.kind.padEnd(8)} ${f.path}`);
     for (const p of v.problems) ctx.io.out(`  problem: ${p}`);
   }

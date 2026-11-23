@@ -7,6 +7,7 @@ import {
   hashTexts,
   IMPROVE_BENCH_ACTOR,
   improvementPolicy,
+  listVariants,
   loadDefinitions,
   mergeAgentText,
   mergeValues,
@@ -17,7 +18,7 @@ import {
   textsHash,
   variantInfo,
 } from '../src/index.js';
-import { setup, tempDir } from './helpers.js';
+import { git, gitRepo, setup, tempDir } from './helpers.js';
 
 const ENGINEER = [
   '---',
@@ -139,6 +140,88 @@ describe('loadDefinitions with a variant', () => {
     // The base never counts the variants folder.
     expect(base.files.map((f) => f.path)).toEqual(['agents/claude-engineer.md', 'swarm.yaml']);
     expect(() => loadDefinitions(dir, { variant: 'missing' })).toThrow(/no variant 'missing'/);
+  });
+
+  it('reads a from_ref variant as the store had its definitions at the ref', () => {
+    const dir = gitRepo();
+    put(dir, 'swarm.yaml', 'swarmup_defs: 1\n');
+    put(dir, 'agents/claude-engineer.md', ENGINEER);
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'defs');
+    git(dir, 'tag', 'v1');
+    put(dir, 'agents/claude-engineer.md', ENGINEER.replace('Write the code.', 'Changed since.'));
+    put(
+      dir,
+      'swarm.yaml',
+      [
+        'swarmup_defs: 1',
+        'variants:',
+        '  old-engineer: {from_ref: v1, description: The engineer as v1 had it}',
+        '  tests-first: {description: Write the test first}',
+        'experiments:',
+        '  - {id: trial, variant: old-engineer, share: 0.5}',
+        '',
+      ].join('\n'),
+    );
+    put(dir, 'variants/tests-first/agents/claude-engineer.md', '---\n---\n\nTests first.\n');
+    clearDefinitionsCache();
+    const base = loadDefinitions(dir, { checkRefs: true });
+    expect(base.problems).toEqual([]);
+    expect(base.swarm?.variants).toEqual({
+      'old-engineer': { from_ref: 'v1', description: 'The engineer as v1 had it' },
+      'tests-first': { description: 'Write the test first' },
+    });
+    const v = loadDefinitions(dir, { variant: 'old-engineer' });
+    expect(v).toMatchObject({ ok: true, variant: 'old-engineer', ref: 'v1', baseHash: base.hash });
+    expect(v.commit).toBe(git(dir, 'rev-parse', 'v1').trim());
+    expect(v.agents.find((a) => a.id === 'claude:engineer')!.body).toContain('Write the code.');
+    // `defs variants` lists both, with their descriptions, and the ref variant's change.
+    const info = variantInfo(dir, 'old-engineer');
+    expect(info).toMatchObject({
+      from_ref: 'v1',
+      description: 'The engineer as v1 had it',
+      agents: ['claude:engineer'],
+      ok: true,
+    });
+    expect(info.files.map((f) => `${f.kind} ${f.path}`)).toEqual([
+      'changed agents/claude-engineer.md',
+      'changed swarm.yaml',
+    ]);
+    expect(listVariants(dir).map((x) => [x.name, x.description])).toEqual([
+      ['old-engineer', 'The engineer as v1 had it'],
+      ['tests-first', 'Write the test first'],
+    ]);
+  });
+
+  it('refuses a from_ref git cannot read and a name that is a folder too', () => {
+    const dir = gitRepo();
+    put(dir, 'agents/claude-engineer.md', ENGINEER);
+    put(
+      dir,
+      'swarm.yaml',
+      [
+        'swarmup_defs: 1',
+        'variants:',
+        '  gone: {from_ref: no-such-ref}',
+        '  both: {from_ref: HEAD}',
+        '  loose: {description: no folder}',
+        '',
+      ].join('\n'),
+    );
+    put(dir, 'variants/both/agents/claude-engineer.md', '---\n---\n\nBoth.\n');
+    clearDefinitionsCache();
+    const problems = loadDefinitions(dir, { checkRefs: true }).problems.map(
+      (p) => `${p.line}:${p.col} ${p.severity} ${p.path}: ${p.message}`,
+    );
+    expect(problems).toHaveLength(3);
+    expect(problems[0]).toMatch(
+      /^3:10 error variants\.gone\.from_ref: git cannot read no-such-ref/,
+    );
+    expect(problems.slice(1)).toEqual([
+      '4:10 error variants.both.from_ref: variants/both/ is a folder variant too; a name is a folder or a from_ref variant, not both',
+      '5:3 warning variants.loose: no variants/loose/ in this store and no from_ref',
+    ]);
+    expect(() => loadDefinitions(dir, { variant: 'gone' })).toThrow(/git cannot read no-such-ref/);
   });
 
   it('reports a schema error in the overlay against the overlay file', () => {

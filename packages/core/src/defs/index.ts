@@ -32,9 +32,13 @@ export {
 export type { DefsRefSnapshot } from './ref.js';
 export {
   checkDefsRef,
+  clearDefsSnapshots,
   DEFS_REF_RE,
   defsRefGit,
+  defsSnapshotAt,
   gitWhy,
+  keepDefsSnapshot,
+  keptDefsSnapshot,
   readDefsAtRef,
   snapshotTexts,
 } from './ref.js';
@@ -70,6 +74,7 @@ export type {
   SwarmDefs,
   SwarmExperiment,
   SwarmExperimentScope,
+  SwarmVariant,
   SwarmScoring,
   SwarmImport,
   SwarmImprovement,
@@ -117,6 +122,7 @@ export {
   requiresProblems,
   rollbackPromoted,
   variantInfo,
+  variantNames,
   writePromoted,
   writeProposal,
   writeVariantFiles,

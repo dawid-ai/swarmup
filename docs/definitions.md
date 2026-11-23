@@ -62,8 +62,8 @@ roles: # as swarmupd.roles takes them
   [Work types](#work-types)).
 - `experiments` give a share of task runs a variant (see [Experiments](#experiments)).
 - `scoring` sets the [rubric scorers](#rubric-scorers)' cap and sample.
-- `variants` is accepted with a warning that it is not active yet; the `variants/<name>/` folders
-  are.
+- `variants` describes variants and points them at a git ref (see
+  [Variants from a git ref](#variants-from-a-git-ref)).
 - Agent files keep their fields. They also take `runtimes.<rt>.{model, effort}`, which wins over the
   file's own `model` and `effort` for that runtime, and `role`, `providers`, `writes` and
   `scorers`; see [Agent folders](#agent-folders).
@@ -500,6 +500,35 @@ checked out, and swarmupd reads the ref off the event loop before the launch.
   table of `state.db` under that hash.
 - A run takes `--variant` or `--defs-ref`, not both, and an experiment never picks a variant for a
   run with a ref.
+
+### Variants from a git ref
+
+`variants` in `swarm.yaml` names variants. An entry with `from_ref` is a variant whose definitions
+are the store's definitions at that ref, so you can give an older or another branch's team a name
+and use it wherever a variant name goes: `swarmup launch --variant`, `swarmup bench run --variant`
+and `experiments`.
+
+```yaml
+variants:
+  as-v1: # a variant of the definitions as tag v1 had them
+    from_ref: v1
+    description: The team before the review checklist
+  tests-first: # describes the folder variants/tests-first/
+    description: Write the test first
+```
+
+- The ref is read with `git show`, as `--defs-ref` reads it; nothing is checked out. swarmupd
+  reads each `from_ref` off the event loop every tick, again only when the commit it names moves,
+  so a launch or an experiment that picks the variant runs no git.
+- A run of a `from_ref` variant carries `variant`, and its definition stamp the snapshot's hash,
+  `ref` and `commit`. `tools`, `mcp`, `writes` and `can_claim` still come from the store's own
+  agent, as for `--defs-ref`.
+- `description` without `from_ref` describes the folder `variants/<name>/`.
+  `swarmup defs variants` shows the description, and for a `from_ref` variant the ref, its commit
+  and the files that differ from the base.
+- `swarmup validate` reports a `from_ref` git cannot read, and a name that is both a folder and a
+  `from_ref` variant, as errors, and an entry with neither as a warning. A `from_ref` variant has
+  no folder, so it is never proposed, promoted or rejected.
 
 ### Experiments
 
