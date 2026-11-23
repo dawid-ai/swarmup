@@ -16,7 +16,7 @@ covers:
   - packages/cli/test/defs-phase4.test.ts
   - packages/core/test/scorers.test.ts
   - packages/supervisor/test/scores-git.test.ts
-links: [defs, repeats, /supervisor/wake, /cli]
+links: [defs, repeats, /supervisor/wake, /supervisor/hooks, /cli]
 ---
 
 # Triggers, checks and scorers in git
@@ -35,6 +35,8 @@ it uses can live in a task store, behind each machine's consent. See `docs/defin
 - `supervisor/src/triggers.ts` picks the triggers a machine runs (`swarmupd.triggers.<root>:
 true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires them from
   `runSchedules` and records each in `triggers.json` in the state folder.
+- A trigger may have a `webhook` section (W8 phase 4) instead of or beside a schedule; the
+  inbound listener fires it (see `/supervisor/hooks`), and the section is part of the hash.
 - `cli/src/triggers-cmd.ts` is `swarmup triggers list|on|off`; `defs import-schedules` in
   `defs-cmd.ts` writes `swarmupd.schedules` as trigger files.
 

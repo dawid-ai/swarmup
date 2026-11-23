@@ -79,17 +79,20 @@ folder inside a data root, or list roots in the user config, so it finds the tas
 
 State lives in `~/.swarmup/swarmupd/` (or `SWARMUP_STATE_DIR`) and is never committed:
 
-| Path                 | Content                                                                                                                                                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `opsd.json`          | pid, port and API token of the running swarmupd (mode `0600` on Linux and macOS)                                                                                                                                                                 |
-| `opsd.lock`          | PID and creation time of the running swarmupd; one swarmupd per state folder, even when two start at once. A lock is replaced only when its holder is certainly gone; if swarmupd cannot tell, it refuses to start and names the file to delete. |
-| `opsd.lock.takeover` | held for a moment while a starter replaces a stale lock; never reclaimed automatically. If a start crashed while holding it, swarmupd refuses and names it.                                                                                      |
-| `opsd.log`           | the supervisor's own log                                                                                                                                                                                                                         |
-| `runs/<id>.json`     | one record per run: agent, task, pid, budget, tokens, outcome                                                                                                                                                                                    |
-| `logs/<id>.log`      | the run's output (Claude `stream-json`, Codex `--json`)                                                                                                                                                                                          |
-| `schedules.json`     | when each schedule last ran                                                                                                                                                                                                                      |
-| `triggers.json`      | when each git trigger (`<root>/<name>`) last fired on this machine, or when this machine first saw it                                                                                                                                            |
-| `wake.json`          | which inbox items each waking agent was last started for                                                                                                                                                                                         |
+| Path                  | Content                                                                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `opsd.json`           | pid, port and API token of the running swarmupd (mode `0600` on Linux and macOS)                                                                                                                                                                 |
+| `opsd.lock`           | PID and creation time of the running swarmupd; one swarmupd per state folder, even when two start at once. A lock is replaced only when its holder is certainly gone; if swarmupd cannot tell, it refuses to start and names the file to delete. |
+| `opsd.lock.takeover`  | held for a moment while a starter replaces a stale lock; never reclaimed automatically. If a start crashed while holding it, swarmupd refuses and names it.                                                                                      |
+| `opsd.log`            | the supervisor's own log                                                                                                                                                                                                                         |
+| `runs/<id>.json`      | one record per run: agent, task, pid, budget, tokens, outcome                                                                                                                                                                                    |
+| `logs/<id>.log`       | the run's output (Claude `stream-json`, Codex `--json`)                                                                                                                                                                                          |
+| `schedules.json`      | when each schedule last ran                                                                                                                                                                                                                      |
+| `triggers.json`       | when each git trigger (`<root>/<name>`) last fired on this machine, or when this machine first saw it                                                                                                                                            |
+| `hooks.log`           | one JSON line per webhook delivery, accepted or refused, with the reason; moves to `hooks.log.1` past 1 MB                                                                                                                                       |
+| `hooks-seen.json`     | delivery ids and body hashes of the last 24 hours, so a replayed delivery does nothing                                                                                                                                                           |
+| `hooks-listener.json` | where the inbound listener listens, or why it could not, while swarmupd runs                                                                                                                                                                     |
+| `wake.json`           | which inbox items each waking agent was last started for                                                                                                                                                                                         |
 
 ## State on this PC
 
@@ -736,6 +739,53 @@ swarmupd:
 - **`manual`**, or a task with no adapter, keeps the manual flow: `swarmup publish` says to post
   it yourself and run `swarmup published ID --url URL`.
 
+### Inbound webhook triggers
+
+A trigger with a `webhook` section (see [Webhook triggers](definitions.md#webhook-triggers)) takes
+deliveries on swarmupd's inbound listener (W8 phase 4). The listener is a server of its own: not
+the API, its own port, and no API token or run token is valid on it.
+
+- **Off by default.** Set `swarmupd.hooks.enabled: true` and restart swarmupd; the port and host
+  apply at the next start too. Turning it off answers every delivery with 404 at once.
+- **Loopback by default.** It listens on `127.0.0.1:4748`. Give the outside world a URL through
+  your own tunnel to that port (Cloudflare Tunnel, ngrok, Tailscale Funnel) and register
+  `https://<tunnel>/hooks/<root>/<trigger>` with the sender. `doctor` warns about a `host` that
+  is not loopback.
+- **Which triggers answer:** only `POST /hooks/<root>/<trigger>` for a trigger of a root this
+  machine turned triggers on for (`swarmupd.triggers.<root>`), whose exact set a person trusted
+  (`swarmup defs trust`), that has a `webhook` section, is enabled and whose `runs_on` names this
+  machine. Everything else, another path or method included, answers 404 with the same body, so a
+  caller learns nothing of which roots or triggers exist.
+- **Checks, in order:** the listener's own rate (300 requests a minute, before it reads any
+  file; 429), the trigger lookup (404), the body cap (256 KB; 413), the secret in `secrets.yml`
+  (at least 16 characters; 503 when it is unset or shorter), the signature or token (401),
+  Slack's and Linear's timestamp (within 5 minutes; 401), the trigger's rate (`rate` a minute,
+  default 30, counted for verified deliveries only, so unsigned junk cannot use it up; 429), then
+  the dedupe: a delivery whose id (`delivery_header`) came in the last 24 hours, or whose body
+  hash came in the last 24 hours (7 days for `hmac` and `bearer`, which have no timestamp)
+  answers 200 and does nothing. Ids and hashes are kept in `hooks-seen.json` only after the
+  checks pass, and forgotten again when acting fails, so the sender's retry is taken.
+- **Answers:** each refusal has a fixed body per status (`{"error":"unauthorized"}` for 401,
+  `{"error":"unavailable"}` for 503, and so on); the reason, which may name the secret, is only
+  in `hooks.log`. The listener holds at most 64 connections, and an error on its socket is a
+  warning in `opsd.log`, never a crash of swarmupd.
+- **What it does:** a finding for triage, or the trigger's action where
+  `swarmupd.hooks.direct.<root>.<trigger>: true`, with the payload only as fenced untrusted text;
+  see [Webhook triggers](definitions.md#webhook-triggers). Only a person sets `direct`, in the
+  user config: `POST /api/settings` refuses runs. A paused swarmupd files findings and runs no
+  action. An accepted delivery answers 202 and writes a `trigger` line to `opsd.log`.
+- **The log:** each delivery, accepted or refused, is a line of `hooks.log` in the state folder:
+  the time, root and trigger, the status code, the reason, the delivery id, and what it made.
+  Never the body, a signature or a secret. Each kind of refusal (404, 401, 413, 429) is logged
+  one line at a time for the first 10 a minute; the rest go into one summary line, so a flood
+  never pushes real deliveries out of the log.
+- **Check it:** `swarmup triggers list` says per trigger whether a delivery files a finding or
+  runs the action here. `swarmup trigger test <root>/<name> --payload FILE --sign` posts a signed
+  file to the local listener and prints the answer; without `--sign` it shows the refusal.
+  `swarmup trigger fire <root>/<name> [--payload FILE]` does what a delivery does without the
+  listener. `swarmup doctor` reports whether the listener is off, listening or failed to listen,
+  and hook triggers whose secret is missing or shorter than 16 characters.
+
 ### Processes
 
 Every process starts with no console window. swarmupd stops only processes it started, and never
@@ -1161,6 +1211,11 @@ swarmupd:
       paused: false # true keeps it without starting runs
   triggers: # per root: run the root's git triggers (triggers/*.yaml) on this machine; off by default
     v2: true
+  hooks: # the inbound webhook listener (see "Inbound webhook triggers"); off by default
+    enabled: false
+    port: 4748
+    host: 127.0.0.1 # loopback; the public URL comes from your own tunnel
+    direct: { v2: { linear-issue: true } } # per root and trigger: run the action, not a finding
   repeats: true # create the tasks of due repeats; false on every PC but one that shares a store
   test_changes: # per root: the test and check configuration files a review prompt lists changes of
     v2: { tests: ['**/test/**', '*.test.*'], checks: [package.json, 'vitest.config.*'] }

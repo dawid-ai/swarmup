@@ -29,7 +29,9 @@ import {
   Workspace,
 } from '@swarmup/core';
 import type { OpsdConfig } from './config.js';
-import { opsdConfig } from './config.js';
+import { opsdConfig, stateDir } from './config.js';
+import type { HookListenerState } from './hooks.js';
+import { HOOK_SECRET_MIN, hookSecret, HOOKS_LISTENER } from './hooks.js';
 import { buildStamp, daemonCall, readDaemon } from './daemon.js';
 import { resolveCommand } from './proc.js';
 
@@ -585,6 +587,9 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
   // MCP servers on roles (W8).
   for (const c of mcpChecks(env, cfg, ws)) add(c);
 
+  // The inbound webhook listener and the webhook triggers' secrets (W8 phase 4).
+  for (const c of hooksChecks(env, cfg, ws, opts.self?.pid ?? readDaemon(env)?.pid)) add(c);
+
   // User-level skill copies.
   const bundled = opts.skillFile === undefined ? bundledSkillFile() : opts.skillFile;
   for (const c of skillChecks(env, home, bundled)) add(c);
@@ -760,6 +765,117 @@ export function mcpChecks(
       status: 'warn',
       detail: `${ids.join(', ')} ask for ${n}, which this machine does not define; their runs start without it`,
       fix: 'add it in Settings > MCP servers, or remove it from the role files',
+    });
+  }
+  return out;
+}
+
+const LOOPBACK_RE = /^(localhost|127(\.\d{1,3}){3}|::1|\[::1\])$/i;
+
+/**
+ * Inbound hook checks (W8 phase 4): whether the listener is off, listening, or failed to listen
+ * in the swarmupd with pid `daemonPid`; a listener off loopback; and webhook triggers of roots
+ * this machine turned triggers on for whose secret `secrets.yml` lacks. Never a secret value.
+ */
+export function hooksChecks(
+  env: NodeJS.ProcessEnv,
+  cfg: OpsdConfig | null,
+  ws: Workspace | null,
+  daemonPid: number | undefined,
+): Check[] {
+  if (!cfg) return [];
+  const out: Check[] = [];
+  const hooks: Array<{ root: string; name: string; secret: string }> = [];
+  for (const r of ws ? safeRoots(ws) : []) {
+    if ((r as { isMirror?: boolean }).isMirror || cfg.triggers[r.name] !== true) continue;
+    try {
+      for (const t of loadDefinitions(r.dir).triggers) {
+        if (t.def?.webhook)
+          hooks.push({ root: r.name, name: t.name, secret: t.def.webhook.secret });
+      }
+    } catch {
+      // The definitions check names the problem.
+    }
+  }
+  const label = 'Inbound hooks';
+  const where = `${cfg.hooks.host}:${cfg.hooks.port}`;
+  if (!cfg.hooks.enabled) {
+    out.push({
+      id: 'hooks',
+      label,
+      status: 'ok',
+      detail:
+        `off (swarmupd.hooks.enabled)` +
+        (hooks.length > 0 ? `; ${hooks.length} webhook trigger(s) take no delivery here` : ''),
+    });
+  } else {
+    let state: HookListenerState | null = null;
+    try {
+      state = JSON.parse(
+        readFileSync(join(stateDir(env), HOOKS_LISTENER), 'utf8'),
+      ) as HookListenerState;
+    } catch {
+      state = null;
+    }
+    const mine = daemonPid !== undefined && state?.pid === daemonPid;
+    if (daemonPid === undefined) {
+      out.push({
+        id: 'hooks',
+        label,
+        status: 'warn',
+        detail: `on for ${where}, but swarmupd is not running`,
+        fix: 'run `swarmup daemon start`, or open the desktop app',
+      });
+    } else if (mine && state?.error) {
+      out.push({
+        id: 'hooks',
+        label,
+        status: 'fail',
+        detail: `could not listen on ${where}: ${state.error}`,
+        fix: 'free the port or set swarmupd.hooks.port, then restart swarmupd',
+      });
+    } else if (mine && state) {
+      out.push({
+        id: 'hooks',
+        label,
+        status: 'ok',
+        detail: `listening on ${state.host}:${state.port}, ${hooks.length} webhook trigger(s)`,
+      });
+    } else {
+      out.push({
+        id: 'hooks',
+        label,
+        status: 'warn',
+        detail: `on for ${where} in the config, but the running swarmupd started without it`,
+        fix: '`swarmup daemon stop`, then `swarmup daemon start`',
+      });
+    }
+    if (!LOOPBACK_RE.test(cfg.hooks.host)) {
+      out.push({
+        id: 'hooks:host',
+        label,
+        status: 'warn',
+        detail: `listens on ${cfg.hooks.host}, which other machines can reach`,
+        fix: 'set swarmupd.hooks.host: 127.0.0.1 and give the public URL through your own tunnel to it',
+      });
+    }
+  }
+  let readable = true;
+  try {
+    readSecrets(env);
+  } catch {
+    // The MCP check names the broken file.
+    readable = false;
+  }
+  for (const h of hooks) {
+    const secret = readable ? hookSecret(env, h.secret) : null;
+    if (!secret || !('why' in secret)) continue;
+    out.push({
+      id: `hook:${h.root}/${h.name}`,
+      label: `Webhook trigger ${h.root}/${h.name}`,
+      status: 'warn',
+      detail: `${secret.why}, so the listener refuses its deliveries`,
+      fix: `set ${h.secret} to a random value of at least ${HOOK_SECRET_MIN} characters in Settings > MCP servers, or as \`${h.secret}: <value>\` in ${secretsPath(env)}`,
     });
   }
   return out;

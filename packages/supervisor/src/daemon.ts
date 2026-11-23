@@ -29,6 +29,7 @@ import {
   samePath,
 } from '@swarmup/core';
 import { startApi } from './api.js';
+import { HookListener } from './hooks.js';
 import { opsdConfig, stateDir } from './config.js';
 import { migrateStateDir } from './migrate.js';
 import { seedOnStart } from './seed.js';
@@ -505,11 +506,24 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   log(
     `swarmupd ${OPSD_VERSION} pid ${process.pid} on 127.0.0.1:${server.port}, state ${stateDir(env)}`,
   );
+  // The inbound webhook listener (W8 phase 4): its own server, never the API's port or token.
+  let hooks: HookListener | undefined;
+  if (config.hooks.enabled) {
+    const listener = new HookListener(sup);
+    try {
+      const port = await listener.start();
+      hooks = listener;
+      log(`${stamp()} hooks listening on ${config.hooks.host}:${port}`);
+    } catch (err) {
+      log(`${stamp()} warn hooks could not listen: ${(err as Error).message}`);
+    }
+  }
 
   async function stop(killRuns: boolean): Promise<void> {
     if (stopping) return;
     stopping = true;
     sup.stop({ killRuns });
+    await hooks?.close();
     await sup.close();
     await server.close();
     try {

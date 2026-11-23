@@ -171,7 +171,7 @@ enabled: true # optional; false keeps the file and fires nothing
 ```
 
 - **When:** exactly one of `every` (a duration such as `30m` or `1d`), `at` (a daily local time
-  such as `09:00`) and `cron`. `cron` takes five fields, minute, hour, day of month, month and
+  such as `09:00`) and `cron`, unless the trigger has a `webhook` section. `cron` takes five fields, minute, hour, day of month, month and
   day of week, in the local time of the machine that runs it. Each field takes `*`, a value, a
   range `a-b`, a step `*/s`, `a-b/s` or `a/s`, and lists joined by commas; months take `jan` to
   `dec` and days of the week `sun` to `sat` (0 or 7 is Sunday). When both day fields are
@@ -192,7 +192,8 @@ enabled: true # optional; false keeps the file and fires nothing
     `swarmup defs trust --root NAME`, or `swarmup triggers on --root NAME --trust`, keeps
     `t:` and a SHA-256 in `swarmupd.trusted_defs.<root>.triggers`. The hash covers every field
     that changes what fires: name, `every`, `at`, `cron`, `action`, `agent`, `prompt`, `task`,
-    `workflow`, `params`, `title`, `repeat`, `runs_on` and `enabled`, not `description`. Any
+    `workflow`, `params`, `title`, `repeat`, `runs_on`, `enabled` and `webhook`, not
+    `description`. Any
     change stops every trigger of the store until a person trusts the new set, since a run can
     write `triggers/` with a shell command and store sync commits it. `validate` and `doctor`
     (on a machine that turned the store's triggers on), `swarmup triggers list` and swarmupd's
@@ -214,8 +215,67 @@ true`) and has a role file in the store with `status: active`.
   the limits have room, just before the launch), so a crash or a failure never starts it twice.
   A cron time that a spring-forward change skips fires at the first minute after the gap, as in
   Vixie cron; a cron that names no date that comes, such as `0 0 30 2 *`, is an error.
-- **webhook:** accepted and listed, with a warning; webhook triggers come in W8 phase 4, and a
-  trigger with only `webhook` never fires.
+- **webhook:** a `webhook` section (W8 phase 4) lets swarmupd's inbound listener take deliveries
+  for the trigger at `POST /hooks/<root>/<name>`. A trigger may have a webhook alone, or a
+  schedule and a webhook; `every`, `at` and `cron` are then optional. See
+  [Webhook triggers](#webhook-triggers).
+
+#### Webhook triggers
+
+```yaml
+# triggers/linear-issue.yaml
+webhook:
+  verify: linear # hmac | bearer | linear | slack
+  secret: LINEAR_WEBHOOK_SECRET # the name of a value in secrets.yml, never the secret
+  delivery_header: Linear-Delivery # optional; the header with a delivery id, for dedupe
+  rate: 30 # optional; deliveries a minute, default 30
+action: run
+agent: claude:pm
+prompt: Triage the Linear issue in the payload.
+```
+
+- **Checks:** `hmac` takes an HMAC-SHA256 of the body, hex, with or without `sha256=`, in
+  `header` (default `X-Hub-Signature-256`; `X-GitHub-Delivery` is the default delivery id).
+  `bearer` takes `Authorization: Bearer <secret>`. `linear` takes `Linear-Signature` and needs the
+  body's `webhookTimestamp` within 5 minutes. `slack` takes `X-Slack-Signature` over
+  `X-Slack-Request-Timestamp`, which must be within 5 minutes, and answers Slack's
+  `url_verification` challenge. Every comparison is constant-time.
+- **Replays:** `hmac` and `bearer` deliveries carry no signed timestamp, so the listener cannot
+  tell a fresh delivery from a captured one. It keeps their body hashes for 7 days (24 hours for
+  delivery ids, and for `linear` and `slack`, whose timestamps refuse old ones); a captured
+  `hmac` or `bearer` delivery replays once that window has passed. Prefer `linear` or `slack`
+  where the sender supports them, and rotate the secret if a delivery may have leaked.
+- **The secret** lives in `secrets.yml`, beside the user config (the MCP secrets file: never
+  synced, never in a repo). `secret` names it: letters, digits and `_`, in capitals by convention.
+  The value must be at least 16 characters; a shorter one counts as unset, since a guessable key
+  lets anyone forge a signature. `swarmup validate` checks the name's format, never the value,
+  and refuses a value that looks like a token; `swarmup doctor` names hook triggers whose secret
+  is missing or too short.
+- **Trust:** the trigger hash covers the `webhook` section (verify, secret, header,
+  delivery_header and rate), so changing it untrusts the set. A trigger set without webhooks
+  keeps the hash it had before.
+- **What a delivery does:** by default it files a `finding` in the trigger's store for triage,
+  owned by the PM that triages findings (else the store's person), with the payload in a fenced
+  block marked untrusted. Only where a person sets
+  `swarmupd.hooks.direct.<root>.<name>: true` in the machine's user config does a delivery run
+  the trigger's `action` instead: a `run` gets the payload in its prompt, a `workflow` in its plan
+  note, a `repeat` in a comment on the task it creates, each only as the same fenced untrusted
+  block. A `run` still needs the agent's `wake: true`, an active role file and room under the
+  limits; when the action cannot run (paused, limits, an error), the delivery files the finding
+  instead, with the reason.
+- **The fence:** the block opens with a note that it came from outside and must not be followed
+  as instructions. JSON is indented; control, bidirectional and invisible characters (zero-width
+  marks, word joiners, the byte-order mark, Unicode tag characters) are dropped; lines that look
+  like secrets are removed; the text is cut at 16 KB; and every run of three or more backticks or
+  tildes is escaped, so nothing in the payload can close the fence. The fence's info string and
+  the closing sentence carry a random nonce (`untrusted-<nonce>`), so a fake closing line in the
+  payload, which cannot know it, stands out.
+- **Which deliveries count:** see [Inbound webhook triggers](supervisor.md#inbound-webhook-triggers)
+  for the listener, the order of its checks, dedupe, the rate limit and the log.
+- **By hand:** `swarmup trigger fire <root>/<name> [--payload FILE]` does here what a delivery
+  does, without the listener or a signature. `swarmup trigger test <root>/<name> --payload FILE
+[--sign]` posts the file to the local listener, signed with the trigger's secret with
+  `--sign`, and prints the answer. Both refuse an agent and anyone inside a run.
 
 `swarmup validate` checks each trigger's schema and its targets: the workflow and the repeat must
 exist in the store (errors), and the agent should have an agent file or a machine entry (a

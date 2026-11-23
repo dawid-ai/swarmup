@@ -6743,6 +6743,14 @@ export class Supervisor extends EventEmitter {
     this.launch({ agent, task, extra: t.def.prompt || undefined, schedule: `trigger ${t.key}` });
   }
 
+  /**
+   * Why a run of `agent` on `task` may not start now under the usual limits, as for a schedule,
+   * or null. A webhook delivery's approved run checks it first (W8 phase 4, `hooks.ts`).
+   */
+  launchBlocker(agent: string, task?: string): string | null {
+    return this.scheduleBlocker(this.ws(agent), { name: 'hook', agent, ...(task ? { task } : {}) });
+  }
+
   /** Starts a `workflow` trigger's workflow, or creates a `repeat` trigger's task. */
   private fireTrigger(t: DueTrigger): void {
     const ws = this.ws(TRIGGER_ACTOR);

@@ -174,9 +174,18 @@ export {
   scorerIdOf,
   SCORERS_DIR,
 } from './scorer.js';
-export type { TriggerAction, TriggerDef, TriggerInfo } from './trigger.js';
+export type {
+  TriggerAction,
+  TriggerDef,
+  TriggerInfo,
+  WebhookDef,
+  WebhookVerify,
+} from './trigger.js';
 export {
   checkTriggerText,
+  SECRET_REF_RE,
+  WEBHOOK_DEFAULT_RATE,
+  WEBHOOK_VERIFIES,
   nextTriggerFire,
   scheduleTriggerText,
   TRIGGER_ACTIONS,

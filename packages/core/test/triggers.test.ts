@@ -16,6 +16,7 @@ import {
   triggerDue,
   triggerRunsOn,
   triggersHash,
+  triggerWhen,
 } from '../src/index.js';
 import { tempDir } from './helpers.js';
 
@@ -148,14 +149,47 @@ describe('trigger files', () => {
     ]);
   });
 
-  it('accepts webhook as an inactive stub that never fires', () => {
-    const t = check('webhook: {path: /hook}\naction: run\nagent: claude:pm\n');
-    expect(t.problems.map((p) => p.message)).toEqual([
-      'accepted but not active yet: webhook triggers come in W8 phase 4',
-    ]);
-    expect(t.def?.webhook).toBeDefined();
+  it('takes a webhook section that names its secret, and never fires it on a schedule', () => {
+    const t = check(
+      'webhook: {verify: linear, secret: LINEAR_HOOK, rate: 10}\naction: run\nagent: claude:pm\n',
+    );
+    expect(t.problems).toEqual([]);
+    expect(t.def?.webhook).toEqual({ verify: 'linear', secret: 'LINEAR_HOOK', rate: 10 });
+    expect(triggerWhen(t.def!)).toBe('webhook linear');
     expect(triggerDue(t.def!, undefined, at(2026, 11, 23))).toBe('wait');
     expect(nextTriggerFire(t.def!, undefined, at(2026, 11, 23))).toBeNull();
+    const both = check('every: 1d\nwebhook: {verify: slack, secret: S}\naction: run\nagent: a:b\n');
+    expect(triggerWhen(both.def!)).toBe('every 1d, webhook slack');
+  });
+
+  it('checks the webhook secret reference, never a secret in the file', () => {
+    const msgs = (text: string): string[] =>
+      check(`${text}\naction: run\nagent: claude:pm\n`).problems.map(
+        (p) => `${p.severity}: ${p.path}: ${p.message}`,
+      );
+    expect(msgs('webhook: {verify: hmac}')).toEqual(["error: webhook: missing key 'secret'"]);
+    expect(msgs('webhook: {verify: hmac, secret: "my secret!"}')[0]).toMatch(
+      /^error: webhook\.secret: name a value of secrets\.yml/,
+    );
+    expect(msgs('webhook: {verify: gpg, secret: K}')[0]).toMatch(/^error: webhook\.verify/);
+    expect(msgs('webhook: {verify: hmac, secret: xoxb_abc}')).toEqual([
+      "warning: webhook: webhook.secret 'xoxb_abc' names a secrets.yml value; write names in capitals, such as LINEAR_WEBHOOK_SECRET, and never the secret itself",
+    ]);
+    expect(msgs('webhook: {verify: slack, secret: K, header: X-Sig}')).toEqual([
+      'warning: webhook: webhook.header is for verify hmac; slack does not read it',
+    ]);
+    expect(msgs('webhook: {verify: hmac, secret: K, rate: 0}')[0]).toMatch(/^error: webhook\.rate/);
+  });
+
+  it('untrusts the set when the webhook section changes, and keeps older hashes', () => {
+    const hash = (text: string): string =>
+      triggersHash([check(`${text}action: run\nagent: claude:pm\n`).def!])!;
+    const plain = hash('every: 1h\n');
+    expect(plain).toBe(hash('every: 1h\n'));
+    const hooked = hash('every: 1h\nwebhook: {verify: hmac, secret: A}\n');
+    expect(hooked).not.toBe(plain);
+    expect(hash('every: 1h\nwebhook: {verify: hmac, secret: B}\n')).not.toBe(hooked);
+    expect(hash('every: 1h\nwebhook: {verify: bearer, secret: A}\n')).not.toBe(hooked);
   });
 
   it('is checked as a trigger by its path', () => {
