@@ -175,8 +175,8 @@ describe('improvement policy', () => {
     );
     expect(out).toEqual([
       'AGENTS.md: outside what a proposal may change (agents/*.md, agents/*/*.md, workflows/**)',
-      'scorers/x.yaml: frozen by the improvement policy (scorers/**, benchmarks/**, rubrics/**, swarm.yaml)',
-      'swarm.yaml: frozen by the improvement policy (scorers/**, benchmarks/**, rubrics/**, swarm.yaml)',
+      'scorers/x.yaml: frozen by the improvement policy (scorers/**, benchmarks/**, rubrics/**, triggers/**, swarm.yaml)',
+      'swarm.yaml: frozen by the improvement policy (scorers/**, benchmarks/**, rubrics/**, triggers/**, swarm.yaml)',
     ]);
   });
 
