@@ -42,6 +42,7 @@ import type { OpsdConfig } from '@swarmup/supervisor';
 import {
   checkJudge,
   importableConfig,
+  judgesRoot,
   scorerSettings,
   lineDiff,
   opsdConfig,
@@ -444,16 +445,26 @@ function scorers(ctx: DefsCtx): number {
   } catch (err) {
     ctx.io.err(`${(err as Error).message}; showing the git values alone`);
   }
-  // Rubric scorers run only where the machine turns them on (`swarmupd.judge.scorers`).
-  let judgeOn = false;
+  // Rubric scorers run only on the machine that judges the root (`swarmupd.judge.scorers`).
+  let judgeCfg: boolean | string[] = false;
+  let merging: string[] = [];
   try {
-    judgeOn = checkJudge(daemonSection(ctx.ws().user)?.judge).scorers;
+    const user = ctx.ws().user;
+    judgeCfg = checkJudge(daemonSection(user)?.judge).scorers;
+    merging = Object.keys(opsdConfig(user).merge);
   } catch {
     // `swarmup doctor` names a bad `swarmupd.judge`.
   }
   const rows = rootsOf(ctx).flatMap((root) => {
     const set = loadDefinitions(root.dir);
     const scoring = set.swarm?.scoring;
+    const judgeOn = judgesRoot(
+      judgeCfg,
+      root.name,
+      merging,
+      scoring?.runs_on,
+      ctx.ws().user.machine,
+    );
     return set.scorers.map((sc) => {
       const d = sc.def;
       const machine = d ? settings[d.kind === 'builtin' ? d.scorer! : d.id] : undefined;
@@ -472,6 +483,7 @@ function scorers(ctx: DefsCtx): number {
         ...(d?.kind === 'rubric' && scoring?.scorers && !scoring.scorers.includes(d.id)
           ? { unlisted: true }
           : {}),
+        ...(d?.kind === 'rubric' ? { judges_here: judgeOn } : {}),
         active:
           !!d &&
           d.enabled &&
@@ -516,8 +528,8 @@ function scorers(ctx: DefsCtx): number {
           ? 'on'
           : 'unlisted' in r
             ? 'off (not in scoring.scorers)'
-            : judgeOn
-              ? 'off on this machine'
+            : judgeCfg !== false
+              ? 'off on this machine (another machine judges this root)'
               : 'off on this machine (swarmupd.judge.scorers)';
       ctx.io.out(
         `${r.root}/${r.id}  rubric ${d.rubric}  ${state}${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,

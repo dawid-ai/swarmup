@@ -171,6 +171,8 @@ describe('per-run API tokens', () => {
       ['/api/roles', { as: 'human:dawid', create: true, role: { id: 'fake:writer' } }],
       ['/api/runs', { agent: 'fake:qa', prompt: 'x' }],
       ['/api/runs', { agent: 'fake:engineer', parent: 'OTHER', prompt: 'x' }],
+      ['/api/runs', { agent: 'fake:engineer', prompt: 'x', variant: 'tests-first' }],
+      ['/api/runs', { agent: 'fake:engineer', prompt: 'x', defs_ref: 'HEAD~1' }],
       ['/api/schedules', { name: 'daily', agent: 'fake:engineer', every: '1h' }],
       ['/api/schedules/daily/run', {}],
       ['/api/schedules/daily/delete', {}],

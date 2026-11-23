@@ -1,17 +1,18 @@
 // Rubric scorers in git (W5 phase 5): each store's `scorers/<id>.yaml` with `kind: rubric` has the
 // LLM judge (`judge.ts`) score a deterministic sample of the closed tasks it applies to. It runs
-// only on a machine with `swarmupd.judge.scorers: true`, under a daily token cap, and keeps each
-// judgment in `state.db` `rubric_judgments`; the score keeper adds the score rows they gave to
-// the built-in scorers' rows.
+// only on the one machine that judges a store (`swarmupd.judge.scorers`, `scoring.runs_on`), under
+// a daily token cap, and keeps each judgment in `state.db` `rubric_judgments`; the score keeper
+// adds the score rows they gave to the built-in scorers' rows.
 import type { Root, Rubric, ScorerDef, Workspace } from '@swarmup/core';
 import {
   DEFAULT_DAILY_JUDGE_TOKENS,
   DEFAULT_RUBRIC_PASS,
   effectiveSample,
-  experimentFraction,
   judgePrompt,
   loadDefinitions,
   parseRubric,
+  shareFraction,
+  triggerRunsOn,
 } from '@swarmup/core';
 import type { JudgeConfig, RuntimeConfig } from './config.js';
 import { gitAsync } from './git.js';
@@ -30,6 +31,10 @@ export interface RubricScorerHost {
   /** The machine's `swarmupd.judge`. */
   judge(): JudgeConfig;
   runtimes(): Record<string, RuntimeConfig>;
+  /** The roots this machine merges (`swarmupd.merge.<root>`). */
+  merging(): string[];
+  /** This machine's name (`machine` in the user config). */
+  machine(): string | undefined;
   /** `swarmupd.scorers` of the user config. */
   settings(): Record<string, ScorerSetting>;
   db: Pick<StateDb, 'saveJudgment' | 'judgedPairs' | 'judgeTokensSince'> | null;
@@ -43,12 +48,36 @@ export interface RubricScorerHost {
   warn(message: string): void;
 }
 
-/** Tokens a judge's answer takes, over its prompt, when its output reports no usage. */
-const ANSWER_TOKENS = 1500;
+/** Tokens a judge's answer and its runtime's own prompt take, over the rubric prompt. */
+const ANSWER_TOKENS = 2000;
 
-/** A judgment's tokens when the runtime reports none: the prompt at 4 characters a token. */
+/** Hours before a judgment that gave no score is tried again. */
+export const JUDGE_RETRY_HOURS = 6;
+
+/**
+ * A judgment's tokens, estimated on the high side before it runs: the prompt at 3 characters a
+ * token and room for the answer. The cap is checked with it; the tokens the runtime then reports
+ * are what counts, so a day can end at most one judgment over the cap.
+ */
 export function estimateJudgeTokens(prompt: string): number {
-  return Math.ceil(prompt.length / 4) + ANSWER_TOKENS;
+  return Math.ceil(prompt.length / 3) + ANSWER_TOKENS;
+}
+
+/**
+ * Whether this machine judges root `root`: `scorers` is `true` and the machine merges the root,
+ * or a list that names it; and the store's `scoring.runs_on`, when set, names this machine. One
+ * machine judges a store, so the store's daily cap and each task are spent once.
+ */
+export function judgesRoot(
+  scorers: boolean | readonly string[],
+  root: string,
+  merging: readonly string[],
+  runsOn: readonly string[] | undefined,
+  machine: string | undefined,
+): boolean {
+  if (scorers === false) return false;
+  const mine = scorers === true ? merging.includes(root) : scorers.includes(root);
+  return mine && triggerRunsOn({ runs_on: runsOn ? [...runsOn] : undefined }, machine);
 }
 
 /** The start of the UTC day of `now`, as ISO. */
@@ -56,15 +85,19 @@ function dayStart(now: number): string {
   return `${new Date(now).toISOString().slice(0, 10)}T00:00:00.000Z`;
 }
 
-/** Whether rubric scorer `id` judges task `ref`: `sha256(id + ref)` as a fraction under `sample`. */
+/**
+ * Whether rubric scorer `id` judges task `ref`: `sha256('rubric-sample:' + id + ref)` as a
+ * fraction under `sample`.
+ */
 export function sampled(id: string, ref: string, sample: number): boolean {
-  return experimentFraction(id, ref) < sample;
+  return shareFraction('rubric-sample', id, ref) < sample;
 }
 
 /**
  * The task text a judge reads: its title and body. Blind, every agent id of the machine's runtimes
- * is replaced, in the text and the diff, so the judge cannot tell who did the work; otherwise the
- * text names the agent.
+ * (`claude:engineer`), its slug (`claude-engineer`) and each runtime's name as a word, in any
+ * case, are replaced in the text and the diff, so the judge cannot tell who did the work;
+ * otherwise the text names the agent.
  */
 export function judgeTexts(
   task: { title: string; body: string },
@@ -77,8 +110,11 @@ export function judgeTexts(
   const names = [...new Set([...opts.runtimes, agent.slice(0, agent.indexOf(':'))])]
     .filter(Boolean)
     .map((n) => n.replace(/[^a-z0-9]/g, ''));
-  const ids = new RegExp(`\\b(?:${names.join('|')}):[a-z][a-z0-9-]*`, 'g');
-  const hide = (s: string): string => s.split(agent).join('an agent').replace(ids, 'an agent');
+  const alt = names.join('|');
+  const ids = new RegExp(`\\b(?:${alt})[:-][a-z][a-z0-9-]*`, 'gi');
+  const bare = new RegExp(`\\b(?:${alt})\\b`, 'gi');
+  const hide = (s: string): string =>
+    s.split(agent).join('an agent').replace(ids, 'an agent').replace(bare, 'a runtime');
   return { task: hide(text), diff: hide(diff) };
 }
 
@@ -153,7 +189,7 @@ export async function runRubricScorers(
   const ws = host.ws();
   const runs = host.runs();
   const settings = host.settings();
-  const judged = db.judgedPairs();
+  const judged = db.judgedPairs(new Date(now - JUDGE_RETRY_HOURS * 3_600_000).toISOString());
   const machineCap = judge.daily_tokens;
   let machineSpent = db.judgeTokensSince(since);
   let done = 0;
@@ -166,6 +202,9 @@ export async function runRubricScorers(
       continue;
     }
     const scoring = set.swarm?.scoring;
+    if (!judgesRoot(judge.scorers, root.name, host.merging(), scoring?.runs_on, host.machine())) {
+      continue;
+    }
     const defs = set.scorers.flatMap((sc) => {
       const d = sc.def;
       if (!d || d.kind !== 'rubric' || !d.enabled || !d.rubric) return [];
@@ -242,6 +281,7 @@ export async function runRubricScorers(
             (machineCap === undefined || machineSpent + tokens <= machineCap),
         });
         if (row === 'cap') break;
+        if (row === 'aborted') return done;
         db.saveJudgment(row);
         judged.add(`${def.id}\0${ref}`);
         spent += row.tokens;
@@ -260,7 +300,7 @@ async function judgeOne(
   config: JudgeConfig,
   runs: readonly RunRecord[],
   cap: { fits: (tokens: number) => boolean },
-): Promise<RubricJudgmentRow | 'cap'> {
+): Promise<RubricJudgmentRow | 'cap' | 'aborted'> {
   const ref = `${p.task.root}/${p.task.id}`;
   const at = (): string => new Date(host.now()).toISOString();
   const base = { scorer: p.def.id, root: p.root.name, subject: ref, agent: p.author };
@@ -289,6 +329,8 @@ async function judgeOne(
     ...(host.runner ? { runner: host.runner } : {}),
     ...(host.signal ? { signal: host.signal } : {}),
   });
+  // A judgment stopped by swarmupd's shutdown or update is no failure of the task: nothing is kept.
+  if (judgeFailed(outcome) && host.signal?.aborted) return 'aborted';
   const tokens = outcome.tokens ?? estimate;
   if (judgeFailed(outcome)) {
     return {

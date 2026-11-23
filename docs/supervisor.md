@@ -1175,7 +1175,7 @@ swarmupd:
     effort: low
     budget_min: 5 # minutes one judgment may take before swarmupd stops it
     at_merge: false # true: judge rubric criteria at merge; spends tokens on every merge that has one
-    scorers: false # true: run the rubric scorers of each store's scorers/ on closed tasks; spends tokens
+    scorers: false # true: judge with the rubric scorers of the roots this machine merges, or [root, ...]
     # daily_tokens: 100000 # the most tokens rubric scorers spend a day here; lowers each store's cap
   mcp: # MCP servers role files may name; values from secrets.yml (see "MCP servers")
     servers:

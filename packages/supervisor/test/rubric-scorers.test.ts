@@ -103,13 +103,19 @@ function project(
     } as RunRecord,
   ];
   const db = new StateDb(temp());
-  const fake = fakeRunner(answerWithUsage);
-  const host = (judge: Partial<JudgeConfig> = {}): RubricScorerHost => ({
+  const answer = { text: answerWithUsage() };
+  const fake = fakeRunner(() => answer.text);
+  const host = (
+    judge: Partial<JudgeConfig> = {},
+    more: Partial<RubricScorerHost> = {},
+  ): RubricScorerHost => ({
     now: () => NOW,
     ws: () => as('human:dawid'),
     runs: () => runs,
     judge: () => ({ ...DEFAULT_JUDGE, scorers: true, ...judge }),
     runtimes: () => ({ claude: { command: 'claude' }, codex: { command: 'codex' } }),
+    merging: () => ['test'],
+    machine: () => 'pc-1',
     settings: () => ({}),
     db,
     repos: () => [repo],
@@ -117,8 +123,9 @@ function project(
     held: () => null,
     runner: fake.runner,
     warn: () => {},
+    ...more,
   });
-  return { repo, store, db, fake, host, as };
+  return { repo, store, db, fake, answer, host, as };
 }
 
 describe('rubric scorers', () => {
@@ -186,22 +193,66 @@ describe('rubric scorers', () => {
   });
 });
 
+describe('one machine per store, retries and aborts', () => {
+  it('judges only the roots this machine merges or names, and the scoring.runs_on machine', async () => {
+    const p = project();
+    expect(await runRubricScorers(p.host({ scorers: ['other'] }))).toBe(0);
+    expect(await runRubricScorers(p.host({ scorers: true }, { merging: () => [] }))).toBe(0);
+    const elsewhere = project(undefined, 'swarmup_defs: 1\nscoring: {runs_on: [pc-2]}\n');
+    expect(await runRubricScorers(elsewhere.host())).toBe(0);
+    expect(p.fake.calls.length + elsewhere.fake.calls.length).toBe(0);
+    const here = project(undefined, 'swarmup_defs: 1\nscoring: {runs_on: [PC-1]}\n');
+    expect(await runRubricScorers(here.host({ scorers: ['test'] }, { merging: () => [] }))).toBe(1);
+  });
+
+  it('tries a failed judgment again after 6 hours, counting the tokens of each try', async () => {
+    const p = project();
+    p.answer.text = 'no json here';
+    expect(await runRubricScorers(p.host())).toBe(1);
+    expect(p.db.rubricResults()).toEqual([]);
+    const failedTokens = p.db.judgeTokensSince('2026-11-23T00:00:00.000Z');
+    expect(failedTokens).toBeGreaterThan(2000);
+    // Not before the backoff ends.
+    expect(await runRubricScorers(p.host({}, { now: () => NOW + 3_600_000 }))).toBe(0);
+    p.answer.text = answerWithUsage();
+    expect(await runRubricScorers(p.host({}, { now: () => NOW + 7 * 3_600_000 }))).toBe(1);
+    expect(p.db.rubricResults()).toHaveLength(1);
+    expect(p.db.judgeTokensSince('2026-11-23T00:00:00.000Z')).toBe(failedTokens + 1000);
+  });
+
+  it('keeps nothing of a judgment swarmupd stopped', async () => {
+    const p = project();
+    const stop = new AbortController();
+    stop.abort();
+    p.answer.text = 'no json here';
+    expect(await runRubricScorers(p.host({}, { signal: stop.signal }))).toBe(0);
+    expect(p.db.judgedPairs().size).toBe(0);
+    expect(p.db.judgeTokensSince('2026-11-23T00:00:00.000Z')).toBe(0);
+  });
+});
+
 describe('rubric scorer helpers', () => {
   it('samples by sha256(id + ref), and estimates tokens from the prompt', () => {
     expect(sampled('quality', 'test/T-0001', 1)).toBe(true);
     expect(sampled('quality', 'test/T-0001', 0)).toBe(false);
-    expect(estimateJudgeTokens('x'.repeat(4000))).toBe(2500);
+    // On the high side: 3 characters a token, and room for the answer.
+    expect(estimateJudgeTokens('x'.repeat(3000))).toBe(3000);
   });
 
   it('hides every agent id of the runtimes when blind', () => {
     const t = judgeTexts(
-      { title: 'Fix', body: 'codex:reviewer asked claude:engineer for tests.' },
-      '+// by claude:engineer\n',
+      {
+        title: 'Fix',
+        body: 'codex:reviewer asked claude:engineer for tests; Claude wrote them in claude-engineer/.',
+      },
+      '+// by claude:engineer, see CODEX notes\n',
       'claude:engineer',
       { blind: true, runtimes: ['claude', 'codex'] },
     );
-    expect(t.task).toBe('# Fix\n\nan agent asked an agent for tests.');
-    expect(t.diff).toBe('+// by an agent\n');
+    expect(t.task).toBe(
+      '# Fix\n\nan agent asked an agent for tests; a runtime wrote them in an agent/.',
+    );
+    expect(t.diff).toBe('+// by an agent, see a runtime notes\n');
   });
 
   it('takes scorers and daily_tokens in swarmupd.judge', () => {
@@ -210,6 +261,7 @@ describe('rubric scorer helpers', () => {
       daily_tokens: 5000,
     });
     expect(checkJudge(undefined).scorers).toBe(false);
+    expect(checkJudge({ scorers: ['site'] }).scorers).toEqual(['site']);
     expect(() => checkJudge({ scorers: 'yes' })).toThrow(/swarmupd.judge.scorers/);
     expect(() => checkJudge({ daily_tokens: -1 })).toThrow(/swarmupd.judge.daily_tokens/);
   });

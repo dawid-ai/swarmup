@@ -186,7 +186,7 @@
       }
     },
     "scoring": {
-      "description": "Judge-based scoring: which rubric scorers run, their default sample and the daily token cap. They run only on a machine with `swarmupd.judge.scorers: true`.",
+      "description": "Judge-based scoring: which rubric scorers run, their default sample, the daily token cap and the machine that judges. They run only on a machine whose `swarmupd.judge.scorers` takes the root.",
       "type": [
         "object",
         "null"
@@ -210,6 +210,14 @@
           "description": "The most tokens rubric scorers spend on this store's work per day (UTC). Default 200000. A machine's `swarmupd.judge.daily_tokens` may only lower it.",
           "type": "integer",
           "minimum": 0
+        },
+        "runs_on": {
+          "description": "The machine (`machine` in its user config) that judges this store's work, so one machine spends the cap. Without it, the machine whose `swarmupd.judge.scorers` names the root, or that merges it with `true`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
         }
       },
       "additionalProperties": false

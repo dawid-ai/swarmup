@@ -552,6 +552,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (run && (parent ? parent !== run.id : agent !== run.agent)) {
           humanOnly(parent ? `starting a helper of run ${parent}` : `starting a run of ${agent}`);
         }
+        // Other definitions than the store's are a person's choice: a run cannot pick its own.
+        if (run && (str(body.variant) || str(body.defs_ref))) {
+          humanOnly(
+            str(body.variant) ? 'starting a run with a variant' : 'starting a run at a ref',
+          );
+        }
         const launched = await sup.launchFresh({
           agent,
           task: str(body.task),

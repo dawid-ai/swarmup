@@ -1,7 +1,7 @@
 /**
  * Experiments (W5 phase 5): which variant of the definitions a task run gets when nobody named
  * one. Each experiment of `swarm.yaml` takes the task runs its `scope` matches until its `until`
- * day ends; of those, the tasks whose `sha256(experiment id + task ref)`, read as a fraction, is
+ * day ends; of those, the tasks whose `sha256('experiment:' + id + task ref)`, read as a fraction, is
  * under `share` run the variant and the rest run the base. A task that already ran under the
  * experiment keeps the side its `run-start` event records.
  */
@@ -27,10 +27,22 @@ export interface ExperimentPick {
   sticky?: boolean;
 }
 
-/** `sha256(id + ref)` as a fraction from 0 (inclusive) to 1 (exclusive), from its first 52 bits. */
-export function experimentFraction(id: string, ref: string): number {
-  const hex = createHash('sha256').update(`${id}${ref}`, 'utf8').digest('hex').slice(0, 13);
+/**
+ * `sha256(domain + ':' + id + ref)` as a fraction from 0 (inclusive) to 1 (exclusive), from its
+ * first 52 bits. The domain keeps an experiment's deal and a scorer's sample apart, so one never
+ * follows the other when they share an id.
+ */
+export function shareFraction(domain: string, id: string, ref: string): number {
+  const hex = createHash('sha256')
+    .update(`${domain}:${id}${ref}`, 'utf8')
+    .digest('hex')
+    .slice(0, 13);
   return parseInt(hex, 16) / 2 ** 52;
+}
+
+/** An experiment's deal of a task: `sha256('experiment:' + id + ref)` as a fraction. */
+export function experimentFraction(id: string, ref: string): number {
+  return shareFraction('experiment', id, ref);
 }
 
 /** Whether `e` still runs at `now`: through the end of its `until` day in UTC. */

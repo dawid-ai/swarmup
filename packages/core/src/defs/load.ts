@@ -458,7 +458,17 @@ function scorerProblems(
         add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
       } else {
         try {
-          parseRubric(text, `rubrics/${d.rubric}.md`);
+          const rubric = parseRubric(text, `rubrics/${d.rubric}.md`);
+          // A rubric scorer judges a closed task from its text and diff, with no tree to read.
+          const unread = rubric.inputs.filter((i) => i === 'repo' || i === 'files');
+          if (unread.length > 0) {
+            add(
+              sc,
+              'rubric',
+              'warning',
+              `rubric scorers give the judge only the task and the diff; rubrics/${d.rubric}.md asks for ${unread.join(' and ')}, which stay empty`,
+            );
+          }
         } catch (err) {
           add(sc, 'rubric', 'error', (err as Error).message.split('\n')[0] ?? 'does not read');
         }

@@ -41,6 +41,7 @@ import {
   actorSlug,
   agentRuntimeValues,
   agentText,
+  ALWAYS_FROZEN_KEYS,
   assertActor,
   checkDefsRef,
   loadDefinitions,
@@ -3555,8 +3556,9 @@ export class Supervisor extends EventEmitter {
 
   /**
    * The experiment of the task's store that takes this run, with the side it puts the task on
-   * (W5 phase 5). A variant that does not check, or has no usable role file for the agent, puts
-   * the run outside the experiment, with a warning, rather than stop it.
+   * (W5 phase 5). Store definitions that do not check run no experiment. A variant that does not
+   * check, or has no usable role file for the agent, puts the run on the base side of the
+   * experiment, with a warning, rather than stop it; the side sticks for the task.
    */
   private experimentFor(
     ws: Workspace,
@@ -3570,7 +3572,9 @@ export class Supervisor extends EventEmitter {
     if (!root || root.isMirror) return null;
     let experiments: SwarmExperiment[] | undefined;
     try {
-      experiments = loadDefinitions(root.dir).swarm?.experiments;
+      const base = loadDefinitions(root.dir);
+      if (!base.ok) return null;
+      experiments = base.swarm?.experiments;
     } catch {
       return null;
     }
@@ -3602,9 +3606,9 @@ export class Supervisor extends EventEmitter {
     if (!why) return pick;
     this.warnOnce(
       `experiment:${rootName}:${pick.experiment}:${agent}`,
-      `experiment ${pick.experiment} of ${rootName}: variant ${pick.variant} ${why}; ${ref} runs the base outside the experiment`,
+      `experiment ${pick.experiment} of ${rootName}: variant ${pick.variant} ${why}; ${ref} runs on its base side`,
     );
-    return null;
+    return { experiment: pick.experiment };
   }
 
   /**
@@ -3743,10 +3747,21 @@ export class Supervisor extends EventEmitter {
       if (why) throw new OpsError(why);
       const norm = vdef.file.replace(/\\/g, '/');
       const path = Object.keys(set.texts).find((p) => norm.endsWith(`/${p}`));
-      def = vdef;
+      // What the agent may do stays the store's: a variant or an old ref never brings back tools,
+      // MCP servers or claims a person took away (W6 frozen keys).
+      const { def: kept, changed } = withFrozenKeys(vdef, def);
+      if (changed.length > 0) {
+        this.emit(
+          'warn',
+          `${what} of ${vroot.name} sets ${changed.join(', ')} for ${agent} differently; the run keeps the store's`,
+        );
+      }
+      def = kept;
       variantRole = {
         // A folder agent's file is shared by its runtimes: the run reads the agent put together.
-        text: vdef.folder ? agentText(vdef) : path ? set.texts[path]! : vdef.body,
+        // A file whose frozen keys were put back is written again from the agent as it runs.
+        text:
+          vdef.folder || changed.length > 0 ? agentText(kept) : path ? set.texts[path]! : vdef.body,
         hash: set.hash,
         root: vroot.name,
         ...(set.ref ? { ref: set.ref } : {}),
@@ -5761,6 +5776,8 @@ export class Supervisor extends EventEmitter {
           runs: () => this.runs(),
           judge: () => this.config.judge,
           runtimes: () => this.config.runtimes,
+          merging: () => Object.keys(this.config.merge),
+          machine: () => this.user.machine,
           settings: () => settings,
           db: this.state,
           repos: (root) => [this.codeDirOf(root), root.dir],
@@ -7718,6 +7735,27 @@ function inside(child: string, parent: string): boolean {
  * and imports the run files kept before it. Null when it cannot be opened: swarmupd then works
  * from its JSON files alone, as before `state.db`.
  */
+/**
+ * `other` (an agent from a variant or a git ref) with every {@link ALWAYS_FROZEN_KEYS} key
+ * (`tools`, `mcp`, `writes`, `can_claim`, `id`) taken from `base`, the store's own agent; a key
+ * the base lacks is dropped. Returns the keys whose values differed.
+ */
+export function withFrozenKeys(
+  other: AgentDef,
+  base: AgentDef | undefined,
+): { def: AgentDef; changed: string[] } {
+  const out: Record<string, unknown> = { ...other };
+  const from = (base ?? {}) as Record<string, unknown>;
+  const changed: string[] = [];
+  for (const k of ALWAYS_FROZEN_KEYS) {
+    if (k === 'id') continue;
+    if (JSON.stringify(out[k]) !== JSON.stringify(from[k])) changed.push(k);
+    if (from[k] === undefined) delete out[k];
+    else out[k] = from[k];
+  }
+  return { def: out as unknown as AgentDef, changed };
+}
+
 /**
  * Machine agent settings (`swarmupd.agents.<id>.model` and `effort`) that override a value the
  * agent's file gives, as `agents.<id>.model`, for a run's definitions stamp.

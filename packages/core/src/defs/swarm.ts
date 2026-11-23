@@ -174,6 +174,8 @@ export interface SwarmScoring {
   sample?: number;
   /** The most tokens rubric scorers spend on the store's work per UTC day. */
   daily_judge_tokens?: number;
+  /** The machines that judge the store's work; any that opts in when unset. */
+  runs_on?: string[];
 }
 
 export const modelSchema = (doc?: string): Schema =>
@@ -369,10 +371,13 @@ export const SWARM_SCHEMA: Schema = obj(
           min: 0,
           doc: "The most tokens rubric scorers spend on this store's work per day (UTC). Default 200000. A machine's `swarmupd.judge.daily_tokens` may only lower it.",
         }),
+        runs_on: list(str({ pattern: /\S/, hint: 'name a machine' }), {
+          doc: "The machine (`machine` in its user config) that judges this store's work, so one machine spends the cap. Without it, the machine whose `swarmupd.judge.scorers` names the root, or that merges it with `true`.",
+        }),
       },
       {
         nullable: true,
-        doc: 'Judge-based scoring: which rubric scorers run, their default sample and the daily token cap. They run only on a machine with `swarmupd.judge.scorers: true`.',
+        doc: 'Judge-based scoring: which rubric scorers run, their default sample, the daily token cap and the machine that judges. They run only on a machine whose `swarmupd.judge.scorers` takes the root.',
       },
     ),
     checks: map(
@@ -605,6 +610,8 @@ export function swarmDefs(value: unknown): SwarmDefs {
     if (typeof v.scoring.daily_judge_tokens === 'number') {
       sc.daily_judge_tokens = v.scoring.daily_judge_tokens;
     }
+    const runsOn = strings(v.scoring.runs_on);
+    if (runsOn && runsOn.length > 0) sc.runs_on = runsOn.map((m) => m.trim());
     out.scoring = sc;
   }
   if (Array.isArray(v.experiments)) {

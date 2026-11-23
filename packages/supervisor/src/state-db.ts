@@ -144,8 +144,9 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (run, entry, attempt)
    );
    CREATE INDEX bench_results_set ON bench_results ("set", started_at);`,
-  // Rubric scorers (W5 phase 5): one row per scorer and task judged, the score row it gave
-  // (`result` NULL with `error` when the judgment gave none) and the tokens it spent.
+  // Rubric scorers (W5 phase 5): one row per judgment of a task by a scorer, the score row it gave
+  // (`result` NULL with `error` when the judgment gave none) and the tokens it spent. A failed
+  // judgment is tried again later as a new row, so the tokens of each try still count.
   `CREATE TABLE rubric_judgments (
      scorer TEXT NOT NULL,
      root TEXT NOT NULL,
@@ -156,7 +157,7 @@ const MIGRATIONS: string[] = [
      cost_usd REAL,
      result TEXT,
      error TEXT,
-     PRIMARY KEY (scorer, subject)
+     PRIMARY KEY (scorer, subject, judged_at)
    );
    CREATE INDEX rubric_judgments_day ON rubric_judgments (judged_at);`,
 ];
@@ -593,7 +594,7 @@ export class StateDb {
 
   // ---- Rubric judgments -------------------------------------------------------------------------
 
-  /** Records a rubric scorer's judgment of a task; a later one of the same pair replaces it. */
+  /** Records a rubric scorer's judgment of a task. */
   saveJudgment(r: RubricJudgmentRow): void {
     this.use((db) =>
       db
@@ -616,14 +617,19 @@ export class StateDb {
     );
   }
 
-  /** The scorer and task pairs judged so far, as `scorer` NUL `subject`. */
-  judgedPairs(): Set<string> {
+  /**
+   * The scorer and task pairs not to judge now, as `scorer` NUL `subject`: those with a score,
+   * and those whose judgment failed at `retryAfter` (ISO) or later.
+   */
+  judgedPairs(retryAfter = ''): Set<string> {
     const rows = this.use(
       (db) =>
-        db.prepare('SELECT scorer, subject FROM rubric_judgments').all() as Array<{
-          scorer: string;
-          subject: string;
-        }>,
+        db
+          .prepare(
+            `SELECT DISTINCT scorer, subject FROM rubric_judgments
+             WHERE result IS NOT NULL OR judged_at >= ?`,
+          )
+          .all(retryAfter) as Array<{ scorer: string; subject: string }>,
     );
     return new Set(rows.map((r) => `${r.scorer}\0${r.subject}`));
   }

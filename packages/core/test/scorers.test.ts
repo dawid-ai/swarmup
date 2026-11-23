@@ -115,5 +115,16 @@ describe('scorers in a store', () => {
         'warning: applies_to.workflows: no workflows/nope.yaml in this store',
       ]),
     );
+    // A rubric scorer has no tree for the judge to read: repo and files stay empty.
+    writeFileSync(
+      join(dir, 'rubrics', 'copy.md'),
+      '---\nid: copy\nscale: {min: 1, max: 5}\ninputs: [diff, repo]\ncriteria:\n  - {id: clear, describe: Reads clearly}\n---\nJudge.\n',
+    );
+    clearDefinitionsCache();
+    expect(
+      loadDefinitions(dir).problems.map((p) => `${p.severity}: ${p.path}: ${p.message}`),
+    ).toContain(
+      'warning: rubric: rubric scorers give the judge only the task and the diff; rubrics/copy.md asks for repo, which stay empty',
+    );
   });
 });

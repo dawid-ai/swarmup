@@ -61,6 +61,7 @@ export {
   experimentActive,
   experimentFraction,
   experimentTakes,
+  shareFraction,
   pickExperiment,
   priorSide,
 } from './experiments.js';

@@ -119,10 +119,18 @@ describe('experiments', () => {
       (await sup.launchFresh({ agent: 'claude:engineer', task: 'T-0001' })).id,
     );
     expect(past.experiment).toBeUndefined();
+    // Store definitions that do not check run no experiment.
+    put(store, 'swarm.yaml', `${swarm(1)}roles: {qa: {burst: x}}\n`);
+    as('human:dawid').newTask({ title: 'b', owner: 'claude:engineer' });
+    const broken = await ended(
+      sup,
+      (await sup.launchFresh({ agent: 'claude:engineer', task: 'T-0002' })).id,
+    );
+    expect(broken.experiment).toBeUndefined();
     await sup.defsSettled();
   });
 
-  it('runs the base outside the experiment when its variant has no role file for the agent', async () => {
+  it('puts the run on the base side when its variant has no role file for the agent', async () => {
     const { sup, as, store } = await project();
     put(store, 'swarm.yaml', swarm(1).replace('{roles: [engineer]}', '{agents: [claude:qa]}'));
     put(store, 'agents/claude-qa.md', '---\nid: claude:qa\nstatus: active\n---\n\nTest it.\n');
@@ -133,7 +141,8 @@ describe('experiments', () => {
     as('human:dawid').newTask({ title: 'a', owner: 'claude:qa' });
     const r = await ended(sup, (await sup.launchFresh({ agent: 'claude:qa', task: 'T-0001' })).id);
     expect(r.variant).toBeUndefined();
-    expect(r.experiment).toBeUndefined();
+    // The side is recorded, so the task stays on it.
+    expect(r.experiment).toBe('tests-first-trial');
     expect(warnings.join('\n')).toContain('variant tests-first has no role file for claude:qa');
     await sup.defsSettled();
   });
@@ -221,8 +230,15 @@ describe('definitions at a git ref', () => {
     git('add', '-A');
     git('commit', '-q', '-m', 'defs');
     const commit = git('rev-parse', 'HEAD').trim();
-    put(store, 'agents/claude-engineer.md', ENGINEER.replace('Write the code.', 'Changed since.'));
+    // Since the ref, a person took the Edit tool away: the old ref must not bring it back.
+    put(
+      store,
+      'agents/claude-engineer.md',
+      ENGINEER.replace('Write the code.', 'Changed since.').replace('[Read, Edit]', '[Read]'),
+    );
     await sup.tick();
+    const warnings: string[] = [];
+    sup.on('warn', (m: string) => warnings.push(m));
     as('human:dawid').newTask({ title: 'a', owner: 'claude:engineer' });
     const r = await ended(
       sup,
@@ -234,6 +250,9 @@ describe('definitions at a git ref', () => {
     const role = readFileSync(join(r.scratch!, 'role-claude-engineer.md'), 'utf8');
     expect(role).toContain('Write the code.');
     expect(role).not.toContain('Changed since.');
+    expect(role).not.toContain('Edit');
+    expect(role).toMatch(/tools:/);
+    expect(warnings.join('\n')).toContain('sets tools for claude:engineer differently');
     const start = as('human:dawid')
       .showEvents('1')
       .events.find((e) => e.type === 'run-start')!;

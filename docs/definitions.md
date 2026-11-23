@@ -295,7 +295,8 @@ of it. Runs may not edit `scorers/`, and a proposal never changes it by default.
 ### Rubric scorers
 
 A rubric scorer has the [LLM judge](protocol.md#rubric-files) score closed tasks against a
-rubric. It spends tokens, so it runs only on a machine that turns it on:
+rubric. It spends tokens, so it runs only where a machine takes it on, and one machine judges
+each store:
 
 ```yaml
 # swarm.yaml: the team's limits
@@ -303,31 +304,44 @@ scoring:
   scorers: [copy-quality] # optional: the rubric scorers that run; every enabled one when unset
   sample: 0.2 # the sample of a scorer whose file sets none; default 1
   daily_judge_tokens: 200000 # the most tokens a day (UTC) on this store's work; the default
+  runs_on: [build-pc] # optional: the one machine (`machine` in its user config) that judges
 ```
 
 ```yaml
 # The user config: this machine's consent and its own limit
 swarmupd:
   judge:
-    scorers: true # default false: rubric scorers never run here
+    scorers: true # the roots this machine merges (swarmupd.merge.<root>); or a list: [site]
     daily_tokens: 100000 # optional: lowers every store's cap, and caps the machine's total
 ```
 
+- **Who judges:** a machine judges a root when `swarmupd.judge.scorers` is `true` and it merges
+  the root, which is one machine per root, or when the list names the root; and, when the store
+  sets `scoring.runs_on`, only if that list names the machine. Cap and dedup live in that
+  machine's `state.db`, so two machines that both take a store would each spend its cap and
+  judge its tasks again: name one.
 - **What it judges:** once a minute, swarmupd looks at each store's closed (`done`) tasks that
   the scorer's `applies_to` takes, the role being that of the agent whose work it is. A task is
-  in the sample when `sha256(scorer id + "root/ID")`, read as a fraction, is under the sample:
+  in the sample when `sha256("rubric-sample:" + scorer id + "root/ID")`, read as a fraction, is
+  under the sample:
   the scorer's `sample`, else `scoring.sample`, lowered to the machine's
-  `swarmupd.scorers.<id>.sample`. Each task is judged once, at most five a minute.
+  `swarmupd.scorers.<id>.sample`. Each task gets one score, at most five judgments a minute. A
+  judgment that gives no score is tried again after 6 hours; one that swarmupd stopped on its
+  way down or for an update leaves nothing behind.
 - **What the judge reads:** the task's title and body and the diff of its work: from the commit
   its first writing run started at to the commit its last review named, else a merge commit's
-  first parent to the merge. Blind (the default), every agent id of the machine's runtimes is
-  replaced in both with "an agent"; with `blind: false` the task text names the agent. The judge
+  first parent to the merge. Rubric scorers give the judge only these `task` and `diff` inputs:
+  a rubric's `repo` and `files` stay empty, and `swarmup validate` warns about them. Blind (the
+  default), every agent id of the machine's runtimes (`claude:engineer`) and its slug
+  (`claude-engineer`) is replaced in both with "an agent", and each runtime's name as a word, in
+  any case, with "a runtime"; with `blind: false` the task text names the agent. The judge
   is `swarmupd.judge` with the scorer's `judge` over it, and the rubric comes from the store's
   definitions.
-- **The cap:** before each judgment swarmupd estimates its tokens from the prompt; it stops for
-  the day for a store when the store's spend would pass `daily_judge_tokens`, and for every store
-  at the machine's `daily_tokens`. A judgment counts the tokens the runtime reports, else the
-  estimate. Judging also waits while the judge's runtime is paused for usage or signed out.
+- **The cap:** before each judgment swarmupd estimates its tokens on the high side (the prompt at
+  3 characters a token, plus 2,000); it stops for the day for a store when the store's spend would
+  pass `daily_judge_tokens`, and for every store at the machine's `daily_tokens`. A judgment then
+  counts the tokens the runtime reports, else the estimate, so a day can end at most one judgment
+  over the cap. Failed tries count too. Judging also waits while the judge's runtime is paused for usage or signed out.
 - **The result:** each judgment is a row of `rubric_judgments` in `state.db`, with its tokens. One
   that gives a score is a task score row like a built-in scorer's: the scorer's id, the score as a
   share, `pass` against the scorer's `pass` (default 0.7), the criterion scores in `extra`, the
@@ -416,6 +430,10 @@ read with `git show` into a snapshot, the way a variant's overlay is put togethe
 checked out, and swarmupd reads the ref off the event loop before the launch.
 
 - The run gets the role file as the ref had it in its scratch folder, like a variant run.
+- A variant or a ref changes the instructions, model and effort, never what the agent may do:
+  `tools`, `mcp`, `writes` and `can_claim` always come from the store's own agent, and swarmupd
+  warns when the variant or the ref sets them differently. A run (its token) cannot start a run
+  with `variant` or `defs_ref`; that is a person's choice.
 - Its definition stamp holds the snapshot's hash, `ref` and the `commit` the ref named, and its
   `run-start` event carries `defs_ref`. swarmupd keeps the snapshot's files in the `definitions`
   table of `state.db` under that hash.
@@ -441,13 +459,14 @@ experiments:
   (`swarmup launch`, `variant` in `POST /api/runs`) or a `--defs-ref`, then the first active
   experiment whose `scope` takes the run, then the base. `scope` takes `agents`, `roles`, `types`
   and `labels` (a task carries one of them).
-- The side is deterministic: the task lands on the variant when `sha256(id + "root/ID")`, read as
-  a fraction from 0 to 1, is under `share`. It is also sticky: a task whose earlier `run-start`
+- The side is deterministic: the task lands on the variant when
+  `sha256("experiment:" + id + "root/ID")`, read as a fraction from 0 to 1, is under `share`. It is also sticky: a task whose earlier `run-start`
   names the experiment keeps the side it had, even after `share` changes.
 - The run record and the `run-start` event carry `experiment` on both sides, and `variant` on the
   variant side, so the base side of an experiment is the work it took that ran without a variant.
-- A variant that does not check, or that has no active role file for the agent, puts the run
-  outside the experiment on the base, and swarmupd warns once.
+- A variant that does not check, or that has no active role file for the agent, puts the run on
+  the base side of the experiment, recorded, so the task stays there; swarmupd warns once. A store
+  whose `swarm.yaml` does not check runs no experiment.
 - A machine with `swarmupd.experiments: false` runs the base for every run it starts without
   `--variant`.
 - `swarmup scores --by-variant` (and `GET /api/scores?by_variant=1`) splits each agent's task and

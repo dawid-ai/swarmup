@@ -240,10 +240,11 @@ export interface JudgeConfig {
    */
   at_merge: boolean;
   /**
-   * Run the rubric scorers of each store's `scorers/` on closed tasks (W5 phase 5). Off unless set
-   * to true: each judgment spends tokens.
+   * Run the rubric scorers of a store's `scorers/` on its closed tasks here (W5 phase 5): `true`
+   * for the roots this machine merges (`swarmupd.merge.<root>`), or a list of root names, so one
+   * machine judges each store. Off unless set: each judgment spends tokens.
    */
-  scorers: boolean;
+  scorers: boolean | string[];
   /**
    * The most tokens rubric scorers spend per UTC day on this machine, over every store; it also
    * lowers each store's `scoring.daily_judge_tokens`, never raises it.
@@ -888,10 +889,15 @@ export function checkJudge(raw: unknown): JudgeConfig {
     out.at_merge = j.at_merge;
   }
   if (j.scorers !== undefined && j.scorers !== null) {
-    if (typeof j.scorers !== 'boolean') {
-      throw new OpsError('swarmupd.judge.scorers: use true or false', 2);
+    const s = j.scorers;
+    const roots = Array.isArray(s) && s.every((r) => typeof r === 'string' && r.trim() !== '');
+    if (typeof s !== 'boolean' && !roots) {
+      throw new OpsError(
+        'swarmupd.judge.scorers: use true (the roots this machine merges), false, or a list of root names',
+        2,
+      );
     }
-    out.scorers = j.scorers;
+    out.scorers = roots ? (s as string[]).map((r) => r.trim()) : (s as boolean);
   }
   if (j.daily_tokens !== undefined && j.daily_tokens !== null) {
     const t = j.daily_tokens;

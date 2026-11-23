@@ -81,7 +81,7 @@ const names = (doc: string): Schema => list(str({ pattern: /\S/, hint: 'use a na
 export const SCORER_SCHEMA: Schema = obj(
   {
     kind: enumOf(['builtin', 'rubric'], {
-      doc: 'builtin: the threshold and filters of a built-in scorer. rubric: an LLM judge scores a sample of closed tasks against a rubric file, on a machine with `swarmupd.judge.scorers: true`.',
+      doc: 'builtin: the threshold and filters of a built-in scorer. rubric: an LLM judge scores a sample of closed tasks against a rubric file, on the machine whose `swarmupd.judge.scorers` takes the store.',
     }),
     description: str({ doc: 'What the scorer is for.' }),
     scorer: enumOf([...BUILTIN_SCORER_IDS], {
