@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OpsError } from '../ids.js';
 import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
@@ -7,6 +7,9 @@ import { AGENT_FOLDER_FILE } from '../agents.js';
 import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { ROLE_NAME_RE, RUNTIME_NAME_RE } from './values.js';
 import { parseDoneWhen } from '../criteria.js';
+import { parseRubric } from '../rubric.js';
+import type { ScorerFileInfo } from './scorer.js';
+import { checkScorerText, SCORERS_DIR, scorerIdOf } from './scorer.js';
 import type { TriggerInfo } from './trigger.js';
 import { checkTriggerText, TRIGGERS_DIR, triggerNameOf } from './trigger.js';
 import type { WorkflowInfo } from './workflow.js';
@@ -65,6 +68,8 @@ export interface DefinitionSet {
    * its own or across files (a workflow it names is missing), has a null `def`.
    */
   triggers: TriggerInfo[];
+  /** The store's scorers (W5 phase 4), each with its problems; a null `def` on an error. */
+  scorers: ScorerFileInfo[];
 }
 
 export interface LoadOptions {
@@ -299,6 +304,23 @@ function checkSet(
     triggers.push(t);
   }
   problems.push(...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts));
+  // Scorers (W5 phase 4): each file against its schema, then their rubrics and overlaps.
+  const scorers: ScorerFileInfo[] = [];
+  for (const [path, text] of texts) {
+    if (!path.startsWith(`${SCORERS_DIR}/`)) continue;
+    const id = scorerIdOf(path);
+    if (!id) {
+      warnAt(
+        fileOf(path),
+        'a scorer is scorers/<id>.yaml, with an id of lowercase letters, digits and dashes; this file is not read',
+      );
+      continue;
+    }
+    const sc = checkScorerText(id, text, { file: fileOf(path), strict: opts.strict });
+    problems.push(...sc.problems);
+    scorers.push(sc);
+  }
+  problems.push(...scorerProblems(rootDir, scorers, workflows));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -355,7 +377,63 @@ function checkSet(
         ? { ...t, def: null }
         : t,
     ),
+    scorers: scorers.map((sc) =>
+      sc.def && problems.some((p) => p.file === sc.file && p.severity === 'error')
+        ? { ...sc, def: null }
+        : sc,
+    ),
   };
+}
+
+/**
+ * Checks across scorer files: a rubric scorer's rubric exists in the store and reads (errors),
+ * one file per built-in scorer (an error on each), and workflows `applies_to` names exist (a
+ * warning).
+ */
+function scorerProblems(
+  rootDir: string,
+  scorers: readonly ScorerFileInfo[],
+  workflows: readonly WorkflowInfo[],
+): DefProblem[] {
+  const out: DefProblem[] = [];
+  const add = (sc: ScorerFileInfo, path: string, severity: DefProblem['severity'], m: string) =>
+    out.push({ file: sc.file, path, line: 1, col: 1, severity, message: m });
+  const byBuiltin = new Map<string, ScorerFileInfo[]>();
+  for (const sc of scorers) {
+    const d = sc.def;
+    if (!d) continue;
+    if (d.kind === 'builtin' && d.scorer) {
+      byBuiltin.set(d.scorer, [...(byBuiltin.get(d.scorer) ?? []), sc]);
+    }
+    if (d.kind === 'rubric' && d.rubric) {
+      const file = join(rootDir, 'rubrics', `${d.rubric}.md`);
+      if (!existsSync(file)) add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
+      else {
+        try {
+          parseRubric(readFileSync(file, 'utf8'), `rubrics/${d.rubric}.md`);
+        } catch (err) {
+          add(sc, 'rubric', 'error', (err as Error).message.split('\n')[0] ?? 'does not read');
+        }
+      }
+    }
+    for (const w of d.applies_to?.workflows ?? []) {
+      if (!workflows.some((x) => x.id === w)) {
+        add(sc, 'applies_to.workflows', 'warning', `no workflows/${w}.yaml in this store`);
+      }
+    }
+  }
+  for (const [builtin, files] of byBuiltin) {
+    if (files.length < 2) continue;
+    for (const sc of files) {
+      add(
+        sc,
+        'scorer',
+        'error',
+        `${files.length} files set the built-in scorer ${builtin} (${files.map((f) => f.id).join(', ')}); keep one`,
+      );
+    }
+  }
+  return out;
 }
 
 /**
@@ -412,7 +490,7 @@ function triggerTargetProblems(
 export function checkDefinitionText(
   file: string,
   text: string,
-  opts: { strict?: boolean; kind?: 'swarm' | 'agent' | 'workflow' | 'trigger' } = {},
+  opts: { strict?: boolean; kind?: 'swarm' | 'agent' | 'workflow' | 'trigger' | 'scorer' } = {},
 ): DefProblem[] {
   const src = normalText(text);
   const parts = file.replace(/\\/g, '/').split('/');
@@ -424,9 +502,14 @@ export function checkDefinitionText(
         ? 'workflow'
         : parts.at(-2) === TRIGGERS_DIR && /\.ya?ml$/i.test(file)
           ? 'trigger'
-          : 'swarm');
+          : parts.at(-2) === SCORERS_DIR && /\.ya?ml$/i.test(file)
+            ? 'scorer'
+            : 'swarm');
   const problems: DefProblem[] = [];
-  if (kind === 'trigger') {
+  if (kind === 'scorer') {
+    const id = (parts.at(-1) ?? '').replace(/\.ya?ml$/i, '');
+    problems.push(...checkScorerText(id, src, { file, strict: opts.strict }).problems);
+  } else if (kind === 'trigger') {
     const name = (parts.at(-1) ?? '').replace(/\.ya?ml$/i, '');
     problems.push(...checkTriggerText(name, src, { file, strict: opts.strict }).problems);
   } else if (kind === 'workflow') {

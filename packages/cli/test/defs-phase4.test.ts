@@ -114,3 +114,31 @@ describe('swarmup defs trust', () => {
     ]);
   });
 });
+
+describe('swarmup defs scorers', () => {
+  it('lists built-in and rubric scorers with what this machine uses of them', async () => {
+    const p = project();
+    writeFileSync(
+      p.config,
+      'me: human:dawid\nswarmupd:\n  scorers:\n    review-rounds: {pass: 2}\n    copy: {sample: 0.1}\n',
+    );
+    mkdirSync(join(p.store, 'scorers'), { recursive: true });
+    mkdirSync(join(p.store, 'rubrics'), { recursive: true });
+    writeFileSync(
+      join(p.store, 'rubrics', 'copy.md'),
+      '---\nid: copy\nscale: {min: 1, max: 5}\ncriteria:\n  - {id: clear, describe: Reads clearly}\n---\nJudge.\n',
+    );
+    writeFileSync(
+      join(p.store, 'scorers', 'review-rounds.yaml'),
+      'kind: builtin\npass: 0\napplies_to: {types: [bug]}\n',
+    );
+    writeFileSync(
+      join(p.store, 'scorers', 'copy.yaml'),
+      'kind: rubric\nrubric: copy\nsample: 0.5\njudge: {runtime: claude, model: sonnet}\n',
+    );
+    expect((await cli(p, ['defs', 'scorers'])).out).toEqual([
+      'demo/copy  rubric copy  not run yet  sample 0.1  blind  judge claude sonnet',
+      'demo/review-rounds  builtin review-rounds  on  pass 2 (this machine, over 0)  applies to types bug',
+    ]);
+  });
+});

@@ -186,7 +186,7 @@
       }
     },
     "scoring": {
-      "description": "Accepted but not active yet: scorers in git come in phase 4."
+      "description": "Accepted but not active yet: judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now."
     },
     "checks": {
       "description": "Merge checks: commands swarmupd runs on approved work before the base moves. They run on a machine only after a person there runs `swarmup defs trust`, and any change to them needs a new trust. A machine that sets `swarmupd.merge.<root>.checks` keeps its own.",

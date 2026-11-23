@@ -1,5 +1,6 @@
 // Reading tasks for the scorers and keeping their scores in `state.db` (W4). See `scores.ts`.
 import type { Workspace } from '@swarmup/core';
+import { gitScorers } from './git-scorers.js';
 import type { OrientationStats } from './orientation.js';
 import { ReportEvents } from './report.js';
 import type { RunRecord } from './runs.js';
@@ -217,8 +218,10 @@ export class ScoreKeeper {
     this.load();
     const views = ws.list({ all: true });
     const ended = runs.filter((r) => r.status === 'ended');
+    const stores = gitScorers(ws);
     const fingerprint = [
       JSON.stringify(settings),
+      JSON.stringify(stores),
       ended.length,
       ended[0]?.id ?? '',
       ...views.map((t) => `${t.root}/${t.meta.id}@${t.lastEvent}:${t.eventCount}`),
@@ -236,7 +239,7 @@ export class ScoreKeeper {
     await this.readOrientations(ended);
     const results = computeScores(
       { tasks, runs, orientation: (r) => this.orientations.get(r.id) },
-      { settings, now: this.opts.now },
+      { settings, now: this.opts.now, stores },
     );
     this.save(results);
     this.fingerprint = fingerprint;

@@ -5,6 +5,7 @@
 import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { toJsonSchema } from './schema.js';
 import { SWARM_SCHEMA } from './swarm.js';
+import { SCORER_SCHEMA } from './scorer.js';
 import { TRIGGER_SCHEMA } from './trigger.js';
 import { WORKFLOW_SCHEMA } from './workflow.js';
 
@@ -139,6 +140,16 @@ export {
 } from './workflow.js';
 export type { Cron } from './cron.js';
 export { CRON_HINT, cronMatches, nextCron, parseCron } from './cron.js';
+export type { ScorerAppliesTo, ScorerDef, ScorerFileInfo } from './scorer.js';
+export {
+  BUILTIN_SCORER_IDS,
+  checkScorerText,
+  effectiveSample,
+  SCORER_ID_RE,
+  SCORER_SCHEMA,
+  scorerIdOf,
+  SCORERS_DIR,
+} from './scorer.js';
 export type { TriggerAction, TriggerDef, TriggerInfo } from './trigger.js';
 export {
   checkTriggerText,
@@ -201,6 +212,12 @@ export function schemaFiles(): Record<string, string> {
       id: `${SCHEMA_BASE}workflow.schema.json`,
       title: 'Workflow',
       description: 'A SwarmUp workflow (`workflows/<id>.yaml`): a repeatable milestone plan.',
+    }),
+    'scorer.schema.json': toJsonSchema(SCORER_SCHEMA, {
+      id: `${SCHEMA_BASE}scorer.schema.json`,
+      title: 'Scorer',
+      description:
+        'A SwarmUp scorer in git (`scorers/<id>.yaml`): settings of a built-in scorer, or a rubric scorer.',
     }),
     'trigger.schema.json': toJsonSchema(TRIGGER_SCHEMA, {
       id: `${SCHEMA_BASE}trigger.schema.json`,

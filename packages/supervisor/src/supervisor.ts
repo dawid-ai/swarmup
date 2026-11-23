@@ -293,10 +293,17 @@ export function reviewArtifactsOf(ws: Workspace, ref: string): ReviewArtifactsPr
 
 /**
  * The folders of a task store that no run may edit: role files and variants (W6), which change
- * only through `swarmup defs propose`, and rubrics, workflows and triggers (W8), the yardsticks a
- * run is judged by and what starts runs.
+ * only through `swarmup defs propose`, and rubrics, workflows, triggers and scorers (W8, W5), the
+ * yardsticks a run is judged by and what starts runs.
  */
-export const RUN_DENIED_STORE_DIRS = ['agents', VARIANTS_DIR, 'rubrics', 'workflows', 'triggers'];
+export const RUN_DENIED_STORE_DIRS = [
+  'agents',
+  VARIANTS_DIR,
+  'rubrics',
+  'workflows',
+  'triggers',
+  'scorers',
+];
 
 /** The folders under the store `dir` that a run may not edit. */
 export function runDeniedDirs(dir: string): string[] {

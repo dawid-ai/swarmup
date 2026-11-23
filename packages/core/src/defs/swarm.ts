@@ -305,7 +305,9 @@ export const SWARM_SCHEMA: Schema = obj(
       ),
       { nullable: true, doc: 'Kinds of work, with default criteria and workflow.' },
     ),
-    scoring: later('scorers in git come in phase 4'),
+    scoring: later(
+      'judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now',
+    ),
     checks: map(
       oneOf([
         str({ pattern: /\S/, hint: 'name the command to run' }),

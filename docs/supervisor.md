@@ -1349,7 +1349,12 @@ swarmup scores --refresh                # compute again and keep them in state.d
     scorers:
       review-rounds: { pass: 2 } # pass with up to 2 rounds
       orientation: { enabled: false }
+      copy-quality: { sample: 0.1 } # a rubric scorer in git: judge at most 10% here
   ```
+
+- A task store can set a scorer's threshold and filters for its own work in
+  `scorers/<id>.yaml` (see [Scorers in git](definitions.md#scorers-in-git)). The user config
+  still wins: its `pass` over the store's, and its `enabled: false` everywhere.
 
 swarmupd computes the scores a minute after it starts and then at most once a minute, only when a
 task or run changed, such as a run end, a verdict or a merge. It reads only the events of tasks

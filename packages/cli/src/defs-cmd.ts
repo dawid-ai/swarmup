@@ -10,6 +10,7 @@ import {
   checksHash,
   checksTrust,
   checksTrustProblem,
+  effectiveSample,
   gitMergeChecks,
   isHuman,
   daemonKeyIn,
@@ -39,6 +40,7 @@ import type { OpsdConfig } from '@swarmup/supervisor';
 import {
   daemonCall,
   importableConfig,
+  scorerSettings,
   lineDiff,
   opsdConfig,
   readDaemon,
@@ -225,9 +227,9 @@ function validate(ctx: DefsCtx): number {
 
 export const defsCommand = {
   usage:
-    'defs show [--root NAME] | defs hash [--root NAME] | defs trust [--root NAME] [--revoke] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs import-schedules [--root NAME] [--apply] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME]',
+    'defs show [--root NAME] | defs hash [--root NAME] | defs trust [--root NAME] [--revoke] | defs diff [REF] [--root NAME] | defs import-config [--root NAME] [--remove] | defs import-schedules [--root NAME] [--apply] [--remove] | defs migrate [--root NAME] [--apply] [--prune] | defs propose ID --dir DIR --name NAME -m WHY [--scorer S]... [--agent ID]... | defs promote NAME [--root NAME] [-m NOTE] [--force] | defs reject NAME [--root NAME] -m WHY | defs rollback NAME [--root NAME] -m WHY [--force] | defs variants [--root NAME] | defs scorers [--root NAME]',
   summary:
-    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, trust the merge checks of a root's swarm.yaml on this machine (a person, outside runs; --revoke takes the trust back), diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move swarmupd.schedules into triggers/ (import-schedules prints the files; --apply writes them, --remove also takes the schedules out of the user config and turns the root's triggers on here); move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
+    "definitions as code: show each root's swarm.yaml and what it sets under this machine's config, print the definition hash, trust the merge checks of a root's swarm.yaml on this machine (a person, outside runs; --revoke takes the trust back), diff the definitions against a git ref (default HEAD), write swarmupd.runtimes model and effort and swarmupd.roles from the user config into swarm.yaml; move swarmupd.schedules into triggers/ (import-schedules prints the files; --apply writes them, --remove also takes the schedules out of the user config and turns the root's triggers on here); move legacy agent files into agent folders (migrate prints the change; --apply writes it, --prune also removes the legacy files); list the scorers in git (scorers/*.yaml) with what this machine uses of them; propose a change as a variant overlay (checked against the improvement policy), promote it onto the definitions, reject it or roll a promote back (a person), and list the variants",
   options: {
     remove: { type: 'boolean' },
     revoke: { type: 'boolean' },
@@ -267,6 +269,8 @@ export const defsCommand = {
         return rollback(ctx, rest);
       case 'variants':
         return variants(ctx);
+      case 'scorers':
+        return scorers(ctx);
       default:
         throw new OpsError(`usage: swarmup ${defsCommand.usage}`, 2);
     }
@@ -410,6 +414,73 @@ async function trust(ctx: DefsCtx): Promise<number> {
   // A running swarmupd reads the user config again at once.
   const info = readDaemon(ctx.io.env);
   if (info) await daemonCall(info, 'POST', '/api/settings', { patch: {} }).catch(() => undefined);
+  return 0;
+}
+
+/**
+ * `swarmup defs scorers`: each root's `scorers/*.yaml`: a built-in's threshold and filters, with
+ * the machine's `pass` when it wins, and a rubric scorer's rubric, judge and sample (lowered to
+ * the machine's `sample`), which swarmupd does not run yet.
+ */
+function scorers(ctx: DefsCtx): number {
+  let settings: ReturnType<typeof scorerSettings> = {};
+  try {
+    settings = scorerSettings(ctx.ws().user);
+  } catch (err) {
+    ctx.io.err(`${(err as Error).message}; showing the git values alone`);
+  }
+  const rows = rootsOf(ctx).flatMap((root) =>
+    loadDefinitions(root.dir).scorers.map((sc) => {
+      const d = sc.def;
+      const machine = d ? settings[d.kind === 'builtin' ? d.scorer! : d.id] : undefined;
+      return {
+        root: root.name,
+        id: sc.id,
+        file: sc.file,
+        ok: d !== null,
+        ...(d ? { def: d } : {}),
+        ...(machine?.pass !== undefined && d?.kind === 'builtin'
+          ? { machine_pass: machine.pass }
+          : {}),
+        ...(d?.kind === 'rubric' ? { sample: effectiveSample(d.sample, machine?.sample) } : {}),
+        active: !!d && d.enabled && d.kind === 'builtin' && machine?.enabled !== false,
+      };
+    }),
+  );
+  if (ctx.opts.json) {
+    ctx.io.out(JSON.stringify(rows, null, 2));
+    return 0;
+  }
+  if (rows.length === 0) ctx.io.out('no scorers in git (scorers/*.yaml)');
+  for (const r of rows) {
+    const d = r.def;
+    if (!d) {
+      ctx.io.out(`${r.root}/${r.id}  has errors (swarmup validate --root ${r.root})`);
+      continue;
+    }
+    const to = d.applies_to
+      ? `  applies to ${Object.entries(d.applies_to)
+          .map(([k, v]) => `${k} ${v.join(', ')}`)
+          .join('; ')}`
+      : '';
+    const pass =
+      r.machine_pass !== undefined
+        ? `  pass ${r.machine_pass} (this machine, over ${d.pass ?? 'the default'})`
+        : d.pass !== undefined
+          ? `  pass ${d.pass}`
+          : '';
+    if (d.kind === 'builtin') {
+      const state = !d.enabled ? 'off' : r.active ? 'on' : 'off on this machine';
+      ctx.io.out(`${r.root}/${r.id}  builtin ${d.scorer}  ${state}${pass}${to}`);
+    } else {
+      const judge = d.judge
+        ? `  judge ${[d.judge.runtime, d.judge.model, d.judge.effort].filter(Boolean).join(' ')}`
+        : '';
+      ctx.io.out(
+        `${r.root}/${r.id}  rubric ${d.rubric}  not run yet${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,
+      );
+    }
+  }
   return 0;
 }
 

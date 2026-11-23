@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmup.tech/schemas/scorer.schema.json",
+  "title": "Scorer",
+  "description": "A scorer in git: settings of a built-in scorer, or a rubric scorer.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "description": "builtin: the threshold and filters of a built-in scorer. rubric: a judge scores the work against a rubric file (accepted and listed; not run yet).",
+      "enum": [
+        "builtin",
+        "rubric"
+      ]
+    },
+    "description": {
+      "description": "What the scorer is for.",
+      "type": "string"
+    },
+    "scorer": {
+      "description": "builtin: the built-in scorer this file sets; the file name when unset.",
+      "enum": [
+        "criteria-pass-rate",
+        "verdict-completeness",
+        "review-rounds",
+        "merge-failures",
+        "cost-per-merged-task",
+        "human-touches",
+        "escalation-correctness",
+        "recommendation-acceptance",
+        "stuck-runs",
+        "orientation",
+        "post-approval-edits"
+      ]
+    },
+    "pass": {
+      "description": "The threshold. A built-in's is in its unit and direction (`swarmup scores` lists them); a rubric's is a share from 0 to 1. A machine's `swarmupd.scorers.<id>.pass` wins.",
+      "type": "number"
+    },
+    "applies_to": {
+      "description": "Which of this store's work it scores; every list that is set must match. All of it when unset.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "types": {
+          "description": "Task types.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "labels": {
+          "description": "Labels, of which a task carries one.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "roles": {
+          "description": "Roles of the agent whose work it is, such as engineer.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "workflows": {
+          "description": "Workflows a task's milestone was started from.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "enabled": {
+      "description": "Default true; false turns the scorer off for this store's work.",
+      "type": "boolean"
+    },
+    "rubric": {
+      "description": "rubric: the rubric file, `rubrics/<id>.md`.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
+    },
+    "judge": {
+      "description": "rubric: the judge; `swarmupd.judge` fills what it leaves out.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "runtime": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*$"
+        },
+        "model": {
+          "description": "The model; `swarmupd.judge.model` when unset.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@[\\]-]{0,99}$"
+        },
+        "effort": {
+          "description": "The effort; `swarmupd.judge.effort` when unset.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,19}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sample": {
+      "description": "rubric: the share of subjects judged, from 0 to 1. Default 1; a machine may only lower it (`swarmupd.scorers.<id>.sample`).",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "blind": {
+      "description": "rubric: the judge does not see which agent did the work. Default true.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "kind"
+  ],
+  "additionalProperties": false
+}

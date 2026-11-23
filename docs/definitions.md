@@ -18,12 +18,13 @@ nothing new.
   agents/<runtime>-<role>.md  # a legacy agent file, still read
   workflows/<id>.yaml         # repeatable milestone plans: see Workflows in the protocol
   triggers/<name>.yaml        # when swarmupd starts something: see Triggers
+  scorers/<id>.yaml           # a built-in scorer's threshold and filters, or a rubric scorer
   variants/<name>/            # sparse overlays: see Variants
   .schemas/*.schema.json      # optional: `swarmup validate --write-schemas` writes them for editors
 ```
 
-The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/` and
-`triggers/`. It is `d:` and the SHA-256
+The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/`,
+`triggers/` and `scorers/`. It is `d:` and the SHA-256
 of a header line plus one line per file, its path and the SHA-256 of its text, sorted by path. The
 text is read with the BOM removed and CRLF turned into LF, so line ends and file order never change
 the hash. `swarmup defs hash` prints it.
@@ -231,6 +232,42 @@ Git never names a command swarmupd runs without the machine's trust (Decision 7)
   and the git list is recorded as overridden. The git checks need a `swarmupd.merge.<root>` entry
   on the machine, since `base`, `checkout`, `build` and `install` stay machine-only.
 
+## Scorers in git
+
+`scorers/<id>.yaml` keeps a scorer's settings with the store:
+
+```yaml
+# scorers/review-rounds.yaml: the built-in scorer of the same name, for this store's work
+kind: builtin
+pass: 0 # in the scorer's unit and direction; `swarmup scores` lists the defaults
+applies_to: # optional; every list that is set must match
+  types: [bug, feature]
+  labels: [ui] # a task carries one of them
+  roles: [engineer] # the role of the agent whose work it is
+  workflows: [bugfix] # the workflow its milestone started from
+```
+
+- **kind: builtin** sets one of the built-in scorers ([Scores](supervisor.md#scores)): the file
+  id names it, or `scorer:` when the file has another name. swarmupd, `swarmup scores` and
+  `swarmup report` score the store's work with its `pass`, and only the work `applies_to` takes;
+  other stores' work keeps the default. `enabled: false` turns the scorer off for the store's
+  work. One file per built-in scorer and store.
+- **kind: rubric** names a rubric (`rubrics/<id>.md`, which must exist and read), a `judge`
+  (`runtime`, `model`, `effort`; `swarmupd.judge` fills the rest), a `sample` (the share of
+  subjects judged, default 1), `pass` (a share from 0 to 1) and `blind` (default true: the judge
+  does not see which agent did the work). Rubric scorers are checked and listed, but swarmupd's
+  scoring loop does not run judge-based scorers yet: `swarmup defs scorers` shows them as
+  `not run yet`.
+- **The machine wins:** `swarmupd.scorers.<id>.pass` beats the store's `pass`, and
+  `enabled: false` there turns a built-in scorer off for every store. For a rubric scorer a
+  machine may only lower `sample` (`swarmupd.scorers.<id>.sample`); a higher value is ignored.
+- An agent-level scorer (`recommendation-acceptance`, `stuck-runs`) counts an agent across
+  stores: it scores once, over the work every store's `applies_to` takes, with the stores'
+  `pass` when they agree, else the default.
+
+`swarmup defs scorers [--root NAME] [--json]` lists each scorer file with what this machine uses
+of it. Runs may not edit `scorers/`, and a proposal never changes it by default.
+
 ## Precedence
 
 More specific beats less specific, and at equal specificity the machine beats git:
@@ -379,6 +416,8 @@ improvement:
 - `swarmup defs show` prints each root's hash and what its `swarm.yaml` sets under this machine's
   config, with the machine keys that overrode it.
 - `swarmup defs hash` prints the full hash of each root.
+- `swarmup defs scorers [--root NAME]` lists the scorers in git; see
+  [Scorers in git](#scorers-in-git).
 - `swarmup defs trust [--root NAME] [--revoke]` trusts the merge checks of each root's
   `swarm.yaml` on this machine; see [Merge checks in git](#merge-checks-in-git).
 - `swarmup defs diff [REF]` lists the definition files that changed since a git ref, `HEAD` by

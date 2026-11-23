@@ -3,7 +3,7 @@
 // Each scorer measures one narrow failure mode, at the level of a run, a task or an agent, and
 // names the definition to change when it fails (`lever`). `swarmup scores`, `swarmup report`,
 // `GET /api/scores` and swarmupd's `state.db` read them from here.
-import type { OpsEvent, TaskMeta, UserConfig } from '@swarmup/core';
+import type { OpsEvent, ScorerAppliesTo, TaskMeta, UserConfig } from '@swarmup/core';
 import {
   ASK_REASONS,
   criteriaOf,
@@ -49,7 +49,8 @@ export interface ScoreTask {
   root: string;
   id: string;
   title: string;
-  meta: Pick<TaskMeta, 'type' | 'labels' | 'owner'> & Partial<Pick<TaskMeta, 'done_when'>>;
+  meta: Pick<TaskMeta, 'type' | 'labels' | 'owner'> &
+    Partial<Pick<TaskMeta, 'done_when' | 'workflow' | 'parent'>>;
   status: string;
   events: OpsEvent[];
 }
@@ -92,6 +93,25 @@ export interface Scorer {
 /** One scorer's settings in `swarmupd.scorers.<id>` of the user config. */
 export interface ScorerSetting {
   pass?: number;
+  enabled?: boolean;
+  /** A rubric scorer in git (W5): the most of its `sample` this machine judges; only lowers it. */
+  sample?: number;
+}
+
+/**
+ * A built-in scorer's settings from one store's `scorers/<id>.yaml` (W5 phase 4): its threshold
+ * and which of that store's work it scores. The machine's `swarmupd.scorers.<id>` wins: its
+ * `pass` over this one, and its `enabled: false` turns the scorer off everywhere.
+ */
+export interface GitScorer {
+  /** The store's root name. */
+  root: string;
+  /** The file's id, `scorers/<id>.yaml`. */
+  id: string;
+  /** The built-in scorer it sets. */
+  scorer: string;
+  pass?: number;
+  applies_to?: ScorerAppliesTo;
   enabled?: boolean;
 }
 
@@ -711,7 +731,11 @@ export const SCORER_IDS: readonly string[] = builtinScorers().map((s) => s.id);
 
 // ---- Settings -----------------------------------------------------------------------------------
 
-/** `swarmupd.scorers` of the user config, checked: `pass` a number, `enabled` true or false. */
+/**
+ * `swarmupd.scorers` of the user config, checked: `pass` a number, `enabled` true or false,
+ * `sample` a share from 0 to 1. An id that is no built-in scorer names a rubric scorer in git,
+ * and takes only `enabled` and `sample`.
+ */
 export function scorerSettings(user: UserConfig): Record<string, ScorerSetting> {
   const raw = daemonSection(user)?.scorers;
   if (raw === undefined || raw === null) return {};
@@ -720,18 +744,28 @@ export function scorerSettings(user: UserConfig): Record<string, ScorerSetting> 
   }
   const out: Record<string, ScorerSetting> = {};
   for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!SCORER_IDS.includes(id)) {
-      throw new OpsError(`swarmupd.scorers.${id}: no such scorer; use ${SCORER_IDS.join(', ')}`, 2);
+    const builtin = SCORER_IDS.includes(id);
+    if (!builtin && !/^[a-z0-9][a-z0-9-]{0,59}$/.test(id)) {
+      throw new OpsError(
+        `swarmupd.scorers.${id}: no such scorer; use ${SCORER_IDS.join(', ')}, or a rubric scorer's id`,
+        2,
+      );
     }
     if (v === null || v === undefined) continue;
     if (typeof v !== 'object' || Array.isArray(v)) {
       throw new OpsError(`swarmupd.scorers.${id}: use pass and enabled`, 2);
     }
-    const { pass, enabled, ...rest } = v as Record<string, unknown>;
+    const { pass, enabled, sample, ...rest } = v as Record<string, unknown>;
     const extra = Object.keys(rest);
     if (extra.length) {
       throw new OpsError(
-        `swarmupd.scorers.${id}: unknown key ${extra[0]}; use pass and enabled`,
+        `swarmupd.scorers.${id}: unknown key ${extra[0]}; use pass, enabled and sample`,
+        2,
+      );
+    }
+    if (!builtin && (pass !== undefined || (enabled === undefined && sample === undefined))) {
+      throw new OpsError(
+        `swarmupd.scorers.${id}: no such scorer; use ${SCORER_IDS.join(', ')}, or only enabled and sample for a rubric scorer`,
         2,
       );
     }
@@ -741,9 +775,13 @@ export function scorerSettings(user: UserConfig): Record<string, ScorerSetting> 
     if (enabled !== undefined && typeof enabled !== 'boolean') {
       throw new OpsError(`swarmupd.scorers.${id}.enabled: use true or false`, 2);
     }
+    if (sample !== undefined && (typeof sample !== 'number' || !(sample >= 0 && sample <= 1))) {
+      throw new OpsError(`swarmupd.scorers.${id}.sample: use a share from 0 to 1`, 2);
+    }
     out[id] = {
       ...(pass !== undefined ? { pass } : {}),
       ...(enabled !== undefined ? { enabled } : {}),
+      ...(sample !== undefined ? { sample } : {}),
     };
   }
   return out;
@@ -759,6 +797,8 @@ export interface ScoreOptions {
   /** Ends a run that is still going. */
   now?: () => number;
   scorers?: Scorer[];
+  /** Built-in scorer settings from each store's `scorers/` (W5 phase 4). */
+  stores?: readonly GitScorer[];
 }
 
 /** The scorers `settings` leaves on, each with its threshold. */
@@ -791,9 +831,95 @@ export function computeScores(input: ScoreInput, opts: ScoreOptions = {}): Score
   };
   const out: ScoreResult[] = [];
   for (const { s, pass } of activeScorers(opts)) {
-    for (const r of s.score(ctx, pass)) {
+    for (const r of scoreWithStores(s, pass, ctx, opts)) {
       if (r.level === 'agent' || inWindow(r.at)) out.push(r);
     }
+  }
+  return out;
+}
+
+const roleOfAgent = (agent: string): string => agent.slice(agent.indexOf(':') + 1);
+
+/** Whether a store's `applies_to` takes task `t`, whose milestone's workflow is `workflow`. */
+function appliesToTask(
+  a: ScorerAppliesTo | undefined,
+  t: ScoreTask,
+  author: string,
+  workflow: string | undefined,
+): boolean {
+  if (!a) return true;
+  if (a.types && !a.types.includes(t.meta.type)) return false;
+  if (a.labels && !(t.meta.labels ?? []).some((l) => a.labels!.includes(l))) return false;
+  if (a.workflows && !(workflow && a.workflows.includes(workflow))) return false;
+  if (a.roles && !(author && a.roles.includes(roleOfAgent(author)))) return false;
+  return true;
+}
+
+/**
+ * Scores `s` with each store's settings (W5 phase 4); without a store that sets it, as before.
+ * Each store's work is scored with its own threshold and only where its `applies_to` takes it;
+ * the work of stores that leave the scorer alone keeps the default threshold. The machine's
+ * `pass` wins over every store's. An agent-level scorer counts an agent across stores, so it
+ * scores once, over the work every store takes, with the threshold the stores agree on, else
+ * the default.
+ */
+function scoreWithStores(
+  s: Scorer,
+  pass: number | undefined,
+  ctx: ScoreContext,
+  opts: ScoreOptions,
+): ScoreResult[] {
+  const byRoot = new Map<string, GitScorer>();
+  for (const g of opts.stores ?? []) {
+    if (g.scorer === s.id && !byRoot.has(g.root)) byRoot.set(g.root, g);
+  }
+  if (byRoot.size === 0) return s.score(ctx, pass);
+  const machinePass = opts.settings?.[s.id]?.pass;
+  const passOf = (g: GitScorer | undefined): number | undefined =>
+    g ? (machinePass ?? g.pass ?? s.pass) : pass;
+  const byRef = new Map(ctx.tasks.map((t) => [ref(t), t]));
+  const workflowOf = (t: ScoreTask): string | undefined =>
+    t.meta.workflow ??
+    (t.meta.parent ? byRef.get(`${t.root}/${t.meta.parent}`)?.meta.workflow : undefined);
+  const takes = (t: ScoreTask): boolean => {
+    const g = byRoot.get(t.root);
+    if (!g) return true;
+    if (g.enabled === false) return false;
+    return appliesToTask(g.applies_to, t, ctx.facts(t).author, workflowOf(t));
+  };
+  const tasks = ctx.tasks.filter(takes);
+  const taken = new Set(tasks.map(ref));
+  const takesRun = (r: RunRecord): boolean => {
+    const g = r.root ? byRoot.get(r.root) : undefined;
+    if (!g) return true;
+    if (g.enabled === false) return false;
+    const a = g.applies_to;
+    if (a?.roles && !a.roles.includes(roleOfAgent(r.agent))) return false;
+    if (a?.types || a?.labels || a?.workflows) return !!r.task && taken.has(`${r.root}/${r.task}`);
+    return true;
+  };
+  const runs = ctx.runs.filter(takesRun);
+  if (s.level === 'agent') {
+    const passes = new Set([...byRoot.values()].map((g) => passOf(g)));
+    const agreed = passes.size === 1 ? [...passes][0] : pass;
+    return s.score({ ...ctx, tasks, runs }, machinePass ?? agreed);
+  }
+  // Task and run scorers: one pass per threshold, over the work of the stores that use it.
+  const groupOf = (root: string | undefined): string => {
+    const g = root ? byRoot.get(root) : undefined;
+    return g ? `p:${passOf(g)}` : 'default';
+  };
+  const thresholds = new Map<string, number | undefined>([['default', pass]]);
+  for (const g of byRoot.values()) thresholds.set(groupOf(g.root), passOf(g));
+  const out: ScoreResult[] = [];
+  for (const [key, threshold] of thresholds) {
+    const sub = {
+      ...ctx,
+      tasks: tasks.filter((t) => groupOf(t.root) === key),
+      runs: runs.filter((r) => groupOf(r.root) === key),
+    };
+    if (sub.tasks.length === 0 && sub.runs.length === 0) continue;
+    out.push(...s.score(sub, threshold));
   }
   return out;
 }

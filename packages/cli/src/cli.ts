@@ -97,6 +97,7 @@ import type {
 import {
   buildReport,
   computeScores,
+  gitScorers,
   logOrientation,
   ScoreKeeper,
   scoreTasks,
@@ -3864,7 +3865,7 @@ const COMMANDS: Record<string, Command> = {
       const tasks = scoreTasks(ws, { root: ws.scope, since: sinceIso });
       const results = computeScores(
         { tasks, runs, orientation: (r) => logOrientation(r.log) },
-        { settings, ...(since !== undefined ? { from: since } : {}) },
+        { settings, stores: gitScorers(ws), ...(since !== undefined ? { from: since } : {}) },
       );
       const task = str(ctx.opts.task);
       if (task) {
