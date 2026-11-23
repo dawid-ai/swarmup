@@ -65,6 +65,7 @@ import {
   plainNotes,
   scheduleUpdateChecks,
   takeRelaunch,
+  UPDATE_STOP_WAIT_MS,
   writeRelaunch,
 } from './updates.js';
 import type {
@@ -605,7 +606,12 @@ function startAutoUpdate(): void {
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     install: async (resume) => {
       try {
-        await stopDaemon({ env: process.env, killRuns: false, ifIdle: true });
+        await stopDaemon({
+          env: process.env,
+          killRuns: false,
+          ifIdle: true,
+          waitMs: UPDATE_STOP_WAIT_MS,
+        });
         info = null;
         writeRelaunch(
           app.getPath('userData'),
@@ -737,7 +743,7 @@ async function installUpdate(asked: boolean): Promise<UpdateState> {
     },
     stop: async ({ ifIdle, killRuns }) => {
       try {
-        await stopDaemon({ env: process.env, killRuns, ifIdle });
+        await stopDaemon({ env: process.env, killRuns, ifIdle, waitMs: UPDATE_STOP_WAIT_MS });
       } catch (err) {
         // 409: a run is live, so swarmupd kept running and nothing was cut off.
         if (err instanceof DaemonCallError && err.status === 409) return 'busy';

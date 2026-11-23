@@ -241,22 +241,42 @@ export function notesText(
     .trim();
 }
 
-/** Strips HTML tags from release notes, which GitHub serves as HTML. */
+/**
+ * Plain text of release notes, which GitHub serves as HTML rendered from wrapped Markdown. A line
+ * break inside a bullet or paragraph is a space; the end of a bullet, a paragraph or a heading, a
+ * `<br>`, a blank line and the start of a bullet stay breaks.
+ */
 export function plainNotes(notes: string | undefined): string | undefined {
   if (!notes) return undefined;
-  return notes
-    .replace(/<\/(p|li|h\d)>/gi, '\n')
-    .replace(/<li>/gi, '- ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  // Breaks the HTML structure makes, kept apart from the wraps until those are joined.
+  const BREAK = '\u2029';
+  return (
+    notes
+      // A line break between two tags is no text in HTML.
+      .replace(/>\s*\n\s*</g, '><')
+      .replace(/<\/(p|li|h\d)>/gi, BREAK)
+      .replace(/<li>/gi, '- ')
+      .replace(/<br\s*\/?>/gi, BREAK)
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/(?<![\n\u2029])[ \t]*\n[ \t]*(?!\n|- |\* |\u2029|$)/g, ' ')
+      .replace(/\u2029/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  );
 }
+
+/**
+ * How long an update waits for swarmupd to stop. It finishes a store sync or a merge under way
+ * first, so no rebase or commit is cut off halfway, and a sync of a few stores at startup can take
+ * well over the 15 s a plain stop waits.
+ */
+export const UPDATE_STOP_WAIT_MS = 120_000;
 
 /**
  * The note an update leaves for the app it relaunches: start in the tray when the old app had no
