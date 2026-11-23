@@ -1295,8 +1295,9 @@ The desktop reads three shapes of the API:
 
 ## Self-improvement
 
-Scorer failures turn into reviewed changes to agent definitions, never into learn notes. The loop
-has four steps, and only the last one changes a definition file:
+Scorer failures turn into reviewed changes to agent definitions, never into learn notes; learn
+notes that keep mattering turn into rules in a role file the same way. The loop has four steps, and
+only the last one changes a definition file:
 
 1. **Trigger.** At most every `check_hours`, swarmupd counts each agent's distinct failing task and
    run scores of the last `max_age_days` days. An agent at or over `threshold`, with no open
@@ -1304,10 +1305,20 @@ has four steps, and only the last one changes a definition file:
    improver (`agent`) and created by `opsd:improve`. Its body lists the failing scorers with their
    values, levers and evidence, and the `Agent:`, `Scorers:` and `Evidence:` lines
    `swarmup defs propose` reads. The trigger is off by default.
+
+   With `notes: true`, the trigger also files one for each agent with learn-note promotion
+   candidates (`swarmup kb --promote`, on its defaults), on the same conditions, titled
+   `Improve <agent>: fold N learn note(s) into the role`. Its body lists the notes with why, and
+   the `Agent:` and `Notes:` lines. A note that an earlier improvement task of the agent named,
+   open or closed, is not filed again on its own: it was folded in, or a person turned the
+   change down. `notes` works without `enabled`.
+
 2. **Proposal.** The improver (`packages/core/templates/agents/claude-improver.md`) reads the
    scores, the evidence tasks' threads and the agent's role file, finds one pattern, writes the
    smallest overlay that addresses it in its scratch folder, checks it with `swarmup validate`, and
-   records it with [`swarmup defs propose`](definitions.md#proposals). swarmupd runs the improver
+   records it with [`swarmup defs propose`](definitions.md#proposals). For a learn-note task, it
+   folds each lesson that still holds into the role file as one short rule and ends the
+   proposal's message with a `Notes:` line naming the notes it folds in. swarmupd runs the improver
    read-only: a Claude run may edit only in its scratch folder, and no run may edit `agents/` or
    `variants/`. No run may edit the store's `rubrics/`, `workflows/` or `triggers/` either (W8):
    they are the yardsticks work is judged by and what starts runs.
@@ -1320,12 +1331,15 @@ has four steps, and only the last one changes a definition file:
    [`improvement.requires`](definitions.md#improvement-policy). The gate is off without
    `benchmark`: it spends tokens.
 4. **Decision.** A person promotes the proposal (`swarmup defs promote`, or **Promote** in the
-   app) or rejects it with a note.
+   app) or rejects it with a note. When the proposal's task or message names notes on a `Notes:`
+   line that still exist, `defs promote` prints the `swarmup kb archive` command for them; it never
+   archives them itself.
 
 ```yaml
 swarmupd:
   improve:
     enabled: false # file improvement tasks on its own
+    notes: false # also file one for an agent's learn-note promotion candidates
     threshold: 10 # distinct failing task and run scores of one agent
     max_age_days: 7 # only scores of the last 7 days count
     agent: claude:improver # who works the task
@@ -1344,10 +1358,13 @@ swarmupd:
 - swarmupd keeps each proposal's benchmark in `improve.json` in its state folder, by variant and
   hash: a proposal benchmarks once, and again only when its hash changes.
 - **Propose an improvement** on an agent's failing scorer in the app files the improvement task
-  now, with every kept failing score of the agent, whatever the trigger's settings.
+  now, with every kept failing score of the agent, whatever the trigger's settings. **Fold into
+  role** on a promote candidate in the **Knowledge** view files the learn-note task for that agent
+  now, with every candidate for it, named before or not.
 - The API: `GET /api/defs/variants` lists each variant with its diff against the base (`diffs`)
   and its benchmark (`benchmark`); `POST /api/defs/variants/<name>/promote` and `.../reject`
-  (`{ root?, message }`) and `POST /api/improve` (`{ agent }`) are for a person: a run's token gets 403.
+  (`{ root?, message }`) and `POST /api/improve` (`{ agent, kind? }`, where `kind: 'notes'` files the learn-note task)
+  are for a person: a run's token gets 403.
 
 ## Merging approved work
 
@@ -1758,6 +1775,8 @@ restart or another human-only action, use `swarmup ask`.
 | `GET /api/activity?q=Q&before=C&limit=N`                     | one page of task events (plus task creation), archived tasks included, and channel posts, newest first: `items`, `next` (pass as `before`), `total`, `actors`, `projects`; `limit` 1 to 500, default 100                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `GET /api/timeline?project=P&root=R&days=N&clip=S&gap=M`     | the replay timeline, archived tasks included: `lanes` per actor, work `spans` (claim to release), review rounds as `reviews`, `waits` (ask to answer), `runs` with tokens, `decisions`, learn `notes`, `created` and `closes`, `totals` for stat cards, and `time`, a map from real to playback time where idle stretches play as `gap` minutes (default 30) and the whole as `clip` seconds; window as for the report (`days`, or `from` and `to`); `root=R` limits it to one data root and `project=P` to one project; `wrapped=1` adds the Wrapped cards from the report of the same root and project |
 | `GET /api/kb?q=WORDS&topic=T`                                | learn notes across roots; every word must match (as `swarmup kb`); no words lists them all                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET /api/kb/promote?days=N&agent=ID`                        | learn-note promotion candidates, as `swarmup kb --promote --json` lists them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `POST /api/kb/archive`                                       | `{ refs, message }`: a person archives learn notes, as `swarmup kb archive`; a run's token gets 403                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `GET /api/kb/:topic/:slug?root=R`                            | one learn note; `root` when the ref exists in several roots                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `GET /api/standup?hours=N`                                   | per agent: done, sent for review, working on, blocked; runs, tokens, minutes; `#standup` posts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `GET /api/schedules`, `POST /api/schedules`                  | schedules with `last_run` and `next_run`; add one, or change the one named `previous`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

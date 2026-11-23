@@ -1,6 +1,6 @@
 ---
 kind: flow
-summary: 'Self-improvement: improvement tasks from failing scores, the improver, proposals, the benchmark gate'
+summary: 'Self-improvement: improvement tasks from failing scores and learn notes, the improver, proposals, the benchmark gate'
 covers:
   - packages/supervisor/src/improve.ts
   - packages/core/templates/agents/claude-improver.md
@@ -9,6 +9,7 @@ covers:
   - packages/core/test/variants.test.ts
   - packages/cli/test/defs-propose.test.ts
   - packages/desktop/test/proposals-view.test.ts
+  - packages/desktop/test/knowledge-view.test.ts
 links: [core/defs, supervisor/stats, bench, supervisor/wake, desktop/ui, docs]
 ---
 
@@ -16,8 +17,9 @@ links: [core/defs, supervisor/stats, bench, supervisor/wake, desktop/ui, docs]
 
 ## Purpose
 
-Turns scorer failures into reviewed changes to agent definitions (W6): never a learn note, never a
-silent edit. Only a person's promote changes a definition file.
+Turns scorer failures, and learn notes that keep mattering, into reviewed changes to agent
+definitions (W6): never a learn note, never a silent edit. Only a person's promote changes a
+definition file.
 
 ## How it works
 
@@ -37,6 +39,12 @@ silent edit. Only a person's promote changes a definition file.
   when `swarmupd.improve.benchmark` is set, and comments the `compareMarkdown` table and verdict
   on the task when both end, recording the result in the proposal (`record`). State (`checkedAt`, gates by `root/variant@hash`) is `improve.json`
   in the state folder. `proposals()` backs `GET /api/defs/variants` with line diffs.
+- With `swarmupd.improve.notes`, `triggerTick` also files a learn-note task per agent with
+  promotion candidates (`Workspace.kbPromote`) that no earlier improvement task of the agent
+  named (`improveNotesBody`, with `Agent:` and `Notes:` lines); `requestNotes` files it on
+  demand (`POST /api/improve` with `kind: 'notes'`, **Fold into role** in the Knowledge view).
+  `defsPromote` returns the notes a proposal names on a `Notes:` line, and `defs promote`
+  prints the `swarmup kb archive` command for them.
 - The improver template (`claude-improver.md`) is a read-only role (`READ_ONLY_ROLES`) whose
   Claude runs may edit only in their scratch folder (`SCRATCH_WRITER_ROLES`, `invocation`).
 - `desktop/ui/src/ui/proposals.tsx` is the **Proposals** list in the Agents view: agents,
@@ -48,5 +56,6 @@ silent edit. Only a person's promote changes a definition file.
 - A proposal never changes `tools`, `writes`, `can_claim` or `id`, nor a frozen path; at most
   `max_open_proposals` wait per store.
 - Promote and reject are for a person only, in the CLI and the API.
-- The trigger and the gate are off by default; the gate spends tokens.
+- The trigger, its learn-note half and the gate are off by default; the gate spends tokens.
+- Nothing archives a note on its own: a person runs `swarmup kb archive` after the promote.
 - Runs never edit `agents/` or `variants/` directly.
