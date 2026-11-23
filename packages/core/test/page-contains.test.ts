@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import type { CheckDeps, Criterion, FetchedPage } from '../src/index.js';
 import {
@@ -204,5 +206,24 @@ describe('page-contains targets', () => {
           : new Response(null, { status: 301, headers: { location: '/b' } })) as typeof fetch,
     });
     expect(ok).toEqual({ status: 200, text: 'hello' });
+  });
+
+  it('refuses at connect time a host that resolves to a blocked address after the check', async () => {
+    // The name check sees a public address; the connection's own lookup then finds loopback,
+    // as a DNS answer that changed in between would (rebinding).
+    const server = createServer((_req, res) => res.end('secret'));
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      await expect(
+        defaultFetchPage(
+          `http://localhost:${port}/`,
+          { timeoutMs: 5000, maxBytes: 100 },
+          { lookup: async () => ['93.184.215.14'] },
+        ),
+      ).rejects.toThrow(/refusing localhost/);
+    } finally {
+      await new Promise((done) => server.close(done));
+    }
   });
 });
