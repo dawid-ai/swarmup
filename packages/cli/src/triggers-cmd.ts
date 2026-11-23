@@ -1,14 +1,18 @@
+import type { ParseArgsConfig } from 'node:util';
 import type { Workspace } from '@swarmup/core';
-import { daemonKeyIn, editUserConfig, localTime, OpsError } from '@swarmup/core';
 import {
-  daemonCall,
-  opsdConfig,
-  readDaemon,
-  RunStore,
-  stateDir,
-  TRIGGERS_STATE,
-  triggersView,
-} from '@swarmup/supervisor';
+  daemonKeyIn,
+  editUserConfig,
+  loadDefinitions,
+  localTime,
+  OpsError,
+  readUserConfig,
+  triggersHash,
+  triggersTrust,
+  untrustedTriggersText,
+} from '@swarmup/core';
+import { opsdConfig, RunStore, stateDir, TRIGGERS_STATE, triggersView } from '@swarmup/supervisor';
+import { notifyDaemon, recordTrust, requirePerson, triggerLines } from './trust.js';
 
 /** What `swarmup triggers` needs of the CLI's context. */
 interface TriggersCtx {
@@ -36,9 +40,10 @@ function rootsOf(ctx: TriggersCtx): Array<{ name: string; dir: string }> {
 }
 
 export const triggersCommand = {
-  usage: 'triggers list [--root NAME] [--json] | triggers on|off [--root NAME]',
+  usage: 'triggers list [--root NAME] [--json] | triggers on|off [--root NAME] [--trust]',
   summary:
-    "the git triggers of each root (triggers/*.yaml): when each fires, what it starts, and whether and when it fires next on this machine; on and off turn a root's triggers on or off for this machine (swarmupd.triggers.<root>)",
+    "the git triggers of each root (triggers/*.yaml): when each fires, what it starts, and whether and when it fires next on this machine; on and off turn a root's triggers on or off for this machine (swarmupd.triggers.<root>; a person, outside runs); on lists what would fire, and --trust also trusts that exact trigger set (else swarmup defs trust does)",
+  options: { trust: { type: 'boolean' } } satisfies NonNullable<ParseArgsConfig['options']>,
   run: async (ctx: TriggersCtx): Promise<number> => {
     const [sub = 'list', ...rest] = ctx.args;
     if (rest.length > 0) throw new OpsError(`usage: swarmup ${triggersCommand.usage}`, 2);
@@ -68,6 +73,11 @@ function list(ctx: TriggersCtx): number {
       `${r.name}: ${mine.length} trigger(s), ${on ? 'turned on' : 'off'} here` +
         (on ? '' : ` (swarmup triggers on --root ${r.name})`),
     );
+    const trust = mine[0]?.trust;
+    if (on && (trust === 'untrusted' || trust === 'changed')) {
+      const count = mine.filter((v) => v.when).length;
+      ctx.io.out(`  warning: ${untrustedTriggersText(r.name, trust, count)}`);
+    }
     for (const v of mine) {
       const where = v.runs_on ? ` runs_on ${v.runs_on.join(', ')}` : '';
       const head = v.when ? `${v.when}  ${v.target}${where}` : 'has errors';
@@ -82,25 +92,51 @@ function list(ctx: TriggersCtx): number {
 }
 
 async function turn(ctx: TriggersCtx, on: boolean): Promise<number> {
+  const ws = ctx.ws();
+  requirePerson(ws, `turns git triggers ${on ? 'on' : 'off'}`);
   const roots = rootsOf(ctx);
   if (roots.length !== 1) {
-    throw new OpsError('name the root: swarmup triggers on|off --root NAME', 2);
+    throw new OpsError('name the root: swarmup triggers on|off --root NAME [--trust]', 2);
   }
-  const root = roots[0]!.name;
+  const root = roots[0]!;
   editUserConfig(
     ctx.io.env,
     (doc) => {
-      doc.setIn([daemonKeyIn(doc), 'triggers', root], on);
+      doc.setIn([daemonKeyIn(doc), 'triggers', root.name], on);
     },
     (next) => void opsdConfig(next),
   );
+  if (!on) {
+    ctx.io.out(`${root.name}: this machine runs none of its git triggers`);
+    await notifyDaemon(ctx.io.env);
+    return 0;
+  }
+  // What turning them on lets fire, so the person sees it before trusting it.
+  const defs = loadDefinitions(root.dir).triggers.flatMap((t) => (t.def ? [t.def] : []));
+  const hash = triggersHash(defs);
+  const trusted = opsdConfig(readUserConfig(ctx.io.env)).trusted_defs[root.name]?.triggers;
+  const state = triggersTrust(defs, trusted);
   ctx.io.out(
-    on
-      ? `${root}: this machine runs its git triggers from swarmupd's next tick`
-      : `${root}: this machine runs none of its git triggers`,
+    `${root.name}: this machine runs the git triggers it trusts, from swarmupd's next tick`,
   );
-  // A running swarmupd reads the user config again at once.
-  const info = readDaemon(ctx.io.env);
-  if (info) await daemonCall(info, 'POST', '/api/settings', { patch: {} }).catch(() => undefined);
+  if (!hash) {
+    ctx.io.out('  the store has no triggers yet');
+    await notifyDaemon(ctx.io.env);
+    return 0;
+  }
+  for (const l of triggerLines(defs)) ctx.io.out(l);
+  if (state === 'trusted') {
+    await notifyDaemon(ctx.io.env);
+    return 0;
+  }
+  if (ctx.opts.trust) {
+    await recordTrust(ctx.io.env, [{ root: root.name, triggers: hash }]);
+    ctx.io.out(`  trusted these triggers (${hash.slice(0, 14)}); any change needs a new trust`);
+    return 0;
+  }
+  ctx.io.out(
+    `  ${untrustedTriggersText(root.name, state, defs.length)}, or \`swarmup triggers on --root ${root.name} --trust\``,
+  );
+  await notifyDaemon(ctx.io.env);
   return 0;
 }

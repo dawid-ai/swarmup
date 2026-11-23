@@ -145,7 +145,8 @@ const LOOKAHEAD_MS = (4 * 365 + 2) * 24 * 3_600_000;
 /**
  * The start of the first minute after `afterMs` that the expression names, in local time; null
  * when none comes within four years (such as `0 0 30 2 *`). Fields that do not match skip ahead
- * by month, day or hour, so the search stays short.
+ * by month, day or hour, so the search stays short. A time daylight saving skips fires at the
+ * first minute after the gap.
  */
 export function nextCron(c: Cron, afterMs: number): number | null {
   const d = new Date(afterMs);
@@ -163,11 +164,18 @@ export function nextCron(c: Cron, afterMs: number): number | null {
     } else if (!dayMatches(c, d)) {
       d.setDate(d.getDate() + 1);
       d.setHours(0, 0, 0, 0);
-    } else if (!c.hours.has(d.getHours())) {
-      d.setHours(d.getHours() + 1, 0, 0, 0);
-    } else if (!c.minutes.has(d.getMinutes())) {
-      d.setMinutes(d.getMinutes() + 1, 0, 0);
-    } else return d.getTime();
+    } else {
+      const hour = d.getHours();
+      const date = d.getDate();
+      if (!c.hours.has(hour)) d.setHours(hour + 1, 0, 0, 0);
+      else if (!c.minutes.has(d.getMinutes())) d.setMinutes(d.getMinutes() + 1, 0, 0);
+      else return d.getTime();
+      // Daylight saving skipped an hour the expression names: as in Vixie cron, it fires at the
+      // first minute after the gap.
+      if (d.getDate() === date) {
+        for (let h = hour + 1; h < d.getHours(); h++) if (c.hours.has(h)) return d.getTime();
+      }
+    }
   }
   return null;
 }

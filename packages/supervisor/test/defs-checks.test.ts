@@ -40,7 +40,7 @@ describe('merge checks in git', () => {
       { root: 'a', count: 2, hash: HASH, trust: 'untrusted', use: 'skipped' },
     ]);
     const trusted = withDefinitions(
-      machine({ merge: { a: { base: 'main' } }, trusted_defs: { a: HASH } }),
+      machine({ merge: { a: { base: 'main' } }, trusted_defs: { a: { checks: HASH } } }),
       [{ root: 'a', swarm: CHECKS }],
     );
     expect(trusted.config.merge.a).toEqual({
@@ -56,7 +56,7 @@ describe('merge checks in git', () => {
       checks: { ...CHECKS.checks, lint: { run: 'pnpm lint', paths: ['**'] } },
     };
     const m = withDefinitions(
-      machine({ merge: { a: { base: 'main' } }, trusted_defs: { a: HASH } }),
+      machine({ merge: { a: { base: 'main' } }, trusted_defs: { a: { checks: HASH } } }),
       [{ root: 'a', swarm: changed }],
     );
     expect(m.config.merge.a!.checks).toBeUndefined();
@@ -65,13 +65,16 @@ describe('merge checks in git', () => {
 
   it("lose to the machine's own checks, and do nothing where the machine does not merge", () => {
     const own = withDefinitions(
-      machine({ merge: { a: { base: 'main', checks: ['npm test'] } }, trusted_defs: { a: HASH } }),
+      machine({
+        merge: { a: { base: 'main', checks: ['npm test'] } },
+        trusted_defs: { a: { checks: HASH } },
+      }),
       [{ root: 'a', swarm: CHECKS }],
     );
     expect(own.config.merge.a!.checks).toEqual(['npm test']);
     expect(own.overrides.map((o) => o.key)).toEqual(['merge.a.checks']);
     expect(own.checks[0]!.use).toBe('machine');
-    const none = withDefinitions(machine({ trusted_defs: { a: HASH } }), [
+    const none = withDefinitions(machine({ trusted_defs: { a: { checks: HASH } } }), [
       { root: 'a', swarm: CHECKS },
     ]);
     expect(none.config.merge).toEqual({});
@@ -96,7 +99,7 @@ describe('merge checks in git', () => {
 
   it('refuse a trusted hash that is not one defs trust writes', () => {
     expect(() => machine({ trusted_defs: { a: 'yes' } })).toThrow(
-      /swarmupd.trusted_defs.a: use the hash swarmup defs trust writes/,
+      /swarmupd.trusted_defs.a: use what swarmup defs trust writes/,
     );
   });
 });

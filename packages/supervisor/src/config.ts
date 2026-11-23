@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { McpConfig, UserConfig } from '@swarmup/core';
 import {
   CHECKS_HASH_RE,
+  TRIGGERS_HASH_RE,
   checkEffort,
   checkMcpConfig,
   checkModel,
@@ -401,10 +402,11 @@ export interface OpsdConfig {
    */
   triggers: Record<string, boolean>;
   /**
-   * Per root name, the hash of the `swarm.yaml` merge checks a person trusted on this machine
-   * (`swarmup defs trust`, W5). Git checks run only while the root's set has this hash.
+   * Per root name, what a person trusted of the root's git definitions on this machine
+   * (`swarmup defs trust`, W5 phase 4): the hash of the `swarm.yaml` merge checks (`checks`) and
+   * of the trigger set (`triggers`). Each runs only while the root's set has the hash kept here.
    */
-  trusted_defs: Record<string, string>;
+  trusted_defs: Record<string, TrustedDefs>;
   /**
    * Create tasks from the roots' repeats (`repeats/*.md`) each tick. On by default; set it to
    * false on every PC but one that shares a task store, so two PCs never fire the same slot.
@@ -952,7 +954,15 @@ function checkPushBranches(raw: unknown): Record<string, boolean> {
   return checkRootFlags(raw, 'push_branches');
 }
 
-function checkTrustedDefs(raw: unknown): Record<string, string> {
+/** What a person trusted of one root's git definitions (`swarmupd.trusted_defs.<root>`). */
+export interface TrustedDefs {
+  /** `c:` and the SHA-256 of the merge checks. */
+  checks?: string;
+  /** `t:` and the SHA-256 of the triggers. */
+  triggers?: string;
+}
+
+function checkTrustedDefs(raw: unknown): Record<string, TrustedDefs> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new OpsError(
@@ -960,15 +970,28 @@ function checkTrustedDefs(raw: unknown): Record<string, string> {
       2,
     );
   }
-  for (const [root, hash] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof hash !== 'string' || !CHECKS_HASH_RE.test(hash)) {
-      throw new OpsError(
-        `swarmupd.trusted_defs.${root}: use the hash swarmup defs trust writes (c: and 64 hex digits)`,
-        2,
-      );
+  const out: Record<string, TrustedDefs> = {};
+  const usage = (root: string): string =>
+    `swarmupd.trusted_defs.${root}: use what swarmup defs trust writes: checks (c: and 64 hex digits) and triggers (t: and 64 hex digits)`;
+  for (const [root, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new OpsError(usage(root), 2);
+    const { checks, triggers, ...rest } = v as Record<string, unknown>;
+    if (Object.keys(rest).length > 0) throw new OpsError(usage(root), 2);
+    if (checks !== undefined && (typeof checks !== 'string' || !CHECKS_HASH_RE.test(checks))) {
+      throw new OpsError(usage(root), 2);
     }
+    if (
+      triggers !== undefined &&
+      (typeof triggers !== 'string' || !TRIGGERS_HASH_RE.test(triggers))
+    ) {
+      throw new OpsError(usage(root), 2);
+    }
+    out[root] = {
+      ...(checks !== undefined ? { checks: checks as string } : {}),
+      ...(triggers !== undefined ? { triggers: triggers as string } : {}),
+    };
   }
-  return { ...(raw as Record<string, string>) };
+  return out;
 }
 
 /** A map of root names to true or false, such as `swarmupd.triggers`. */

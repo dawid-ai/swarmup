@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { OpsEvent } from '@swarmup/core';
 import { BUILTIN_SCORER_IDS, clearDefinitionsCache, initRoot, Workspace } from '@swarmup/core';
-import type { GitScorer, ScoreResult, ScoreTask } from '../src/index.js';
+import type { GitScorer, RunRecord, ScoreResult, ScoreTask } from '../src/index.js';
 import { computeScores, gitScorers, SCORER_IDS, scorerSettings } from '../src/index.js';
 import { temp } from './supervisor-setup.js';
 
@@ -144,5 +144,41 @@ describe('built-in scorers set in git', () => {
     expect(scorerSettings(user({ copy: { sample: 0.2 } }))).toEqual({ copy: { sample: 0.2 } });
     expect(() => scorerSettings(user({ copy: { pass: 1 } }))).toThrow(/no such scorer/);
     expect(() => scorerSettings(user({ copy: { sample: 2 } }))).toThrow(/share from 0 to 1/);
+  });
+});
+
+describe('agent-level scorers set in git', () => {
+  const run = (id: string, root: string, exit: number): RunRecord => ({
+    id,
+    agent: 'claude:engineer',
+    task: 'T-1',
+    root,
+    pid: 1,
+    image: 'node',
+    command: 'x',
+    cwd: '.',
+    log: 'x',
+    started_at: new Date(T0).toISOString(),
+    ended_at: new Date(T0 + 600_000).toISOString(),
+    status: 'ended',
+    exit,
+    reason: 'exit',
+    budget_minutes: 60,
+    tokens: 100,
+  });
+  const stuck = (runs: RunRecord[], stores: GitScorer[]) =>
+    computeScores({ tasks: [], runs }, { stores }).find((r) => r.scorer === 'stuck-runs');
+
+  it("never let one store's threshold judge another store's work", () => {
+    const lax: GitScorer = { root: 'a', id: 'stuck-runs', scorer: 'stuck-runs', pass: 1 };
+    // Half the runs failed: the default (at most 10%) fails it, the lax store's 100% passes.
+    expect(stuck([run('R1', 'a', 0), run('R2', 'a', 1)], [lax])).toMatchObject({
+      value: 0.5,
+      pass: true,
+    });
+    expect(stuck([run('R1', 'a', 0), run('R2', 'b', 1)], [lax])).toMatchObject({
+      value: 0.5,
+      pass: false,
+    });
   });
 });

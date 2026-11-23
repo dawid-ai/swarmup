@@ -15,6 +15,7 @@ import {
   scheduleTriggerText,
   triggerDue,
   triggerRunsOn,
+  triggersHash,
 } from '../src/index.js';
 import { tempDir } from './helpers.js';
 
@@ -110,7 +111,8 @@ describe('trigger files', () => {
       runs_on: ['desk'],
     });
     expect(
-      check('every: 1d\naction: repeat\nrepeat: weekly-report\nenabled: false\n').def,
+      check('every: 1d\naction: repeat\nrepeat: weekly-report\nruns_on: [desk]\nenabled: false\n')
+        .def,
     ).toMatchObject({ every: '1d', repeat: 'weekly-report', enabled: false });
   });
 
@@ -122,9 +124,19 @@ describe('trigger files', () => {
     expect(lines('every: 1h\nat: "09:00"\naction: run\nagent: claude:pm\n')).toEqual([
       'triggers/nightly.yaml:2:1: error: at: set one of every, at and cron; got every and at',
     ]);
-    expect(lines('every: 1h\naction: workflow\n')).toEqual([
+    expect(lines('every: 1h\naction: workflow\nruns_on: [desk]\n')).toEqual([
       'triggers/nightly.yaml:2:1: error: action: action workflow needs workflow',
     ]);
+    // One machine starts a workflow or repeat, or each consenting machine would.
+    expect(lines('every: 1h\naction: repeat\nrepeat: weekly\n')).toEqual([
+      'triggers/nightly.yaml:2:1: error: action: action repeat needs runs_on: name the one machine that starts it, or each machine would',
+    ]);
+    expect(lines('cron: "0 0 30 2 *"\naction: run\nagent: claude:pm\n')).toEqual([
+      "triggers/nightly.yaml:1:1: error: cron: '0 0 30 2 *' never fires: no such date comes",
+    ]);
+    expect(lines('every: 1h\naction: run\nagent: claude:pm\ntask: other/AO-12\n')[0]).toContain(
+      "error: task: name a task of this store such as AO-0012; a trigger never starts another store's task",
+    );
     expect(lines('cron: "0 25 * * *"\naction: run\nagent: claude:pm\n')).toEqual([
       "triggers/nightly.yaml:1:1: error: cron: bad cron '0 25 * * *': hour: 25 is outside 0-23",
     ]);
@@ -229,17 +241,20 @@ describe('triggers in a store', () => {
     const before = loadDefinitions(dir).hash;
     writeFileSync(
       join(dir, 'triggers', 'good.yaml'),
-      'every: 1h\naction: workflow\nworkflow: bugfix\n',
+      'every: 1h\naction: workflow\nworkflow: bugfix\nruns_on: [desk]\n',
     );
     writeFileSync(
       join(dir, 'triggers', 'week.yaml'),
-      'every: 1h\naction: repeat\nrepeat: weekly\n',
+      'every: 1h\naction: repeat\nrepeat: weekly\nruns_on: [desk]\n',
     );
     writeFileSync(
       join(dir, 'triggers', 'lost.yaml'),
-      'every: 1h\naction: workflow\nworkflow: nope\n',
+      'every: 1h\naction: workflow\nworkflow: nope\nruns_on: [desk]\n',
     );
-    writeFileSync(join(dir, 'triggers', 'gone.yaml'), 'every: 1h\naction: repeat\nrepeat: nope\n');
+    writeFileSync(
+      join(dir, 'triggers', 'gone.yaml'),
+      'every: 1h\naction: repeat\nrepeat: nope\nruns_on: [desk]\n',
+    );
     writeFileSync(
       join(dir, 'triggers', 'who.yaml'),
       'every: 1h\naction: run\nagent: claude:ghost\n',
@@ -258,5 +273,43 @@ describe('triggers in a store', () => {
         "warning: agent: claude:ghost has no agent file in this store and is not in this machine's swarmupd.agents",
       ]),
     );
+  });
+});
+
+describe('trigger trust', () => {
+  const def = (text: string, name = 'digest') =>
+    checkTriggerText(name, text, { file: `triggers/${name}.yaml` }).def!;
+  const base = 'every: 1d\naction: run\nagent: claude:pm\nprompt: Write it.\n';
+
+  it('hashes what fires, not what describes it', () => {
+    const hash = triggersHash([def(base)]);
+    expect(hash).toMatch(/^t:[0-9a-f]{64}$/);
+    expect(triggersHash([def(`${base}description: Daily digest\n`)])).toBe(hash);
+    expect(triggersHash([def(base.replace('Write it.', 'Push it.'))])).not.toBe(hash);
+    expect(triggersHash([def(`${base}runs_on: [desk]\n`)])).not.toBe(hash);
+    expect(triggersHash([def(`${base}enabled: false\n`)])).not.toBe(hash);
+    expect(triggersHash([def(base), def(base, 'other')])).not.toBe(hash);
+    expect(triggersHash([])).toBeNull();
+  });
+});
+
+describe('cron across a daylight saving change', () => {
+  it('fires a time the spring-forward gap skips at the first minute after it', () => {
+    const saved = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // 2027-03-14: 02:00 becomes 03:00 in New York.
+      const after = new Date(2027, 2, 14, 1, 0).getTime();
+      const next = nextCron(parseCron('30 2 * * *'), after)!;
+      expect(new Date(next).getHours()).toBe(3);
+      expect(new Date(next).getMinutes()).toBe(0);
+      expect(new Date(next).getDate()).toBe(14);
+      // The next day runs at 02:30 again.
+      const day2 = nextCron(parseCron('30 2 * * *'), next)!;
+      expect([new Date(day2).getDate(), new Date(day2).getHours()]).toEqual([15, 2]);
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
   });
 });

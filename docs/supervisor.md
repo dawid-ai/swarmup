@@ -1185,7 +1185,9 @@ swarmupd:
   view and `/api/schedules` add, change, pause, run and delete them in the user config.
 - **Git triggers** (`triggers/<name>.yaml` in a task store, see
   [Triggers](definitions.md#triggers)) fire in the same step as schedules, on a machine whose
-  `swarmupd.triggers.<root>` is true and that their `runs_on` names. `triggers.json` records when
+  `swarmupd.triggers.<root>` is true, that trusts the store's exact trigger set
+  (`swarmupd.trusted_defs.<root>.triggers`, written by `swarmup defs trust`) and that their
+  `runs_on` names; a `run` trigger also needs the agent's `wake: true`. `triggers.json` records when
   each last fired here, so each fire time starts once, across restarts.
 - **Repeats** (repeating tasks, see [the protocol](protocol.md#repeating-tasks)) create their
   task each tick when a slot is due or a condition holds, before the wake plan, so the new task
@@ -1484,7 +1486,7 @@ swarmupd:
 - **Checks in git.** A store's `swarm.yaml` can keep the merge checks too (`checks.<name>`, see
   [Merge checks in git](definitions.md#merge-checks-in-git)). They run only on a machine where a
   person ran `swarmup defs trust`, which keeps the hash of the exact set in
-  `swarmupd.trusted_defs.<root>`; any change to a command or its paths skips them again until a
+  `swarmupd.trusted_defs.<root>.checks`; any change to a command or its paths skips them again until a
   person trusts the new set, and each merge says so in `opsd.log`. A machine that sets
   `swarmupd.merge.<root>.checks` runs its own list instead. `base`, `checkout`, `build` and
   `install` stay in the user config.

@@ -78,7 +78,9 @@ describe('swarmup defs trust', () => {
       '  pnpm lint  (when it changes **/*.ts)',
       '  pnpm test',
     ]);
-    expect(trusted(p.config)).toEqual({ demo: expect.stringMatching(/^c:[0-9a-f]{64}$/) });
+    expect(trusted(p.config)).toEqual({
+      demo: { checks: expect.stringMatching(/^c:[0-9a-f]{64}$/) },
+    });
     expect((await cli(p, ['validate'])).out).toEqual([]);
     expect((await cli(p, ['defs', 'show'])).out).toContain(
       '  demo: 2 merge check(s), trusted; the merge runs them',
@@ -99,7 +101,7 @@ describe('swarmup defs trust', () => {
     writeFileSync(join(p.store, 'swarm.yaml'), CHECKS);
     const agent = await cli(p, ['defs', 'trust'], { SWARMUP_AGENT: 'claude:engineer' });
     expect(agent.code).toBe(2);
-    expect(agent.err.join('\n')).toContain('only a person trusts merge checks, outside runs');
+    expect(agent.err.join('\n')).toContain('only a person trusts git definitions, outside runs');
     const inRun = await cli(p, ['defs', 'trust'], { SWARMUP_RUN: '01AAAAAAAAAAAAAAAAAAAAAAAA' });
     expect(inRun.code).toBe(2);
     expect(trusted(p.config)).toBeUndefined();
@@ -110,7 +112,7 @@ describe('swarmup defs trust', () => {
     mkdirSync(p.store, { recursive: true });
     writeFileSync(join(p.store, 'swarm.yaml'), 'swarmup_defs: 1\n');
     expect((await cli(p, ['defs', 'trust'])).out).toEqual([
-      'demo: swarm.yaml names no merge checks; nothing to trust',
+      'demo: swarm.yaml names no merge checks and the store has no triggers; nothing to trust',
     ]);
   });
 });
@@ -140,5 +142,71 @@ describe('swarmup defs scorers', () => {
       'demo/copy  rubric copy  not run yet  sample 0.1  blind  judge claude sonnet',
       'demo/review-rounds  builtin review-rounds  on  pass 2 (this machine, over 0)  applies to types bug',
     ]);
+  });
+});
+
+describe('trigger consent', () => {
+  const DIGEST = 'every: 24h\naction: run\nagent: claude:pm\nprompt: Write it.\n';
+  const write = (store: string, name: string, text: string): void => {
+    mkdirSync(join(store, 'triggers'), { recursive: true });
+    writeFileSync(join(store, 'triggers', `${name}.yaml`), text);
+  };
+
+  it('turns triggers on only for a person, and trusts them only with --trust', async () => {
+    const p = project();
+    write(p.store, 'digest', DIGEST);
+    const agent = await cli(p, ['triggers', 'on', '--root', 'demo'], {
+      SWARMUP_AGENT: 'claude:engineer',
+    });
+    expect(agent.code).toBe(2);
+    expect(agent.err.join('\n')).toContain('only a person turns git triggers on, outside runs');
+    const on = await cli(p, ['triggers', 'on', '--root', 'demo']);
+    expect(on.out).toEqual([
+      "demo: this machine runs the git triggers it trusts, from swarmupd's next tick",
+      '  digest  every 24h  run claude:pm  prompt "Write it."',
+      '  1 trigger(s) in demo are not trusted on this machine; none fires until a person runs `swarmup defs trust --root demo`, or `swarmup triggers on --root demo --trust`',
+    ]);
+    expect(trusted(p.config)).toBeUndefined();
+    expect((await cli(p, ['validate'])).out.join('\n')).toContain(
+      '1 trigger(s) in demo are not trusted on this machine',
+    );
+    expect((await cli(p, ['triggers', 'list'])).out).toContain(
+      '  warning: 1 trigger(s) in demo are not trusted on this machine; none fires until a person runs `swarmup defs trust --root demo`',
+    );
+    await cli(p, ['triggers', 'on', '--root', 'demo', '--trust']);
+    expect(trusted(p.config)).toEqual({ demo: { triggers: expect.stringMatching(/^t:/) } });
+    expect((await cli(p, ['validate'])).out.join('\n')).not.toContain('trigger(s) in demo');
+    // A change to what fires untrusts the set.
+    write(p.store, 'digest', DIGEST.replace('Write it.', 'Push it.'));
+    expect((await cli(p, ['validate'])).out.join('\n')).toContain(
+      '1 trigger(s) in demo changed since this machine trusted them',
+    );
+  });
+
+  it('trusts triggers with defs trust, listing what fires', async () => {
+    const p = project();
+    write(p.store, 'digest', DIGEST);
+    const res = await cli(p, ['defs', 'trust']);
+    expect(res.out).toEqual([
+      expect.stringMatching(/^demo: trusts these triggers \(t:[0-9a-f]{12}\):$/),
+      '  digest  every 24h  run claude:pm  prompt "Write it."',
+    ]);
+    expect(trusted(p.config)).toEqual({ demo: { triggers: expect.stringMatching(/^t:/) } });
+  });
+
+  it('moves schedules into triggers only for a person, and never onto another store', async () => {
+    const p = project();
+    writeFileSync(
+      p.config,
+      'me: human:dawid\nswarmupd:\n  schedules:\n    - {name: digest, every: 24h, agent: claude:pm, task: other/AO-12}\n',
+    );
+    const agent = await cli(p, ['defs', 'import-schedules', '--apply'], {
+      SWARMUP_AGENT: 'claude:engineer',
+    });
+    expect(agent.err.join('\n')).toContain('only a person moves schedules into triggers');
+    const other = await cli(p, ['defs', 'import-schedules']);
+    expect(other.err.join('\n')).toContain(
+      "schedule 'digest' works on other/AO-12, a task of another store; a trigger of demo cannot",
+    );
   });
 });

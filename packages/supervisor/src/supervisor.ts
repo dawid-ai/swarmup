@@ -41,6 +41,7 @@ import {
   loadDefinitions,
   SCRATCH_WRITER_ROLES,
   TRIGGER_ACTOR,
+  untrustedTriggersText,
   VARIANTS_DIR,
   canClaimType,
   editUserConfig,
@@ -1112,6 +1113,8 @@ export class Supervisor extends EventEmitter {
   private readonly signInRuns = new Set<Promise<SignInAnswer>>();
   /** Providers whose first sign-in check after swarmupd started has not answered yet. */
   private readonly startChecks = new Set<string>();
+  /** Git trigger sets swarmupd warned are not trusted, by root and hash: one warning each. */
+  private readonly triggerWarned = new Set<string>();
   /** Whether live runs keep going after this swarmupd exits; see `RUNS_OUTLIVE_OPSD`. */
   readonly runsOutlive: boolean;
   /** The desktop chat with the orchestrator; each turn is a run under the usual limits. */
@@ -6417,27 +6420,42 @@ export class Supervisor extends EventEmitter {
     if (!Object.values(this.config.triggers).some(Boolean)) return;
     const state = this.store.readJson<Record<string, number>>(TRIGGERS_STATE, {});
     const now = this.now();
-    const { due, baselines } = dueTriggers(
+    const { due, baselines, active, untrusted } = dueTriggers(
       this.defsRoots(),
       this.config,
       this.user.machine,
       state,
       now,
     );
+    for (const u of untrusted) {
+      const told = `triggers\0${u.root}\0${u.hash}`;
+      if (this.triggerWarned.has(told)) continue;
+      this.triggerWarned.add(told);
+      this.emit('warn', untrustedTriggersText(u.root, u.trust, u.count));
+    }
     const record = (key: string): void => {
       state[key] = now;
       this.store.writeJson(TRIGGERS_STATE, state);
     };
-    if (baselines.length > 0) {
-      for (const key of baselines) state[key] = now;
-      this.store.writeJson(TRIGGERS_STATE, state);
+    // A trigger that stopped firing here loses its record, so when it fires again it starts
+    // from then: never for a time it missed while off, untrusted or disabled.
+    const live = new Set(active);
+    let changed = false;
+    for (const key of Object.keys(state)) {
+      if (!live.has(key)) {
+        delete state[key];
+        changed = true;
+      }
     }
+    for (const key of baselines) {
+      state[key] = now;
+      changed = true;
+    }
+    if (changed) this.store.writeJson(TRIGGERS_STATE, state);
     for (const t of due) {
       if (this.stopping) return;
       if (t.def.action === 'run') {
-        this.safe(() => {
-          if (this.fireRunTrigger(t)) record(t.key);
-        });
+        this.safe(() => this.fireRunTrigger(t, () => record(t.key)));
         continue;
       }
       record(t.key);
@@ -6445,16 +6463,26 @@ export class Supervisor extends EventEmitter {
     }
   }
 
-  /** Starts a `run` trigger's run under the usual limits; false when it cannot start now. */
-  private fireRunTrigger(t: DueTrigger): boolean {
+  /**
+   * Starts a `run` trigger's run under the usual limits, on a task of the trigger's own store
+   * only. `record` marks the fire just before the launch, so a crash never starts it twice; a
+   * trigger that waits for room is not recorded and starts once there is room.
+   */
+  private fireRunTrigger(t: DueTrigger, record: () => void): void {
     const agent = t.def.agent!;
-    const task = t.def.task && !t.def.task.includes('/') ? `${t.root}/${t.def.task}` : t.def.task;
+    if (t.def.task?.includes('/')) {
+      throw new OpsError(`trigger ${t.key}: task ${t.def.task} is not a task of ${t.root}`);
+    }
+    const task = t.def.task ? `${t.root}/${t.def.task}` : undefined;
     const ws = this.ws(agent);
+    if (task && ws.resolve(task).root.name !== t.root) {
+      throw new OpsError(`trigger ${t.key}: task ${t.def.task} is not a task of ${t.root}`);
+    }
     const s: ScheduleConfig = { name: t.key, agent, ...(task ? { task } : {}) };
-    if (this.scheduleBlocker(ws, s)) return false;
-    if (task && this.liveRecords().some((r) => r.task === ws.resolve(task).id)) return false;
+    if (this.scheduleBlocker(ws, s)) return;
+    if (task && this.liveRecords().some((r) => r.task === ws.resolve(task).id)) return;
+    record();
     this.launch({ agent, task, extra: t.def.prompt || undefined, schedule: `trigger ${t.key}` });
-    return true;
   }
 
   /** Starts a `workflow` trigger's workflow, or creates a `repeat` trigger's task. */

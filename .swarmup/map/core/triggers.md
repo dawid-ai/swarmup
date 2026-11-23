@@ -9,6 +9,7 @@ covers:
   - packages/supervisor/src/git-scorers.ts
   - packages/supervisor/src/triggers.ts
   - packages/cli/src/triggers-cmd.ts
+  - packages/cli/src/trust.ts
   - packages/core/test/triggers.test.ts
   - packages/supervisor/test/triggers.test.ts
   - packages/supervisor/test/defs-checks.test.ts
@@ -50,7 +51,8 @@ true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires t
 
 ## Invariants
 
-- Git triggers fire only on a machine whose `swarmupd.triggers.<root>` is true; workflows and
+- Git triggers fire only where `swarmupd.triggers.<root>` is true, a person trusted the exact
+  set (`trusted_defs.<root>.triggers`, `cli/src/trust.ts`) and a run's agent has `wake: true`; workflows and
   repeats they start act as `opsd:trigger`, never as a person.
 - Git checks never run without a person's trust of their exact hash on that machine.
 - One fire time starts once per machine: a `run` trigger is recorded after its launch, a

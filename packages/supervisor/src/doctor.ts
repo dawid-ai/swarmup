@@ -17,6 +17,8 @@ import type { UserConfig } from '@swarmup/core';
 import {
   checksTrustProblem,
   formatProblem,
+  triggersTrustProblem,
+  TRIGGERS_DIR,
   loadDefinitions,
   SWARM_FILE,
   mcpSecretRefs,
@@ -545,10 +547,19 @@ export async function doctor(opts: DoctorOptions): Promise<Check[]> {
           join(r.dir, SWARM_FILE),
           r.name,
           set.swarm.checks,
-          cfg?.trusted_defs[r.name],
+          cfg?.trusted_defs[r.name]?.checks,
         )
       : null;
-    const problems = trust ? [...set.problems, trust] : set.problems;
+    const tTrust =
+      cfg?.triggers[r.name] === true
+        ? triggersTrustProblem(
+            join(r.dir, TRIGGERS_DIR),
+            r.name,
+            set.triggers.flatMap((t) => (t.def ? [t.def] : [])),
+            cfg.trusted_defs[r.name]?.triggers,
+          )
+        : null;
+    const problems = [...set.problems, ...(trust ? [trust] : []), ...(tTrust ? [tTrust] : [])];
     const errors = problems.filter((p) => p.severity === 'error');
     const warnings = problems.length - errors.length;
     add({

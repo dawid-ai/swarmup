@@ -860,8 +860,9 @@ function appliesToTask(
  * Each store's work is scored with its own threshold and only where its `applies_to` takes it;
  * the work of stores that leave the scorer alone keeps the default threshold. The machine's
  * `pass` wins over every store's. An agent-level scorer counts an agent across stores, so it
- * scores once, over the work every store takes, with the threshold the stores agree on, else
- * the default.
+ * scores once, over the work every store takes, with a store's threshold only when every store
+ * whose work it counts has that threshold (a store without a file has the default); else the
+ * default.
  */
 function scoreWithStores(
   s: Scorer,
@@ -900,9 +901,15 @@ function scoreWithStores(
   };
   const runs = ctx.runs.filter(takesRun);
   if (s.level === 'agent') {
-    const passes = new Set([...byRoot.values()].map((g) => passOf(g)));
+    // The threshold of every store whose work is counted, the default for a store without a
+    // scorer file: one store's file never sets the threshold of another store's work.
+    const roots = new Set<string | undefined>([
+      ...tasks.map((t) => t.root),
+      ...runs.map((r) => r.root),
+    ]);
+    const passes = new Set([...roots].map((root) => passOf(root ? byRoot.get(root) : undefined)));
     const agreed = passes.size === 1 ? [...passes][0] : pass;
-    return s.score({ ...ctx, tasks, runs }, machinePass ?? agreed);
+    return s.score({ ...ctx, tasks, runs }, agreed);
   }
   // Task and run scorers: one pass per threshold, over the work of the stores that use it.
   const groupOf = (root: string | undefined): string => {

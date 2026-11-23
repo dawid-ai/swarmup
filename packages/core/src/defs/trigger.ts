@@ -4,6 +4,7 @@
  * a store's triggers only after it turns them on (`swarmupd.triggers.<root>: true`), and only the
  * ones whose `runs_on` names it. `webhook` is accepted and does nothing yet (W8 phase 4).
  */
+import { createHash } from 'node:crypto';
 import { OpsError } from '../ids.js';
 import { parseDuration } from '../units.js';
 import type { Cron } from './cron.js';
@@ -107,9 +108,9 @@ export const TRIGGER_SCHEMA: Schema = obj(
     }),
     prompt: str({ doc: 'run: instructions for the run; the standard prompt without them.' }),
     task: str({
-      pattern: /^([^\s/]+\/)?[A-Za-z][A-Za-z0-9]*-\d+$/,
-      hint: 'name a task such as AO-0012 or root/AO-0012',
-      doc: 'run: the task the run works on.',
+      pattern: /^[A-Za-z][A-Za-z0-9]*-\d+$/,
+      hint: "name a task of this store such as AO-0012; a trigger never starts another store's task",
+      doc: 'run: the task of this store the run works on.',
     }),
     workflow: str({
       pattern: WORKFLOW_ID_RE,
@@ -129,7 +130,7 @@ export const TRIGGER_SCHEMA: Schema = obj(
       doc: 'repeat: the repeat (`repeats/<name>.md`) whose task to create now.',
     }),
     runs_on: list(str({ pattern: /\S/, hint: 'name a machine' }), {
-      doc: 'Machines (`machine` in each user config) that run the trigger; unset: every machine that turned triggers on for this store.',
+      doc: 'Machines (`machine` in each user config) that run the trigger; unset: every machine that turned triggers on for this store. Required for action workflow and repeat, so one fire time starts once.',
     }),
     enabled: bool({ doc: 'Default true; false keeps the file and fires nothing.' }),
   },
@@ -183,7 +184,9 @@ export function checkTriggerText(
   }
   if (typeof v.cron === 'string') {
     try {
-      parseCron(v.cron);
+      if (nextCron(parseCron(v.cron), Date.now()) === null) {
+        at('cron', 'error', `'${v.cron}' never fires: no such date comes`);
+      }
     } catch (err) {
       at('cron', 'error', (err as Error).message);
     }
@@ -191,6 +194,15 @@ export function checkTriggerText(
   const action = v.action as TriggerAction;
   const needs = { run: 'agent', workflow: 'workflow', repeat: 'repeat' }[action];
   if (typeof v[needs] !== 'string') at('action', 'error', `action ${action} needs ${needs}`);
+  // Each consenting machine fires a trigger without runs_on, so one fire time would start one
+  // workflow or repeat task per machine.
+  if (action !== 'run' && !(Array.isArray(v.runs_on) && v.runs_on.length > 0)) {
+    at(
+      'action',
+      'error',
+      `action ${action} needs runs_on: name the one machine that starts it, or each machine would`,
+    );
+  }
   for (const [other, keys] of Object.entries(ACTION_KEYS)) {
     if (other === action) continue;
     for (const k of keys) {
@@ -321,6 +333,93 @@ export function scheduleTriggerText(s: {
     ...(s.paused ? ['enabled: false'] : []),
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/** Prefix of a trigger-set hash; the rest is a SHA-256 in hex. */
+export const TRIGGERS_HASH_PREFIX = 't:';
+
+/** A trusted trigger-set hash as `swarmupd.trusted_defs.<root>.triggers` keeps it. */
+export const TRIGGERS_HASH_RE = /^t:[0-9a-f]{64}$/;
+
+/**
+ * The hash of a store's triggers (W5 phase 4, Decision 7): `t:` and the SHA-256 of every field
+ * that changes what fires, per trigger in name order: name, schedule, action, agent, prompt,
+ * task, workflow, params, title, repeat, runs_on and enabled. A description does not change it.
+ * Null when the store has no trigger that reads.
+ */
+export function triggersHash(defs: readonly TriggerDef[]): string | null {
+  if (defs.length === 0) return null;
+  const lines = [...defs]
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((d) =>
+      JSON.stringify([
+        d.name,
+        d.every ?? null,
+        d.at ?? null,
+        d.cron ?? null,
+        d.action,
+        d.agent ?? null,
+        d.prompt ?? null,
+        d.task ?? null,
+        d.workflow ?? null,
+        Object.entries(d.params ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        d.title ?? null,
+        d.repeat ?? null,
+        d.runs_on ?? null,
+        d.enabled,
+      ]),
+    );
+  return (
+    TRIGGERS_HASH_PREFIX +
+    createHash('sha256')
+      .update(`swarmup-triggers/1\n${lines.join('\n')}`, 'utf8')
+      .digest('hex')
+  );
+}
+
+/**
+ * Whether `trusted` (the hash a machine keeps for the root) trusts the store's triggers: `none`
+ * (no trigger reads), `trusted`, `untrusted` (none kept) or `changed` (another set's hash).
+ */
+export function triggersTrust(
+  defs: readonly TriggerDef[],
+  trusted: string | undefined,
+): 'none' | 'trusted' | 'untrusted' | 'changed' {
+  const hash = triggersHash(defs);
+  if (!hash) return 'none';
+  if (!trusted) return 'untrusted';
+  return trusted === hash ? 'trusted' : 'changed';
+}
+
+/** What swarmupd does with a store's triggers that are not trusted, in one sentence. */
+export function untrustedTriggersText(root: string, trust: string, count: number): string {
+  const why =
+    trust === 'changed'
+      ? 'changed since this machine trusted them'
+      : 'are not trusted on this machine';
+  return `${count} trigger(s) in ${root} ${why}; none fires until a person runs \`swarmup defs trust --root ${root}\``;
+}
+
+/**
+ * The warning `swarmup validate` and `doctor` give on a machine that turned a store's triggers on
+ * but does not trust its trigger set, or null.
+ */
+export function triggersTrustProblem(
+  file: string,
+  root: string,
+  defs: readonly TriggerDef[],
+  trusted: string | undefined,
+): DefProblem | null {
+  const trust = triggersTrust(defs, trusted);
+  if (trust === 'none' || trust === 'trusted') return null;
+  return {
+    file,
+    path: 'triggers',
+    line: 1,
+    col: 1,
+    severity: 'warning',
+    message: untrustedTriggersText(root, trust, defs.length),
+  };
 }
 
 export { CRON_HINT };

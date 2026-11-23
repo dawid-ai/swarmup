@@ -163,7 +163,7 @@ cron: '0 9 * * mon-fri' # or every: 30m, or at: '09:00'
 action: run # run | workflow | repeat
 agent: claude:pm
 prompt: Post the standup in the channel.
-runs_on: [desk] # optional: machine names; unset means every machine that turned triggers on
+runs_on: [desk] # machine names; unset means every consenting machine (run only)
 enabled: true # optional; false keeps the file and fires nothing
 ```
 
@@ -174,23 +174,43 @@ enabled: true # optional; false keeps the file and fires nothing
   `dec` and days of the week `sun` to `sat` (0 or 7 is Sunday). When both day fields are
   restricted, a day that matches either one fires, as in Vixie cron.
 - **What:** `action: run` starts `agent` with `prompt` (the standard prompt without one) on
-  `task` (`ID` in this store, or `root/ID`), under the usual limits, as a schedule does.
+  `task` (an `ID` of this store; a trigger never starts another store's task), under the usual
+  limits, as a schedule does.
   `action: workflow` starts `workflow` with `params` and an optional milestone `title`, through
   the same path as `swarmup workflow start`. `action: repeat` creates the task of
   `repeats/<repeat>.md` now, as `swarmup repeat run` does. swarmupd starts workflows and repeats
   as `opsd:trigger`, never as a person, so a `starter` workflow still waits for a person's
   approval.
-- **Where:** a machine runs a store's triggers only after it turns them on, per root:
-  `swarmupd.triggers.<root>: true` in its user config, or `swarmup triggers on --root NAME`. Git
-  never starts runs on a machine without its consent. `runs_on` then narrows a trigger to the
-  machines it names (`machine` in each user config). When several machines turn on the same
-  store, give each trigger a `runs_on`, or one fire time starts on each of them.
+- **Consent:** git never starts anything on a machine without its consent. A trigger fires on a
+  machine only when all of these hold:
+  - The machine turned the store's triggers on: `swarmupd.triggers.<root>: true`, which
+    `swarmup triggers on --root NAME` writes.
+  - A person trusted the store's exact trigger set there (Decision 7, as for merge checks):
+    `swarmup defs trust --root NAME`, or `swarmup triggers on --root NAME --trust`, keeps
+    `t:` and a SHA-256 in `swarmupd.trusted_defs.<root>.triggers`. The hash covers every field
+    that changes what fires: name, `every`, `at`, `cron`, `action`, `agent`, `prompt`, `task`,
+    `workflow`, `params`, `title`, `repeat`, `runs_on` and `enabled`, not `description`. Any
+    change stops every trigger of the store until a person trusts the new set, since a run can
+    write `triggers/` with a shell command and store sync commits it. `validate` and `doctor`
+    (on a machine that turned the store's triggers on), `swarmup triggers list` and swarmupd's
+    log say so.
+  - `runs_on` names the machine (`machine` in its user config), or is unset. `action: workflow`
+    and `action: repeat` need `runs_on`, so one fire time starts one workflow or task, not one
+    per consenting machine.
+  - For `action: run`: the agent may be woken on this machine (`swarmupd.agents.<id>.wake:
+true`) and has a role file in the store with `status: active`.
+  - `swarmup triggers on|off`, `defs trust` and `defs import-schedules --apply` refuse an agent
+    and anyone inside a run: only a person decides what git may start.
 - **Once per fire time:** swarmupd records in `triggers.json`, in its state folder, when each
   trigger last fired on this machine, so a restart never fires one fire time twice. A new
   `every` trigger fires at once; a new `at` or `cron` trigger fires first at its next time after
-  this machine first sees it. After a pause or a stop, each trigger fires once for the latest time
-  it missed. A `run` trigger that waits for room starts once there is room; a `workflow` or
-  `repeat` trigger is recorded before it acts, so one that fails is not tried again every tick.
+  this machine first sees it. A trigger that stops firing here (turned off, untrusted, disabled,
+  `runs_on` no longer naming the machine) loses its record, so when it fires again it starts
+  from then, never for a time weeks ago. After a pause or a stop of swarmupd, each trigger fires
+  once for the latest time it missed. Each fire is recorded before it acts (for a `run`, once
+  the limits have room, just before the launch), so a crash or a failure never starts it twice.
+  A cron time that a spring-forward change skips fires at the first minute after the gap, as in
+  Vixie cron; a cron that names no date that comes, such as `0 0 30 2 *`, is an error.
 - **webhook:** accepted and listed, with a warning; webhook triggers come in W8 phase 4, and a
   trigger with only `webhook` never fires.
 
@@ -202,7 +222,8 @@ it does, and whether and when it fires next on this machine.
 `swarmup defs import-schedules [--root NAME]` prints each `swarmupd.schedules` entry as a trigger
 file, with `runs_on` set to this machine when the user config names it. `--apply` writes the
 files, never over a different one, and `--remove` also takes the schedules out of the user config
-and turns on `swarmupd.triggers.<root>`, so nothing fires twice.
+and turns on `swarmupd.triggers.<root>`, so nothing fires twice; the new triggers fire once a
+person trusts them. A schedule on a task of another store is refused.
 
 ## Merge checks in git
 
@@ -222,7 +243,8 @@ Git never names a command swarmupd runs without the machine's trust (Decision 7)
 
 - The checks run on a machine only after a person runs `swarmup defs trust [--root NAME]` there,
   outside any run. It prints the commands and keeps the hash of the exact set, each check's name,
-  command and paths, in the user config as `swarmupd.trusted_defs.<root>`. An agent, or anyone
+  command and paths, in the user config as `swarmupd.trusted_defs.<root>.checks`. An agent, or
+  anyone
   inside a run, cannot trust them.
 - Any change to a command or its paths untrusts the set: merges skip the git checks, and
   `swarmup validate`, `swarmup doctor`, `swarmup defs show`, swarmupd's log and each merge's line
@@ -425,8 +447,8 @@ improvement:
 - `swarmup defs migrate [--apply] [--prune]` moves legacy agent files into agent folders; see
   [Migrate legacy files](#migrate-legacy-files).
 - `swarmup triggers list [--root NAME] [--json]` lists the triggers, with whether and when each
-  fires next on this machine; `swarmup triggers on|off --root NAME` turns a root's triggers on or
-  off here. `swarmup defs import-schedules [--apply] [--remove]` moves `swarmupd.schedules` into
+  fires next on this machine; `swarmup triggers on|off --root NAME [--trust]` turns a root's
+  triggers on or off here, and `on` lists what would fire; `--trust` also trusts that set. `swarmup defs import-schedules [--apply] [--remove]` moves `swarmupd.schedules` into
   `triggers/`; see [Triggers](#triggers).
 - `swarmup workflow list|show|start` lists, shows and starts the store's workflows; see
   [Workflows](protocol.md#workflows).

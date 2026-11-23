@@ -12,7 +12,6 @@ import {
   checksTrustProblem,
   effectiveSample,
   gitMergeChecks,
-  isHuman,
   daemonKeyIn,
   DEF_FOLDERS,
   definitionHash,
@@ -35,17 +34,20 @@ import {
   SWARM_FILE,
   TRIGGER_NAME_RE,
   TRIGGERS_DIR,
+  triggersHash,
+  triggersTrust,
+  triggersTrustProblem,
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
 import {
-  daemonCall,
   importableConfig,
   scorerSettings,
   lineDiff,
   opsdConfig,
-  readDaemon,
   withDefinitions,
 } from '@swarmup/supervisor';
+import type { TrustChange } from './trust.js';
+import { recordTrust, requirePerson, triggerLines } from './trust.js';
 
 /** What `swarmup validate` and `swarmup defs` need of the CLI's context. */
 interface DefsCtx {
@@ -180,10 +182,21 @@ function validate(ctx: DefsCtx): number {
             join(dir, SWARM_FILE),
             root.name,
             set.swarm.checks,
-            machine?.trusted_defs[root.name],
+            machine?.trusted_defs[root.name]?.checks,
           )
         : null;
     if (trust) problems.push(trust);
+    // Triggers this machine turned on fire only while it trusts their exact set.
+    const tTrust =
+      root && machine?.triggers[root.name] === true
+        ? triggersTrustProblem(
+            join(dir, TRIGGERS_DIR),
+            root.name,
+            set.triggers.flatMap((t) => (t.def ? [t.def] : [])),
+            machine.trusted_defs[root.name]?.triggers,
+          )
+        : null;
+    if (tTrust) problems.push(tTrust);
   }
   if (ctx.opts['write-schemas']) {
     for (const dir of stores) {
@@ -353,67 +366,68 @@ function defsShow(ctx: DefsCtx): number {
 
 /**
  * `swarmup defs trust`: a person, outside runs, trusts the merge checks of each root's
- * `swarm.yaml` on this machine: the user config keeps the hash of the exact set
- * (`swarmupd.trusted_defs.<root>`), and any change to a command or its paths needs a new trust.
- * `--revoke` takes the trust back.
+ * `swarm.yaml` and the root's triggers on this machine (Decision 7). The user config keeps the
+ * hash of each exact set (`swarmupd.trusted_defs.<root>.{checks, triggers}`); any change to
+ * either needs a new trust. `--revoke` takes both back.
  */
 async function trust(ctx: DefsCtx): Promise<number> {
   const ws = ctx.ws();
-  const actor = ws.actor;
-  if (ws.run || !actor || !isHuman(actor)) {
-    throw new OpsError(
-      `only a person trusts merge checks, outside runs${actor ? `; ${actor}${ws.run ? ` in run ${ws.run}` : ''} cannot` : ''}`,
-      2,
-    );
-  }
+  requirePerson(ws, 'trusts git definitions');
   const revoke = Boolean(ctx.opts.revoke);
-  const changes: Array<{ root: string; hash: string | null }> = [];
+  const changes: TrustChange[] = [];
   for (const root of rootsOf(ctx)) {
-    const set = loadDefinitions(root.dir);
-    const checks = set.swarm?.checks;
     if (revoke) {
-      changes.push({ root: root.name, hash: null });
-      ctx.io.out(`${root.name}: merge checks no longer trusted on this machine`);
+      changes.push({ root: root.name, checks: null, triggers: null });
+      ctx.io.out(`${root.name}: merge checks and triggers no longer trusted on this machine`);
       continue;
     }
+    const set = loadDefinitions(root.dir);
     if (set.present && !set.swarm) {
       throw new OpsError(
         `${root.name}: swarm.yaml has errors; fix them first (swarmup validate --root ${root.name})`,
         1,
       );
     }
-    if (!checks) {
-      ctx.io.out(`${root.name}: swarm.yaml names no merge checks; nothing to trust`);
-      continue;
-    }
-    const hash = checksHash(checks);
-    const before = machineOf(ws.user)?.trusted_defs[root.name];
-    const state = checksTrust(checks, before);
-    ctx.io.out(
-      `${root.name}: ${state === 'trusted' ? 'already trusts' : 'trusts'} these merge checks (${hash.slice(0, 14)}):`,
-    );
-    for (const c of gitMergeChecks(checks)) {
+    const before = machineOf(ws.user)?.trusted_defs[root.name] ?? {};
+    const change: TrustChange = { root: root.name };
+    const checks = set.swarm?.checks;
+    if (checks) {
+      const hash = checksHash(checks);
+      const state = checksTrust(checks, before.checks);
       ctx.io.out(
-        typeof c === 'string' ? `  ${c}` : `  ${c.run}  (when it changes ${c.paths.join(', ')})`,
+        `${root.name}: ${state === 'trusted' ? 'already trusts' : 'trusts'} these merge checks (${hash.slice(0, 14)}):`,
+      );
+      for (const c of gitMergeChecks(checks)) {
+        ctx.io.out(
+          typeof c === 'string' ? `  ${c}` : `  ${c.run}  (when it changes ${c.paths.join(', ')})`,
+        );
+      }
+      if (state !== 'trusted') change.checks = hash;
+    }
+    const defs = set.triggers.flatMap((t) => (t.def ? [t.def] : []));
+    const broken = set.triggers.length - defs.length;
+    const tHash = triggersHash(defs);
+    if (tHash) {
+      const state = triggersTrust(defs, before.triggers);
+      ctx.io.out(
+        `${root.name}: ${state === 'trusted' ? 'already trusts' : 'trusts'} these triggers (${tHash.slice(0, 14)}):`,
+      );
+      for (const l of triggerLines(defs)) ctx.io.out(l);
+      if (state !== 'trusted') change.triggers = tHash;
+    }
+    if (broken > 0) {
+      ctx.io.err(
+        `${root.name}: ${broken} trigger file(s) have errors; they are not trusted and never fire (swarmup validate --root ${root.name})`,
       );
     }
-    if (state !== 'trusted') changes.push({ root: root.name, hash });
+    if (!checks && !tHash) {
+      ctx.io.out(
+        `${root.name}: swarm.yaml names no merge checks and the store has no triggers; nothing to trust`,
+      );
+    }
+    if (change.checks !== undefined || change.triggers !== undefined) changes.push(change);
   }
-  if (changes.length === 0) return 0;
-  editUserConfig(
-    ctx.io.env,
-    (d) => {
-      const key = daemonKeyIn(d);
-      for (const c of changes) {
-        if (c.hash) d.setIn([key, 'trusted_defs', c.root], c.hash);
-        else if (d.hasIn([key, 'trusted_defs', c.root])) d.deleteIn([key, 'trusted_defs', c.root]);
-      }
-    },
-    (next) => void opsdConfig(next),
-  );
-  // A running swarmupd reads the user config again at once.
-  const info = readDaemon(ctx.io.env);
-  if (info) await daemonCall(info, 'POST', '/api/settings', { patch: {} }).catch(() => undefined);
+  await recordTrust(ctx.io.env, changes);
   return 0;
 }
 
@@ -631,6 +645,8 @@ function importSchedules(ctx: DefsCtx): number {
   }
   const apply = Boolean(ctx.opts.apply);
   if (ctx.opts.remove && !apply) throw new OpsError('--remove needs --apply', 2);
+  // Writing triggers and turning them on is the machine's decision: a person's, outside runs.
+  if (apply) requirePerson(ws, 'moves schedules into triggers');
   const files: Array<{ name: string; file: string; text: string; same: boolean }> = [];
   for (const s of machine.schedules) {
     if (!TRIGGER_NAME_RE.test(s.name)) {
@@ -640,7 +656,19 @@ function importSchedules(ctx: DefsCtx): number {
       );
     }
     const file = join(root.dir, TRIGGERS_DIR, `${s.name}.yaml`);
-    const text = scheduleTriggerText({ ...s, machine: ws.user.machine });
+    // A trigger works on its own store's tasks only.
+    let task = s.task;
+    const slash = task?.lastIndexOf('/') ?? -1;
+    if (task && slash >= 0) {
+      if (task.slice(0, slash) !== root.name) {
+        throw new OpsError(
+          `schedule '${s.name}' works on ${task}, a task of another store; a trigger of ${root.name} cannot`,
+          2,
+        );
+      }
+      task = task.slice(slash + 1);
+    }
+    const text = scheduleTriggerText({ ...s, task, machine: ws.user.machine });
     const problems = checkDefinitionText(file, text).filter((p) => p.severity === 'error');
     if (problems.length > 0) {
       for (const p of problems) ctx.io.err(show(ctx, p));
@@ -699,7 +727,7 @@ function importSchedules(ctx: DefsCtx): number {
     d.setIn([key, 'triggers', root.name], true);
   });
   ctx.io.out(
-    `removed ${names.size} schedule(s) from the user config and turned on swarmupd.triggers.${root.name}; restart swarmupd or change a setting in the app for it to read them`,
+    `removed ${names.size} schedule(s) from the user config and turned on swarmupd.triggers.${root.name}; they fire once you trust them: swarmup defs trust --root ${root.name}`,
   );
   return 0;
 }

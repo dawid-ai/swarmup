@@ -242,7 +242,7 @@ export function withDefinitions(cfg: OpsdConfig, sources: readonly DefsSource[])
   // this exact set here (Decision 7) and the machine merges the root without checks of its own.
   let merge = cfg.merge;
   for (const { root, swarm } of sources) {
-    const trust = checksTrust(swarm.checks, cfg.trusted_defs?.[root]);
+    const trust = checksTrust(swarm.checks, cfg.trusted_defs?.[root]?.checks);
     if (trust === 'none') continue;
     const list = gitMergeChecks(swarm.checks);
     const key = `merge.${root}.checks`;

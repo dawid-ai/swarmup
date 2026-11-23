@@ -44,9 +44,9 @@
       "type": "string"
     },
     "task": {
-      "description": "run: the task the run works on.",
+      "description": "run: the task of this store the run works on.",
       "type": "string",
-      "pattern": "^([^\\s/]+\\/)?[A-Za-z][A-Za-z0-9]*-\\d+$"
+      "pattern": "^[A-Za-z][A-Za-z0-9]*-\\d+$"
     },
     "workflow": {
       "description": "workflow: the workflow (`workflows/<id>.yaml`) to start.",
@@ -86,7 +86,7 @@
       "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
     },
     "runs_on": {
-      "description": "Machines (`machine` in each user config) that run the trigger; unset: every machine that turned triggers on for this store.",
+      "description": "Machines (`machine` in each user config) that run the trigger; unset: every machine that turned triggers on for this store. Required for action workflow and repeat, so one fire time starts once.",
       "type": "array",
       "items": {
         "type": "string",
