@@ -1175,6 +1175,8 @@ swarmupd:
     effort: low
     budget_min: 5 # minutes one judgment may take before swarmupd stops it
     at_merge: false # true: judge rubric criteria at merge; spends tokens on every merge that has one
+    scorers: false # true: run the rubric scorers of each store's scorers/ on closed tasks; spends tokens
+    # daily_tokens: 100000 # the most tokens rubric scorers spend a day here; lowers each store's cap
   mcp: # MCP servers role files may name; values from secrets.yml (see "MCP servers")
     servers:
       search:
@@ -1307,8 +1309,9 @@ dialog may pick.
 
 Scorers grade runs, tasks and agents from what SwarmUp already records: task events and run
 records. Each scorer measures one narrow failure mode and names the definition to change when it
-fails, such as a role file, a task's `done_when` or the merge checks. All of them are
-deterministic; none calls a model.
+fails, such as a role file, a task's `done_when` or the merge checks. The built-in scorers are
+deterministic and call no model. A store's [rubric scorers](definitions.md#rubric-scorers) add
+scores an LLM judge gives, on a machine that turns them on.
 
 ```bash
 swarmup scores                          # per agent: each scorer's mean, pass rate and worst tasks

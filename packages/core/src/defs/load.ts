@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { OpsError } from '../ids.js';
 import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
@@ -345,7 +345,7 @@ function checkSet(
     problems.push(...sc.problems);
     scorers.push(sc);
   }
-  problems.push(...scorerProblems(rootDir, scorers, workflows));
+  problems.push(...scorerProblems(texts, scorers, workflows));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -437,7 +437,7 @@ function checkSet(
  * warning).
  */
 function scorerProblems(
-  rootDir: string,
+  texts: ReadonlyMap<string, string>,
   scorers: readonly ScorerFileInfo[],
   workflows: readonly WorkflowInfo[],
 ): DefProblem[] {
@@ -452,11 +452,13 @@ function scorerProblems(
       byBuiltin.set(d.scorer, [...(byBuiltin.get(d.scorer) ?? []), sc]);
     }
     if (d.kind === 'rubric' && d.rubric) {
-      const file = join(rootDir, 'rubrics', `${d.rubric}.md`);
-      if (!existsSync(file)) add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
-      else {
+      // Rubrics are definitions too: a variant or a git ref brings its own.
+      const text = texts.get(`rubrics/${d.rubric}.md`);
+      if (text === undefined) {
+        add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
+      } else {
         try {
-          parseRubric(readFileSync(file, 'utf8'), `rubrics/${d.rubric}.md`);
+          parseRubric(text, `rubrics/${d.rubric}.md`);
         } catch (err) {
           add(sc, 'rubric', 'error', (err as Error).message.split('\n')[0] ?? 'does not read');
         }

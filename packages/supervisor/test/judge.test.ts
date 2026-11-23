@@ -161,6 +161,8 @@ ${single}
       text: '{"scores":{}}',
       costUsd: null,
       model: null,
+      // The tokens of `turn.completed`, which rubric scorers count against their daily cap.
+      tokens: 5,
     });
   });
 });

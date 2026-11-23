@@ -55,5 +55,17 @@ roles:
 #     workflow: bugfix
 #     done_when: ['A test reproduces the bug and passes with the fix']
 
-# Accepted but not active yet; they come in later phases:
-# scoring, checks, variants, experiments.
+# Experiments: a share of matching task runs gets a variant (variants/<name>/), the same side
+# for every run of a task. `swarmup scores --by-variant` reads the result.
+# experiments:
+#   - id: tests-first-trial
+#     variant: engineer-tests-first
+#     share: 0.5
+#     scope: { roles: [engineer] }
+
+# Rubric scorers (scorers/<id>.yaml, kind: rubric) judge closed tasks on a machine with
+# swarmupd.judge.scorers: true, within this daily token cap.
+# scoring:
+#   daily_judge_tokens: 200000
+
+# Accepted but not active yet: variants (the variants/<name>/ folders are).

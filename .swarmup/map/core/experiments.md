@@ -1,15 +1,17 @@
 ---
 kind: module
-summary: 'Definitions as code, phase 5: swarm.yaml experiments that give task runs a variant, and runs at a git ref'
+summary: 'Definitions as code, phase 5: experiments that give task runs a variant, runs at a git ref, rubric scorers'
 covers:
   - packages/core/src/defs/experiments.ts
   - packages/core/src/defs/ref.ts
   - packages/core/test/experiments.test.ts
   - packages/supervisor/test/experiments.test.ts
-links: [defs, /improve, /bench, /supervisor/wake, /supervisor/stats]
+  - packages/supervisor/src/rubric-scorers.ts
+  - packages/supervisor/test/rubric-scorers.test.ts
+links: [defs, triggers, /improve, /bench, /judge, /supervisor/wake, /supervisor/stats]
 ---
 
-# Experiments and definitions at a ref
+# Experiments, definitions at a ref, rubric scorers
 
 ## Purpose
 
@@ -34,6 +36,12 @@ ref), and read the result in the scores. W5 phase 5; see `docs/definitions.md` (
   `RunDefs` gets the snapshot's hash, `ref` and `commit`, `run-start` gets `defs_ref`, and the
   files go in `state.db` `definitions`. `swarmup bench run --defs-ref` puts the role file in the
   prompt and `summary.json` `role` records `ref` and `commit`.
+- `rubric-scorers.ts` `runRubricScorers` (supervisor `rubricTick`, once a minute, only with
+  `swarmupd.judge.scorers`): for each store's `kind: rubric` scorers, judges closed tasks that
+  `applies_to` takes and `sha256(id + ref) < sample` picks, once each, with the diff from the task's
+  first run base to its review commit (`taskWorkDiff`), blind by default (`judgeTexts`), under
+  `scoring.daily_judge_tokens` and `swarmupd.judge.daily_tokens`. Rows go to `state.db`
+  `rubric_judgments`; `ScoreKeeper` `extra` joins their score rows to the built-in ones.
 - Scores read the side back: task and run scores carry `variant`, `experiment` and `defs_hash`
   (`scores.ts` `attributeScores`), and `swarmup scores --by-variant` splits them.
 
@@ -42,3 +50,4 @@ ref), and read the result in the scores. W5 phase 5; see `docs/definitions.md` (
 - Explicit beats experiment: `--variant` or `--defs-ref` first, then the experiment, then base.
 - A task's side never flips while the experiment runs, even when `share` changes.
 - Nothing is checked out for a ref, and `launch` itself runs no git.
+- Rubric scorers never run without the machine's consent, and never past either token cap.

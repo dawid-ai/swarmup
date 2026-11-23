@@ -69,6 +69,7 @@ export type {
   SwarmDefs,
   SwarmExperiment,
   SwarmExperimentScope,
+  SwarmScoring,
   SwarmImport,
   SwarmImprovement,
   SwarmImprovementRequires,
@@ -79,6 +80,7 @@ export type {
   SwarmWorkType,
 } from './swarm.js';
 export {
+  DEFAULT_DAILY_JUDGE_TOKENS,
   DEFS_FORMAT,
   EXPERIMENT_ID_RE,
   POLICY_KEYS,

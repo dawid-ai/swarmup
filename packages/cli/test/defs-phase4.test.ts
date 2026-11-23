@@ -139,7 +139,7 @@ describe('swarmup defs scorers', () => {
       'kind: rubric\nrubric: copy\nsample: 0.5\njudge: {runtime: claude, model: sonnet}\n',
     );
     expect((await cli(p, ['defs', 'scorers'])).out).toEqual([
-      'demo/copy  rubric copy  not run yet  sample 0.1  blind  judge claude sonnet',
+      'demo/copy  rubric copy  off on this machine (swarmupd.judge.scorers)  sample 0.1  blind  judge claude sonnet',
       'demo/review-rounds  builtin review-rounds  on  pass 2 (this machine, over 0)  applies to types bug',
     ]);
   });

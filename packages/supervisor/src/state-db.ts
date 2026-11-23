@@ -144,7 +144,40 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (run, entry, attempt)
    );
    CREATE INDEX bench_results_set ON bench_results ("set", started_at);`,
+  // Rubric scorers (W5 phase 5): one row per scorer and task judged, the score row it gave
+  // (`result` NULL with `error` when the judgment gave none) and the tokens it spent.
+  `CREATE TABLE rubric_judgments (
+     scorer TEXT NOT NULL,
+     root TEXT NOT NULL,
+     subject TEXT NOT NULL,
+     agent TEXT NOT NULL,
+     judged_at TEXT NOT NULL,
+     tokens INTEGER NOT NULL,
+     cost_usd REAL,
+     result TEXT,
+     error TEXT,
+     PRIMARY KEY (scorer, subject)
+   );
+   CREATE INDEX rubric_judgments_day ON rubric_judgments (judged_at);`,
 ];
+
+/** One row of `rubric_judgments`: a rubric scorer's judgment of one task (W5 phase 5). */
+export interface RubricJudgmentRow {
+  /** The scorer file's id, `scorers/<id>.yaml`. */
+  scorer: string;
+  root: string;
+  /** The task as `root/ID`. */
+  subject: string;
+  /** The agent whose work it is. */
+  agent: string;
+  judged_at: string;
+  /** Tokens spent: what the judge reported, else an estimate from the prompt. */
+  tokens: number;
+  cost_usd: number | null;
+  /** The score row it gave, a `ScoreResult`; null when the judgment gave none. */
+  result: unknown;
+  error: string | null;
+}
 
 /** One row of `bench_results`: one attempt of a finished bench run (W5 phase 5). */
 export interface BenchResultRow {
@@ -556,6 +589,82 @@ export class StateDb {
         >,
     );
     return rows.map((r) => ({ ...r, cost_estimated: r.cost_estimated === 1 }));
+  }
+
+  // ---- Rubric judgments -------------------------------------------------------------------------
+
+  /** Records a rubric scorer's judgment of a task; a later one of the same pair replaces it. */
+  saveJudgment(r: RubricJudgmentRow): void {
+    this.use((db) =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO rubric_judgments
+             (scorer, root, subject, agent, judged_at, tokens, cost_usd, result, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          r.scorer,
+          r.root,
+          r.subject,
+          r.agent,
+          r.judged_at,
+          r.tokens,
+          r.cost_usd,
+          r.result === null || r.result === undefined ? null : JSON.stringify(r.result),
+          r.error,
+        ),
+    );
+  }
+
+  /** The scorer and task pairs judged so far, as `scorer` NUL `subject`. */
+  judgedPairs(): Set<string> {
+    const rows = this.use(
+      (db) =>
+        db.prepare('SELECT scorer, subject FROM rubric_judgments').all() as Array<{
+          scorer: string;
+          subject: string;
+        }>,
+    );
+    return new Set(rows.map((r) => `${r.scorer}\0${r.subject}`));
+  }
+
+  /** Tokens rubric judgments spent from `since` (ISO), on root `root`'s work or on all. */
+  judgeTokensSince(since: string, root?: string): number {
+    return this.use((db) => {
+      const row = (
+        root === undefined
+          ? db
+              .prepare('SELECT sum(tokens) AS n FROM rubric_judgments WHERE judged_at >= ?')
+              .get(since)
+          : db
+              .prepare(
+                'SELECT sum(tokens) AS n FROM rubric_judgments WHERE judged_at >= ? AND root = ?',
+              )
+              .get(since, root)
+      ) as { n: number | null };
+      return Number(row.n ?? 0);
+    });
+  }
+
+  /** The score rows rubric judgments gave, oldest first. */
+  rubricResults<T = unknown>(): T[] {
+    const rows = this.use(
+      (db) =>
+        db
+          .prepare(
+            'SELECT result FROM rubric_judgments WHERE result IS NOT NULL ORDER BY judged_at',
+          )
+          .all() as Array<{ result: string }>,
+    );
+    const out: T[] = [];
+    for (const r of rows) {
+      try {
+        out.push(JSON.parse(r.result) as T);
+      } catch {
+        // A row that does not parse is left out.
+      }
+    }
+    return out;
   }
 
   // ---- Merge state ------------------------------------------------------------------------------

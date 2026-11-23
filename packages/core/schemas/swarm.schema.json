@@ -186,7 +186,33 @@
       }
     },
     "scoring": {
-      "description": "Accepted but not active yet: judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now."
+      "description": "Judge-based scoring: which rubric scorers run, their default sample and the daily token cap. They run only on a machine with `swarmupd.judge.scorers: true`.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "scorers": {
+          "description": "The rubric scorers that run for this store; every enabled one when unset.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
+          }
+        },
+        "sample": {
+          "description": "The share of matching closed tasks a rubric scorer judges when its file sets no `sample`, from 0 to 1. Default 1.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "daily_judge_tokens": {
+          "description": "The most tokens rubric scorers spend on this store's work per day (UTC). Default 200000. A machine's `swarmupd.judge.daily_tokens` may only lower it.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "checks": {
       "description": "Merge checks: commands swarmupd runs on approved work before the base moves. They run on a machine only after a person there runs `swarmup defs trust`, and any change to them needs a new trust. A machine that sets `swarmupd.merge.<root>.checks` keeps its own.",

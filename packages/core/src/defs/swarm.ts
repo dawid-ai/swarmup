@@ -3,8 +3,8 @@
  * `runtimes.<rt>.{model, effort}`, `roles` and `policy`; `work_types` give new tasks their
  * default criteria and workflow; `improvement` is the W6 policy; `checks` are merge checks that
  * run only on a machine that trusts them (W5 phase 4); `experiments` give a share of matching
- * task runs a variant (W5 phase 5). The other top-level keys are accepted and warned about until
- * their phase lands.
+ * task runs a variant, and `scoring` runs the rubric scorers (W5 phase 5). The other top-level
+ * keys are accepted and warned about until their phase lands.
  */
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
@@ -160,6 +160,20 @@ export interface SwarmDefs {
   checks?: Record<string, SwarmCheck>;
   /** Experiments, in order: the first one that takes a task run decides its variant. */
   experiments?: SwarmExperiment[];
+  scoring?: SwarmScoring;
+}
+
+/** The tokens rubric scorers may spend on a store's work per day when `scoring` sets none. */
+export const DEFAULT_DAILY_JUDGE_TOKENS = 200_000;
+
+/** Judge-based scoring of a store's work (W5 phase 5): `scoring` in `swarm.yaml`. */
+export interface SwarmScoring {
+  /** The rubric scorers that run; every enabled one when unset. */
+  scorers?: string[];
+  /** The sample of a rubric scorer whose file sets none. */
+  sample?: number;
+  /** The most tokens rubric scorers spend on the store's work per UTC day. */
+  daily_judge_tokens?: number;
 }
 
 export const modelSchema = (doc?: string): Schema =>
@@ -340,8 +354,26 @@ export const SWARM_SCHEMA: Schema = obj(
       ),
       { nullable: true, doc: 'Kinds of work, with default criteria and workflow.' },
     ),
-    scoring: later(
-      'judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now',
+    scoring: obj(
+      {
+        scorers: list(
+          str({ pattern: /^[a-z0-9][a-z0-9-]{0,59}$/, hint: 'name a scorer (scorers/<id>.yaml)' }),
+          { doc: 'The rubric scorers that run for this store; every enabled one when unset.' },
+        ),
+        sample: num({
+          min: 0,
+          max: 1,
+          doc: 'The share of matching closed tasks a rubric scorer judges when its file sets no `sample`, from 0 to 1. Default 1.',
+        }),
+        daily_judge_tokens: int({
+          min: 0,
+          doc: "The most tokens rubric scorers spend on this store's work per day (UTC). Default 200000. A machine's `swarmupd.judge.daily_tokens` may only lower it.",
+        }),
+      },
+      {
+        nullable: true,
+        doc: 'Judge-based scoring: which rubric scorers run, their default sample and the daily token cap. They run only on a machine with `swarmupd.judge.scorers: true`.',
+      },
     ),
     checks: map(
       oneOf([
@@ -564,6 +596,16 @@ export function swarmDefs(value: unknown): SwarmDefs {
       imp.requires = req;
     }
     out.improvement = imp;
+  }
+  if (isRecord(v.scoring)) {
+    const sc: SwarmScoring = {};
+    const ids = strings(v.scoring.scorers);
+    if (ids) sc.scorers = ids;
+    if (typeof v.scoring.sample === 'number') sc.sample = v.scoring.sample;
+    if (typeof v.scoring.daily_judge_tokens === 'number') {
+      sc.daily_judge_tokens = v.scoring.daily_judge_tokens;
+    }
+    out.scoring = sc;
   }
   if (Array.isArray(v.experiments)) {
     out.experiments = v.experiments.filter(isRecord).flatMap((e) => {

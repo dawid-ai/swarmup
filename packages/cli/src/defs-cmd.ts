@@ -12,6 +12,7 @@ import {
   effectiveSample,
   gitMergeChecks,
   daemonKeyIn,
+  daemonSection,
   definitionHash,
   editUserConfig,
   formatProblem,
@@ -39,6 +40,7 @@ import {
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
 import {
+  checkJudge,
   importableConfig,
   scorerSettings,
   lineDiff,
@@ -433,7 +435,7 @@ async function trust(ctx: DefsCtx): Promise<number> {
 /**
  * `swarmup defs scorers`: each root's `scorers/*.yaml`: a built-in's threshold and filters, with
  * the machine's `pass` when it wins, and a rubric scorer's rubric, judge and sample (lowered to
- * the machine's `sample`), which swarmupd does not run yet.
+ * the machine's `sample`), and whether it runs here (`swarmupd.judge.scorers`).
  */
 function scorers(ctx: DefsCtx): number {
   let settings: ReturnType<typeof scorerSettings> = {};
@@ -442,8 +444,17 @@ function scorers(ctx: DefsCtx): number {
   } catch (err) {
     ctx.io.err(`${(err as Error).message}; showing the git values alone`);
   }
-  const rows = rootsOf(ctx).flatMap((root) =>
-    loadDefinitions(root.dir).scorers.map((sc) => {
+  // Rubric scorers run only where the machine turns them on (`swarmupd.judge.scorers`).
+  let judgeOn = false;
+  try {
+    judgeOn = checkJudge(daemonSection(ctx.ws().user)?.judge).scorers;
+  } catch {
+    // `swarmup doctor` names a bad `swarmupd.judge`.
+  }
+  const rows = rootsOf(ctx).flatMap((root) => {
+    const set = loadDefinitions(root.dir);
+    const scoring = set.swarm?.scoring;
+    return set.scorers.map((sc) => {
       const d = sc.def;
       const machine = d ? settings[d.kind === 'builtin' ? d.scorer! : d.id] : undefined;
       return {
@@ -455,11 +466,21 @@ function scorers(ctx: DefsCtx): number {
         ...(machine?.pass !== undefined && d?.kind === 'builtin'
           ? { machine_pass: machine.pass }
           : {}),
-        ...(d?.kind === 'rubric' ? { sample: effectiveSample(d.sample, machine?.sample) } : {}),
-        active: !!d && d.enabled && d.kind === 'builtin' && machine?.enabled !== false,
+        ...(d?.kind === 'rubric'
+          ? { sample: effectiveSample(d.sample ?? scoring?.sample, machine?.sample) }
+          : {}),
+        ...(d?.kind === 'rubric' && scoring?.scorers && !scoring.scorers.includes(d.id)
+          ? { unlisted: true }
+          : {}),
+        active:
+          !!d &&
+          d.enabled &&
+          machine?.enabled !== false &&
+          (d.kind === 'builtin' ||
+            (judgeOn && (!scoring?.scorers || scoring.scorers.includes(d.id)))),
       };
-    }),
-  );
+    });
+  });
   if (ctx.opts.json) {
     ctx.io.out(JSON.stringify(rows, null, 2));
     return 0;
@@ -489,8 +510,17 @@ function scorers(ctx: DefsCtx): number {
       const judge = d.judge
         ? `  judge ${[d.judge.runtime, d.judge.model, d.judge.effort].filter(Boolean).join(' ')}`
         : '';
+      const state = !d.enabled
+        ? 'off'
+        : r.active
+          ? 'on'
+          : 'unlisted' in r
+            ? 'off (not in scoring.scorers)'
+            : judgeOn
+              ? 'off on this machine'
+              : 'off on this machine (swarmupd.judge.scorers)';
       ctx.io.out(
-        `${r.root}/${r.id}  rubric ${d.rubric}  not run yet${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,
+        `${r.root}/${r.id}  rubric ${d.rubric}  ${state}${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,
       );
     }
   }

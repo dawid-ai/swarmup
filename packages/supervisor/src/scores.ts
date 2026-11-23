@@ -52,6 +52,11 @@ export interface ScoreResult {
   variant?: string;
   /** The `swarm.yaml` experiment that chose that run's side. */
   experiment?: string;
+  /**
+   * A rubric scorer's score (W5 phase 5): the rubric it judged against and the share it passes
+   * at. The built-in scorers give none.
+   */
+  rubric?: { id: string; pass: number };
 }
 
 /** A task as the scorers read it. */
@@ -143,7 +148,8 @@ export interface TaskFacts {
   closed: OpsEvent | null;
 }
 
-function taskFacts(t: ScoreTask): TaskFacts {
+/** What several scorers read of task `t`, such as the agent whose work it is. */
+export function taskFacts(t: ScoreTask): TaskFacts {
   let reviewer = '';
   let claimer = '';
   let approvalAt = -1;
@@ -900,7 +906,7 @@ function attributeScores(out: ScoreResult[], input: ScoreInput): void {
 const roleOfAgent = (agent: string): string => agent.slice(agent.indexOf(':') + 1);
 
 /** Whether a store's `applies_to` takes task `t`, whose milestone's workflow is `workflow`. */
-function appliesToTask(
+export function appliesToTask(
   a: ScorerAppliesTo | undefined,
   t: ScoreTask,
   author: string,
@@ -1047,6 +1053,19 @@ export interface AgentScores {
   scorers: ScorerLine[];
 }
 
+/** A rubric scorer of a store (`scorers/<id>.yaml`, W5 phase 5) as a summary reads it. */
+export function rubricScorer(id: string, rubric: string): Scorer {
+  return {
+    id,
+    description: `an LLM judge's score of a closed task against rubrics/${rubric}.md, as a share`,
+    level: 'task',
+    unit: 'ratio',
+    better: 'higher',
+    lever: "the agent's role file, against the rubric's criteria",
+    score: () => [],
+  };
+}
+
 /**
  * Per agent, each scorer's mean, pass rate and worst subjects, agents by name. With `byVariant`,
  * one block per agent and variant (the base first), over task and run scores only: an agent score
@@ -1071,6 +1090,14 @@ export function summarizeScores(
     byAgent.set(key, m);
   }
   const worst = opts.worst ?? 3;
+  // Rubric scorers in git (W5 phase 5) come after the built-in ones, by id.
+  const known = new Set(scorers.map(({ s }) => s.id));
+  const rubrics = new Map<string, { s: Scorer; pass?: number }>();
+  for (const r of results) {
+    if (!r.rubric || known.has(r.scorer) || rubrics.has(r.scorer)) continue;
+    rubrics.set(r.scorer, { s: rubricScorer(r.scorer, r.rubric.id), pass: r.rubric.pass });
+  }
+  const all = [...scorers, ...[...rubrics.values()].sort((a, b) => a.s.id.localeCompare(b.s.id))];
   return [...byAgent]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, m]) => {
@@ -1080,7 +1107,7 @@ export function summarizeScores(
     .map(({ agent, variant, m }) => ({
       agent,
       ...(opts.byVariant ? { variant: variant || null } : {}),
-      scorers: scorers.flatMap(({ s, pass }) => {
+      scorers: all.flatMap(({ s, pass }) => {
         const list = m.get(s.id);
         if (!list?.length) return [];
         const sign = s.better === 'lower' ? -1 : 1;

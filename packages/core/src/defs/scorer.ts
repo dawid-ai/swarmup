@@ -1,8 +1,8 @@
 /**
  * Scorers in git (W5 phase 4): `scorers/<id>.yaml` in a task store. `kind: builtin` sets the
  * threshold and the filters of one of the W4 built-in scorers for the store's work; swarmupd's
- * scoring uses it. `kind: rubric` names a rubric file and a judge; it is accepted, checked and
- * listed, but swarmupd's scoring loop does not run judge-based scorers yet.
+ * scoring uses it. `kind: rubric` names a rubric file and a judge; swarmupd judges a sample of the
+ * closed tasks it applies to on a machine that turns it on (`swarmupd.judge.scorers`, W5 phase 5).
  */
 import { checkYaml, enumOf, list, num, obj, str, bool } from './schema.js';
 import type { DefProblem, Schema } from './schema.js';
@@ -81,7 +81,7 @@ const names = (doc: string): Schema => list(str({ pattern: /\S/, hint: 'use a na
 export const SCORER_SCHEMA: Schema = obj(
   {
     kind: enumOf(['builtin', 'rubric'], {
-      doc: 'builtin: the threshold and filters of a built-in scorer. rubric: a judge scores the work against a rubric file (accepted and listed; not run yet).',
+      doc: 'builtin: the threshold and filters of a built-in scorer. rubric: an LLM judge scores a sample of closed tasks against a rubric file, on a machine with `swarmupd.judge.scorers: true`.',
     }),
     description: str({ doc: 'What the scorer is for.' }),
     scorer: enumOf([...BUILTIN_SCORER_IDS], {

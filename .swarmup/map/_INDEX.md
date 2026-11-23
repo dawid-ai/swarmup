@@ -9,7 +9,7 @@
 - `core/adopt` — module — swarmup adopt, new-project and init; repo survey, project templates and the role templates they copy
 - `core/content` — flow — Content projects (W8); campaign and content templates, review artifacts, publish records and the artifact route
 - `core/defs` — module — Definitions as code: swarm.yaml, agent folders, workflows; validate, hash, migrate, merge, run stamps
-- `core/experiments` — module — Definitions as code, phase 5: swarm.yaml experiments that give task runs a variant, and runs at a git ref
+- `core/experiments` — module — Definitions as code, phase 5: experiments that give task runs a variant, runs at a git ref, rubric scorers
 - `core/fold` — flow — Folds a task's events in ULID order into its state; the state machine, leases, milestones, plans and criteria
 - `core/knowledge` — module — Learn notes (kb/), their reads, prompt matching, promotion and archive, and the decision log (decisions/)
 - `core/map` — module — The project map: parse .swarmup/map/ nodes, check coverage of a change, search, _INDEX.md and prompt block

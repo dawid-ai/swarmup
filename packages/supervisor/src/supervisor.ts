@@ -103,7 +103,8 @@ import type { BenchHost } from './bench-runs.js';
 import { BenchRuns } from './bench-runs.js';
 import type { ImproveState } from './improve.js';
 import { Improver } from './improve.js';
-import type { ScoreResult } from './scores.js';
+import type { ScoreResult, ScorerSetting } from './scores.js';
+import { runRubricScorers } from './rubric-scorers.js';
 import { scorerSettings } from './scores.js';
 import type { DueTrigger } from './triggers.js';
 import { dueTriggers, TRIGGERS_STATE } from './triggers.js';
@@ -989,6 +990,8 @@ export class Supervisor extends EventEmitter {
   readonly improver: Improver;
   /** When the tick last ran the improvement loop (ms). */
   private improveAt = 0;
+  private rubricAt = 0;
+  private rubricBusy: Promise<number> | null = null;
   /** When the tick last asked for a scores refresh (ms); the first comes a minute after start. */
   private scoresAt: number;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
@@ -1161,6 +1164,14 @@ export class Supervisor extends EventEmitter {
     this.scores = new ScoreKeeper(this.state, {
       orientation: (r) => logOrientation(r.log),
       now: this.now,
+      // The score rows rubric scorers gave (W5 phase 5), kept with the built-in ones.
+      extra: () => {
+        try {
+          return this.state?.rubricResults<ScoreResult>() ?? [];
+        } catch {
+          return [];
+        }
+      },
     });
     this.bench = new BenchRuns(() => this.benchHost());
     this.improver = new Improver({
@@ -5574,6 +5585,7 @@ export class Supervisor extends EventEmitter {
       this.safe(() => this.notifyTick());
       this.scoresTick();
       this.safe(() => this.improveTick());
+      this.rubricTick();
       this.emit('tick');
     } finally {
       this.ticks++;
@@ -5706,6 +5718,65 @@ export class Supervisor extends EventEmitter {
       configPath: this.configPath,
       env: this.context.env,
     };
+  }
+
+  /**
+   * The rubric scorers (W5 phase 5), once a minute at most and one pass at a time, off the tick:
+   * only with `swarmupd.judge.scorers` on, since each judgment spends tokens.
+   */
+  private rubricTick(): void {
+    if (this.stopping || this.closed || !this.config.judge.scorers || this.rubricBusy) return;
+    if (this.now() - this.rubricAt < 60_000) return;
+    this.rubricAt = this.now();
+    this.rubricBusy = this.judgeRubrics()
+      .catch((err: unknown) => {
+        this.emit('warn', `rubric scorers: ${err instanceof Error ? err.message : String(err)}`);
+        return 0;
+      })
+      .finally(() => {
+        this.rubricBusy = null;
+      });
+  }
+
+  /**
+   * One pass of the rubric scorers: judges up to `max` closed tasks they take, records each in
+   * `state.db`, and scores again when it judged any. Returns how many it judged.
+   */
+  async judgeRubrics(max = 5): Promise<number> {
+    const stop = new AbortController();
+    const watch = setInterval(() => {
+      if (this.stopping) stop.abort();
+    }, 1000);
+    let settings: Record<string, ScorerSetting> = {};
+    try {
+      settings = scorerSettings(this.user);
+    } catch {
+      // `refreshScores` warns about it.
+    }
+    try {
+      const n = await runRubricScorers(
+        {
+          now: () => this.now(),
+          ws: () => this.ws(),
+          runs: () => this.runs(),
+          judge: () => this.config.judge,
+          runtimes: () => this.config.runtimes,
+          settings: () => settings,
+          db: this.state,
+          repos: (root) => [this.codeDirOf(root), root.dir],
+          env: () => this.commandEnv(),
+          held: (runtime) => this.providerHold(runtime)?.text ?? null,
+          ...(this.judgeRunner ? { runner: this.judgeRunner } : {}),
+          signal: stop.signal,
+          warn: (m) => this.emit('warn', m),
+        },
+        { max },
+      );
+      if (n > 0) await this.refreshScores(true);
+      return n;
+    } finally {
+      clearInterval(watch);
+    }
   }
 
   /** The scores, computed again first when something changed, or always with `force`. */

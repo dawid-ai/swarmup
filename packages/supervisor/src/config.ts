@@ -239,6 +239,16 @@ export interface JudgeConfig {
    * score below `pass` sends the task back. Off unless set to true: each judgment spends tokens.
    */
   at_merge: boolean;
+  /**
+   * Run the rubric scorers of each store's `scorers/` on closed tasks (W5 phase 5). Off unless set
+   * to true: each judgment spends tokens.
+   */
+  scorers: boolean;
+  /**
+   * The most tokens rubric scorers spend per UTC day on this machine, over every store; it also
+   * lowers each store's `scoring.daily_judge_tokens`, never raises it.
+   */
+  daily_tokens?: number;
 }
 
 /** The judge when `swarmupd.judge` leaves a key out. */
@@ -247,6 +257,7 @@ export const DEFAULT_JUDGE: JudgeConfig = {
   effort: 'low',
   budget_min: 5,
   at_merge: false,
+  scorers: false,
 };
 
 /**
@@ -825,7 +836,15 @@ function checkBench(raw: unknown): BenchConfig {
   };
 }
 
-const JUDGE_KEYS = ['runtime', 'model', 'effort', 'budget_min', 'at_merge'];
+const JUDGE_KEYS = [
+  'runtime',
+  'model',
+  'effort',
+  'budget_min',
+  'at_merge',
+  'scorers',
+  'daily_tokens',
+];
 
 /**
  * `swarmupd.judge`, checked, with {@link DEFAULT_JUDGE} for what it leaves out. Refuses an unknown
@@ -867,6 +886,19 @@ export function checkJudge(raw: unknown): JudgeConfig {
       throw new OpsError('swarmupd.judge.at_merge: use true or false', 2);
     }
     out.at_merge = j.at_merge;
+  }
+  if (j.scorers !== undefined && j.scorers !== null) {
+    if (typeof j.scorers !== 'boolean') {
+      throw new OpsError('swarmupd.judge.scorers: use true or false', 2);
+    }
+    out.scorers = j.scorers;
+  }
+  if (j.daily_tokens !== undefined && j.daily_tokens !== null) {
+    const t = j.daily_tokens;
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0) {
+      throw new OpsError('swarmupd.judge.daily_tokens: use a whole number of at least 0', 2);
+    }
+    out.daily_tokens = t;
   }
   return out;
 }

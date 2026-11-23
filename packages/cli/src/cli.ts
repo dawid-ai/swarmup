@@ -89,6 +89,7 @@ import type {
   ProcView,
   RunRecord,
   RuntimeConfig,
+  ScoreResult,
   SignInState,
   UsageState,
   WaitItem,
@@ -3882,6 +3883,15 @@ const COMMANDS: Record<string, Command> = {
         { tasks, runs, orientation: (r) => logOrientation(r.log) },
         { settings, stores: gitScorers(ws), ...(since !== undefined ? { from: since } : {}) },
       );
+      // The rows rubric scorers gave (W5 phase 5), which swarmupd keeps in state.db.
+      if (existsSync(join(store.dir, 'state.db'))) {
+        const scope = ws.scope;
+        for (const r of new StateDb(store.dir).rubricResults<ScoreResult>()) {
+          if (sinceIso && r.at < sinceIso) continue;
+          if (scope && !r.subject.startsWith(`${scope}/`)) continue;
+          results.push(r);
+        }
+      }
       const task = str(ctx.opts.task);
       if (task) {
         const { root, id } = ws.resolve(task);

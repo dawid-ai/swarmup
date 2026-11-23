@@ -19,11 +19,12 @@ nothing new.
   workflows/<id>.yaml         # repeatable milestone plans: see Workflows in the protocol
   triggers/<name>.yaml        # when swarmupd starts something: see Triggers
   scorers/<id>.yaml           # a built-in scorer's threshold and filters, or a rubric scorer
+  rubrics/<id>.md             # what a judge scores work against: see Rubric files in the protocol
   variants/<name>/            # sparse overlays: see Variants
   .schemas/*.schema.json      # optional: `swarmup validate --write-schemas` writes them for editors
 ```
 
-The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/`,
+The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/`, `rubrics/`,
 `triggers/` and `scorers/`. It is `d:` and the SHA-256
 of a header line plus one line per file, its path and the SHA-256 of its text, sorted by path. The
 text is read with the BOM removed and CRLF turned into LF, so line ends and file order never change
@@ -60,7 +61,9 @@ roles: # as swarmupd.roles takes them
 - `work_types` give a new task without criteria its default ones (see
   [Work types](#work-types)).
 - `experiments` give a share of task runs a variant (see [Experiments](#experiments)).
-- `scoring`, `checks` and `variants` are accepted with a warning that they are not active yet.
+- `scoring` sets the [rubric scorers](#rubric-scorers)' cap and sample.
+- `variants` is accepted with a warning that it is not active yet; the `variants/<name>/` folders
+  are.
 - Agent files keep their fields. They also take `runtimes.<rt>.{model, effort}`, which wins over the
   file's own `model` and `effort` for that runtime, and `role`, `providers`, `writes` and
   `scorers`; see [Agent folders](#agent-folders).
@@ -277,9 +280,8 @@ applies_to: # optional; every list that is set must match
 - **kind: rubric** names a rubric (`rubrics/<id>.md`, which must exist and read), a `judge`
   (`runtime`, `model`, `effort`; `swarmupd.judge` fills the rest), a `sample` (the share of
   subjects judged, default 1), `pass` (a share from 0 to 1) and `blind` (default true: the judge
-  does not see which agent did the work). Rubric scorers are checked and listed, but swarmupd's
-  scoring loop does not run judge-based scorers yet: `swarmup defs scorers` shows them as
-  `not run yet`.
+  does not see which agent did the work). See [Rubric scorers](#rubric-scorers) for when and how
+  swarmupd runs them.
 - **The machine wins:** `swarmupd.scorers.<id>.pass` beats the store's `pass`, and
   `enabled: false` there turns a built-in scorer off for every store. For a rubric scorer a
   machine may only lower `sample` (`swarmupd.scorers.<id>.sample`); a higher value is ignored.
@@ -289,6 +291,49 @@ applies_to: # optional; every list that is set must match
 
 `swarmup defs scorers [--root NAME] [--json]` lists each scorer file with what this machine uses
 of it. Runs may not edit `scorers/`, and a proposal never changes it by default.
+
+### Rubric scorers
+
+A rubric scorer has the [LLM judge](protocol.md#rubric-files) score closed tasks against a
+rubric. It spends tokens, so it runs only on a machine that turns it on:
+
+```yaml
+# swarm.yaml: the team's limits
+scoring:
+  scorers: [copy-quality] # optional: the rubric scorers that run; every enabled one when unset
+  sample: 0.2 # the sample of a scorer whose file sets none; default 1
+  daily_judge_tokens: 200000 # the most tokens a day (UTC) on this store's work; the default
+```
+
+```yaml
+# The user config: this machine's consent and its own limit
+swarmupd:
+  judge:
+    scorers: true # default false: rubric scorers never run here
+    daily_tokens: 100000 # optional: lowers every store's cap, and caps the machine's total
+```
+
+- **What it judges:** once a minute, swarmupd looks at each store's closed (`done`) tasks that
+  the scorer's `applies_to` takes, the role being that of the agent whose work it is. A task is
+  in the sample when `sha256(scorer id + "root/ID")`, read as a fraction, is under the sample:
+  the scorer's `sample`, else `scoring.sample`, lowered to the machine's
+  `swarmupd.scorers.<id>.sample`. Each task is judged once, at most five a minute.
+- **What the judge reads:** the task's title and body and the diff of its work: from the commit
+  its first writing run started at to the commit its last review named, else a merge commit's
+  first parent to the merge. Blind (the default), every agent id of the machine's runtimes is
+  replaced in both with "an agent"; with `blind: false` the task text names the agent. The judge
+  is `swarmupd.judge` with the scorer's `judge` over it, and the rubric comes from the store's
+  definitions.
+- **The cap:** before each judgment swarmupd estimates its tokens from the prompt; it stops for
+  the day for a store when the store's spend would pass `daily_judge_tokens`, and for every store
+  at the machine's `daily_tokens`. A judgment counts the tokens the runtime reports, else the
+  estimate. Judging also waits while the judge's runtime is paused for usage or signed out.
+- **The result:** each judgment is a row of `rubric_judgments` in `state.db`, with its tokens. One
+  that gives a score is a task score row like a built-in scorer's: the scorer's id, the score as a
+  share, `pass` against the scorer's `pass` (default 0.7), the criterion scores in `extra`, the
+  judge's reasons in `note`, and the work's `defs_hash`, `variant` and `experiment`. `swarmup
+scores` and the app list it after the built-in scorers, and `--by-variant` splits it.
+- `swarmup defs scorers` shows a rubric scorer as `on`, or why it is off here.
 
 ## Precedence
 
