@@ -13,7 +13,7 @@ covers:
   - packages/desktop/test/defs-view.test.ts
   - packages/cli/src/defs-cmd.ts
   - docs/definitions.md
-links: [store, triggers, /cli, /supervisor, /supervisor/runs, /leaks]
+links: [store, triggers, experiments, /cli, /supervisor, /supervisor/runs, /leaks]
 ---
 
 # Definitions as code
@@ -57,7 +57,7 @@ phases 1 to 3; see `docs/definitions.md` and `docs/protocol.md` ("Workflows").
   per variant. `proposals.ts`: the `improvement` policy of `swarm.yaml`, `policyProblems`,
   `proposal.json`, `listVariants` and `applyVariantToBase`; `defs-cmd.ts` adds
   `defs propose|promote|reject|variants` and `validate --variant` (see `/improve`).
-- W5 phase 4 (triggers, checks, scorers in git) is in the `triggers` node.
+- W5 phase 4 (triggers, checks, scorers) is in the `triggers` node, phase 5 in `experiments`.
 - `desktop/ui/src/ui/defs.tsx` is **Settings > Definitions**: a card per root with the hash and
   commit, effective values, problems, the YAML with problem lines marked, and in-place edits.
 

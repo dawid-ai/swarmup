@@ -100,6 +100,9 @@ install and never in a project repo; tasks, events, decisions and the KB stay fi
 - **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`. swarmupd
   imports the run files it lacks when it starts, then reads its runs from `state.db`, held in
   memory, and reads no run file again. `swarmup runs` and other CLI commands still read the files.
+- **Bench results.** The attempts of each finished bench run swarmupd lists go to `bench_results`
+  once a minute; `swarmup bench history` reads them. See
+  [Benchmarks](benchmarks.md#history).
 - **Merge state.** A task whose merge check timed out once, and the merges in a row that could not
   read a task's worktrees, are kept in `merge_state`, so a restart or an update between two tries
   keeps the count. Which tasks swarmupd already looked at stays in memory: a restart looks at every
@@ -1130,6 +1133,7 @@ swarmupd:
   remove_stale_temp: false # delete temp files older than an hour from each root's .ops/tmp
   resume_on_changes: true # a task back with changes resumes its last run's session
   resume_max_hours: 24 # how long after its run ended a session may be resumed
+  experiments: true # false: runs started here ignore swarm.yaml experiments and run the base
   seeded: 1 # the defaults were written once; from then on runtimes lists every provider
   runtimes:
     claude: { command: claude, model: opus, effort: medium } # effort: --effort for Claude
@@ -1171,6 +1175,8 @@ swarmupd:
     effort: low
     budget_min: 5 # minutes one judgment may take before swarmupd stops it
     at_merge: false # true: judge rubric criteria at merge; spends tokens on every merge that has one
+    scorers: false # true: judge with the rubric scorers of the roots this machine merges, or [root, ...]
+    # daily_tokens: 100000 # the most tokens rubric scorers spend a day here; lowers each store's cap
   mcp: # MCP servers role files may name; values from secrets.yml (see "MCP servers")
     servers:
       search:
@@ -1303,16 +1309,23 @@ dialog may pick.
 
 Scorers grade runs, tasks and agents from what SwarmUp already records: task events and run
 records. Each scorer measures one narrow failure mode and names the definition to change when it
-fails, such as a role file, a task's `done_when` or the merge checks. All of them are
-deterministic; none calls a model.
+fails, such as a role file, a task's `done_when` or the merge checks. The built-in scorers are
+deterministic and call no model. A store's [rubric scorers](definitions.md#rubric-scorers) add
+scores an LLM judge gives, on a machine that turns them on.
 
 ```bash
 swarmup scores                          # per agent: each scorer's mean, pass rate and worst tasks
 swarmup scores --agent claude:engineer  # one agent, with its 10 worst tasks per scorer
 swarmup scores --task AO-0300           # one task's scores, each with its evidence
 swarmup scores --since 2026-11-01       # tasks and runs from that date; agent scores too
+swarmup scores --by-variant             # each agent's task and run scores per variant, base first
 swarmup scores --refresh                # compute again and keep them in state.db
 ```
+
+A task or run score carries the definitions its work started with, when swarmupd ran it:
+`defs_hash` (the short hash), `variant` and `experiment`, from the run record or, for a task,
+the newest `run-start` of the agent the score counts for. `--by-variant` groups by `variant`, which
+is how you read an [experiment](definitions.md#experiments).
 
 | Scorer                      | Level | Value                                                                                                                                                          | Pass by default |
 | --------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |

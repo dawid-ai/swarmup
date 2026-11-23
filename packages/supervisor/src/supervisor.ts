@@ -20,11 +20,15 @@ import { basename, delimiter, dirname, join, relative, resolve } from 'node:path
 import type {
   AgentDef,
   CriteriaResults,
+  DefinitionSet,
+  DefsRefSnapshot,
+  ExperimentPick,
   Criterion,
   OpsEvent,
   Priority,
   Root,
   Route,
+  SwarmExperiment,
   TaskView,
   UserConfig,
 } from '@swarmup/core';
@@ -37,8 +41,12 @@ import {
   actorSlug,
   agentRuntimeValues,
   agentText,
+  ALWAYS_FROZEN_KEYS,
   assertActor,
+  checkDefsRef,
   loadDefinitions,
+  loadDefinitionsAtRef,
+  pickExperiment,
   SCRATCH_WRITER_ROLES,
   TRIGGER_ACTOR,
   untrustedTriggersText,
@@ -88,7 +96,7 @@ import {
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
 import type { DefsChecks } from './defs-config.js';
-import { DefsState } from './defs-state.js';
+import { DefsState, readDefsAtRefAsync } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
 import { ScoreKeeper } from './score-keeper.js';
@@ -96,7 +104,8 @@ import type { BenchHost } from './bench-runs.js';
 import { BenchRuns } from './bench-runs.js';
 import type { ImproveState } from './improve.js';
 import { Improver } from './improve.js';
-import type { ScoreResult } from './scores.js';
+import type { ScoreResult, ScorerSetting } from './scores.js';
+import { runRubricScorers } from './rubric-scorers.js';
 import { scorerSettings } from './scores.js';
 import type { DueTrigger } from './triggers.js';
 import { dueTriggers, TRIGGERS_STATE } from './triggers.js';
@@ -141,7 +150,7 @@ import {
 } from './proc.js';
 import type { KillResult, ProcEntry, ProcInfo, ProcLedger, ProcLister, ProcView } from './procs.js';
 import { applyKills, startMs, survivors, systemLister, track, viewLedger } from './procs.js';
-import type { Leftovers, RunRecord } from './runs.js';
+import type { Leftovers, RunDefs, RunRecord } from './runs.js';
 import { RunStore } from './runs.js';
 import type { RunFailure } from './stuck.js';
 import {
@@ -723,6 +732,13 @@ export interface LaunchRequest {
    * role file into the run's scratch folder and points the prompt at it.
    */
   variant?: string;
+  /**
+   * Run with the task store's definitions as git ref `defsRef` had them (W5 phase 5), read with
+   * `git show` into a snapshot and never checked out; the role file goes in the scratch folder as
+   * a variant's does. {@link Supervisor.launchFresh} reads the snapshot into `defsSnapshot`.
+   */
+  defsRef?: string;
+  defsSnapshot?: DefsRefSnapshot & { root: string };
 }
 
 interface LiveRun {
@@ -975,6 +991,8 @@ export class Supervisor extends EventEmitter {
   readonly improver: Improver;
   /** When the tick last ran the improvement loop (ms). */
   private improveAt = 0;
+  private rubricAt = 0;
+  private rubricBusy: Promise<number> | null = null;
   /** When the tick last asked for a scores refresh (ms); the first comes a minute after start. */
   private scoresAt: number;
   /** The shared Electron folders this swarmupd has logged the use of (AO-0306). */
@@ -1147,6 +1165,14 @@ export class Supervisor extends EventEmitter {
     this.scores = new ScoreKeeper(this.state, {
       orientation: (r) => logOrientation(r.log),
       now: this.now,
+      // The score rows rubric scorers gave (W5 phase 5), kept with the built-in ones.
+      extra: () => {
+        try {
+          return this.state?.rubricResults<ScoreResult>() ?? [];
+        } catch {
+          return [];
+        }
+      },
     });
     this.bench = new BenchRuns(() => this.benchHost());
     this.improver = new Improver({
@@ -3438,6 +3464,7 @@ export class Supervisor extends EventEmitter {
       }
     }
     if (needsReleases(req.agent)) await this.releasesTick();
+    if (req.defsRef !== undefined && !req.defsSnapshot) req = await this.withDefsSnapshot(req);
     await this.learnLaunchCheckouts(req);
     // A task worktree that is not there yet is made and installed off the event loop, and the
     // launch runs again once it is (AO-0380). The second launch makes it in place if it must.
@@ -3510,6 +3537,81 @@ export class Supervisor extends EventEmitter {
   }
 
   /**
+   * `req` with the snapshot of its `defsRef`: the definition files of the task's store (or the
+   * first store) at that ref, read with git off the event loop.
+   */
+  private async withDefsSnapshot(req: LaunchRequest): Promise<LaunchRequest> {
+    const ws = this.ws();
+    let root: Root | undefined;
+    if (req.task && !req.parent) root = ws.resolve(req.task).root;
+    else if (req.parent) {
+      const p = this.live.get(req.parent)?.record.root;
+      root = ws.roots.find((r) => r.name === p);
+    }
+    root ??= ws.roots.find((r) => !r.isMirror);
+    if (!root) throw new OpsError('a --defs-ref run needs a task store', 2);
+    const snap = await readDefsAtRefAsync(root.dir, checkDefsRef(req.defsRef));
+    return { ...req, defsSnapshot: { ...snap, root: root.name } };
+  }
+
+  /**
+   * The experiment of the task's store that takes this run, with the side it puts the task on
+   * (W5 phase 5). Store definitions that do not check run no experiment. A variant that does not
+   * check, or has no usable role file for the agent, puts the run on the base side of the
+   * experiment, with a warning, rather than stop it; the side sticks for the task.
+   */
+  private experimentFor(
+    ws: Workspace,
+    rootName: string,
+    ref: string,
+    agent: string,
+    type: string | undefined,
+    labels: string[] | undefined,
+  ): ExperimentPick | null {
+    const root = ws.roots.find((r) => r.name === rootName);
+    if (!root || root.isMirror) return null;
+    let experiments: SwarmExperiment[] | undefined;
+    try {
+      const base = loadDefinitions(root.dir);
+      if (!base.ok) return null;
+      experiments = base.swarm?.experiments;
+    } catch {
+      return null;
+    }
+    if (!experiments?.length) return null;
+    let events: OpsEvent[] = [];
+    try {
+      events = ws.showEvents(ref).events;
+    } catch {
+      // A task whose events do not read has no earlier side.
+    }
+    const pick = pickExperiment(
+      experiments,
+      { agent, ref, ...(type ? { type } : {}), ...(labels ? { labels } : {}) },
+      { now: new Date(this.now()), events },
+    );
+    if (!pick?.variant) return pick;
+    let why: string | null = null;
+    try {
+      const set = loadDefinitions(root.dir, { variant: pick.variant });
+      const vdef = set.agents.find((a) => a.id === agent);
+      why = !set.ok
+        ? 'does not check'
+        : !vdef
+          ? `has no role file for ${agent}`
+          : roleInactive(vdef);
+    } catch (err) {
+      why = err instanceof Error ? err.message : String(err);
+    }
+    if (!why) return pick;
+    this.warnOnce(
+      `experiment:${rootName}:${pick.experiment}:${agent}`,
+      `experiment ${pick.experiment} of ${rootName}: variant ${pick.variant} ${why}; ${ref} runs on its base side`,
+    );
+    return { experiment: pick.experiment };
+  }
+
+  /**
    * Starts a run. With `defer`, a task worktree that is not there yet is not made here: the
    * launch starts making it off the event loop and throws {@link WorktreePending}.
    */
@@ -3536,6 +3638,7 @@ export class Supervisor extends EventEmitter {
     let check: MilestoneCheckPrompt | undefined;
     let criteria: Criterion[] | undefined;
     let taskType: string | undefined;
+    let taskLabels: string[] | undefined;
     const parent = req.parent ? this.live.get(req.parent)?.record : undefined;
     if (req.parent) {
       if (!parent) throw new OpsError(`parent run ${req.parent} is not live`);
@@ -3564,6 +3667,7 @@ export class Supervisor extends EventEmitter {
       const v = ws.view(ref);
       delegation = v.delegation;
       taskType = v.meta.type;
+      taskLabels = v.meta.labels;
       if (!req.review && v.meta.type === QUESTION_TYPE) question = questionPrompt(ws, ref, v);
       if (!req.review) check = milestoneCheckPrompt(ws, ref, v);
       criteria = v.criteria;
@@ -3585,38 +3689,101 @@ export class Supervisor extends EventEmitter {
         }
       }
     }
+    if (req.defsRef !== undefined && req.variant !== undefined) {
+      throw new OpsError('a run takes --variant or --defs-ref, not both', 2);
+    }
+    // Without a variant or a ref named, an experiment of the task's store may pick a variant (W5
+    // phase 5).
+    let variant = req.variant;
+    let experiment: string | undefined;
+    if (
+      variant === undefined &&
+      req.defsRef === undefined &&
+      ref &&
+      rootName &&
+      !req.chat &&
+      this.config.experiments
+    ) {
+      const pick = this.experimentFor(ws, rootName, ref, agent, taskType, taskLabels);
+      if (pick) {
+        experiment = pick.experiment;
+        variant = pick.variant;
+      }
+    }
     // A run of a variant reads its role file from the variant's definitions: the store's files with
-    // the overlay on top (W5).
-    let variantRole: { text: string; hash: string; root: string } | undefined;
-    if (req.variant !== undefined) {
-      if (req.chat) throw new OpsError('a chat turn runs no variant', 2);
+    // the overlay on top (W5). A run at a git ref reads it from the store's definitions as that
+    // ref had them, a snapshot `launchFresh` read with `git show`.
+    let variantRole:
+      { text: string; hash: string; root: string; ref?: string; commit?: string } | undefined;
+    if (variant !== undefined || req.defsRef !== undefined) {
+      const what = variant !== undefined ? `variant ${variant}` : `definitions at ${req.defsRef}`;
+      if (req.chat) throw new OpsError(`a chat turn runs no ${variant ? 'variant' : 'ref'}`, 2);
       const vroot = rootName
         ? ws.roots.find((r) => r.name === rootName)
         : ws.roots.find((r) => !r.isMirror);
-      if (!vroot) throw new OpsError('a variant run needs a task store', 2);
-      const set = loadDefinitions(vroot.dir, { variant: req.variant });
+      if (!vroot) throw new OpsError(`a run with ${what} needs a task store`, 2);
+      let set: DefinitionSet;
+      if (variant !== undefined) set = loadDefinitions(vroot.dir, { variant });
+      else {
+        const snap = req.defsSnapshot;
+        if (!snap || snap.ref !== req.defsRef || snap.root !== vroot.name) {
+          throw new OpsError('a --defs-ref run starts through swarmupd, which reads the ref', 2);
+        }
+        set = loadDefinitionsAtRef(vroot.dir, snap);
+      }
       if (!set.ok) {
         const first = set.problems.find((p) => p.severity === 'error');
         throw new OpsError(
-          `variant ${req.variant} does not check` +
+          `${what} does not check` +
             (first ? `: ${first.path}: ${first.message}` : '') +
-            `; \`swarmup validate --root ${vroot.name} --variant ${req.variant}\` lists the problems`,
+            (variant !== undefined
+              ? `; \`swarmup validate --root ${vroot.name} --variant ${variant}\` lists the problems`
+              : ''),
         );
       }
       const vdef = set.agents.find((a) => a.id === agent);
-      if (!vdef)
-        throw new OpsError(`variant ${req.variant} of ${vroot.name} has no role file for ${agent}`);
+      if (!vdef) throw new OpsError(`${what} of ${vroot.name} has no role file for ${agent}`);
       const why = roleInactive(vdef);
       if (why) throw new OpsError(why);
       const norm = vdef.file.replace(/\\/g, '/');
       const path = Object.keys(set.texts).find((p) => norm.endsWith(`/${p}`));
-      def = vdef;
+      // What the agent may do stays the store's: a variant or an old ref never brings back tools,
+      // MCP servers or claims a person took away (W6 frozen keys).
+      const { def: kept, changed } = withFrozenKeys(vdef, def);
+      if (changed.length > 0) {
+        this.emit(
+          'warn',
+          `${what} of ${vroot.name} sets ${changed.join(', ')} for ${agent} differently; the run keeps the store's`,
+        );
+      }
+      def = kept;
       variantRole = {
         // A folder agent's file is shared by its runtimes: the run reads the agent put together.
-        text: vdef.folder ? agentText(vdef) : path ? set.texts[path]! : vdef.body,
+        // A file whose frozen keys were put back is written again from the agent as it runs.
+        text:
+          vdef.folder || changed.length > 0 ? agentText(kept) : path ? set.texts[path]! : vdef.body,
         hash: set.hash,
         root: vroot.name,
+        ...(set.ref ? { ref: set.ref } : {}),
+        ...(set.commit ? { commit: set.commit } : {}),
       };
+      // The snapshot of a ref's files goes in state.db, as the base's do, under its hash.
+      if (set.ref) {
+        const snapSet = set;
+        this.safe(() =>
+          this.state?.saveDefinitions({
+            hash: snapSet.hash,
+            root: vroot.name,
+            commit: snapSet.commit ?? null,
+            created_at: new Date(this.now()).toISOString(),
+            files: snapSet.files.map((f) => ({
+              path: f.path,
+              sha256: f.sha256,
+              text: snapSet.texts[f.path] ?? '',
+            })),
+          }),
+        );
+      }
     }
     const project = parent
       ? (parent.project ?? parent.root ?? this.projectOf(ws))
@@ -3777,12 +3944,15 @@ export class Supervisor extends EventEmitter {
     // The definitions the run starts with, when a task store has a swarm.yaml (W5). The commit
     // comes from a lookup off the event loop: a run before it ends records the hash alone.
     const baseStamp = this.defsState.stamp(rootName, agent, localAgentKeys(agent, agentCfg, def));
-    // A variant run is stamped with the variant's hash: the commit and dirty flag are the base's.
-    const defsStamp = variantRole
+    // A variant run is stamped with the variant's hash, and no commit: the files are not one. A run
+    // at a git ref is stamped with the snapshot's hash, the ref and the commit it named.
+    const defsStamp: RunDefs | undefined = variantRole
       ? {
           root: variantRole.root,
           hash: variantRole.hash,
-          variant: req.variant!,
+          ...(variant !== undefined ? { variant } : {}),
+          ...(variantRole.ref ? { ref: variantRole.ref } : {}),
+          ...(variantRole.commit ? { commit: variantRole.commit } : {}),
           ...(baseStamp?.local ? { local: baseStamp.local } : {}),
         }
       : baseStamp;
@@ -4032,7 +4202,8 @@ export class Supervisor extends EventEmitter {
         around,
         resumed: resumed?.session,
         resumed_from: resumed?.from,
-        ...(req.variant ? { variant: req.variant } : {}),
+        ...(variant ? { variant } : {}),
+        ...(experiment ? { experiment } : {}),
         ...(defsStamp ? { defs: defsStamp, model: invModel, effort: invEffort } : {}),
         ...(mcp.grant.granted.length > 0 ? { mcp: mcp.grant.granted } : {}),
       };
@@ -4093,10 +4264,16 @@ export class Supervisor extends EventEmitter {
             run: id,
             ...(resumed ? { session: resumed.session } : {}),
             ...(defsStamp ? { defs: shortHash(defsStamp.hash) } : {}),
-            ...(req.variant ? { variant: req.variant } : {}),
+            ...(variant ? { variant } : {}),
+            ...(experiment ? { experiment } : {}),
+            ...(variantRole?.ref ? { defs_ref: variantRole.ref } : {}),
           },
           `${runtime} run, budget ${formatMinutes(budget)}${tokenBudget ? `, ${tokenBudget} tokens` : ''}` +
-            (req.variant ? `, variant ${req.variant}` : '') +
+            (variant ? `, variant ${variant}` : '') +
+            (variantRole?.ref
+              ? `, definitions at ${variantRole.ref} (${(variantRole.commit ?? '').slice(0, 12)})`
+              : '') +
+            (experiment ? `, experiment ${experiment}${variant ? '' : ' (base)'}` : '') +
             (resumed ? `, resumed session ${resumed.session} of run ${resumed.from}` : ''),
         ),
       );
@@ -5423,6 +5600,7 @@ export class Supervisor extends EventEmitter {
       this.safe(() => this.notifyTick());
       this.scoresTick();
       this.safe(() => this.improveTick());
+      this.rubricTick();
       this.emit('tick');
     } finally {
       this.ticks++;
@@ -5517,6 +5695,25 @@ export class Supervisor extends EventEmitter {
       this.emit('warn', `improve: filed ${t.id} for ${t.owner}: ${t.title}`);
     }
     this.improver.gateTick();
+    this.safe(() => this.recordBenchResults());
+  }
+
+  /** What `bench_results` holds of each run, by run id; read from `state.db` once. */
+  private benchRecorded: Map<string, string> | null = null;
+
+  /**
+   * Writes the attempts of bench runs that finished, or were judged again, since the last look
+   * into `state.db` `bench_results` (W5 phase 5): runs the app or the improvement gate started,
+   * and those in `swarmupd.bench.results`. Returns how many rows it wrote.
+   */
+  recordBenchResults(): number {
+    if (!this.state) return 0;
+    this.benchRecorded ??= this.state.benchRecorded();
+    const rows = this.bench.unrecorded(this.benchRecorded);
+    if (rows.length === 0) return 0;
+    this.state.saveBenchResults(rows);
+    for (const r of rows) this.benchRecorded.set(r.run, r.summary_at);
+    return rows.length;
   }
 
   /** What the bench runner needs: the state folder, the roots, `swarmupd.bench` and the env. */
@@ -5536,6 +5733,67 @@ export class Supervisor extends EventEmitter {
       configPath: this.configPath,
       env: this.context.env,
     };
+  }
+
+  /**
+   * The rubric scorers (W5 phase 5), once a minute at most and one pass at a time, off the tick:
+   * only with `swarmupd.judge.scorers` on, since each judgment spends tokens.
+   */
+  private rubricTick(): void {
+    if (this.stopping || this.closed || !this.config.judge.scorers || this.rubricBusy) return;
+    if (this.now() - this.rubricAt < 60_000) return;
+    this.rubricAt = this.now();
+    this.rubricBusy = this.judgeRubrics()
+      .catch((err: unknown) => {
+        this.emit('warn', `rubric scorers: ${err instanceof Error ? err.message : String(err)}`);
+        return 0;
+      })
+      .finally(() => {
+        this.rubricBusy = null;
+      });
+  }
+
+  /**
+   * One pass of the rubric scorers: judges up to `max` closed tasks they take, records each in
+   * `state.db`, and scores again when it judged any. Returns how many it judged.
+   */
+  async judgeRubrics(max = 5): Promise<number> {
+    const stop = new AbortController();
+    const watch = setInterval(() => {
+      if (this.stopping) stop.abort();
+    }, 1000);
+    let settings: Record<string, ScorerSetting> = {};
+    try {
+      settings = scorerSettings(this.user);
+    } catch {
+      // `refreshScores` warns about it.
+    }
+    try {
+      const n = await runRubricScorers(
+        {
+          now: () => this.now(),
+          ws: () => this.ws(),
+          runs: () => this.runs(),
+          judge: () => this.config.judge,
+          runtimes: () => this.config.runtimes,
+          merging: () => Object.keys(this.config.merge),
+          machine: () => this.user.machine,
+          settings: () => settings,
+          db: this.state,
+          repos: (root) => [this.codeDirOf(root), root.dir],
+          env: () => this.commandEnv(),
+          held: (runtime) => this.providerHold(runtime)?.text ?? null,
+          ...(this.judgeRunner ? { runner: this.judgeRunner } : {}),
+          signal: stop.signal,
+          warn: (m) => this.emit('warn', m),
+        },
+        { max },
+      );
+      if (n > 0) await this.refreshScores(true);
+      return n;
+    } finally {
+      clearInterval(watch);
+    }
   }
 
   /** The scores, computed again first when something changed, or always with `force`. */
@@ -7477,6 +7735,27 @@ function inside(child: string, parent: string): boolean {
  * and imports the run files kept before it. Null when it cannot be opened: swarmupd then works
  * from its JSON files alone, as before `state.db`.
  */
+/**
+ * `other` (an agent from a variant or a git ref) with every {@link ALWAYS_FROZEN_KEYS} key
+ * (`tools`, `mcp`, `writes`, `can_claim`, `id`) taken from `base`, the store's own agent; a key
+ * the base lacks is dropped. Returns the keys whose values differed.
+ */
+export function withFrozenKeys(
+  other: AgentDef,
+  base: AgentDef | undefined,
+): { def: AgentDef; changed: string[] } {
+  const out: Record<string, unknown> = { ...other };
+  const from = (base ?? {}) as Record<string, unknown>;
+  const changed: string[] = [];
+  for (const k of ALWAYS_FROZEN_KEYS) {
+    if (k === 'id') continue;
+    if (JSON.stringify(out[k]) !== JSON.stringify(from[k])) changed.push(k);
+    if (from[k] === undefined) delete out[k];
+    else out[k] = from[k];
+  }
+  return { def: out as unknown as AgentDef, changed };
+}
+
 /**
  * Machine agent settings (`swarmupd.agents.<id>.model` and `effort`) that override a value the
  * agent's file gives, as `agents.<id>.model`, for a run's definitions stamp.

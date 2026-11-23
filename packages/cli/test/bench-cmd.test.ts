@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { StateDb } from '@swarmup/supervisor';
 import { run } from '../src/cli.js';
 
 const dirs: string[] = [];
@@ -89,5 +90,70 @@ describe('swarmup bench run --max-usd and prices', () => {
     expect(bad.err).toContain(
       'swarmupd.bench.prices.gpt-x.cached_input: use a number of 0 or more',
     );
+  });
+});
+
+describe('swarmup bench history', () => {
+  const history = async (state: string, ...argv: string[]) => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const env: NodeJS.ProcessEnv = { ...process.env, SWARMUP_STATE_DIR: state };
+    const code = await run(['bench', 'history', ...argv], {
+      out: (l) => out.push(l),
+      err: (l) => err.push(l),
+      env,
+      cwd: state,
+    });
+    return { code, out, err };
+  };
+
+  it('lists the attempts swarmupd kept, newest first, filtered by set, agent and variant', async () => {
+    const state = temp();
+    const none = await history(state);
+    expect(none.out).toEqual([
+      'no bench results: swarmupd keeps the attempts of the runs it starts or lists',
+    ]);
+    const row = {
+      run: 'demo-20261123-100000',
+      set: 'demo',
+      entry: 'E1',
+      attempt: 1,
+      mode: 'agent',
+      agent: 'claude:engineer',
+      model: 'opus',
+      variant: null,
+      defs_hash: 'd:abc',
+      defs_ref: null,
+      pass_rate: 0.5,
+      hidden_total: 2,
+      hidden_passed: 1,
+      cost_usd: 0.25,
+      cost_estimated: false,
+      wall_ms: 125_000,
+      started_at: '2026-11-23T10:00:00.000Z',
+      summary_at: '2026-11-23T10:05:00.000Z',
+    };
+    new StateDb(state).saveBenchResults([
+      row,
+      {
+        ...row,
+        run: 'demo-20261123-110000',
+        variant: 'tests-first',
+        pass_rate: 1,
+        cost_usd: 0.3,
+        cost_estimated: true,
+        started_at: '2026-11-23T11:00:00.000Z',
+      },
+    ]);
+    const all = await history(state, '--set', 'demo');
+    expect(all.code).toBe(0);
+    expect(all.out).toEqual([
+      '2026-11-23 11:00  demo/E1 #1  claude:engineer (opus)  variant tests-first  pass 100%  hidden 1/2  $0.30~  2m05s  demo-20261123-110000',
+      '2026-11-23 10:00  demo/E1 #1  claude:engineer (opus)  base  pass 50%  hidden 1/2  $0.25  2m05s  demo-20261123-100000',
+    ]);
+    expect((await history(state, '--variant', 'tests-first')).out).toHaveLength(1);
+    expect((await history(state, '--agent', 'codex:engineer')).out[0]).toMatch(/^no bench/);
+    const json = await history(state, '--json', '--limit', '1');
+    expect(JSON.parse(json.out.join('\n'))).toHaveLength(1);
   });
 });

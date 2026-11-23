@@ -109,6 +109,8 @@ export class ScoreKeeper {
     private readonly opts: {
       orientation?: OrientationProvider;
       logsPerRefresh?: number;
+      /** Score rows kept elsewhere that join the computed ones, such as rubric scorers'. */
+      extra?: () => ScoreResult[];
       now?: () => number;
     } = {},
   ) {}
@@ -219,9 +221,12 @@ export class ScoreKeeper {
     const views = ws.list({ all: true });
     const ended = runs.filter((r) => r.status === 'ended');
     const stores = gitScorers(ws);
+    // Rows that do not come from the task files, such as rubric scorers' (W5 phase 5).
+    const extra = this.opts.extra?.() ?? [];
     const fingerprint = [
       JSON.stringify(settings),
       JSON.stringify(stores),
+      `${extra.length}:${extra.at(-1)?.subject ?? ''}`,
       ended.length,
       ended[0]?.id ?? '',
       ...views.map((t) => `${t.root}/${t.meta.id}@${t.lastEvent}:${t.eventCount}`),
@@ -241,6 +246,7 @@ export class ScoreKeeper {
       { tasks, runs, orientation: (r) => this.orientations.get(r.id) },
       { settings, now: this.opts.now, stores },
     );
+    results.push(...extra);
     this.save(results);
     this.fingerprint = fingerprint;
     return this.results();

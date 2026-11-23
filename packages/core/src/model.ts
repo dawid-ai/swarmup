@@ -353,6 +353,13 @@ export interface OpsEvent {
    * back (W6).
    */
   variant?: string;
+  /**
+   * run-start: the experiment of `swarm.yaml` that chose the run's side (W5 phase 5); with no
+   * `variant`, the run is on its base side.
+   */
+  experiment?: string;
+  /** run-start: the git ref the run's definitions were read at (`--defs-ref`, W5 phase 5). */
+  defs_ref?: string;
   /** defs-promote, defs-rollback: the short hashes of the store's definitions before and after. */
   defs_from?: string;
   defs_to?: string;

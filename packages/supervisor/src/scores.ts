@@ -13,6 +13,7 @@ import {
   MERGE_ACTOR,
   needsHumanReview,
   OpsError,
+  shortHash,
 } from '@swarmup/core';
 import type { OrientationStats } from './orientation.js';
 import type { RunRecord } from './runs.js';
@@ -42,6 +43,20 @@ export interface ScoreResult {
   /** More figures, such as the minutes next to a merged task's tokens. */
   extra?: Record<string, number>;
   note?: string;
+  /**
+   * The short definition hash the work started with, when known (W5): a run's own, or for a task
+   * the newest `run-start` of the agent the score counts for.
+   */
+  defs_hash?: string;
+  /** The variant the work ran with, from the same run; unset for the base. */
+  variant?: string;
+  /** The `swarm.yaml` experiment that chose that run's side. */
+  experiment?: string;
+  /**
+   * A rubric scorer's score (W5 phase 5): the rubric it judged against and the share it passes
+   * at. The built-in scorers give none.
+   */
+  rubric?: { id: string; pass: number };
 }
 
 /** A task as the scorers read it. */
@@ -133,7 +148,8 @@ export interface TaskFacts {
   closed: OpsEvent | null;
 }
 
-function taskFacts(t: ScoreTask): TaskFacts {
+/** What several scorers read of task `t`, such as the agent whose work it is. */
+export function taskFacts(t: ScoreTask): TaskFacts {
   let reviewer = '';
   let claimer = '';
   let approvalAt = -1;
@@ -835,13 +851,62 @@ export function computeScores(input: ScoreInput, opts: ScoreOptions = {}): Score
       if (r.level === 'agent' || inWindow(r.at)) out.push(r);
     }
   }
+  attributeScores(out, input);
   return out;
+}
+
+/** What a score's work started with: its short definition hash, variant and experiment. */
+export interface ScoreSide {
+  defs_hash?: string;
+  variant?: string;
+  experiment?: string;
+}
+
+/**
+ * The side of task `t`'s work for `agent`: its newest `run-start`, else the task's newest one.
+ * Empty when the task never ran under swarmupd.
+ */
+export function taskSide(t: Pick<ScoreTask, 'events'>, agent: string): ScoreSide {
+  const starts = t.events.filter((e) => e.type === 'run-start');
+  const e = starts.filter((s) => s.actor === agent).at(-1) ?? starts.at(-1);
+  if (!e) return {};
+  return {
+    ...(e.defs ? { defs_hash: e.defs } : {}),
+    ...(e.variant ? { variant: e.variant } : {}),
+    ...(e.experiment ? { experiment: e.experiment } : {}),
+  };
+}
+
+/** The side of a run: its definitions' short hash, variant and experiment. */
+export function runSide(r: RunRecord): ScoreSide {
+  return {
+    ...(r.defs ? { defs_hash: shortHash(r.defs.hash) } : {}),
+    ...(r.variant ? { variant: r.variant } : {}),
+    ...(r.experiment ? { experiment: r.experiment } : {}),
+  };
+}
+
+/** Adds to each task and run score the side its work started with (W5); agent scores get none. */
+function attributeScores(out: ScoreResult[], input: ScoreInput): void {
+  const runs = new Map(input.runs.map((r) => [r.id, r]));
+  const tasks = new Map(input.tasks.map((t) => [ref(t), t]));
+  for (const r of out) {
+    let side: ScoreSide | undefined;
+    if (r.level === 'run') {
+      const run = runs.get(r.subject);
+      if (run) side = runSide(run);
+    } else if (r.level === 'task') {
+      const t = tasks.get(r.subject);
+      if (t) side = taskSide(t, r.agent);
+    }
+    if (side) Object.assign(r, side);
+  }
 }
 
 const roleOfAgent = (agent: string): string => agent.slice(agent.indexOf(':') + 1);
 
 /** Whether a store's `applies_to` takes task `t`, whose milestone's workflow is `workflow`. */
-function appliesToTask(
+export function appliesToTask(
   a: ScorerAppliesTo | undefined,
   t: ScoreTask,
   author: string,
@@ -980,30 +1045,69 @@ export interface ScorerLine {
 
 export interface AgentScores {
   agent: string;
+  /**
+   * With `byVariant`: the variant this block's work ran with, null for the base. Absent
+   * otherwise.
+   */
+  variant?: string | null;
   scorers: ScorerLine[];
 }
 
-/** Per agent, each scorer's mean, pass rate and worst subjects, agents by name. */
+/** A rubric scorer of a store (`scorers/<id>.yaml`, W5 phase 5) as a summary reads it. */
+export function rubricScorer(id: string, rubric: string): Scorer {
+  return {
+    id,
+    description: `an LLM judge's score of a closed task against rubrics/${rubric}.md, as a share`,
+    level: 'task',
+    unit: 'ratio',
+    better: 'higher',
+    lever: "the agent's role file, against the rubric's criteria",
+    score: () => [],
+  };
+}
+
+/**
+ * Per agent, each scorer's mean, pass rate and worst subjects, agents by name. With `byVariant`,
+ * one block per agent and variant (the base first), over task and run scores only: an agent score
+ * counts all of the agent's work, whatever its variant.
+ */
 export function summarizeScores(
   results: ScoreResult[],
-  opts: ScoreOptions & { worst?: number } = {},
+  opts: ScoreOptions & { worst?: number; byVariant?: boolean } = {},
 ): AgentScores[] {
   const scorers = activeScorers(opts);
   const byAgent = new Map<string, Map<string, ScoreResult[]>>();
+  const keyOf = (r: ScoreResult): string =>
+    opts.byVariant ? `${r.agent}\n${r.variant ?? ''}` : r.agent;
   for (const r of results) {
     if (!r.agent) continue;
-    const m = byAgent.get(r.agent) ?? new Map<string, ScoreResult[]>();
+    if (opts.byVariant && r.level === 'agent') continue;
+    const key = keyOf(r);
+    const m = byAgent.get(key) ?? new Map<string, ScoreResult[]>();
     const list = m.get(r.scorer) ?? [];
     list.push(r);
     m.set(r.scorer, list);
-    byAgent.set(r.agent, m);
+    byAgent.set(key, m);
   }
   const worst = opts.worst ?? 3;
+  // Rubric scorers in git (W5 phase 5) come after the built-in ones, by id.
+  const known = new Set(scorers.map(({ s }) => s.id));
+  const rubrics = new Map<string, { s: Scorer; pass?: number }>();
+  for (const r of results) {
+    if (!r.rubric || known.has(r.scorer) || rubrics.has(r.scorer)) continue;
+    rubrics.set(r.scorer, { s: rubricScorer(r.scorer, r.rubric.id), pass: r.rubric.pass });
+  }
+  const all = [...scorers, ...[...rubrics.values()].sort((a, b) => a.s.id.localeCompare(b.s.id))];
   return [...byAgent]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([agent, m]) => ({
+    .map(([key, m]) => {
+      const [agent, variant] = key.split('\n') as [string, string | undefined];
+      return { agent, variant, m };
+    })
+    .map(({ agent, variant, m }) => ({
       agent,
-      scorers: scorers.flatMap(({ s, pass }) => {
+      ...(opts.byVariant ? { variant: variant || null } : {}),
+      scorers: all.flatMap(({ s, pass }) => {
         const list = m.get(s.id);
         if (!list?.length) return [];
         const sign = s.better === 'lower' ? -1 : 1;
@@ -1086,7 +1190,9 @@ export function scoresText(summary: AgentScores[]): string {
   if (summary.length === 0) return 'no scores: no task or run in the window has anything to score';
   const lines: string[] = [];
   for (const a of summary) {
-    lines.push(a.agent);
+    const side =
+      a.variant === undefined ? '' : a.variant === null ? ' [base]' : ` [variant ${a.variant}]`;
+    lines.push(`${a.agent}${side}`);
     for (const l of a.scorers) lines.push(`  ${scorerLineText(l)}`);
   }
   return lines.join('\n');

@@ -26,8 +26,18 @@ export {
   checkDefinitionText,
   clearDefinitionsCache,
   loadDefinitions,
+  loadDefinitionsAtRef,
   sortProblems,
 } from './load.js';
+export type { DefsRefSnapshot } from './ref.js';
+export {
+  checkDefsRef,
+  DEFS_REF_RE,
+  defsRefGit,
+  gitWhy,
+  readDefsAtRef,
+  snapshotTexts,
+} from './ref.js';
 export type { Checked, CheckOptions, DefProblem, Locate, Schema, Severity } from './schema.js';
 export {
   checkValue,
@@ -46,9 +56,21 @@ export {
   gitMergeChecks,
   untrustedChecksText,
 } from './checks.js';
+export type { ExperimentPick, ExperimentSubject } from './experiments.js';
+export {
+  experimentActive,
+  experimentFraction,
+  experimentTakes,
+  shareFraction,
+  pickExperiment,
+  priorSide,
+} from './experiments.js';
 export type {
   SwarmCheck,
   SwarmDefs,
+  SwarmExperiment,
+  SwarmExperimentScope,
+  SwarmScoring,
   SwarmImport,
   SwarmImprovement,
   SwarmImprovementRequires,
@@ -59,7 +81,9 @@ export type {
   SwarmWorkType,
 } from './swarm.js';
 export {
+  DEFAULT_DAILY_JUDGE_TOKENS,
   DEFS_FORMAT,
+  EXPERIMENT_ID_RE,
   POLICY_KEYS,
   setSwarmValues,
   SWARM_FILE,

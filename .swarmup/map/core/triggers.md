@@ -45,7 +45,7 @@ true`, `runs_on` against `user.machine`); the supervisor's `runTriggers` fires t
   hash.
 
 - `scorer.ts`: `scorers/<id>.yaml`, `kind: builtin` (a W4 scorer's `pass` and `applies_to`) or
-  `kind: rubric` (checked and listed only). `git-scorers.ts` reads the built-in ones into
+  `kind: rubric` (run by `rubric-scorers.ts`; see `experiments`). `git-scorers.ts` reads the built-in ones into
   `ScoreOptions.stores`; `scores.ts` `scoreWithStores` scores each store's work with its
   threshold and filters. `swarmup defs scorers` lists them.
 

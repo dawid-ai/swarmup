@@ -249,6 +249,7 @@ describe('loadDefinitions', () => {
       swarmup_defs: 1,
       defaults: { model: 'opus', budget_min: 30 },
       policy: { stuck_runs: 2 },
+      scoring: { sample: 1 },
       runtimes: { codex: { model: 'gpt-5-codex', effort: 'high' } },
       roles: { reviewer: { providers: ['codex', 'claude'], per_project: 2 } },
     });

@@ -319,11 +319,30 @@ function claudeModel(events: Json[], result: Json): string | null {
   return ranked[0]?.[0] ?? null;
 }
 
-/** What a judge's output says: its answer text, its cost when reported, and the model that ran. */
+/** The tokens of a `usage` object: input, cached input and output; null when it names none. */
+function usageTokens(usage: unknown): number | null {
+  if (!usage || typeof usage !== 'object') return null;
+  const u = usage as Json;
+  let sum: number | null = null;
+  for (const k of [
+    'input_tokens',
+    'output_tokens',
+    'cache_read_input_tokens',
+    'cache_creation_input_tokens',
+  ]) {
+    if (typeof u[k] === 'number') sum = (sum ?? 0) + (u[k] as number);
+  }
+  return sum;
+}
+
+/**
+ * What a judge's output says: its answer text, its cost when reported, the model that ran, and
+ * the tokens it used when the output reports them (rubric scorers count them against a cap).
+ */
 export function readJudgeOutput(
   runtime: string,
   stdout: string,
-): { text: string; costUsd: number | null; model: string | null; error?: string } {
+): { text: string; costUsd: number | null; model: string | null; tokens?: number; error?: string } {
   if (runtime === 'claude') {
     // `--output-format json` prints the session's messages as one JSON array (older builds: the
     // result object alone, or one object per line); the `result` message holds the answer.
@@ -331,10 +350,12 @@ export function readJudgeOutput(
     const r = events.filter((e) => e.type === 'result').at(-1);
     if (!r) return { text: stdout, costUsd: null, model: null };
     const text = typeof r.result === 'string' ? r.result : '';
+    const tokens = usageTokens(r.usage);
     return {
       text,
       costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : null,
       model: claudeModel(events, r),
+      ...(tokens !== null ? { tokens } : {}),
       ...(r.is_error === true
         ? { error: text.split('\n')[0] || String(r.subtype ?? 'error') }
         : {}),
@@ -342,19 +363,33 @@ export function readJudgeOutput(
   }
   // Codex `--json`: the last agent message is the answer; it reports tokens, not cost.
   let text = '';
+  let tokens: number | null = null;
   for (const line of stdout.split('\n')) {
     const t = line.trim();
     if (!t.startsWith('{')) continue;
     try {
-      const ev = JSON.parse(t) as { type?: string; item?: { type?: string; text?: string } };
+      const ev = JSON.parse(t) as {
+        type?: string;
+        item?: { type?: string; text?: string };
+        usage?: unknown;
+      };
       if (ev.type === 'item.completed' && ev.item?.type === 'agent_message' && ev.item.text) {
         text = ev.item.text;
+      }
+      if (ev.type === 'turn.completed') {
+        const n = usageTokens(ev.usage);
+        if (n !== null) tokens = (tokens ?? 0) + n;
       }
     } catch {
       // Not an event.
     }
   }
-  return { text: text || stdout, costUsd: null, model: null };
+  return {
+    text: text || stdout,
+    costUsd: null,
+    model: null,
+    ...(tokens !== null ? { tokens } : {}),
+  };
 }
 
 // ---- One judgment -------------------------------------------------------------------------------
@@ -366,6 +401,8 @@ interface JudgeRun {
   model: string | null;
   costUsd: number | null;
   wallMs: number;
+  /** The tokens the judge used, when its output reports them. */
+  tokens?: number;
 }
 
 /** A judgment that gave a score. */
@@ -458,7 +495,11 @@ export async function runJudge(
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
     const read = readJudgeOutput(cmd.runtime, out.stdout);
-    const seen = { costUsd: read.costUsd, model: read.model ?? base.model };
+    const seen = {
+      costUsd: read.costUsd,
+      model: read.model ?? base.model,
+      ...(read.tokens !== undefined ? { tokens: read.tokens } : {}),
+    };
     if (out.timedOut) return fail(`timed out after ${opts.config.budget_min} min`, seen);
     if (out.error) return fail(out.error, seen);
     if (read.error) return fail(read.error, seen);

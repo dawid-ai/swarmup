@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
@@ -13,7 +12,7 @@ import {
   effectiveSample,
   gitMergeChecks,
   daemonKeyIn,
-  DEF_FOLDERS,
+  daemonSection,
   definitionHash,
   editUserConfig,
   formatProblem,
@@ -23,6 +22,7 @@ import {
   migrationLogDir,
   normalText,
   planMigration,
+  readDefsAtRef,
   applyMigration,
   OpsError,
   ROOT_DIR_NAME,
@@ -40,7 +40,9 @@ import {
 } from '@swarmup/core';
 import type { OpsdConfig } from '@swarmup/supervisor';
 import {
+  checkJudge,
   importableConfig,
+  judgesRoot,
   scorerSettings,
   lineDiff,
   opsdConfig,
@@ -434,7 +436,7 @@ async function trust(ctx: DefsCtx): Promise<number> {
 /**
  * `swarmup defs scorers`: each root's `scorers/*.yaml`: a built-in's threshold and filters, with
  * the machine's `pass` when it wins, and a rubric scorer's rubric, judge and sample (lowered to
- * the machine's `sample`), which swarmupd does not run yet.
+ * the machine's `sample`), and whether it runs here (`swarmupd.judge.scorers`).
  */
 function scorers(ctx: DefsCtx): number {
   let settings: ReturnType<typeof scorerSettings> = {};
@@ -443,8 +445,27 @@ function scorers(ctx: DefsCtx): number {
   } catch (err) {
     ctx.io.err(`${(err as Error).message}; showing the git values alone`);
   }
-  const rows = rootsOf(ctx).flatMap((root) =>
-    loadDefinitions(root.dir).scorers.map((sc) => {
+  // Rubric scorers run only on the machine that judges the root (`swarmupd.judge.scorers`).
+  let judgeCfg: boolean | string[] = false;
+  let merging: string[] = [];
+  try {
+    const user = ctx.ws().user;
+    judgeCfg = checkJudge(daemonSection(user)?.judge).scorers;
+    merging = Object.keys(opsdConfig(user).merge);
+  } catch {
+    // `swarmup doctor` names a bad `swarmupd.judge`.
+  }
+  const rows = rootsOf(ctx).flatMap((root) => {
+    const set = loadDefinitions(root.dir);
+    const scoring = set.swarm?.scoring;
+    const judgeOn = judgesRoot(
+      judgeCfg,
+      root.name,
+      merging,
+      scoring?.runs_on,
+      ctx.ws().user.machine,
+    );
+    return set.scorers.map((sc) => {
       const d = sc.def;
       const machine = d ? settings[d.kind === 'builtin' ? d.scorer! : d.id] : undefined;
       return {
@@ -456,11 +477,22 @@ function scorers(ctx: DefsCtx): number {
         ...(machine?.pass !== undefined && d?.kind === 'builtin'
           ? { machine_pass: machine.pass }
           : {}),
-        ...(d?.kind === 'rubric' ? { sample: effectiveSample(d.sample, machine?.sample) } : {}),
-        active: !!d && d.enabled && d.kind === 'builtin' && machine?.enabled !== false,
+        ...(d?.kind === 'rubric'
+          ? { sample: effectiveSample(d.sample ?? scoring?.sample, machine?.sample) }
+          : {}),
+        ...(d?.kind === 'rubric' && scoring?.scorers && !scoring.scorers.includes(d.id)
+          ? { unlisted: true }
+          : {}),
+        ...(d?.kind === 'rubric' ? { judges_here: judgeOn } : {}),
+        active:
+          !!d &&
+          d.enabled &&
+          machine?.enabled !== false &&
+          (d.kind === 'builtin' ||
+            (judgeOn && (!scoring?.scorers || scoring.scorers.includes(d.id)))),
       };
-    }),
-  );
+    });
+  });
   if (ctx.opts.json) {
     ctx.io.out(JSON.stringify(rows, null, 2));
     return 0;
@@ -490,8 +522,17 @@ function scorers(ctx: DefsCtx): number {
       const judge = d.judge
         ? `  judge ${[d.judge.runtime, d.judge.model, d.judge.effort].filter(Boolean).join(' ')}`
         : '';
+      const state = !d.enabled
+        ? 'off'
+        : r.active
+          ? 'on'
+          : 'unlisted' in r
+            ? 'off (not in scoring.scorers)'
+            : judgeCfg !== false
+              ? 'off on this machine (another machine judges this root)'
+              : 'off on this machine (swarmupd.judge.scorers)';
       ctx.io.out(
-        `${r.root}/${r.id}  rubric ${d.rubric}  not run yet${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,
+        `${r.root}/${r.id}  rubric ${d.rubric}  ${state}${pass}  sample ${r.sample}${d.blind ? '  blind' : ''}${judge}${to}`,
       );
     }
   }
@@ -520,30 +561,9 @@ function defsHash(ctx: DefsCtx): number {
   return 0;
 }
 
-function gitIn(dir: string, args: string[]): string {
-  return execFileSync('git', args, {
-    cwd: dir,
-    encoding: 'utf8',
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    maxBuffer: 64 * 1024 * 1024,
-  });
-}
-
 /** The definition files of the store in `dir` at git `ref`, as path to text. */
 function filesAt(dir: string, ref: string): Map<string, string> {
-  let names: string[];
-  try {
-    names = gitIn(dir, ['ls-tree', '-r', '--name-only', ref, '--', SWARM_FILE, ...DEF_FOLDERS])
-      .split('\n')
-      .filter(Boolean);
-  } catch (err) {
-    const why = ((err as { stderr?: string }).stderr ?? (err as Error).message).split('\n')[0];
-    throw new OpsError(`git cannot read ${ref} in ${dir}: ${why}`, 2);
-  }
-  const out = new Map<string, string>();
-  for (const name of names) out.set(name, normalText(gitIn(dir, ['show', `${ref}:./${name}`])));
-  return out;
+  return readDefsAtRef(dir, ref).texts;
 }
 
 const sha = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');

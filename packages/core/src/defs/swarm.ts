@@ -2,8 +2,9 @@
  * `swarm.yaml`: the team's settings kept in the task store, in git. swarmupd reads `defaults`,
  * `runtimes.<rt>.{model, effort}`, `roles` and `policy`; `work_types` give new tasks their
  * default criteria and workflow; `improvement` is the W6 policy; `checks` are merge checks that
- * run only on a machine that trusts them (W5 phase 4). The other top-level keys are accepted and
- * warned about until their phase lands.
+ * run only on a machine that trusts them (W5 phase 4); `experiments` give a share of matching
+ * task runs a variant, and `scoring` runs the rubric scorers (W5 phase 5). The other top-level
+ * keys are accepted and warned about until their phase lands.
  */
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
@@ -117,6 +118,35 @@ export interface SwarmCheck {
   description?: string;
 }
 
+/** Which task runs an experiment takes: every list that is set must match. */
+export interface SwarmExperimentScope {
+  /** Agent ids, such as `claude:engineer`. */
+  agents?: string[];
+  /** Roles, such as `engineer`. */
+  roles?: string[];
+  /** Task types. */
+  types?: string[];
+  /** Labels, of which a task carries one. */
+  labels?: string[];
+}
+
+/**
+ * An experiment (W5 phase 5): a `share` of the task runs `scope` takes run with `variant`, until
+ * the end of the day `until` (UTC). The experiment id and the task fix which side a task lands
+ * on, so every run of a task gets the same definitions.
+ */
+export interface SwarmExperiment {
+  id: string;
+  /** A variant of this store, `variants/<name>/`. */
+  variant: string;
+  /** The share of matching tasks that run the variant, from 0 to 1. */
+  share: number;
+  scope?: SwarmExperimentScope;
+  /** The last day it runs, `YYYY-MM-DD` in UTC; open-ended without it. */
+  until?: string;
+  description?: string;
+}
+
 /** The part of `swarm.yaml` swarmupd applies. */
 export interface SwarmDefs {
   swarmup_defs: number;
@@ -128,6 +158,24 @@ export interface SwarmDefs {
   improvement?: SwarmImprovement;
   /** Merge checks by name; they run only on a machine that trusts this exact set. */
   checks?: Record<string, SwarmCheck>;
+  /** Experiments, in order: the first one that takes a task run decides its variant. */
+  experiments?: SwarmExperiment[];
+  scoring?: SwarmScoring;
+}
+
+/** The tokens rubric scorers may spend on a store's work per day when `scoring` sets none. */
+export const DEFAULT_DAILY_JUDGE_TOKENS = 200_000;
+
+/** Judge-based scoring of a store's work (W5 phase 5): `scoring` in `swarm.yaml`. */
+export interface SwarmScoring {
+  /** The rubric scorers that run; every enabled one when unset. */
+  scorers?: string[];
+  /** The sample of a rubric scorer whose file sets none. */
+  sample?: number;
+  /** The most tokens rubric scorers spend on the store's work per UTC day. */
+  daily_judge_tokens?: number;
+  /** The machines that judge the store's work; any that opts in when unset. */
+  runs_on?: string[];
 }
 
 export const modelSchema = (doc?: string): Schema =>
@@ -207,6 +255,9 @@ const roleSchema = ref(
 );
 
 const later = (phase: string): Schema => any({ inactive: phase });
+
+/** An experiment's id: lowercase letters, digits and dashes. */
+export const EXPERIMENT_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 /** The schema of `swarm.yaml`. */
 export const SWARM_SCHEMA: Schema = obj(
@@ -305,8 +356,29 @@ export const SWARM_SCHEMA: Schema = obj(
       ),
       { nullable: true, doc: 'Kinds of work, with default criteria and workflow.' },
     ),
-    scoring: later(
-      'judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now',
+    scoring: obj(
+      {
+        scorers: list(
+          str({ pattern: /^[a-z0-9][a-z0-9-]{0,59}$/, hint: 'name a scorer (scorers/<id>.yaml)' }),
+          { doc: 'The rubric scorers that run for this store; every enabled one when unset.' },
+        ),
+        sample: num({
+          min: 0,
+          max: 1,
+          doc: 'The share of matching closed tasks a rubric scorer judges when its file sets no `sample`, from 0 to 1. Default 1.',
+        }),
+        daily_judge_tokens: int({
+          min: 0,
+          doc: "The most tokens rubric scorers spend on this store's work per day (UTC). Default 200000. A machine's `swarmupd.judge.daily_tokens` may only lower it.",
+        }),
+        runs_on: list(str({ pattern: /\S/, hint: 'name a machine' }), {
+          doc: "The machine (`machine` in its user config) that judges this store's work, so one machine spends the cap. Without it, the machine whose `swarmupd.judge.scorers` names the root, or that merges it with `true`.",
+        }),
+      },
+      {
+        nullable: true,
+        doc: 'Judge-based scoring: which rubric scorers run, their default sample, the daily token cap and the machine that judges. They run only on a machine whose `swarmupd.judge.scorers` takes the root.',
+      },
     ),
     checks: map(
       oneOf([
@@ -330,7 +402,61 @@ export const SWARM_SCHEMA: Schema = obj(
       },
     ),
     variants: later('variants come in phase 5'),
-    experiments: later('experiments come in phase 5'),
+    experiments: list(
+      obj(
+        {
+          id: str({
+            pattern: EXPERIMENT_ID_RE,
+            hint: 'name the experiment with lowercase letters, digits and dashes',
+            doc: 'The experiment id. With the task it fixes which side a task lands on: a new id deals the tasks again.',
+          }),
+          variant: str({
+            pattern: /^[a-z0-9][a-z0-9-]{0,39}$/,
+            hint: 'name a variant (variants/<name>/) such as engineer-tests-first',
+            doc: 'The variant the chosen share of task runs gets: `variants/<name>/` in this store.',
+          }),
+          share: num({
+            min: 0,
+            max: 1,
+            doc: 'The share of matching tasks that run the variant, from 0 to 1 (0.5 is half). The rest run the base definitions.',
+          }),
+          scope: obj(
+            {
+              agents: list(
+                str({
+                  pattern: /^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$/,
+                  hint: 'use <runtime>:<role>, such as claude:engineer',
+                }),
+                { doc: 'Agent ids.' },
+              ),
+              roles: list(str({ pattern: ROLE_NAME_RE, hint: 'name a role such as engineer' }), {
+                doc: 'Roles, such as engineer.',
+              }),
+              types: list(str(), { doc: 'Task types.' }),
+              labels: list(str(), { doc: 'Labels, of which a task carries one.' }),
+            },
+            {
+              nullable: true,
+              doc: 'Which task runs it takes; every list that is set must match. Every task run when unset.',
+            },
+          ),
+          until: str({
+            pattern: /^\d{4}-\d{2}-\d{2}$/,
+            hint: 'use a date such as 2026-12-31',
+            doc: 'The last day it runs, in UTC. Open-ended when unset.',
+          }),
+          description: str({ doc: 'What the experiment tests.' }),
+        },
+        {
+          required: ['id', 'variant', 'share'],
+          doc: 'One experiment: a share of the task runs it takes run a variant.',
+        },
+      ),
+      {
+        nullable: true,
+        doc: 'A/B experiments: the first one that takes a task run gives it the variant or the base, the same for every run of the task. A machine with `swarmupd.experiments: false` runs the base, and an explicit `--variant` or `--defs-ref` wins.',
+      },
+    ),
     improvement: obj(
       {
         agent: str({
@@ -475,6 +601,36 @@ export function swarmDefs(value: unknown): SwarmDefs {
       imp.requires = req;
     }
     out.improvement = imp;
+  }
+  if (isRecord(v.scoring)) {
+    const sc: SwarmScoring = {};
+    const ids = strings(v.scoring.scorers);
+    if (ids) sc.scorers = ids;
+    if (typeof v.scoring.sample === 'number') sc.sample = v.scoring.sample;
+    if (typeof v.scoring.daily_judge_tokens === 'number') {
+      sc.daily_judge_tokens = v.scoring.daily_judge_tokens;
+    }
+    const runsOn = strings(v.scoring.runs_on);
+    if (runsOn && runsOn.length > 0) sc.runs_on = runsOn.map((m) => m.trim());
+    out.scoring = sc;
+  }
+  if (Array.isArray(v.experiments)) {
+    out.experiments = v.experiments.filter(isRecord).flatMap((e) => {
+      if (typeof e.id !== 'string' || typeof e.variant !== 'string') return [];
+      if (typeof e.share !== 'number') return [];
+      const x: SwarmExperiment = { id: e.id, variant: e.variant, share: e.share };
+      if (isRecord(e.scope)) {
+        const scope: SwarmExperimentScope = {};
+        for (const k of ['agents', 'roles', 'types', 'labels'] as const) {
+          const list = strings(e.scope[k]);
+          if (list && list.length > 0) scope[k] = list;
+        }
+        if (Object.keys(scope).length > 0) x.scope = scope;
+      }
+      if (typeof e.until === 'string') x.until = e.until;
+      if (typeof e.description === 'string') x.description = e.description;
+      return [x];
+    });
   }
   if (isRecord(v.checks)) {
     const checks: Record<string, SwarmCheck> = {};

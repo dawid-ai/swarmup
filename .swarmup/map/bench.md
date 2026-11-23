@@ -42,8 +42,8 @@ swarmupd; the desktop app's Benchmarks view starts it through swarmupd's API.
   with a temporary worktree from `diff.patch` when the rubric needs files. Judged rubric
   criteria count in the pass rate; the summary adds judged counts and judge cost, and names the
   set file (`setFile`) so a later judge finds the entries.
-- `--role-file` and `--variant` with `--root` (a store folder or root name) put the agent's role
-  file, or a variant's, at the top of each prompt (`rolePrompt`) and take its model and effort;
+- `--role-file`, `--variant` or `--defs-ref` with `--root` (a store folder or root name) put the role
+  file, a variant's or a git ref's, at the top of each prompt (`rolePrompt`) and take its model and effort;
   the run writes `role.md` and `summary.json` records `role` (agent, store, hash, variant). The
   improvement loop's benchmark gate starts runs this way (see `improve`).
 - `supervisor/src/bench-cost.ts` prices attempts whose log reports tokens but no cost (Codex):
@@ -52,15 +52,15 @@ swarmupd; the desktop app's Benchmarks view starts it through swarmupd's API.
   `costEstimated` and show with `~`. With repeats, entries and `overall` carry the spread
   (pass-rate min, max and SD, cost SD; `overall` over repeats). `--max-usd` stops starting
   attempts once agent and judge cost reach the cap and lists the rest as `skipped`.
-- `cli/src/bench-cmd.ts` is `swarmup bench run|judge|compare`. `runBench` keeps `status.json` (state,
+- `cli/src/bench-cmd.ts` is `swarmup bench run|judge|compare|history`. `runBench` keeps `status.json` (state,
   attempts done of total, the attempt under way, the runner's pid) in the out folder.
 - `supervisor/src/bench-runs.ts` serves `/api/bench/*`: sets from each root's
   `benchmarks/` and `swarmupd.bench.sets`, runs under `<state>/bench/` and
   `swarmupd.bench.results`, a dry run's plan, and a run started as `swarmup bench run` in a
   detached child with no window (`request.json`, `run.log`); a request may name `variant`,
-  `root` and `role_file`. `BenchRuns` lives on the supervisor (`sup.bench`), and `get(id)` gives
-  one run's view. `SWARMUP_BENCH_CLI` names another
-  runner for tests.
+  `root`, `role_file` and `defs_ref`. `BenchRuns` lives on the supervisor (`sup.bench`); `unrecorded`
+  gives finished runs' attempts, which `recordBenchResults` writes to `state.db` `bench_results`.
+  `SWARMUP_BENCH_CLI` names another runner for tests.
 - `desktop/ui/src/views/Bench.tsx` and `ui/bench.tsx` are the Benchmarks view: sets, runs with
   live progress, a run's attempts and criteria, the run dialog with the plan and cost
   confirmation, and Compare.

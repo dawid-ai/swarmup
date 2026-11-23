@@ -6,7 +6,7 @@
   "type": "object",
   "properties": {
     "kind": {
-      "description": "builtin: the threshold and filters of a built-in scorer. rubric: a judge scores the work against a rubric file (accepted and listed; not run yet).",
+      "description": "builtin: the threshold and filters of a built-in scorer. rubric: an LLM judge scores a sample of closed tasks against a rubric file, on the machine whose `swarmupd.judge.scorers` takes the store.",
       "enum": [
         "builtin",
         "rubric"

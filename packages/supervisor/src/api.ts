@@ -552,6 +552,12 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         if (run && (parent ? parent !== run.id : agent !== run.agent)) {
           humanOnly(parent ? `starting a helper of run ${parent}` : `starting a run of ${agent}`);
         }
+        // Other definitions than the store's are a person's choice: a run cannot pick its own.
+        if (run && (str(body.variant) || str(body.defs_ref))) {
+          humanOnly(
+            str(body.variant) ? 'starting a run with a variant' : 'starting a run at a ref',
+          );
+        }
         const launched = await sup.launchFresh({
           agent,
           task: str(body.task),
@@ -561,6 +567,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           tokens: str(body.tokens),
           parent,
           ...(str(body.variant) ? { variant: str(body.variant) } : {}),
+          ...(str(body.defs_ref) ? { defsRef: str(body.defs_ref) } : {}),
         });
         return send(res, 201, launched);
       }
@@ -1144,7 +1151,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
     if (area === 'scores') {
       // The scores swarmupd keeps in state.db (scores.ts): per agent, each scorer's mean, pass
       // rate and worst subjects; `agent=ID` for one agent, `task=root/ID` adds that task's
-      // scores with evidence. Task and run scores count from `since` (ISO), agent scores over all
+      // scores with evidence; `by_variant=1` splits them by variant. Task and run scores count from `since` (ISO), agent scores over all
       // time. The report carries the scores of its own window. `POST /api/scores/refresh`
       // computes them all again.
       if (method === 'POST' && id === 'refresh') {
@@ -1188,7 +1195,11 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           );
         }
         return send(res, 200, {
-          agents: summarizeScores(results, { settings }).filter((a) => !agent || a.agent === agent),
+          // `by_variant=1`: one block per agent and variant, to read an experiment (W5).
+          agents: summarizeScores(results, {
+            settings,
+            byVariant: q.get('by_variant') === '1',
+          }).filter((a) => !agent || a.agent === agent),
           scorers: scorerCatalog({ settings }),
           ...(task ? { results: mine } : {}),
         });
@@ -1877,6 +1888,7 @@ function benchRequest(body: Json): BenchRunRequest {
     'hidden_dir',
     'reference_dir',
     'variant',
+    'defs_ref',
     'root',
   ] as const) {
     const v = text(k);

@@ -239,6 +239,17 @@ export interface JudgeConfig {
    * score below `pass` sends the task back. Off unless set to true: each judgment spends tokens.
    */
   at_merge: boolean;
+  /**
+   * Run the rubric scorers of a store's `scorers/` on its closed tasks here (W5 phase 5): `true`
+   * for the roots this machine merges (`swarmupd.merge.<root>`), or a list of root names, so one
+   * machine judges each store. Off unless set: each judgment spends tokens.
+   */
+  scorers: boolean | string[];
+  /**
+   * The most tokens rubric scorers spend per UTC day on this machine, over every store; it also
+   * lowers each store's `scoring.daily_judge_tokens`, never raises it.
+   */
+  daily_tokens?: number;
 }
 
 /** The judge when `swarmupd.judge` leaves a key out. */
@@ -247,6 +258,7 @@ export const DEFAULT_JUDGE: JudgeConfig = {
   effort: 'low',
   budget_min: 5,
   at_merge: false,
+  scorers: false,
 };
 
 /**
@@ -482,6 +494,11 @@ export interface OpsdConfig {
   resume_on_changes: boolean;
   /** Hours after a run ended that its session may still be resumed. */
   resume_max_hours: number;
+  /**
+   * Give task runs the variant a store's `swarm.yaml` experiment picks for them (W5 phase 5). On
+   * unless set to false: then every run this machine starts without `--variant` runs the base.
+   */
+  experiments: boolean;
   bench: BenchConfig;
   judge: JudgeConfig;
   improve: ImproveConfig;
@@ -613,6 +630,7 @@ export function opsdConfig(
     review_checks: raw.review_checks ?? false,
     remove_stale_temp: raw.remove_stale_temp ?? false,
     resume_on_changes: raw.resume_on_changes ?? true,
+    experiments: raw.experiments ?? true,
     resume_max_hours: raw.resume_max_hours ?? 24,
     bench: checkBench((raw as { bench?: unknown }).bench),
     judge: checkJudge((raw as { judge?: unknown }).judge),
@@ -651,6 +669,9 @@ export function opsdConfig(
   }
   if (typeof cfg.resume_on_changes !== 'boolean') {
     throw new OpsError('swarmupd.resume_on_changes: use true or false', 2);
+  }
+  if (typeof cfg.experiments !== 'boolean') {
+    throw new OpsError('swarmupd.experiments: use true or false', 2);
   }
   amount(cfg.resume_max_hours, 'resume_max_hours');
   amount(cfg.reclaim_after_minutes, 'reclaim_after_minutes');
@@ -816,7 +837,15 @@ function checkBench(raw: unknown): BenchConfig {
   };
 }
 
-const JUDGE_KEYS = ['runtime', 'model', 'effort', 'budget_min', 'at_merge'];
+const JUDGE_KEYS = [
+  'runtime',
+  'model',
+  'effort',
+  'budget_min',
+  'at_merge',
+  'scorers',
+  'daily_tokens',
+];
 
 /**
  * `swarmupd.judge`, checked, with {@link DEFAULT_JUDGE} for what it leaves out. Refuses an unknown
@@ -858,6 +887,24 @@ export function checkJudge(raw: unknown): JudgeConfig {
       throw new OpsError('swarmupd.judge.at_merge: use true or false', 2);
     }
     out.at_merge = j.at_merge;
+  }
+  if (j.scorers !== undefined && j.scorers !== null) {
+    const s = j.scorers;
+    const roots = Array.isArray(s) && s.every((r) => typeof r === 'string' && r.trim() !== '');
+    if (typeof s !== 'boolean' && !roots) {
+      throw new OpsError(
+        'swarmupd.judge.scorers: use true (the roots this machine merges), false, or a list of root names',
+        2,
+      );
+    }
+    out.scorers = roots ? (s as string[]).map((r) => r.trim()) : (s as boolean);
+  }
+  if (j.daily_tokens !== undefined && j.daily_tokens !== null) {
+    const t = j.daily_tokens;
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0) {
+      throw new OpsError('swarmupd.judge.daily_tokens: use a whole number of at least 0', 2);
+    }
+    out.daily_tokens = t;
   }
   return out;
 }

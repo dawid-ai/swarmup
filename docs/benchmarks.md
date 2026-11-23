@@ -193,9 +193,15 @@ swarmup bench run tally.yaml --repo C:\dev\swarmup-testbed --agent claude:engine
 swarmup bench compare base variant
 ```
 
+`--defs-ref REF --root ROOT` does the same with the store's definitions as git ref `REF` had them,
+such as last week's commit or a tag, to measure a regression. The files are read with `git show`
+into a snapshot and never checked out, so the store's working files and branch stay as they are.
+`--variant` and `--defs-ref` don't go together.
+
 The run writes the resolved role file to `role.md` in its out folder, and `summary.json` records
-`role`: the agent, the store, the definition hash and the variant. `bench compare` names the
-variant in its header.
+`role`: the agent, the store, the definition hash, and the variant or the `ref` and the `commit` it
+named. `bench compare` names the variant in its header. From the app, `POST /api/bench/run` takes
+`defs_ref` with `root`.
 
 ## Results
 
@@ -316,3 +322,21 @@ figure, B's, and B minus A for the pass rate, hidden pass, cost, time and tool c
 first edit. The overall row covers only the entries both runs have, so the deltas compare like
 with like. With one repeat, an entry's pass rate moves in large steps; use `--repeat 3` or more
 before you read a small delta as a real change. A `~` marks an estimated cost.
+
+## History
+
+swarmupd keeps one row per attempt of every finished run it lists, the runs the app or the
+[improvement gate](definitions.md#improvement-policy) started and those in
+`swarmupd.bench.results`, in the `bench_results` table of `state.db`. It looks once a minute, and
+writes a run's rows again when `swarmup bench judge` changes its summary.
+
+```sh
+swarmup bench history                              # newest first, at most 200 attempts
+swarmup bench history --set tally --agent claude:engineer
+swarmup bench history --variant engineer-tests-first --limit 20 --json
+```
+
+Each row holds the set, entry and attempt, the agent and model, the variant or the `--defs-ref`
+and the definition hash of the role file the prompt carried (`base` when the run had a role file
+and no variant), the pass rate, the hidden criteria passed, the agent's cost (`~` for an estimate),
+the wall time, when the attempt started, and the run id.

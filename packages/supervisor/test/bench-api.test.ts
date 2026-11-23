@@ -274,6 +274,12 @@ describe('bench API', () => {
       expect(
         (await call('GET', `/api/bench/runs/${id}/attempt?entry=../x&n=1&file=diff`)).status,
       ).toBe(400);
+      // swarmupd keeps the finished run's attempts in state.db once (W5 phase 5).
+      expect(sup.recordBenchResults()).toBe(1);
+      expect(sup.recordBenchResults()).toBe(0);
+      expect(sup.state?.benchResults({ set: 'demo' })).toMatchObject([
+        { run: id, entry: 'E-1', attempt: 1, mode: 'none', agent: 'none', pass_rate: 1 },
+      ]);
       const cmp = await call('POST', '/api/bench/compare', { a: id, b: id });
       expect(cmp.data).toMatchObject({
         rows: [{ entry: 'E-1' }],

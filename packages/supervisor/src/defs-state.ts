@@ -3,11 +3,16 @@
  * `swarm.yaml` of each root, the effective config, and the store commit of each definition hash.
  * The commit is read with git off the event loop, never in `launch` (AO-0171).
  */
-import type { DefinitionSet, DefProblem, SwarmDefs } from '@swarmup/core';
+import type { DefinitionSet, DefProblem, DefsRefSnapshot, SwarmDefs } from '@swarmup/core';
 import {
+  checkDefsRef,
   DEF_FOLDERS,
   definitionsFingerprint,
+  defsRefGit,
+  gitWhy,
   loadDefinitions,
+  OpsError,
+  snapshotTexts,
   shortHash,
   SWARM_FILE,
   untrustedChecksText,
@@ -18,6 +23,31 @@ import { overridesFor, withDefinitions } from './defs-config.js';
 import { gitAsync } from './git.js';
 import type { RunDefs } from './runs.js';
 import type { StateDb } from './state-db.js';
+
+/**
+ * The definition files of the store in `dir` at git `ref` (`--defs-ref`, W5 phase 5), read with
+ * `git show` off the event loop into a snapshot; nothing is checked out. Refuses a ref git cannot
+ * resolve with exit 2.
+ */
+export async function readDefsAtRefAsync(dir: string, ref: string): Promise<DefsRefSnapshot> {
+  checkDefsRef(ref);
+  let commit: string;
+  let names: string[];
+  try {
+    commit = (await gitAsync(dir, defsRefGit.commit(ref))).trim();
+    names = (await gitAsync(dir, defsRefGit.list(ref))).split('\n').filter(Boolean);
+  } catch (err) {
+    throw new OpsError(`git cannot read ${ref} in ${dir}: ${gitWhy(err)}`, 2);
+  }
+  if (!commit) throw new OpsError(`git cannot read ${ref} in ${dir}: no such commit`, 2);
+  const files = await Promise.all(
+    names.map(async (n): Promise<[string, string]> => [
+      n,
+      await gitAsync(dir, defsRefGit.show(ref, n)),
+    ]),
+  );
+  return { ref, commit, texts: snapshotTexts(files) };
+}
 
 /** A root swarmupd reads definitions from. */
 export interface DefsRoot {

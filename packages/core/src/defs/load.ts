@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { OpsError } from '../ids.js';
 import type { AgentDef, AgentFileProblem, AgentFiles } from '../agents.js';
@@ -15,6 +15,7 @@ import { checkTriggerText, TRIGGERS_DIR, triggerNameOf } from './trigger.js';
 import type { WorkflowInfo } from './workflow.js';
 import { checkWorkflowText, WORKFLOWS_DIR, workflowIdOf } from './workflow.js';
 import type { DefFile } from './hash.js';
+import type { DefsRefSnapshot } from './ref.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
 
@@ -61,6 +62,9 @@ export interface DefinitionSet {
   overlay?: Record<string, string>;
   /** A variant's base hash: the store's own definitions. */
   baseHash?: string;
+  /** The git ref these definitions were read at (`--defs-ref`), and the commit it named. */
+  ref?: string;
+  commit?: string;
   /** The store's workflows (W5 phase 3), each with its problems. */
   workflows: WorkflowInfo[];
   /**
@@ -192,6 +196,27 @@ function loadVariant(rootDir: string, name: string, opts: LoadOptions): Definiti
   return out;
 }
 
+/**
+ * The definitions of the store in `rootDir` as a git ref had them: `snap`'s texts, read with
+ * `git show` (see `readDefsAtRef`), checked as the working files would be. Agents' `file` paths
+ * name where each file sits in the store; the text comes from the snapshot. Not cached.
+ */
+export function loadDefinitionsAtRef(
+  rootDir: string,
+  snap: DefsRefSnapshot,
+  opts: LoadOptions = {},
+): DefinitionSet {
+  const set = checkSet(
+    rootDir,
+    textFiles(snap.texts),
+    snap.texts,
+    agentFilesFromTexts(rootDir, snap.texts),
+    `ref ${snap.commit}`,
+    opts,
+  );
+  return { ...set, ref: snap.ref, commit: snap.commit };
+}
+
 /** Checks one set of definition texts: each file against its schema, then across files. */
 function checkSet(
   rootDir: string,
@@ -320,7 +345,7 @@ function checkSet(
     problems.push(...sc.problems);
     scorers.push(sc);
   }
-  problems.push(...scorerProblems(rootDir, scorers, workflows));
+  problems.push(...scorerProblems(texts, scorers, workflows));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -339,6 +364,27 @@ function checkSet(
         parseDoneWhen(w.done_when);
       } catch (err) {
         at(`work_types.${i}.done_when`, 'error', (err as Error).message.split('\n')[0] ?? 'bad');
+      }
+    });
+  }
+  // Experiments name variants of this store, once each, and real days.
+  if (swarm?.experiments) {
+    const swarmFile = fileOf(SWARM_FILE);
+    const at = (path: string, severity: DefProblem['severity'], message: string): void => {
+      const pos = locate.get(swarmFile)?.(path.split('.')) ?? { line: 1, col: 1 };
+      problems.push({ file: swarmFile, path, ...pos, severity, message });
+    };
+    const variants = listVariantNames(rootDir);
+    const seen = new Set<string>();
+    swarm.experiments.forEach((e, i) => {
+      if (seen.has(e.id)) at(`experiments.${i}.id`, 'error', `experiment ${e.id} is named twice`);
+      seen.add(e.id);
+      if (!variants.includes(e.variant)) {
+        at(`experiments.${i}.variant`, 'error', `no variants/${e.variant}/ in this store`);
+      }
+      const day = e.until ? Date.parse(`${e.until}T00:00:00Z`) : 0;
+      if (e.until && (Number.isNaN(day) || new Date(day).toISOString().slice(0, 10) !== e.until)) {
+        at(`experiments.${i}.until`, 'error', `${e.until} is no day`);
       }
     });
   }
@@ -391,7 +437,7 @@ function checkSet(
  * warning).
  */
 function scorerProblems(
-  rootDir: string,
+  texts: ReadonlyMap<string, string>,
   scorers: readonly ScorerFileInfo[],
   workflows: readonly WorkflowInfo[],
 ): DefProblem[] {
@@ -406,11 +452,23 @@ function scorerProblems(
       byBuiltin.set(d.scorer, [...(byBuiltin.get(d.scorer) ?? []), sc]);
     }
     if (d.kind === 'rubric' && d.rubric) {
-      const file = join(rootDir, 'rubrics', `${d.rubric}.md`);
-      if (!existsSync(file)) add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
-      else {
+      // Rubrics are definitions too: a variant or a git ref brings its own.
+      const text = texts.get(`rubrics/${d.rubric}.md`);
+      if (text === undefined) {
+        add(sc, 'rubric', 'error', `no rubrics/${d.rubric}.md in this store`);
+      } else {
         try {
-          parseRubric(readFileSync(file, 'utf8'), `rubrics/${d.rubric}.md`);
+          const rubric = parseRubric(text, `rubrics/${d.rubric}.md`);
+          // A rubric scorer judges a closed task from its text and diff, with no tree to read.
+          const unread = rubric.inputs.filter((i) => i === 'repo' || i === 'files');
+          if (unread.length > 0) {
+            add(
+              sc,
+              'rubric',
+              'warning',
+              `rubric scorers give the judge only the task and the diff; rubrics/${d.rubric}.md asks for ${unread.join(' and ')}, which stay empty`,
+            );
+          }
         } catch (err) {
           add(sc, 'rubric', 'error', (err as Error).message.split('\n')[0] ?? 'does not read');
         }
