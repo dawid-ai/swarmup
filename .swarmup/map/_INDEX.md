@@ -10,7 +10,7 @@
 - `core/content` — flow — Content projects (W8); campaign and content templates, review artifacts, publish records and the artifact route
 - `core/defs` — module — Definitions as code: swarm.yaml, agent folders, workflows; validate, hash, migrate, merge, run stamps
 - `core/fold` — flow — Folds a task's events in ULID order into its state; the state machine, leases, milestones, plans and criteria
-- `core/knowledge` — module — Learn notes (kb/), their reads and prompt matching, and the decision log (decisions/) with its imports
+- `core/knowledge` — module — Learn notes (kb/), their reads, prompt matching, promotion and archive, and the decision log (decisions/)
 - `core/map` — module — The project map: parse .swarmup/map/ nodes, check coverage of a change, search, _INDEX.md and prompt block
 - `core/repeats` — module — Repeating tasks; templates in repeats/ that create a task on a schedule or when another task closes
 - `core/search` — module — Search over tasks, threads, notes, posts and votes; the activity feed and the replay timeline
@@ -21,7 +21,7 @@
 - `desktop/replay` — component — Replay; animated scenes of a root's timeline, with GIF, MP4 and still exports
 - `desktop/ui` — component — The React renderer (Vite, Tailwind); views, shared UI pieces and lib helpers over swarmupd's API
 - `docs` — area — User and contributor docs, the agent skill copies, and the README media and promo pipeline
-- `improve` — flow — Self-improvement: improvement tasks from failing scores, the improver, proposals, the benchmark gate
+- `improve` — flow — Self-improvement: improvement tasks from failing scores and learn notes, the improver, proposals, the benchmark gate
 - `judge` — flow — The LLM judge of rubric criteria: rubric files, the blind no-tools prompt, the JSON answer, and where it runs
 - `leaks` — module — Secret scanning; one pattern set for the event write path, the leak check script and the pre-commit hook
 - `release` — flow — Cutting a release; version bump, changelog fragments, UPDATES entry, tag and the release workflow

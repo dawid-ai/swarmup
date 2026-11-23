@@ -39,6 +39,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'machines',
     'doctor',
     `kb/${SEG}/${SEG}`,
+    // Learn notes that keep mattering (W6).
+    'kb/promote',
     'decisions',
     `decisions/${SEG}`,
     'channels',
@@ -96,6 +98,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // A person promotes or rejects a proposal, and files an improvement task for an agent.
     `defs/variants/${SEG}/(promote|reject)`,
     'improve',
+    // A person archives learn notes (W6).
+    'kb/archive',
     'bench/(run|compare)',
     `bench/runs/${SEG}/stop`,
     // Settings > MCP servers (W8). Not resolve: that is for runs, and holds secret values.

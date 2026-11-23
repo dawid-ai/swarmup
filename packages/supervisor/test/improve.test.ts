@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadDefinitions, readProposal, shortHash } from '@swarmup/core';
+import { loadDefinitions, readProposal, Root, shortHash, writeShown } from '@swarmup/core';
 import type { Workspace } from '@swarmup/core';
 import type {
   BenchRunRequest,
@@ -420,6 +420,76 @@ describe('improvement trigger', () => {
     expect(benchVerdict(c(0, 0.2)).verdict).toBe('better');
     expect(benchVerdict(c(0, 0)).verdict).toBe('same');
   });
+
+  it('checks swarmupd.improve.notes', () => {
+    expect(DEFAULT_IMPROVE.notes).toBe(false);
+    expect(checkImprove({ notes: true })).toMatchObject({ notes: true, enabled: false });
+    expect(() => checkImprove({ notes: 'yes' })).toThrow(/notes: use true or false/);
+  });
+
+  /** A note shown in 5 run prompts of claude:engineer: a promotion candidate for it. */
+  function shownNote(w: Awaited<ReturnType<typeof world>>): string {
+    const ref = w.as('claude:engineer').learn({
+      topic: 'git',
+      title: 'Rebase onto main',
+      body: 'Rebase before review.',
+    }).note.ref;
+    const root = new Root(w.store);
+    for (let i = 0; i < 5; i++) {
+      writeShown(root, { actor: 'claude:engineer', refs: [ref] }, Date.now() - i * 60_000);
+    }
+    return ref;
+  }
+
+  it('files a learn-note task with notes on, once per note, and on request', async () => {
+    const w = await world({ enabled: false, notes: true });
+    const ref = shownNote(w);
+    const filed = w.improver.triggerTick();
+    expect(filed.map((t) => [t.title, t.owner, t.labels])).toEqual([
+      [
+        'Improve claude:engineer: fold 1 learn note(s) into the role',
+        'claude:improver',
+        ['improve'],
+      ],
+    ]);
+    const dawid = w.as('human:dawid');
+    const body = dawid.showEvents(filed[0]!.id).body;
+    expect(body).toContain('Agent: claude:engineer');
+    expect(body).toContain(`Notes: ${ref}`);
+    expect(body).toContain('shown in 5 run prompts in 30 days');
+    expect(body).toContain('swarmup kb archive');
+    // Open, then closed: a note a task named is not filed again on its own.
+    expect(w.improver.triggerTick(true)).toEqual([]);
+    dawid.park(filed[0]!.id, 'Not now.');
+    expect(w.improver.triggerTick(true)).toEqual([]);
+    // A person can still ask for it.
+    const asked = w.improver.requestNotes('claude:engineer', 'human:dawid');
+    expect(asked.created_by).toBe('human:dawid');
+    expect(() => w.improver.requestNotes('claude:engineer', 'human:dawid')).toThrow(
+      /already has an open/,
+    );
+    expect(() => w.improver.requestNotes('claude:qa', 'human:dawid')).toThrow(/no learn note/);
+    // With notes off, nothing is filed for notes.
+    const off = await world({ enabled: false });
+    shownNote(off);
+    expect(off.improver.triggerTick(true)).toEqual([]);
+  });
+
+  it('names the folded notes on the promote, and leaves archiving to a person', async () => {
+    const w = await world({ enabled: false, notes: true });
+    const ref = shownNote(w);
+    const task = w.improver.triggerTick()[0]!.id;
+    const overlay = join(temp(), 'overlay');
+    put(overlay, 'agents/claude-engineer.md', 'Rebase onto main before you ask for review.\n');
+    w.as('claude:improver').defsPropose(task, {
+      dir: overlay,
+      name: 'rebase-rule',
+      message: `Folds the rebase note in.\n\nNotes: \`${ref}\``,
+    });
+    const dawid = w.as('human:dawid');
+    expect(dawid.defsPromote('rebase-rule').notes).toEqual([ref]);
+    expect(dawid.kbNote(ref).ref).toBe(ref);
+  });
 });
 
 describe('proposal routes', () => {
@@ -483,6 +553,37 @@ describe('proposal routes', () => {
         agent: 'claude:engineer',
       });
       expect(none.status).toBe(409);
+      // Learn notes (W6): the candidates, the notes task on request, and archiving.
+      const ref = as('claude:engineer').learn({ topic: 'git', title: 'Rebase', body: 'Do.' }).note
+        .ref;
+      const promote = await call('GET', '/api/kb/promote?days=7');
+      expect(promote.data).toMatchObject({ days: 7, candidates: [] });
+      const noNotes = await call('POST', '/api/improve', {
+        as: 'human:dawid',
+        agent: 'claude:engineer',
+        kind: 'notes',
+      });
+      expect(noNotes.status).toBe(409);
+      expect(JSON.stringify(noNotes.data)).toMatch(/no learn note/);
+      const badKind = await call('POST', '/api/improve', {
+        as: 'human:dawid',
+        agent: 'x:y',
+        kind: 'z',
+      });
+      expect(badKind.status).toBe(400);
+      const agentArchive = await call('POST', '/api/kb/archive', {
+        as: 'claude:engineer',
+        refs: [ref],
+        message: 'why',
+      });
+      expect(agentArchive.status).toBe(409);
+      const archived = await call('POST', '/api/kb/archive', {
+        as: 'human:dawid',
+        refs: [ref],
+        message: 'Folded in.',
+      });
+      expect(archived.status).toBe(200);
+      expect(archived.data).toMatchObject([{ ref, path: `kb/.archive/${ref}.md` }]);
     } finally {
       await api.close();
       await sup.defsSettled();

@@ -630,6 +630,73 @@ describe('collaboration commands', () => {
     expect(swarmup(d, 'human:dawid', 'kb', '--stale', '--days', 'x').code).toBe(2);
     expect(swarmup(d, 'human:dawid', 'kb', 'windowing', '--days', '3').code).toBe(2);
   });
+
+  it('lists notes that keep mattering with kb --promote and archives them with kb archive (W6)', () => {
+    const d = repo();
+    swarmup(d, 'human:dawid', 'init', '--name', 'demo', '--human', 'human:dawid');
+    swarmup(d, 'codex:engineer', 'learn', 'git', 'Rebase', 'onto', 'main', '-m', 'Rebase first.');
+    swarmup(d, 'codex:engineer', 'learn', 'ui', 'Grid', 'gaps', '-m', 'Use gap.');
+    const none = swarmup(d, 'human:dawid', 'kb', '--promote');
+    expect(none.code).toBe(3);
+    expect(none.out).toContain('no note kept mattering in the last 30 days');
+    // Five run prompts of codex:engineer listed the rebase note.
+    const shownDir = join(d, '.swarmup', 'kb-shown', new Date().toISOString().slice(0, 7));
+    mkdirSync(shownDir, { recursive: true });
+    for (const n of [1, 2, 3, 4, 5]) {
+      writeFileSync(
+        join(shownDir, `01M74WPF31XTQDXSNT8SH9YQZ${n}-codex-engineer.json`),
+        JSON.stringify({
+          actor: 'codex:engineer',
+          at: new Date().toISOString(),
+          refs: ['git/rebase-onto-main'],
+        }),
+      );
+    }
+    const res = swarmup(d, 'human:dawid', 'kb', '--promote');
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('1 note(s) kept mattering in the last 30 days');
+    expect(res.out).toContain('git/rebase-onto-main  Rebase onto main');
+    expect(res.out).toContain('  why: shown in 5 run prompts in 30 days');
+    expect(res.out).toContain('  for: codex:engineer (5 shown)');
+    const json = JSON.parse(swarmup(d, 'human:dawid', 'kb', '--promote', '--json').out) as {
+      candidates: { ref: string; for: string[] }[];
+    };
+    expect(json.candidates).toMatchObject([
+      { ref: 'git/rebase-onto-main', for: ['codex:engineer'] },
+    ]);
+    expect(swarmup(d, 'human:dawid', 'kb', '--promote', '--shown', '6').code).toBe(3);
+    expect(swarmup(d, 'human:dawid', 'kb', '--promote', '--agent', 'claude:qa').code).toBe(3);
+    expect(swarmup(d, 'human:dawid', 'kb', '--promote', '--stale').code).toBe(2);
+    expect(swarmup(d, 'human:dawid', 'kb', '--shown', '2').code).toBe(2);
+
+    // --stale says how to archive.
+    expect(swarmup(d, 'human:dawid', 'kb', '--stale', '--days', '0').out).toContain(
+      'swarmup kb archive TOPIC/SLUG... -m "why"',
+    );
+    // Only a person archives, with a reason.
+    const agent = swarmup(d, 'codex:engineer', 'kb', 'archive', 'git/rebase-onto-main', '-m', 'x');
+    expect(agent.code).toBe(1);
+    expect(agent.err).toContain('only a person archives learn notes');
+    expect(swarmup(d, 'human:dawid', 'kb', 'archive', 'git/rebase-onto-main').code).toBe(2);
+    const done = swarmup(
+      d,
+      'human:dawid',
+      'kb',
+      'archive',
+      'git/rebase-onto-main',
+      '-m',
+      'In role.',
+    );
+    expect(done.code).toBe(0);
+    expect(done.out).toBe('git/rebase-onto-main: archived to kb/.archive/git/rebase-onto-main.md');
+    expect(existsSync(join(d, '.swarmup', 'kb', '.archive', 'git', 'rebase-onto-main.md'))).toBe(
+      true,
+    );
+    expect(swarmup(d, 'human:dawid', 'kb', '--promote').code).toBe(3);
+    expect(swarmup(d, 'human:dawid', 'kb', 'rebase').code).toBe(3);
+    // A search for the word archive is still a search.
+    expect(swarmup(d, 'human:dawid', 'kb', 'archive').code).toBe(3);
+  });
 });
 
 describe('multi-line event text (AO-0143)', () => {

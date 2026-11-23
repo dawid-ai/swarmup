@@ -111,6 +111,9 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/doctor')).toBe(false);
     expect(allowedCall('GET', '/api/kb/git/rebase-first?root=site')).toBe(true);
     expect(allowedCall('GET', '/api/kb/git/rebase-first/more')).toBe(false);
+    expect(allowedCall('GET', '/api/kb/promote?days=30')).toBe(true);
+    expect(allowedCall('POST', '/api/kb/archive')).toBe(true);
+    expect(allowedCall('POST', '/api/kb/promote')).toBe(false);
     for (const a of ['start', 'block', 'review', 'assign', 'retype']) {
       expect(allowedCall('POST', `/api/tasks/AO-0001/${a}`)).toBe(true);
     }

@@ -501,6 +501,13 @@ function promote(ctx: DefsCtx, rest: string[]): number {
   for (const p of res.written ?? []) ctx.io.out(`  wrote   ${p}`);
   for (const p of res.removed ?? []) ctx.io.out(`  removed ${p}`);
   if (res.proposal) ctx.io.out(`  recorded on ${res.proposal.task}`);
+  // The proposal folded learn notes into the role (W6): they now say what the role file says.
+  if (res.notes?.length) {
+    ctx.io.out(
+      `  it folds in learn notes ${res.notes.join(', ')}; archive them with ` +
+        `\`swarmup kb archive ${res.notes.join(' ')} -m "folded into ${res.variant}"\``,
+    );
+  }
   return 0;
 }
 
