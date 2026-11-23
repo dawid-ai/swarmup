@@ -6,6 +6,43 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.21 (2026-11-23)
+
+### Added
+
+- Merge checks in git: `swarm.yaml` `checks.<name>` keeps the commands swarmupd runs before it
+  moves the base. They run on a machine only after a person there runs `swarmup defs trust`, which
+  keeps the hash of the exact command set in `swarmupd.trusted_defs.<root>.checks`; any change to a
+  command or its paths skips them again until trusted, with a warning in `swarmup validate`,
+  `swarmup doctor` and the merge log. A machine's own `swarmupd.merge.<root>.checks` still wins.
+- Scorers in git: `scorers/<id>.yaml` sets a built-in scorer's `pass` and `applies_to` (types,
+  labels, roles, workflows) for a store's own work, under the machine's `swarmupd.scorers`.
+  Rubric scorers (`kind: rubric`, with a rubric, judge, `sample` and `blind`) are checked and
+  listed by `swarmup defs scorers`, but not run yet; a machine may only lower their `sample`.
+  Runs may not edit `scorers/`.
+- Git triggers: `triggers/<name>.yaml` in a task store starts a run, a workflow or a repeat's task
+  `every` interval, `at` a daily time or on a five-field `cron` in local time. A machine runs a
+  store's triggers only after `swarmupd.triggers.<root>: true` (`swarmup triggers on --root NAME`)
+  and after a person trusts the exact trigger set there (`swarmup defs trust`); any change stops
+  them until trusted again. Only triggers whose `runs_on` names the machine fire, and a `run`
+  trigger needs the agent's `wake: true` there; each fire time starts once, across restarts.
+  `swarmup triggers list` shows when each fires next here, `swarmup validate` checks their targets,
+  and `swarmup defs import-schedules` moves `swarmupd.schedules` into trigger files.
+- Plan items and workflow stages take `labels`, such as `labels: ['publish:{{where}}']`, so a
+  publish task a workflow files names its publish adapter without `--adapter`.
+
+### Changed
+
+- **Publish now** lists the files and commit it sends, the same ones **Preview** shows, and
+  publishes exactly those. A base branch that moved, a changed `publish:` label or a new task it
+  waits on can no longer change what goes out between the preview and the publish.
+
+### Fixed
+
+- `page-contains` refuses a loopback, private or link-local address also when the connection
+  resolves the host, so a DNS answer that changes after the check can't reach this machine or
+  its network.
+
 ## 0.3.0-beta.20 (2026-11-23)
 
 ### Added

@@ -3,6 +3,20 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.21 (2026-11-23)
+
+- **Scheduled work from the project.** A project can keep its schedules in git: run an agent, start
+  a workflow or file a repeating task every so often, at a time of day, or on a cron schedule. A
+  PC runs them only after you turn them on there and approve the exact set, and any change waits
+  for your approval again.
+- **Team merge checks.** The checks that run before work is merged can live in the project too.
+  Each PC runs them only after you approve the exact commands.
+- **Team score thresholds.** A project can set its own pass thresholds for scores.
+- **Publish what you previewed.** **Publish now** shows the files and version it sends, the same
+  ones **Preview** shows, and sends exactly those.
+- **Workflow publish steps** can name their publish adapter, so a workflow's publish task is ready
+  to publish.
+
 ## v0.3.0-beta.20 (2026-11-23)
 
 - **Publish from SwarmUp.** Set up a publish adapter (a command of yours or a publishing tool
