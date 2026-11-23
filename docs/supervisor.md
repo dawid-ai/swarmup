@@ -100,6 +100,9 @@ install and never in a project repo; tasks, events, decisions and the KB stay fi
 - **Runs.** Each run record goes to the `runs` table as well as to its file in `runs/`. swarmupd
   imports the run files it lacks when it starts, then reads its runs from `state.db`, held in
   memory, and reads no run file again. `swarmup runs` and other CLI commands still read the files.
+- **Bench results.** The attempts of each finished bench run swarmupd lists go to `bench_results`
+  once a minute; `swarmup bench history` reads them. See
+  [Benchmarks](benchmarks.md#history).
 - **Merge state.** A task whose merge check timed out once, and the merges in a row that could not
   read a task's worktrees, are kept in `merge_state`, so a restart or an update between two tries
   keeps the count. Which tasks swarmupd already looked at stays in memory: a restart looks at every

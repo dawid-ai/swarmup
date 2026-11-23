@@ -25,13 +25,13 @@ describe('state.db', () => {
     const d = mkdtempSync(join(tmpdir(), 'swarmup-state-'));
     dirs.push(d);
     const first = open(d);
-    expect(first.version).toBe(4);
+    expect(first.version).toBe(5);
     first.saveRun(
       { id: 'R1', agent: 'claude:engineer', status: 'ended', started_at: '2026-11-19T00:00:00Z' },
       { id: 'R1', agent: 'claude:engineer' },
     );
     const second = open(d);
-    expect(second.version).toBe(4);
+    expect(second.version).toBe(5);
     expect(second.runCount()).toBe(1);
   });
 
@@ -53,6 +53,54 @@ describe('state.db', () => {
     db.saveRunDefs('R2', 'demo', 'd:abc');
     db.saveRunDefs('R2', 'demo', 'd:abc');
     expect(db.runsWithDefs('d:abc')).toEqual(['R1', 'R2']);
+  });
+
+  it('keeps bench attempts, one row per run, entry and attempt (W5)', () => {
+    const db = open();
+    const row = {
+      run: 'demo-20261123-100000',
+      set: 'demo',
+      entry: 'E-1',
+      attempt: 1,
+      mode: 'agent',
+      agent: 'claude:engineer',
+      model: 'opus',
+      variant: null,
+      defs_hash: 'd:abc',
+      defs_ref: null,
+      pass_rate: 0.5,
+      hidden_total: 2,
+      hidden_passed: 1,
+      cost_usd: 0.25,
+      cost_estimated: false,
+      wall_ms: 60_000,
+      started_at: '2026-11-23T10:00:00.000Z',
+      summary_at: '2026-11-23T10:05:00.000Z',
+    };
+    const variant = {
+      ...row,
+      run: 'demo-20261123-110000',
+      variant: 'tests-first',
+      pass_rate: 1,
+      cost_estimated: true,
+      started_at: '2026-11-23T11:00:00.000Z',
+    };
+    db.saveBenchResults([row, variant]);
+    // A judged-again summary replaces the run's rows.
+    db.saveBenchResults([{ ...row, pass_rate: 0.75, summary_at: '2026-11-23T12:00:00.000Z' }]);
+    expect(db.benchResults().map((r) => [r.run, r.pass_rate, r.cost_estimated])).toEqual([
+      ['demo-20261123-110000', 1, true],
+      ['demo-20261123-100000', 0.75, false],
+    ]);
+    expect(db.benchResults({ variant: 'tests-first' })).toEqual([variant]);
+    expect(db.benchResults({ set: 'other' })).toEqual([]);
+    expect(db.benchResults({ agent: 'claude:engineer', limit: 1 })).toHaveLength(1);
+    expect(db.benchRecorded()).toEqual(
+      new Map([
+        ['demo-20261123-100000', '2026-11-23T12:00:00.000Z'],
+        ['demo-20261123-110000', '2026-11-23T10:05:00.000Z'],
+      ]),
+    );
   });
 
   it('keeps run records, replaces one by its id, and imports the run files it lacks once', () => {

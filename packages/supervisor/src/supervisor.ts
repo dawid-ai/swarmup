@@ -5668,6 +5668,25 @@ export class Supervisor extends EventEmitter {
       this.emit('warn', `improve: filed ${t.id} for ${t.owner}: ${t.title}`);
     }
     this.improver.gateTick();
+    this.safe(() => this.recordBenchResults());
+  }
+
+  /** What `bench_results` holds of each run, by run id; read from `state.db` once. */
+  private benchRecorded: Map<string, string> | null = null;
+
+  /**
+   * Writes the attempts of bench runs that finished, or were judged again, since the last look
+   * into `state.db` `bench_results` (W5 phase 5): runs the app or the improvement gate started,
+   * and those in `swarmupd.bench.results`. Returns how many rows it wrote.
+   */
+  recordBenchResults(): number {
+    if (!this.state) return 0;
+    this.benchRecorded ??= this.state.benchRecorded();
+    const rows = this.bench.unrecorded(this.benchRecorded);
+    if (rows.length === 0) return 0;
+    this.state.saveBenchResults(rows);
+    for (const r of rows) this.benchRecorded.set(r.run, r.summary_at);
+    return rows.length;
   }
 
   /** What the bench runner needs: the state folder, the roots, `swarmupd.bench` and the env. */

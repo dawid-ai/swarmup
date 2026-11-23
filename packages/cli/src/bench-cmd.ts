@@ -27,6 +27,8 @@ import {
   readBenchSummary,
   runBench,
   summaryMarkdown,
+  stateDir,
+  StateDb,
 } from '@swarmup/supervisor';
 
 /** What `swarmup bench` needs of the CLI's context. */
@@ -163,9 +165,9 @@ function benchRole(ctx: BenchCtx): BenchRole | undefined {
 /** `swarmup bench`: replay a benchmark set against an agent and compare two runs. */
 export const benchCommand = {
   usage:
-    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--role-file --root ROOT] [--variant NAME --root ROOT] [--defs-ref REF --root ROOT] [--repeat N] [--max-usd X] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json]',
+    'bench run SET.yaml --repo DIR [--entries ID,ID] [--agent RUNTIME:ROLE|none] [--model M] [--effort E] [--role-file --root ROOT] [--variant NAME --root ROOT] [--defs-ref REF --root ROOT] [--repeat N] [--max-usd X] [--budget-min N] [--hidden-dir DIR] [--reference-dir DIR] [--out DIR] [--keep] [--judge] [--judge-model M] [--dry-run] | bench judge RUN-DIR [--set SET.yaml] [--entries ID,ID] [--again] [--judge-model M] | bench compare A B [--json] | bench history [--set S] [--agent A] [--variant V] [--limit N] [--json]',
   summary:
-    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --role-file puts the agent's role file from --root (a store folder or root name) in each prompt and takes its model and effort, --variant does the same with a variant's overlay on top, --defs-ref with the store's definitions as a git ref had them (read with git show, never checked out); --max-usd stops starting attempts once their agent and judge cost, Codex estimates from tokens included, reaches X; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json",
+    "replay benchmark entries in throwaway worktrees with an agent (spends tokens), no agent, or reference patches, and score their criteria; --role-file puts the agent's role file from --root (a store folder or root name) in each prompt and takes its model and effort, --variant does the same with a variant's overlay on top, --defs-ref with the store's definitions as a git ref had them (read with git show, never checked out); --max-usd stops starting attempts once their agent and judge cost, Codex estimates from tokens included, reaches X; --judge or `bench judge` scores rubric criteria with an LLM judge (spends tokens); compare two runs' summary.json; history lists the attempts of finished runs that swarmupd kept in state.db",
   options: {
     repo: { type: 'string' },
     entries: { type: 'string', multiple: true },
@@ -187,6 +189,7 @@ export const benchCommand = {
     variant: { type: 'string' },
     'role-file': { type: 'boolean' },
     'defs-ref': { type: 'string' },
+    limit: { type: 'string' },
   } satisfies NonNullable<ParseArgsConfig['options']>,
   run: (ctx: BenchCtx): Promise<number> => runBenchCmd(ctx),
 };
@@ -195,9 +198,10 @@ async function runBenchCmd(ctx: BenchCtx): Promise<number> {
   const [sub, ...rest] = ctx.args;
   if (sub === 'compare') return compare(ctx, rest);
   if (sub === 'judge') return judge(ctx, rest);
+  if (sub === 'history') return history(ctx, rest);
   if (sub !== 'run')
     throw new OpsError(
-      'use `swarmup bench run SET.yaml`, `swarmup bench judge RUN-DIR` or `swarmup bench compare A B`',
+      'use `swarmup bench run SET.yaml`, `swarmup bench judge RUN-DIR`, `swarmup bench compare A B` or `swarmup bench history`',
       2,
     );
   const file = rest[0];
@@ -284,5 +288,65 @@ function compare(ctx: BenchCtx, args: string[]): number {
   const [a, b] = args.map((p) => readBenchSummary(resolve(ctx.io.cwd, p)));
   const c = compareSummaries(a!, b!);
   ctx.io.out(ctx.opts.json ? JSON.stringify(c, null, 2) : compareMarkdown(c));
+  return 0;
+}
+
+const pct = (x: number | null): string => (x === null ? '-' : `${Math.round(x * 100)}%`);
+
+const wall = (ms: number | null): string => {
+  if (ms === null) return '-';
+  const s = Math.round(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+};
+
+/**
+ * `swarmup bench history`: the attempts of finished bench runs that swarmupd kept in `state.db`
+ * (`bench_results`), newest first, filtered by set, agent and variant.
+ */
+function history(ctx: BenchCtx, args: string[]): number {
+  if (args.length > 0) throw new OpsError('use --set, --agent and --variant to filter', 2);
+  const file = join(stateDir(ctx.io.env), 'state.db');
+  const limit = positive(ctx.opts.limit, '--limit', true) ?? 200;
+  const rows = existsSync(file)
+    ? new StateDb(stateDir(ctx.io.env)).benchResults({
+        ...(str(ctx.opts.set) ? { set: str(ctx.opts.set) } : {}),
+        ...(str(ctx.opts.agent) ? { agent: str(ctx.opts.agent) } : {}),
+        ...(str(ctx.opts.variant) ? { variant: str(ctx.opts.variant) } : {}),
+        limit,
+      })
+    : [];
+  if (ctx.opts.json) {
+    ctx.io.out(JSON.stringify(rows, null, 2));
+    return 0;
+  }
+  if (rows.length === 0) {
+    ctx.io.out('no bench results: swarmupd keeps the attempts of the runs it starts or lists');
+    return 0;
+  }
+  for (const r of rows) {
+    const side = r.variant
+      ? `variant ${r.variant}`
+      : r.defs_ref
+        ? `at ${r.defs_ref}`
+        : r.defs_hash
+          ? 'base'
+          : '-';
+    const hidden = r.hidden_total ? `hidden ${r.hidden_passed}/${r.hidden_total}` : 'hidden -';
+    const cost =
+      r.cost_usd === null ? '$-' : `$${r.cost_usd.toFixed(2)}${r.cost_estimated ? '~' : ''}`;
+    ctx.io.out(
+      [
+        r.started_at.slice(0, 16).replace('T', ' '),
+        `${r.set}/${r.entry} #${r.attempt}`,
+        r.agent + (r.model ? ` (${r.model})` : ''),
+        side,
+        `pass ${pct(r.pass_rate)}`,
+        hidden,
+        cost,
+        wall(r.wall_ms),
+        r.run,
+      ].join('  '),
+    );
+  }
   return 0;
 }

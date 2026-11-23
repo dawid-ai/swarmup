@@ -43,6 +43,7 @@ import {
   writeBenchStatus,
 } from './bench.js';
 import type { BenchConfig } from './config.js';
+import type { BenchResultRow } from './state-db.js';
 
 /** What the bench API needs of swarmupd. */
 export interface BenchHost {
@@ -438,6 +439,23 @@ export class BenchRuns {
     };
   }
 
+  /**
+   * The attempts of each finished run whose summary changed since `recorded` saw it (by run id,
+   * its `summary_at`), as `bench_results` rows: what swarmupd writes to `state.db` (W5 phase 5).
+   */
+  unrecorded(recorded: ReadonlyMap<string, string>): BenchResultRow[] {
+    const out: BenchResultRow[] = [];
+    for (const run of this.list()) {
+      if (run.state !== 'done') continue;
+      const summary = readJson<BenchSummary>(join(run.dir, 'summary.json'));
+      if (!summary) continue;
+      const at = summaryAt(summary);
+      if (recorded.get(run.id) === at) continue;
+      out.push(...benchResultRows(run.id, summary, this.detail(run.id).attempts));
+    }
+    return out;
+  }
+
   /** An attempt's `diff.patch` or `agent.log`, at most its last 2 MB. */
   attemptFile(id: string, entry: string, n: string, file: string): string {
     const dir = this.dirOf(id) ?? bad(`no bench run ${id}`);
@@ -646,6 +664,40 @@ export class BenchRuns {
     });
     return this.view(id, dir);
   }
+}
+
+/** When a summary last changed: the run's end, or a later judging of its rubric criteria. */
+export function summaryAt(s: Pick<BenchSummary, 'finishedAt' | 'judge'>): string {
+  return s.judge?.at && s.judge.at > s.finishedAt ? s.judge.at : s.finishedAt;
+}
+
+/** A finished run's attempts as `bench_results` rows. */
+export function benchResultRows(
+  run: string,
+  summary: BenchSummary,
+  attempts: readonly AttemptResult[],
+): BenchResultRow[] {
+  const at = summaryAt(summary);
+  return attempts.map((a) => ({
+    run,
+    set: a.set || summary.set,
+    entry: a.entry,
+    attempt: a.attempt,
+    mode: a.mode,
+    agent: a.agent,
+    model: a.model ?? summary.model ?? null,
+    variant: summary.role?.variant ?? null,
+    defs_hash: summary.role?.defs ?? null,
+    defs_ref: summary.role?.ref ?? null,
+    pass_rate: a.score.passRate,
+    hidden_total: a.score.hidden.total,
+    hidden_passed: a.score.hidden.passed,
+    cost_usd: a.metrics.costUsd,
+    cost_estimated: a.metrics.costEstimated === true,
+    wall_ms: a.run.wallMs,
+    started_at: a.startedAt,
+    summary_at: at,
+  }));
 }
 
 /**

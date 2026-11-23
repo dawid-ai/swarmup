@@ -120,7 +120,60 @@ const MIGRATIONS: string[] = [
      hash TEXT NOT NULL
    );
    CREATE INDEX run_defs_hash ON run_defs (hash);`,
+  // Benchmarks (W5 phase 5): one row per attempt of a finished bench run, for `bench history`.
+  // `summary_at` is when its summary last changed (finished, or judged again).
+  `CREATE TABLE bench_results (
+     run TEXT NOT NULL,
+     "set" TEXT NOT NULL,
+     entry TEXT NOT NULL,
+     attempt INTEGER NOT NULL,
+     mode TEXT NOT NULL,
+     agent TEXT NOT NULL,
+     model TEXT,
+     variant TEXT,
+     defs_hash TEXT,
+     defs_ref TEXT,
+     pass_rate REAL,
+     hidden_total INTEGER NOT NULL,
+     hidden_passed INTEGER NOT NULL,
+     cost_usd REAL,
+     cost_estimated INTEGER NOT NULL,
+     wall_ms INTEGER,
+     started_at TEXT NOT NULL,
+     summary_at TEXT NOT NULL,
+     PRIMARY KEY (run, entry, attempt)
+   );
+   CREATE INDEX bench_results_set ON bench_results ("set", started_at);`,
 ];
+
+/** One row of `bench_results`: one attempt of a finished bench run (W5 phase 5). */
+export interface BenchResultRow {
+  /** The bench run's id: its folder name. */
+  run: string;
+  set: string;
+  entry: string;
+  attempt: number;
+  /** `agent`, `none` or `reference`. */
+  mode: string;
+  agent: string;
+  model: string | null;
+  variant: string | null;
+  /** The definition hash of the role file the prompts carried; null without one. */
+  defs_hash: string | null;
+  /** The git ref those definitions were read at (`--defs-ref`). */
+  defs_ref: string | null;
+  /** Checkable criteria passed, as a share; null without checkable criteria. */
+  pass_rate: number | null;
+  hidden_total: number;
+  hidden_passed: number;
+  /** The agent's cost in USD; null when unknown. */
+  cost_usd: number | null;
+  /** `cost_usd` is an estimate from the tokens. */
+  cost_estimated: boolean;
+  wall_ms: number | null;
+  started_at: string;
+  summary_at: string;
+}
 
 /** One file of a definition snapshot. */
 export interface DefinitionFile {
@@ -414,6 +467,95 @@ export class StateDb {
           run: string;
         }>,
     ).map((r) => r.run);
+  }
+
+  // ---- Bench results ----------------------------------------------------------------------------
+
+  /** Writes the attempts of bench runs, replacing the rows of the same run, entry and attempt. */
+  saveBenchResults(rows: readonly BenchResultRow[]): void {
+    if (rows.length === 0) return;
+    this.use((db) => {
+      const insert = db.prepare(
+        `INSERT OR REPLACE INTO bench_results
+           (run, "set", entry, attempt, mode, agent, model, variant, defs_hash, defs_ref,
+            pass_rate, hidden_total, hidden_passed, cost_usd, cost_estimated, wall_ms,
+            started_at, summary_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      db.exec('BEGIN');
+      try {
+        for (const r of rows) {
+          insert.run(
+            r.run,
+            r.set,
+            r.entry,
+            r.attempt,
+            r.mode,
+            r.agent,
+            r.model,
+            r.variant,
+            r.defs_hash,
+            r.defs_ref,
+            r.pass_rate,
+            r.hidden_total,
+            r.hidden_passed,
+            r.cost_usd,
+            r.cost_estimated ? 1 : 0,
+            r.wall_ms,
+            r.started_at,
+            r.summary_at,
+          );
+        }
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+  }
+
+  /** Each recorded bench run with the `summary_at` of its rows, so a run is written once. */
+  benchRecorded(): Map<string, string> {
+    const rows = this.use(
+      (db) =>
+        db.prepare('SELECT run, max(summary_at) AS at FROM bench_results GROUP BY run').all() as {
+          run: string;
+          at: string;
+        }[],
+    );
+    return new Map(rows.map((r) => [r.run, r.at]));
+  }
+
+  /** Bench attempts, newest first, filtered by set, agent and variant; at most `limit`. */
+  benchResults(
+    opts: { set?: string; agent?: string; variant?: string; limit?: number } = {},
+  ): BenchResultRow[] {
+    const where: string[] = [];
+    const args: Array<string | number> = [];
+    if (opts.set) {
+      where.push('"set" = ?');
+      args.push(opts.set);
+    }
+    if (opts.agent) {
+      where.push('agent = ?');
+      args.push(opts.agent);
+    }
+    if (opts.variant) {
+      where.push('variant = ?');
+      args.push(opts.variant);
+    }
+    const rows = this.use(
+      (db) =>
+        db
+          .prepare(
+            `SELECT * FROM bench_results ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+             ORDER BY started_at DESC, run DESC, entry, attempt LIMIT ?`,
+          )
+          .all(...args, opts.limit ?? 200) as Array<
+          Omit<BenchResultRow, 'cost_estimated'> & { cost_estimated: number }
+        >,
+    );
+    return rows.map((r) => ({ ...r, cost_estimated: r.cost_estimated === 1 }));
   }
 
   // ---- Merge state ------------------------------------------------------------------------------
