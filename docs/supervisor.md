@@ -753,12 +753,19 @@ the API, its own port, and no API token or run token is valid on it.
   (`swarmup defs trust`), that has a `webhook` section, is enabled and whose `runs_on` names this
   machine. Everything else, another path or method included, answers 404 with the same body, so a
   caller learns nothing of which roots or triggers exist.
-- **Checks, in order:** the trigger's rate (`rate` a minute, default 30, counted for every
-  request; 429), the body cap (256 KB; 413), the secret in `secrets.yml` (503 when it is not
-  set), the signature or token (401), Slack's and Linear's timestamp (within 5 minutes; 401),
-  then the dedupe: a delivery whose id (`delivery_header`) or body hash came in the last 24 hours
+- **Checks, in order:** the listener's own rate (300 requests a minute, before it reads any
+  file; 429), the trigger lookup (404), the body cap (256 KB; 413), the secret in `secrets.yml`
+  (at least 16 characters; 503 when it is unset or shorter), the signature or token (401),
+  Slack's and Linear's timestamp (within 5 minutes; 401), the trigger's rate (`rate` a minute,
+  default 30, counted for verified deliveries only, so unsigned junk cannot use it up; 429), then
+  the dedupe: a delivery whose id (`delivery_header`) came in the last 24 hours, or whose body
+  hash came in the last 24 hours (7 days for `hmac` and `bearer`, which have no timestamp)
   answers 200 and does nothing. Ids and hashes are kept in `hooks-seen.json` only after the
   checks pass, and forgotten again when acting fails, so the sender's retry is taken.
+- **Answers:** each refusal has a fixed body per status (`{"error":"unauthorized"}` for 401,
+  `{"error":"unavailable"}` for 503, and so on); the reason, which may name the secret, is only
+  in `hooks.log`. The listener holds at most 64 connections, and an error on its socket is a
+  warning in `opsd.log`, never a crash of swarmupd.
 - **What it does:** a finding for triage, or the trigger's action where
   `swarmupd.hooks.direct.<root>.<trigger>: true`, with the payload only as fenced untrusted text;
   see [Webhook triggers](definitions.md#webhook-triggers). Only a person sets `direct`, in the
@@ -766,13 +773,15 @@ the API, its own port, and no API token or run token is valid on it.
   action. An accepted delivery answers 202 and writes a `trigger` line to `opsd.log`.
 - **The log:** each delivery, accepted or refused, is a line of `hooks.log` in the state folder:
   the time, root and trigger, the status code, the reason, the delivery id, and what it made.
-  Never the body, a signature or a secret.
+  Never the body, a signature or a secret. Each kind of refusal (404, 401, 413, 429) is logged
+  one line at a time for the first 10 a minute; the rest go into one summary line, so a flood
+  never pushes real deliveries out of the log.
 - **Check it:** `swarmup triggers list` says per trigger whether a delivery files a finding or
   runs the action here. `swarmup trigger test <root>/<name> --payload FILE --sign` posts a signed
   file to the local listener and prints the answer; without `--sign` it shows the refusal.
   `swarmup trigger fire <root>/<name> [--payload FILE]` does what a delivery does without the
   listener. `swarmup doctor` reports whether the listener is off, listening or failed to listen,
-  and hook triggers whose secret `secrets.yml` lacks.
+  and hook triggers whose secret is missing or shorter than 16 characters.
 
 ### Processes
 

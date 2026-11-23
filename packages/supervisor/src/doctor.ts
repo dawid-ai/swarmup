@@ -31,7 +31,7 @@ import {
 import type { OpsdConfig } from './config.js';
 import { opsdConfig, stateDir } from './config.js';
 import type { HookListenerState } from './hooks.js';
-import { HOOKS_LISTENER } from './hooks.js';
+import { HOOK_SECRET_MIN, hookSecret, HOOKS_LISTENER } from './hooks.js';
 import { buildStamp, daemonCall, readDaemon } from './daemon.js';
 import { resolveCommand } from './proc.js';
 
@@ -860,21 +860,22 @@ export function hooksChecks(
       });
     }
   }
-  let secrets: Record<string, string> | null;
+  let readable = true;
   try {
-    secrets = readSecrets(env);
+    readSecrets(env);
   } catch {
     // The MCP check names the broken file.
-    secrets = null;
+    readable = false;
   }
   for (const h of hooks) {
-    if (!secrets || secrets[h.secret] !== undefined) continue;
+    const secret = readable ? hookSecret(env, h.secret) : null;
+    if (!secret || !('why' in secret)) continue;
     out.push({
       id: `hook:${h.root}/${h.name}`,
       label: `Webhook trigger ${h.root}/${h.name}`,
       status: 'warn',
-      detail: `no value for ${h.secret} in secrets.yml, so the listener refuses its deliveries`,
-      fix: `set ${h.secret} in Settings > MCP servers, or add \`${h.secret}: <value>\` to ${secretsPath(env)}`,
+      detail: `${secret.why}, so the listener refuses its deliveries`,
+      fix: `set ${h.secret} to a random value of at least ${HOOK_SECRET_MIN} characters in Settings > MCP servers, or as \`${h.secret}: <value>\` in ${secretsPath(env)}`,
     });
   }
   return out;

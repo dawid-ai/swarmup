@@ -25,9 +25,11 @@ store's trigger, without opening the API or letting outside text act as instruct
   (consent, trust, a webhook section, enabled, `runs_on`); `approved`/`notDirect` say whether
   the action may run (`swarmupd.hooks.direct.<root>.<name>`, then the agent's wake and role).
 - `hooks.ts` `HookListener`: its own `node:http` server, started by `daemon.ts` when
-  `swarmupd.hooks.enabled`. Order: 404 for anything not a live hook, per-trigger rate (429), body
-  cap (413), secret from `secrets.yml` (503), `verifyDelivery` (401), Slack's URL challenge,
-  dedupe in `hooks-seen.json` (200), then `runHookEffect`; every outcome goes to `hooks.log`.
+  `swarmupd.hooks.enabled`. Order: listener-wide rate (429, before any file read), 404 for
+  anything not a live hook, body cap (413), `hookSecret` (16+ characters; 503), `verifyDelivery`
+  (401), per-trigger rate for verified deliveries (429), Slack's URL challenge, dedupe in
+  `hooks-seen.json` (expiry per key; 200), then `runHookEffect`. Refusal bodies are fixed per
+  status; reasons go to `hooks.log`, flood-prone kinds through `logRefusal` with a summary.
 - `runHookEffect`: a finding via `newTask` in the trigger's root (owner `triagePm`, else the
   root's human), or the approved action (`launchBlocker` then `launchFresh`, `workflowStart`,
   `runRepeat` plus a comment), falling back to the finding with the reason. `fenceUntrusted`

@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 const ISSUE = 'webhook: {verify: hmac, secret: HOOK_KEY}\naction: run\nagent: claude:pm\n';
-const SECRET = 'cli-test-secret';
+const SECRET = 'cli-test-secret-value';
 
 /** A store with the `issue` webhook trigger, turned on and trusted on machine desk. */
 function project(hooks = '', trust = true): { dir: string; config: string; state: string } {
@@ -102,7 +102,7 @@ describe('swarmup trigger fire|test', () => {
     expect(task.meta).toMatchObject({ type: 'finding', created_by: 'opsd:trigger' });
     expect(task.body).toContain('fired by a person with `swarmup trigger fire`');
     expect(task.body.split('\n').filter((l) => l.startsWith('```'))).toEqual([
-      '```untrusted',
+      expect.stringMatching(/^```untrusted-[0-9a-f]{12}$/),
       '```',
     ]);
     expect(readFileSync(join(p.state, 'hooks.log'), 'utf8')).toContain('"via":"fire"');
@@ -166,6 +166,14 @@ describe('swarmup trigger fire|test', () => {
       const unsigned = await cli(p, ['trigger', 'test', 'demo/issue', '--payload', payload]);
       expect(unsigned.code).toBe(1);
       expect(seen).toEqual(['POST /hooks/demo/issue true', 'POST /hooks/demo/issue false']);
+      // A secret too short to keep forgers out is refused before anything is sent.
+      writeFileSync(join(p.dir, 'secrets.yml'), 'HOOK_KEY: short\n');
+      const short = await cli(p, ['trigger', 'test', 'demo/issue', '--payload', payload, '--sign']);
+      expect(short.code).toBe(2);
+      expect(short.err.join('\n')).toContain(
+        'HOOK_KEY in secrets.yml is shorter than 16 characters',
+      );
+      expect(seen).toHaveLength(2);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

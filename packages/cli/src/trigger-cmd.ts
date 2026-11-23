@@ -4,13 +4,7 @@ import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
 import type { ParseArgsConfig } from 'node:util';
 import type { Workspace } from '@swarmup/core';
-import {
-  OpsError,
-  readSecrets,
-  secretsPath,
-  TRIGGER_NAME_RE,
-  Workspace as Ws,
-} from '@swarmup/core';
+import { OpsError, secretsPath, TRIGGER_NAME_RE, Workspace as Ws } from '@swarmup/core';
 import type { HookTarget, RunRecord } from '@swarmup/supervisor';
 import {
   appendHookLog,
@@ -18,6 +12,7 @@ import {
   HOOK_BODY_MAX,
   hookConfig,
   hookRoots,
+  hookSecret,
   hookTarget,
   opsdConfig,
   readDaemon,
@@ -152,11 +147,11 @@ async function test(ctx: TriggerCtx, ws: Workspace, root: string, name: string):
   let body = payloadOf(ctx, true);
   let headers: Record<string, string> = {};
   if (ctx.opts.sign) {
-    const secret = readSecrets(ctx.io.env)[t.def.webhook.secret];
-    if (secret === undefined) {
-      throw new OpsError(`${secretsPath(ctx.io.env)} has no value for ${t.def.webhook.secret}`, 2);
+    const secret = hookSecret(ctx.io.env, t.def.webhook.secret);
+    if ('why' in secret) {
+      throw new OpsError(`${secret.why} (${secretsPath(ctx.io.env)}); the listener refuses it`, 2);
     }
-    ({ headers, body } = signDelivery(t.def.webhook, secret, body, Date.now()));
+    ({ headers, body } = signDelivery(t.def.webhook, secret.value, body, Date.now()));
   }
   // A listener on every address still answers on loopback; the test never leaves this machine.
   const host = /^(0\.0\.0\.0|::|\[::\])$/.test(cfg.hooks.host) ? '127.0.0.1' : cfg.hooks.host;

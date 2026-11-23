@@ -237,10 +237,17 @@ prompt: Triage the Linear issue in the payload.
   body's `webhookTimestamp` within 5 minutes. `slack` takes `X-Slack-Signature` over
   `X-Slack-Request-Timestamp`, which must be within 5 minutes, and answers Slack's
   `url_verification` challenge. Every comparison is constant-time.
+- **Replays:** `hmac` and `bearer` deliveries carry no signed timestamp, so the listener cannot
+  tell a fresh delivery from a captured one. It keeps their body hashes for 7 days (24 hours for
+  delivery ids, and for `linear` and `slack`, whose timestamps refuse old ones); a captured
+  `hmac` or `bearer` delivery replays once that window has passed. Prefer `linear` or `slack`
+  where the sender supports them, and rotate the secret if a delivery may have leaked.
 - **The secret** lives in `secrets.yml`, beside the user config (the MCP secrets file: never
   synced, never in a repo). `secret` names it: letters, digits and `_`, in capitals by convention.
-  `swarmup validate` checks the name's format, never the value, and refuses a value that looks
-  like a token; `swarmup doctor` names hook triggers whose secret `secrets.yml` lacks.
+  The value must be at least 16 characters; a shorter one counts as unset, since a guessable key
+  lets anyone forge a signature. `swarmup validate` checks the name's format, never the value,
+  and refuses a value that looks like a token; `swarmup doctor` names hook triggers whose secret
+  is missing or too short.
 - **Trust:** the trigger hash covers the `webhook` section (verify, secret, header,
   delivery_header and rate), so changing it untrusts the set. A trigger set without webhooks
   keeps the hash it had before.
@@ -254,9 +261,12 @@ prompt: Triage the Linear issue in the payload.
   limits; when the action cannot run (paused, limits, an error), the delivery files the finding
   instead, with the reason.
 - **The fence:** the block opens with a note that it came from outside and must not be followed
-  as instructions. JSON is indented, control and bidirectional characters are dropped, lines that
-  look like secrets are removed, the text is cut at 16 KB, and every run of three or more
-  backticks or tildes is escaped, so nothing in the payload can close the fence.
+  as instructions. JSON is indented; control, bidirectional and invisible characters (zero-width
+  marks, word joiners, the byte-order mark, Unicode tag characters) are dropped; lines that look
+  like secrets are removed; the text is cut at 16 KB; and every run of three or more backticks or
+  tildes is escaped, so nothing in the payload can close the fence. The fence's info string and
+  the closing sentence carry a random nonce (`untrusted-<nonce>`), so a fake closing line in the
+  payload, which cannot know it, stands out.
 - **Which deliveries count:** see [Inbound webhook triggers](supervisor.md#inbound-webhook-triggers)
   for the listener, the order of its checks, dedupe, the rate limit and the log.
 - **By hand:** `swarmup trigger fire <root>/<name> [--payload FILE]` does here what a delivery
