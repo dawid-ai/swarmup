@@ -144,8 +144,10 @@ import {
   isActorId,
   isWildcard,
 } from './ids.js';
-import type { KbHit, KbNote } from './kb.js';
-import { readNotes, relatedNotes, searchNotes, writeNote } from './kb.js';
+import type { ArchivedNote, KbHit, KbNote } from './kb.js';
+import { archiveNote, kbTopic, readNotes, relatedNotes, searchNotes, writeNote } from './kb.js';
+import type { PromoteCandidate } from './kb-promote.js';
+import { PROMOTE_DAYS, promotionCandidates } from './kb-promote.js';
 import type { KbRead, KbShown, NoteUsage } from './kb-reads.js';
 import { noteUsage, readReads, readShown, writeRead, writeShown } from './kb-reads.js';
 import type { RootedPost, SearchHit, SearchResult } from './search.js';
@@ -504,6 +506,11 @@ export interface DefsDecisionResult {
   to?: string;
   written?: string[];
   removed?: string[];
+  /**
+   * Promote: the learn notes the proposal names on a `Notes:` line of its task or message that
+   * still exist (W6). A person archives them with `swarmup kb archive`; the promote does not.
+   */
+  notes?: string[];
 }
 
 export interface ActResult {
@@ -4123,12 +4130,14 @@ export class Workspace {
         files: changed,
       });
       removeVariant(root.dir, name);
+      const notes = meta?.task ? this.proposalNotes(meta) : [];
       return {
         variant: name,
         root: root.name,
         events,
         ...applied,
         ...(meta ? { proposal: meta } : {}),
+        ...(notes.length > 0 ? { notes } : {}),
       };
     });
   }
@@ -4642,6 +4651,120 @@ export class Workspace {
       );
     }
     return out;
+  }
+
+  /**
+   * Learn notes that keep mattering (W6, see `promotionCandidates`), in every root, each with the
+   * ref `swarmup kb --read` takes (`<root>/<topic>/<slug>` when another root has the same ref).
+   * With `agent`, only the notes for that agent. Listing only: nothing changes.
+   */
+  kbPromote(
+    opts: {
+      days?: number;
+      minShown?: number;
+      minReads?: number;
+      topic?: string;
+      agent?: string;
+    } = {},
+  ): { since: string; days: number; candidates: Array<PromoteCandidate & { ref: string }> } {
+    const days = opts.days ?? PROMOTE_DAYS;
+    if (!Number.isFinite(days) || days < 0) throw new OpsError(`bad --days '${days}'`, 2);
+    for (const [k, v] of [
+      ['--shown', opts.minShown],
+      ['--reads', opts.minReads],
+    ] as const) {
+      if (v !== undefined && (!Number.isInteger(v) || v < 1)) {
+        throw new OpsError(`bad ${k} '${v}': use a whole number of at least 1`, 2);
+      }
+    }
+    const now = this.now();
+    const all = this.roots.flatMap((r) => readNotes(r));
+    const seen = new Map<string, number>();
+    for (const note of all) seen.set(note.ref, (seen.get(note.ref) ?? 0) + 1);
+    const topic = opts.topic ? kbTopic(opts.topic) : undefined;
+    const candidates = promotionCandidates(
+      all,
+      this.roots.flatMap((r) => readReads(r, { from: now - days * 86_400_000 })),
+      this.roots.flatMap((r) => readShown(r, { from: now - days * 86_400_000 })),
+      {
+        now,
+        days,
+        ...(opts.minShown ? { minShown: opts.minShown } : {}),
+        ...(opts.minReads ? { minReads: opts.minReads } : {}),
+      },
+    )
+      .filter(
+        (c) => (!topic || c.note.topic === topic) && (!opts.agent || c.for.includes(opts.agent)),
+      )
+      .map((c) => ({
+        ...c,
+        ref: (seen.get(c.note.ref) ?? 0) > 1 ? `${c.note.root}/${c.note.ref}` : c.note.ref,
+      }));
+    return { since: new Date(now - days * 86_400_000).toISOString(), days, candidates };
+  }
+
+  /**
+   * `swarmup kb archive`: a person moves learn notes to `kb/.archive/<topic>/<slug>.md` (W6), with
+   * who, when and why in each note's frontmatter. Search, run prompts and usage counts skip the
+   * archive. Every ref is checked before any note moves. Refuses an agent, a run and a mirror.
+   */
+  kbArchive(refs: string[], why: string): ArchivedNote[] {
+    const actor = this.requireActor();
+    if (!isHuman(actor)) throw new OpsError(`only a person archives learn notes; ${actor} cannot`);
+    if (this.run) throw new OpsError('a run cannot archive learn notes; a person does it');
+    const reason = why.trim();
+    if (!reason) throw new OpsError('say why: swarmup kb archive TOPIC/SLUG... -m "why"', 2);
+    assertNoSecret(reason);
+    if (refs.length === 0)
+      throw new OpsError('name the notes: swarmup kb archive TOPIC/SLUG...', 2);
+    const notes = [
+      ...new Map(refs.map((ref) => this.kbNote(ref)).map((n) => [n.file, n])).values(),
+    ];
+    const at = new Date(this.now()).toISOString();
+    const out: ArchivedNote[] = [];
+    for (const note of notes) {
+      const root = this.roots.find((r) => r.name === note.root)!;
+      if (root.isMirror) {
+        throw new OpsError(`${root.name} is a mirror; archive ${note.ref} in its own root`, 2);
+      }
+    }
+    for (const note of notes) {
+      const root = this.roots.find((r) => r.name === note.root)!;
+      out.push(root.lock('kb', () => archiveNote(root, note, { by: actor, at, why: reason })));
+    }
+    return out;
+  }
+
+  /**
+   * The learn notes a proposal folds in (W6): the refs on `Notes:` lines of its task and of its
+   * message that still name a note. A person archives them after the promote.
+   */
+  private proposalNotes(meta: ProposalMeta): string[] {
+    let body = '';
+    try {
+      const at = this.resolve(meta.task);
+      body = at.root.readTask(at.id).body;
+    } catch {
+      // The task may be gone; the message may still name notes.
+    }
+    const refs = new Set<string>();
+    for (const text of [body, meta.message]) {
+      for (const m of text.matchAll(/^Notes: (.+)$/gm)) {
+        // Refs may be in code font or end a sentence.
+        for (const word of m[1]!.split(/[,\s]+/)) {
+          const ref = word.replace(/^`+|[`.;:]+$/g, '');
+          if (ref.includes('/')) refs.add(ref);
+        }
+      }
+    }
+    return [...refs].filter((ref) => {
+      try {
+        this.kbNote(ref);
+        return true;
+      } catch {
+        return false;
+      }
+    });
   }
 
   /** One note by `<topic>/<slug>` or `<root>/<topic>/<slug>`. */

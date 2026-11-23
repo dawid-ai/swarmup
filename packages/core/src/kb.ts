@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { parseDoc, stringifyDoc } from './frontmatter.js';
@@ -51,15 +52,24 @@ export function writeNote(root: Root, meta: KbMeta, body: string): KbNote {
   const base = slugify(meta.title) || 'note';
   const kb = join(root.dir, 'kb');
   const dir = join(kb, topic);
-  // Check each level before creating anything in it, so nothing lands behind a link.
-  const ensure = (path: string, name: string): void => {
-    if (!existsSync(path)) mkdirSync(path);
-    if (!plain(path, 'dir')) {
-      throw new OpsError(`${name} is a link; learn notes go in a real folder`, 2);
-    }
-  };
-  ensure(kb, 'kb');
-  ensure(dir, `kb/${topic}`);
+  ensureDir(kb, 'kb');
+  ensureDir(dir, `kb/${topic}`);
+  const { slug, file } = reserve(dir, base);
+  const full: KbMeta = { ...meta, topic };
+  root.writeAtomic(file, stringifyDoc(full, body));
+  return { ...full, root: root.name, slug, ref: `${topic}/${slug}`, file, body: body.trim() };
+}
+
+/** Creates a folder that is missing and checks it is a real one, so nothing lands behind a link. */
+function ensureDir(path: string, name: string): void {
+  if (!existsSync(path)) mkdirSync(path);
+  if (!plain(path, 'dir')) {
+    throw new OpsError(`${name} is a link; learn notes go in a real folder`, 2);
+  }
+}
+
+/** Reserves `<base>.md` in `dir`, or `<base>-2.md` and so on when it is taken. */
+function reserve(dir: string, base: string): { slug: string; file: string } {
   for (let i = 1; ; i++) {
     const slug = i === 1 ? base : `${base}-${i}`;
     const file = join(dir, `${slug}.md`);
@@ -70,10 +80,64 @@ export function writeNote(root: Root, meta: KbMeta, body: string): KbNote {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw err;
     }
-    const full: KbMeta = { ...meta, topic };
-    root.writeAtomic(file, stringifyDoc(full, body));
-    return { ...full, root: root.name, slug, ref: `${topic}/${slug}`, file, body: body.trim() };
+    return { slug, file };
   }
+}
+
+/**
+ * The folder under `kb/` that holds archived notes, as `kb/.archive/<topic>/<slug>.md`. Search,
+ * run prompts and usage counts read only `kb/<topic>/`, so they skip it.
+ */
+export const KB_ARCHIVE = '.archive';
+
+/** What `archiveNote` adds to an archived note's frontmatter. */
+export interface KbArchiveInfo {
+  /** Who archived the note: a person. */
+  by: string;
+  /** ISO time. */
+  at: string;
+  why: string;
+}
+
+/** A note `archiveNote` moved. */
+export interface ArchivedNote extends KbArchiveInfo {
+  root: string;
+  /** The note's ref before the move, `<topic>/<slug>`. */
+  ref: string;
+  title: string;
+  /** The archived file, relative to the root: `kb/.archive/<topic>/<slug>.md`. */
+  path: string;
+  file: string;
+}
+
+/**
+ * Moves `note` to `kb/.archive/<topic>/<slug>.md` with its text, adding `archived_by`,
+ * `archived_at` and `archived_why` to its frontmatter. A slug taken in the archive gets a number.
+ */
+export function archiveNote(root: Root, note: KbNote, info: KbArchiveInfo): ArchivedNote {
+  if (note.root !== root.name) throw new OpsError(`${note.ref} is not in ${root.name}`, 2);
+  const archive = join(root.dir, 'kb', KB_ARCHIVE);
+  const dir = join(archive, note.topic);
+  ensureDir(archive, `kb/${KB_ARCHIVE}`);
+  ensureDir(dir, `kb/${KB_ARCHIVE}/${note.topic}`);
+  const doc = parseDoc<Record<string, unknown>>(readFileSync(note.file, 'utf8'));
+  const { slug, file } = reserve(dir, note.slug);
+  root.writeAtomic(
+    file,
+    stringifyDoc(
+      { ...doc.data, archived_by: info.by, archived_at: info.at, archived_why: info.why },
+      doc.body,
+    ),
+  );
+  rmSync(note.file);
+  return {
+    root: root.name,
+    ref: note.ref,
+    title: note.title,
+    path: `kb/${KB_ARCHIVE}/${note.topic}/${slug}.md`,
+    file,
+    ...info,
+  };
 }
 
 /** True for a real folder or file, never a link: links in a synced repo could point anywhere. */
@@ -100,7 +164,8 @@ export function noteFiles(root: Root, topic?: string): NoteFile[] {
   const topics = topic
     ? [kbTopic(topic)]
     : readdirSync(kb, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
+        // A dot folder such as `.archive` is no topic.
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
         .map((d) => d.name);
   const out: NoteFile[] = [];
   for (const t of topics) {

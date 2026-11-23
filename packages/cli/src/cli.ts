@@ -1133,10 +1133,107 @@ function pad(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length);
 }
 
+/** `swarmup kb --promote`: the learn notes that keep mattering, with why and for whom (W6). */
+function kbPromote(ctx: Ctx, ws: Workspace): number | void {
+  if (ctx.opts.usage || ctx.opts.stale)
+    usageError('use --promote alone, not with --usage or --stale');
+  if (ctx.opts.read !== undefined || ctx.args.length > 0) {
+    usageError('--promote takes no words or --read; narrow it with --topic or --agent');
+  }
+  const whole = (k: 'days' | 'shown' | 'reads'): number | undefined => {
+    const v = str(ctx.opts[k]);
+    if (v !== undefined && !/^\d+$/.test(v)) usageError(`bad --${k} '${v}'`);
+    return v === undefined ? undefined : Number(v);
+  };
+  const days = whole('days');
+  const minShown = whole('shown');
+  const minReads = whole('reads');
+  const res = ws.kbPromote({
+    ...(days !== undefined ? { days } : {}),
+    ...(minShown !== undefined ? { minShown } : {}),
+    ...(minReads !== undefined ? { minReads } : {}),
+    ...(str(ctx.opts.topic) ? { topic: str(ctx.opts.topic) } : {}),
+    ...(str(ctx.opts.agent) ? { agent: str(ctx.opts.agent) } : {}),
+  });
+  if (ctx.opts.json) {
+    const out = res.candidates.map((c) => ({
+      root: c.note.root,
+      ref: c.ref,
+      title: c.note.title,
+      shown: c.shown,
+      reads: c.reads,
+      relearned: c.relearned,
+      why: c.why,
+      for: c.for,
+      agents: c.agents,
+    }));
+    ctx.io.out(JSON.stringify({ days: res.days, since: res.since, candidates: out }, null, 2));
+    return out.length === 0 ? 3 : undefined;
+  }
+  if (res.candidates.length === 0) {
+    ctx.io.out(`no note kept mattering in the last ${res.days} days`);
+    return 3;
+  }
+  ctx.io.out(
+    `${res.candidates.length} note(s) kept mattering in the last ${res.days} days. The improver ` +
+      'folds them into a role file (`swarmupd.improve.notes`, or **Fold into role** in the app); ' +
+      'after `swarmup defs promote`, a person archives them with `swarmup kb archive`.',
+  );
+  for (const c of res.candidates) {
+    ctx.io.out(`
+${c.ref}  ${c.note.title}`);
+    ctx.io.out(`  why: ${c.why.join('; ')}`);
+    const uses = (a: { agent: string; shown: number; reads: number }): string =>
+      `${a.agent} (${[a.shown && `${a.shown} shown`, a.reads && `${a.reads} read`].filter(Boolean).join(', ')})`;
+    const forText =
+      c.agents.length > 0
+        ? c.agents
+            .filter((a) => c.for.includes(a.agent))
+            .map(uses)
+            .join(', ')
+        : c.for.length > 0
+          ? `${c.for.join(', ')} (wrote it)`
+          : '-';
+    ctx.io.out(`  for: ${forText}`);
+  }
+}
+
+/** `swarmup kb archive TOPIC/SLUG... -m WHY`: a person moves notes to `kb/.archive/` (W6). */
+function kbArchive(ctx: Ctx, ws: Workspace): void {
+  for (const k of [
+    'read',
+    'usage',
+    'stale',
+    'promote',
+    'days',
+    'shown',
+    'reads',
+    'agent',
+    'topic',
+  ] as const) {
+    if (ctx.opts[k] !== undefined) usageError(`kb archive takes no --${k}`);
+  }
+  const refs = ctx.args.slice(1);
+  if (refs.length === 0) usageError('name the notes: swarmup kb archive TOPIC/SLUG... -m "why"');
+  const done = ws.kbArchive(refs, bodyText(ctx));
+  if (ctx.opts.json) {
+    ctx.io.out(
+      JSON.stringify(
+        done.map(({ file: _file, ...a }) => a),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  for (const a of done) ctx.io.out(`${a.ref}: archived to ${a.path}`);
+}
+
 /**
  * `kb --usage` lists every note with how often it was read and shown in run prompts, most used
  * first; `kb --stale` lists only notes neither read nor shown in the last `--days` days (default
- * 30), never used first, for Dawid to prune by hand (AO-0152). Exit 3 when `--stale` finds none.
+ * 30), never used first, for a person to archive with `kb archive` (AO-0152, W6). Exit 3 when
+ * `--stale` finds none.
  */
 function kbUsage(ctx: Ctx, ws: Workspace): number | void {
   if (ctx.opts.usage && ctx.opts.stale) usageError('use --usage or --stale, not both');
@@ -1206,7 +1303,8 @@ function kbUsage(ctx: Ctx, ws: Workspace): number | void {
   }
   if (ctx.opts.stale) {
     ctx.io.out(
-      `${rows.length} note(s) neither read nor shown in ${n} days and older than that; prune by hand`,
+      `${rows.length} note(s) neither read nor shown in ${n} days and older than that; ` +
+        'a person archives one with `swarmup kb archive TOPIC/SLUG... -m "why"`',
     );
     // Nothing before the first record of a kind was counted, so a window that starts earlier
     // makes notes look unused that may have been read or shown. With no record of a kind, any
@@ -2683,20 +2781,40 @@ const COMMANDS: Record<string, Command> = {
   defs: defsCommand,
   bench: benchCommand,
   kb: {
-    usage: 'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale] [--days N]',
+    usage:
+      'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale | --promote] [--days N] [--shown N] [--reads N] [--agent ID] | kb archive TOPIC/SLUG... (-m WHY | --body-file F)',
     summary:
-      'search learn notes (every word must match), print one with --read, or count reads and prompt listings with --usage or --stale',
+      'search learn notes (every word must match), print one with --read, count reads and prompt listings with --usage or --stale, list the notes that keep mattering with --promote, or archive notes (a person)',
     options: {
       topic: { type: 'string' },
       read: { type: 'string' },
       usage: { type: 'boolean' },
       stale: { type: 'boolean' },
+      promote: { type: 'boolean' },
       days: { type: 'string' },
+      shown: { type: 'string' },
+      reads: { type: 'string' },
+      agent: { type: 'string' },
+      ...MESSAGE_OPTIONS,
     },
     run: (ctx) => {
       const ws = ctx.ws();
+      // `kb archive REF...`: the refs have a slash, so a search for the word archive still works.
+      const archiving =
+        ctx.args[0] === 'archive' &&
+        (ctx.opts.message !== undefined ||
+          ctx.opts['body-file'] !== undefined ||
+          (ctx.args.length > 1 && ctx.args.slice(1).every((a) => a.includes('/'))));
+      if (archiving) return kbArchive(ctx, ws);
+      if (ctx.opts.message !== undefined || ctx.opts['body-file'] !== undefined) {
+        usageError('-m and --body-file go with kb archive');
+      }
+      if (ctx.opts.promote) return kbPromote(ctx, ws);
+      for (const k of ['shown', 'reads', 'agent'] as const) {
+        if (ctx.opts[k] !== undefined) usageError(`--${k} goes with --promote`);
+      }
       if (ctx.opts.usage || ctx.opts.stale) return kbUsage(ctx, ws);
-      if (ctx.opts.days !== undefined) usageError('--days goes with --usage or --stale');
+      if (ctx.opts.days !== undefined) usageError('--days goes with --usage, --stale or --promote');
       const ref = str(ctx.opts.read);
       if (ref) {
         const n = ws.kbNote(ref);

@@ -137,6 +137,42 @@ describe('swarmup defs propose, variants, promote and reject', () => {
     expect(text).toContain('Write the code.');
   });
 
+  it('names the learn notes a promoted proposal folds in, with the archive command (W6)', async () => {
+    const { store, cli } = project();
+    await cli('claude:engineer', 'learn', 'git', 'Rebase', 'first', '-m', 'Rebase first.');
+    await cli(
+      'human:dawid',
+      'new',
+      'Improve claude:engineer: fold 1 learn note(s) into the role',
+      '--to',
+      'claude:improver',
+      '-m',
+      'Agent: claude:engineer\nNotes: git/rebase-first, git/gone',
+    );
+    const overlay = temp();
+    put(overlay, 'agents/claude-engineer.md', 'Rebase onto main before review.\n');
+    await cli(
+      'claude:improver',
+      'defs',
+      'propose',
+      'DM-0001',
+      '--dir',
+      overlay,
+      '--name',
+      'rebase-rule',
+      '-m',
+      'Folds the rebase note in.',
+    );
+    const res = await cli('human:dawid', 'defs', 'promote', 'rebase-rule');
+    expect(res.code).toBe(0);
+    // A ref that names no note is left out; the note stays until a person archives it.
+    expect(res.out.at(-1)).toBe(
+      '  it folds in learn notes git/rebase-first; archive them with ' +
+        '`swarmup kb archive git/rebase-first -m "folded into rebase-rule"`',
+    );
+    expect(existsSync(join(store, 'kb', 'git', 'rebase-first.md'))).toBe(true);
+  });
+
   it("puts a variant's role file in bench prompts, with its model", async () => {
     const { store, cli, dir } = project();
     put(store, 'variants/tests-first/agents/claude-engineer.md', 'Tests first.\n');

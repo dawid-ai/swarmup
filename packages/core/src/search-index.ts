@@ -655,7 +655,8 @@ function notes(roots: Root[], budget: SearchBudget): SearchNote[] {
     // A topic is done when its own walk's pass reaches the end, in this request or after
     // several; until then the next request goes on with the same topic, where its walk stopped.
     const topic: Visit = (t) => {
-      if (!t.dir) return true;
+      // A dot folder such as `.archive` (archived notes) is no topic.
+      if (!t.dir || t.name.startsWith('.')) return true;
       if (!budget.take(1)) return false;
       const dir = join(kb, t.name);
       if (!stampOf(dir, true).dir) return true;
