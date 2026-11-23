@@ -24,7 +24,45 @@
       "type": "string"
     },
     "webhook": {
-      "description": "Accepted but not active yet: webhook triggers come in W8 phase 4."
+      "description": "Take deliveries at `POST /hooks/<root>/<name>` on swarmupd's inbound listener (`swarmupd.hooks`). A delivery files a finding for triage; it runs the action only where the machine sets `swarmupd.hooks.direct.<root>.<name>: true`.",
+      "type": "object",
+      "properties": {
+        "verify": {
+          "description": "hmac: an HMAC-SHA256 of the body in `header`. bearer: `Authorization: Bearer <secret>`. linear: the `Linear-Signature` header. slack: the `X-Slack-Signature` header with a timestamp at most 5 minutes old.",
+          "enum": [
+            "hmac",
+            "bearer",
+            "linear",
+            "slack"
+          ]
+        },
+        "secret": {
+          "description": "The name of the value in `secrets.yml` (beside the user config) that signs deliveries. Never the secret itself: trigger files are in git.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,99}$"
+        },
+        "header": {
+          "description": "hmac: the header with the signature, hex, with or without `sha256=`. Default `X-Hub-Signature-256`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,100}$"
+        },
+        "delivery_header": {
+          "description": "The header with a delivery id, for dedupe. Default `Linear-Delivery` for linear and `X-GitHub-Delivery` for hmac; the body hash dedupes too.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]{1,100}$"
+        },
+        "rate": {
+          "description": "Deliveries a minute the listener takes for this trigger. Default 30.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        }
+      },
+      "required": [
+        "verify",
+        "secret"
+      ],
+      "additionalProperties": false
     },
     "action": {
       "description": "run: start an agent. workflow: start a store workflow. repeat: create the task of a repeat.",

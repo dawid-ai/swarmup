@@ -2,14 +2,16 @@
  * Git triggers (W5 phase 4): `triggers/<name>.yaml` in a task store says when swarmupd starts
  * something (`every`, `at` or `cron`) and what (`action: run | workflow | repeat`). A machine runs
  * a store's triggers only after it turns them on (`swarmupd.triggers.<root>: true`), and only the
- * ones whose `runs_on` names it. `webhook` is accepted and does nothing yet (W8 phase 4).
+ * ones whose `runs_on` names it. A `webhook` section (W8 phase 4) lets swarmupd's inbound listener
+ * take signed deliveries for the trigger: see `packages/supervisor/src/hooks.ts`.
  */
 import { createHash } from 'node:crypto';
 import { OpsError } from '../ids.js';
 import { parseDuration } from '../units.js';
 import type { Cron } from './cron.js';
 import { CRON_HINT, nextCron, parseCron } from './cron.js';
-import { bool, enumOf, list, map, num, obj, oneOf, str, any, checkYaml } from './schema.js';
+import { secretKind } from '../secrets.js';
+import { bool, enumOf, int, list, map, num, obj, oneOf, str, checkYaml } from './schema.js';
 import type { DefProblem, Schema } from './schema.js';
 import { normalText } from './hash.js';
 import { WORKFLOW_ID_RE } from './workflow.js';
@@ -29,6 +31,29 @@ export type TriggerAction = (typeof TRIGGER_ACTIONS)[number];
  */
 export const TRIGGER_ACTOR = 'opsd:trigger';
 
+/** How the inbound listener checks a webhook delivery (W8 phase 4). */
+export const WEBHOOK_VERIFIES = ['hmac', 'bearer', 'linear', 'slack'] as const;
+export type WebhookVerify = (typeof WEBHOOK_VERIFIES)[number];
+
+/** The name of a `secrets.yml` value, as `{secret: NAME}` in the MCP config takes it. */
+export const SECRET_REF_RE = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
+
+/** Deliveries a minute a webhook trigger takes when it sets no `rate`. */
+export const WEBHOOK_DEFAULT_RATE = 30;
+
+/** A trigger's `webhook` section: how the listener checks a delivery for it. */
+export interface WebhookDef {
+  verify: WebhookVerify;
+  /** The name of the value in `secrets.yml` that signs or authorizes deliveries; never the value. */
+  secret: string;
+  /** `hmac`: the header with the signature; default `X-Hub-Signature-256`. */
+  header?: string;
+  /** The header with a delivery id, for dedupe; default per `verify`, see `hooks.ts`. */
+  delivery_header?: string;
+  /** Deliveries a minute; default {@link WEBHOOK_DEFAULT_RATE}. */
+  rate?: number;
+}
+
 /** A checked trigger file. */
 export interface TriggerDef {
   name: string;
@@ -39,8 +64,8 @@ export interface TriggerDef {
   at?: string;
   /** Five-field cron expression in local time. */
   cron?: string;
-  /** Accepted; webhook triggers come in W8 phase 4, so a trigger with only this never fires. */
-  webhook?: unknown;
+  /** Deliveries to `POST /hooks/<root>/<name>` fire it (W8 phase 4). */
+  webhook?: WebhookDef;
   action: TriggerAction;
   /** `run`: the agent to start. */
   agent?: string;
@@ -97,7 +122,37 @@ export const TRIGGER_SCHEMA: Schema = obj(
     cron: str({
       doc: 'Fire on a five-field cron expression in local time, such as `0 9 * * mon-fri`.',
     }),
-    webhook: any({ inactive: 'webhook triggers come in W8 phase 4' }),
+    webhook: obj(
+      {
+        verify: enumOf([...WEBHOOK_VERIFIES], {
+          doc: 'hmac: an HMAC-SHA256 of the body in `header`. bearer: `Authorization: Bearer <secret>`. linear: the `Linear-Signature` header. slack: the `X-Slack-Signature` header with a timestamp at most 5 minutes old.',
+        }),
+        secret: str({
+          pattern: SECRET_REF_RE,
+          hint: 'name a value of secrets.yml, such as LINEAR_WEBHOOK_SECRET; never the secret itself',
+          doc: 'The name of the value in `secrets.yml` (beside the user config) that signs deliveries. Never the secret itself: trigger files are in git.',
+        }),
+        header: str({
+          pattern: /^[A-Za-z0-9-]{1,100}$/,
+          hint: 'name an HTTP header such as X-Hub-Signature-256',
+          doc: 'hmac: the header with the signature, hex, with or without `sha256=`. Default `X-Hub-Signature-256`.',
+        }),
+        delivery_header: str({
+          pattern: /^[A-Za-z0-9-]{1,100}$/,
+          hint: 'name an HTTP header such as X-GitHub-Delivery',
+          doc: 'The header with a delivery id, for dedupe. Default `Linear-Delivery` for linear and `X-GitHub-Delivery` for hmac; the body hash dedupes too.',
+        }),
+        rate: int({
+          min: 1,
+          max: 600,
+          doc: `Deliveries a minute the listener takes for this trigger. Default ${WEBHOOK_DEFAULT_RATE}.`,
+        }),
+      },
+      {
+        required: ['verify', 'secret'],
+        doc: "Take deliveries at `POST /hooks/<root>/<name>` on swarmupd's inbound listener (`swarmupd.hooks`). A delivery files a finding for triage; it runs the action only where the machine sets `swarmupd.hooks.direct.<root>.<name>: true`.",
+      },
+    ),
     action: enumOf([...TRIGGER_ACTIONS], {
       doc: 'run: start an agent. workflow: start a store workflow. repeat: create the task of a repeat.',
     }),
@@ -175,6 +230,29 @@ export function checkTriggerText(
   if (times.length === 0 && v.webhook === undefined) {
     at('(top)', 'error', 'set when it fires: every, at or cron');
   }
+  const hook = isRecord(v.webhook) ? v.webhook : undefined;
+  if (hook && typeof hook.secret === 'string') {
+    if (secretKind(hook.secret)) {
+      at(
+        'webhook',
+        'error',
+        'webhook.secret looks like a secret: name the secrets.yml value instead',
+      );
+    } else if (!/^[A-Z][A-Z0-9_]*$/.test(hook.secret)) {
+      at(
+        'webhook',
+        'warning',
+        `webhook.secret '${hook.secret}' names a secrets.yml value; write names in capitals, such as LINEAR_WEBHOOK_SECRET, and never the secret itself`,
+      );
+    }
+  }
+  if (hook && hook.header !== undefined && hook.verify !== 'hmac') {
+    at(
+      'webhook',
+      'warning',
+      `webhook.header is for verify hmac; ${String(hook.verify)} does not read it`,
+    );
+  }
   if (typeof v.every === 'string') {
     try {
       if (parseDuration(v.every) < 1) at('every', 'error', 'use at least 1m');
@@ -226,7 +304,7 @@ export function checkTriggerText(
     ...(s('every') ? { every: s('every') } : {}),
     ...(s('at') ? { at: s('at') } : {}),
     ...(s('cron') ? { cron: s('cron') } : {}),
-    ...(v.webhook !== undefined ? { webhook: v.webhook } : {}),
+    ...(hook ? { webhook: webhookDef(hook) } : {}),
   };
   for (const k of ACTION_KEYS[action]) {
     if (k === 'params') {
@@ -235,6 +313,16 @@ export function checkTriggerText(
   }
   if (runsOn && runsOn.length > 0) def.runs_on = runsOn;
   return { name, file: opts.file, def, problems };
+}
+
+function webhookDef(h: Record<string, unknown>): WebhookDef {
+  return {
+    verify: h.verify as WebhookVerify,
+    secret: String(h.secret),
+    ...(typeof h.header === 'string' ? { header: h.header } : {}),
+    ...(typeof h.delivery_header === 'string' ? { delivery_header: h.delivery_header } : {}),
+    ...(typeof h.rate === 'number' ? { rate: h.rate } : {}),
+  };
 }
 
 /** The time rule of a trigger as a cron, or null for `every` and webhook-only triggers. */
@@ -247,12 +335,20 @@ export function triggerCron(def: Pick<TriggerDef, 'at' | 'cron'>): Cron | null {
   return null;
 }
 
-/** When a trigger fires, for lists: `every 30m`, `at 09:00`, `cron 0 9 * * 1-5` or `webhook`. */
+/**
+ * When a trigger fires, for lists: `every 30m`, `at 09:00`, `cron 0 9 * * 1-5`, `webhook hmac`,
+ * or a schedule and a webhook such as `every 1d, webhook slack`.
+ */
 export function triggerWhen(def: Pick<TriggerDef, 'every' | 'at' | 'cron' | 'webhook'>): string {
-  if (def.every) return `every ${def.every}`;
-  if (def.at) return `at ${def.at}`;
-  if (def.cron) return `cron ${def.cron}`;
-  return 'webhook (not active yet)';
+  const time = def.every
+    ? `every ${def.every}`
+    : def.at
+      ? `at ${def.at}`
+      : def.cron
+        ? `cron ${def.cron}`
+        : '';
+  const hook = def.webhook ? `webhook ${def.webhook.verify}` : '';
+  return [time, hook].filter(Boolean).join(', ');
 }
 
 /** What a trigger does, for lists: `run claude:pm`, `workflow bugfix`, `repeat weekly`. */
@@ -344,8 +440,9 @@ export const TRIGGERS_HASH_RE = /^t:[0-9a-f]{64}$/;
 /**
  * The hash of a store's triggers (W5 phase 4, Decision 7): `t:` and the SHA-256 of every field
  * that changes what fires, per trigger in name order: name, schedule, action, agent, prompt,
- * task, workflow, params, title, repeat, runs_on and enabled. A description does not change it.
- * Null when the store has no trigger that reads.
+ * task, workflow, params, title, repeat, runs_on and enabled, and the `webhook` section when it
+ * has one (left out otherwise, so a set trusted before W8 phase 4 keeps its hash). A description
+ * does not change it. Null when the store has no trigger that reads.
  */
 export function triggersHash(defs: readonly TriggerDef[]): string | null {
   if (defs.length === 0) return null;
@@ -367,6 +464,17 @@ export function triggersHash(defs: readonly TriggerDef[]): string | null {
         d.repeat ?? null,
         d.runs_on ?? null,
         d.enabled,
+        ...(d.webhook
+          ? [
+              [
+                d.webhook.verify,
+                d.webhook.secret,
+                d.webhook.header ?? null,
+                d.webhook.delivery_header ?? null,
+                d.webhook.rate ?? null,
+              ],
+            ]
+          : []),
       ]),
     );
   return (
