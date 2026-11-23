@@ -720,7 +720,10 @@ swarmupd:
 - **`mcp`** starts the `publish: true` server with its secrets in its environment, as the run
   proxy does, and calls the tool once as an MCP client. The server's `tools` rules apply. The URL
   is the answer's `structuredContent.url`, else the last `url: <URL>` line of its text. `{path}`
-  and `{content}` need exactly one file.
+  and `{content}` need exactly one file. Each call goes in `publish-mcp.log` in swarmupd's state
+  folder, one JSON line in the shape of a run's `mcp.log`: the time, the server, the tool, a
+  SHA-256 of the arguments, the task, the adapter, the attempt, `ok` (the tool answered without an
+  error) and, for a failure, the first line of the reason. No argument value or secret is logged.
 - **On success** swarmupd writes the `publish` event with the URL and `adapter` (closing the
   task), then tags the commit `published/<ID>`, then runs its `when: publish` criteria, as
   `swarmup published` does. The work is live by then, so a step that fails (the task's lock, the
@@ -1432,7 +1435,7 @@ that changed, reads each ended run's log once, and writes a row only for a score
 changed. `swarmup scores` computes them from the files, as `swarmup report` does; `--refresh` asks
 swarmupd to compute and keep them, or writes `state.db` itself when swarmupd is not running.
 `swarmup report` and the desktop **Reports** view show each agent's scores for the report's window,
-and the desktop **Agents** view shows each agent's scores with a trend. See
+rubric scorers' scores after the built-in ones, and the desktop **Agents** view shows each agent's scores with a trend. See
 [Scores in the app](desktop.md#scores-in-the-app).
 
 The desktop reads three shapes of the API:

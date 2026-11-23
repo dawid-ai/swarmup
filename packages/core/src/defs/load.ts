@@ -16,10 +16,11 @@ import type { WorkflowInfo } from './workflow.js';
 import { checkWorkflowText, WORKFLOWS_DIR, workflowIdOf } from './workflow.js';
 import type { DefFile } from './hash.js';
 import type { DefsRefSnapshot } from './ref.js';
+import { clearDefsSnapshots, defsSnapshotAt } from './ref.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
 
-import { checkYaml } from './schema.js';
+import { checkYaml, locateYaml } from './schema.js';
 import type { SwarmDefs } from './swarm.js';
 import { SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
 import { secretProblems, validateDefinitions } from './validate.js';
@@ -85,8 +86,13 @@ export interface LoadOptions {
   machineAgents?: readonly string[];
   /** MCP servers this machine defines, for the check of role `mcp` names (W8). */
   machineMcp?: readonly string[];
-  /** Read variant `variants/<name>/` on top of the store's definitions (W5). */
+  /**
+   * Read variant `name` (W5): `variants/<name>/` on top of the store's definitions, or the
+   * definitions at the git ref `variants.<name>.from_ref` in `swarm.yaml` names.
+   */
   variant?: string;
+  /** Check that each `variants.<name>.from_ref` resolves, reading it with git (`swarmup validate`). */
+  checkRefs?: boolean;
 }
 
 const cache = new Map<string, DefinitionSet>();
@@ -115,6 +121,7 @@ export function loadDefinitions(rootDir: string, opts: LoadOptions = {}): Defini
     opts.machineRuntimes ?? null,
     opts.machineAgents ?? null,
     opts.machineMcp ?? null,
+    Boolean(opts.checkRefs),
   ]);
   const hit = cache.get(key);
   if (hit && hit.fingerprint === fingerprint) return hit;
@@ -153,11 +160,14 @@ function overlayFingerprint(dir: string): string {
 /**
  * The definitions of variant `name`: the store's definitions with `variants/<name>/` on top. The
  * agents are read from the resulting texts; each agent's `file` is its overlay file when the
- * overlay holds one, else its base file. Throws when the variant folder is missing.
+ * overlay holds one, else its base file. A name with no folder that `swarm.yaml` gives a
+ * `from_ref` is the store's definitions at that ref. Throws when the store has neither.
  */
 function loadVariant(rootDir: string, name: string, opts: LoadOptions): DefinitionSet {
   const dir = variantDir(rootDir, name);
   if (!listVariantNames(rootDir).includes(name)) {
+    const fromRef = loadDefinitions(rootDir).swarm?.variants?.[name]?.from_ref;
+    if (fromRef) return loadRefVariant(rootDir, name, fromRef, opts);
     throw new OpsError(`no variant '${name}' in ${rootDir}`, 2);
   }
   const listed = listDefFiles(rootDir);
@@ -191,6 +201,40 @@ function loadVariant(rootDir: string, name: string, opts: LoadOptions): Definiti
     variant: name,
     overlay: Object.fromEntries(overlay),
     baseHash: definitionHash(base.files),
+  };
+  cache.set(key, out);
+  return out;
+}
+
+/**
+ * The definitions of a `from_ref` variant (W5 phase 5): the store's definitions at `ref`, read
+ * with `git show` as `--defs-ref` reads them (the snapshot swarmupd keeps, else read now), with the
+ * variant's name and the store's own hash as its base. Cached by the commit the ref names.
+ */
+function loadRefVariant(
+  rootDir: string,
+  name: string,
+  ref: string,
+  opts: LoadOptions,
+): DefinitionSet {
+  const snap = defsSnapshotAt(rootDir, ref);
+  const baseHash = loadDefinitions(rootDir).hash;
+  const key = JSON.stringify([
+    rootDir,
+    name,
+    'ref',
+    Boolean(opts.strict),
+    opts.machineRuntimes ?? null,
+    opts.machineAgents ?? null,
+    opts.machineMcp ?? null,
+  ]);
+  const hit = cache.get(key);
+  if (hit && hit.ref === ref && hit.commit === snap.commit && hit.baseHash === baseHash) return hit;
+  // The ref's own variants are not read, nor their refs.
+  const out: DefinitionSet = {
+    ...loadDefinitionsAtRef(rootDir, snap, { ...opts, variant: undefined, checkRefs: false }),
+    variant: name,
+    baseHash,
   };
   cache.set(key, out);
   return out;
@@ -312,6 +356,9 @@ function checkSet(
     problems.push(...w.problems);
     workflows.push(w);
   }
+  // The texts of trigger and scorer files by file, so checks across files point at the key.
+  const sources = new Map<string, string>();
+  const locateIn = sourceLocator(sources);
   // Triggers (W5 phase 4): each file against its schema; their targets are checked below.
   const triggers: TriggerInfo[] = [];
   for (const [path, text] of texts) {
@@ -327,8 +374,11 @@ function checkSet(
     const t = checkTriggerText(name, text, { file: fileOf(path), strict: opts.strict });
     problems.push(...t.problems);
     triggers.push(t);
+    sources.set(t.file, text);
   }
-  problems.push(...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts));
+  problems.push(
+    ...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts, locateIn),
+  );
   // Scorers (W5 phase 4): each file against its schema, then their rubrics and overlaps.
   const scorers: ScorerFileInfo[] = [];
   for (const [path, text] of texts) {
@@ -344,8 +394,9 @@ function checkSet(
     const sc = checkScorerText(id, text, { file: fileOf(path), strict: opts.strict });
     problems.push(...sc.problems);
     scorers.push(sc);
+    sources.set(sc.file, text);
   }
-  problems.push(...scorerProblems(texts, scorers, workflows));
+  problems.push(...scorerProblems(texts, scorers, workflows, locateIn));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -367,6 +418,32 @@ function checkSet(
       }
     });
   }
+  // Variants named in swarm.yaml: a folder or a ref, not both, and a ref that git reads.
+  if (swarm?.variants) {
+    const swarmFile = fileOf(SWARM_FILE);
+    const at = (path: string, severity: DefProblem['severity'], message: string): void => {
+      const pos = locate.get(swarmFile)?.(path.split('.')) ?? { line: 1, col: 1 };
+      problems.push({ file: swarmFile, path, ...pos, severity, message });
+    };
+    const folders = listVariantNames(rootDir);
+    for (const [name, v] of Object.entries(swarm.variants)) {
+      if (v.from_ref && folders.includes(name)) {
+        at(
+          `variants.${name}.from_ref`,
+          'error',
+          `variants/${name}/ is a folder variant too; a name is a folder or a from_ref variant, not both`,
+        );
+      } else if (!v.from_ref && !folders.includes(name)) {
+        at(`variants.${name}`, 'warning', `no variants/${name}/ in this store and no from_ref`);
+      } else if (v.from_ref && opts.checkRefs) {
+        try {
+          defsSnapshotAt(rootDir, v.from_ref);
+        } catch (err) {
+          at(`variants.${name}.from_ref`, 'error', (err as Error).message);
+        }
+      }
+    }
+  }
   // Experiments name variants of this store, once each, and real days.
   if (swarm?.experiments) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -374,13 +451,20 @@ function checkSet(
       const pos = locate.get(swarmFile)?.(path.split('.')) ?? { line: 1, col: 1 };
       problems.push({ file: swarmFile, path, ...pos, severity, message });
     };
-    const variants = listVariantNames(rootDir);
+    const variants = [
+      ...listVariantNames(rootDir),
+      ...Object.entries(swarm.variants ?? {}).flatMap(([n, v]) => (v.from_ref ? [n] : [])),
+    ];
     const seen = new Set<string>();
     swarm.experiments.forEach((e, i) => {
       if (seen.has(e.id)) at(`experiments.${i}.id`, 'error', `experiment ${e.id} is named twice`);
       seen.add(e.id);
       if (!variants.includes(e.variant)) {
-        at(`experiments.${i}.variant`, 'error', `no variants/${e.variant}/ in this store`);
+        at(
+          `experiments.${i}.variant`,
+          'error',
+          `no variants/${e.variant}/ in this store and no variants.${e.variant}.from_ref`,
+        );
       }
       const day = e.until ? Date.parse(`${e.until}T00:00:00Z`) : 0;
       if (e.until && (Number.isNaN(day) || new Date(day).toISOString().slice(0, 10) !== e.until)) {
@@ -431,6 +515,21 @@ function checkSet(
   };
 }
 
+/** Where a key path starts in one of `sources` (file to text), each file parsed once when asked. */
+type SourceLocate = (file: string, path: string) => { line: number; col: number };
+
+function sourceLocator(sources: ReadonlyMap<string, string>): SourceLocate {
+  const parsed = new Map<string, Locate>();
+  return (file, path) => {
+    let at = parsed.get(file);
+    if (!at) {
+      at = locateYaml(normalText(sources.get(file) ?? ''));
+      parsed.set(file, at);
+    }
+    return at(path.split('.'));
+  };
+}
+
 /**
  * Checks across scorer files: a rubric scorer's rubric exists in the store and reads (errors),
  * one file per built-in scorer (an error on each), and workflows `applies_to` names exist (a
@@ -440,10 +539,16 @@ function scorerProblems(
   texts: ReadonlyMap<string, string>,
   scorers: readonly ScorerFileInfo[],
   workflows: readonly WorkflowInfo[],
+  locateIn: SourceLocate,
 ): DefProblem[] {
   const out: DefProblem[] = [];
-  const add = (sc: ScorerFileInfo, path: string, severity: DefProblem['severity'], m: string) =>
-    out.push({ file: sc.file, path, line: 1, col: 1, severity, message: m });
+  const add = (
+    sc: ScorerFileInfo,
+    path: string,
+    severity: DefProblem['severity'],
+    m: string,
+    where = path,
+  ) => out.push({ file: sc.file, path, ...locateIn(sc.file, where), severity, message: m });
   const byBuiltin = new Map<string, ScorerFileInfo[]>();
   for (const sc of scorers) {
     const d = sc.def;
@@ -474,11 +579,12 @@ function scorerProblems(
         }
       }
     }
-    for (const w of d.applies_to?.workflows ?? []) {
+    (d.applies_to?.workflows ?? []).forEach((w, i) => {
       if (!workflows.some((x) => x.id === w)) {
-        add(sc, 'applies_to.workflows', 'warning', `no workflows/${w}.yaml in this store`);
+        const m = `no workflows/${w}.yaml in this store`;
+        add(sc, 'applies_to.workflows', 'warning', m, `applies_to.workflows.${i}`);
       }
-    }
+    });
   }
   for (const [builtin, files] of byBuiltin) {
     if (files.length < 2) continue;
@@ -505,10 +611,11 @@ function triggerTargetProblems(
   workflows: readonly WorkflowInfo[],
   agents: readonly AgentDef[],
   opts: LoadOptions,
+  locateIn: SourceLocate,
 ): DefProblem[] {
   const out: DefProblem[] = [];
   const add = (t: TriggerInfo, path: string, severity: DefProblem['severity'], message: string) =>
-    out.push({ file: t.file, path, line: 1, col: 1, severity, message });
+    out.push({ file: t.file, path, ...locateIn(t.file, path), severity, message });
   for (const t of triggers) {
     const d = t.def;
     if (!d) continue;
@@ -605,4 +712,5 @@ export function sortProblems(problems: DefProblem[]): DefProblem[] {
 /** Drops cached sets, for tests that rewrite files within one change-time tick. */
 export function clearDefinitionsCache(): void {
   cache.clear();
+  clearDefsSnapshots();
 }

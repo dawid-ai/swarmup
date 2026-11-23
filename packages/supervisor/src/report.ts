@@ -3,7 +3,7 @@ import { MERGE_ACTOR, OpsError, runtimeOf } from '@swarmup/core';
 import type { LoopsReport, LoopsTask } from './loops.js';
 import { buildLoops, median } from './loops.js';
 import type { RunRecord } from './runs.js';
-import type { AgentScores, ScoreTask } from './scores.js';
+import type { AgentScores, ScoreResult, ScoreTask } from './scores.js';
 import { gitScorers } from './git-scorers.js';
 import { computeScores, scorerLineText, scorerSettings, summarizeScores } from './scores.js';
 
@@ -153,6 +153,11 @@ export interface ReportOptions {
   root?: string;
   /** Events kept from earlier reports; without it the report reads each task it needs once. */
   events?: ReportEvents;
+  /**
+   * The score rows rubric scorers gave (`rubric_judgments` in state.db, W5 phase 5). The report
+   * keeps those of its window's tasks and lists them after the built-in scorers.
+   */
+  rubric?: readonly ScoreResult[];
 }
 
 /** The root and project filters of a report, and the tasks they let through. */
@@ -393,7 +398,14 @@ export function buildReport(
         .slice(0, 5),
     },
     loops: buildLoops(loopTasks, scopedRuns, windowRuns, fromIso, toIso),
-    scores: reportScores(ws, scoreTasks, scopedRuns, from, to),
+    scores: reportScores(
+      ws,
+      scoreTasks,
+      scopedRuns,
+      from,
+      to,
+      (opts.rubric ?? []).filter((r) => tasksIn.has(r.subject) && inWindow(r.at)),
+    ),
     totals: {
       opened: list.reduce((n, p) => n + p.opened, 0),
       closed: list.reduce((n, p) => n + p.closed, 0),
@@ -452,13 +464,17 @@ export function reportText(r: Report): string {
   return lines.join('\n');
 }
 
-/** The scores of a report's window; a bad `swarmupd.scorers` setting falls back to defaults. */
+/**
+ * The scores of a report's window, the rubric scorers' rows after the built-in ones; a bad
+ * `swarmupd.scorers` setting falls back to defaults.
+ */
 function reportScores(
   ws: Workspace,
   tasks: ScoreTask[],
   runs: RunRecord[],
   from: number,
   to: number,
+  rubric: ScoreResult[],
 ): AgentScores[] {
   let settings = {};
   try {
@@ -467,7 +483,7 @@ function reportScores(
     // `swarmup scores` reports the setting's error.
   }
   return summarizeScores(
-    computeScores({ tasks, runs }, { settings, from, to, stores: gitScorers(ws) }),
+    [...computeScores({ tasks, runs }, { settings, from, to, stores: gitScorers(ws) }), ...rubric],
     { settings },
   );
 }

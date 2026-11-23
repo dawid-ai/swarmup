@@ -268,7 +268,30 @@
       }
     },
     "variants": {
-      "description": "Accepted but not active yet: variants come in phase 5."
+      "description": "Variants by name. An entry with `from_ref` is a variant of the definitions at a git ref, usable wherever a variant name is (`--variant`, experiments); one without describes the folder `variants/<name>/`. A name is a folder or a `from_ref` variant, not both.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+      },
+      "additionalProperties": {
+        "description": "One variant: what it tries, and the git ref its definitions come from.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "What the variant tries; `swarmup defs variants` shows it.",
+            "type": "string"
+          },
+          "from_ref": {
+            "description": "The variant's definitions are the store's definitions at this git ref, read with `git show` and never checked out. Without it, the variant is the folder `variants/<name>/`.",
+            "type": "string",
+            "pattern": "^(?!-)[A-Za-z0-9._/@{}~^:-]{1,200}$"
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "experiments": {
       "description": "A/B experiments: the first one that takes a task run gives it the variant or the base, the same for every run of the task. A machine with `swarmupd.experiments: false` runs the base, and an explicit `--variant` or `--defs-ref` wins.",

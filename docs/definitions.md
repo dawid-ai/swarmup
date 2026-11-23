@@ -62,8 +62,8 @@ roles: # as swarmupd.roles takes them
   [Work types](#work-types)).
 - `experiments` give a share of task runs a variant (see [Experiments](#experiments)).
 - `scoring` sets the [rubric scorers](#rubric-scorers)' cap and sample.
-- `variants` is accepted with a warning that it is not active yet; the `variants/<name>/` folders
-  are.
+- `variants` describes variants and points them at a git ref (see
+  [Variants from a git ref](#variants-from-a-git-ref)).
 - Agent files keep their fields. They also take `runtimes.<rt>.{model, effort}`, which wins over the
   file's own `model` and `effort` for that runtime, and `role`, `providers`, `writes` and
   `scorers`; see [Agent folders](#agent-folders).
@@ -286,7 +286,8 @@ it does, and whether and when it fires next on this machine.
 file, with `runs_on` set to this machine when the user config names it. `--apply` writes the
 files, never over a different one, and `--remove` also takes the schedules out of the user config
 and turns on `swarmupd.triggers.<root>`, so nothing fires twice; the new triggers fire once a
-person trusts them. A schedule on a task of another store is refused.
+person trusts them. A running swarmupd reads the user config again at once, as after
+`defs trust` and `triggers on|off`. A schedule on a task of another store is refused.
 
 ## Merge checks in git
 
@@ -405,8 +406,9 @@ swarmupd:
 - **The result:** each judgment is a row of `rubric_judgments` in `state.db`, with its tokens. One
   that gives a score is a task score row like a built-in scorer's: the scorer's id, the score as a
   share, `pass` against the scorer's `pass` (default 0.7), the criterion scores in `extra`, the
-  judge's reasons in `note`, and the work's `defs_hash`, `variant` and `experiment`. `swarmup
-scores` and the app list it after the built-in scorers, and `--by-variant` splits it.
+  judge's reasons in `note`, and the work's `defs_hash`, `variant` and `experiment`.
+  `swarmup scores`, `swarmup report` (the rows of the window's tasks, by the closing event's time)
+  and the app list it after the built-in scorers, and `--by-variant` splits it.
 - `swarmup defs scorers` shows a rubric scorer as `on`, or why it is off here.
 
 ## Precedence
@@ -499,6 +501,35 @@ checked out, and swarmupd reads the ref off the event loop before the launch.
   table of `state.db` under that hash.
 - A run takes `--variant` or `--defs-ref`, not both, and an experiment never picks a variant for a
   run with a ref.
+
+### Variants from a git ref
+
+`variants` in `swarm.yaml` names variants. An entry with `from_ref` is a variant whose definitions
+are the store's definitions at that ref, so you can give an older or another branch's team a name
+and use it wherever a variant name goes: `swarmup launch --variant`, `swarmup bench run --variant`
+and `experiments`.
+
+```yaml
+variants:
+  as-v1: # a variant of the definitions as tag v1 had them
+    from_ref: v1
+    description: The team before the review checklist
+  tests-first: # describes the folder variants/tests-first/
+    description: Write the test first
+```
+
+- The ref is read with `git show`, as `--defs-ref` reads it; nothing is checked out. swarmupd
+  reads each `from_ref` off the event loop every tick, again only when the commit it names moves,
+  so a launch or an experiment that picks the variant runs no git.
+- A run of a `from_ref` variant carries `variant`, and its definition stamp the snapshot's hash,
+  `ref` and `commit`. `tools`, `mcp`, `writes` and `can_claim` still come from the store's own
+  agent, as for `--defs-ref`.
+- `description` without `from_ref` describes the folder `variants/<name>/`.
+  `swarmup defs variants` shows the description, and for a `from_ref` variant the ref, its commit
+  and the files that differ from the base.
+- `swarmup validate` reports a `from_ref` git cannot read, and a name that is both a folder and a
+  `from_ref` variant, as errors, and an entry with neither as a warning. A `from_ref` variant has
+  no folder, so it is never proposed, promoted or rejected.
 
 ### Experiments
 
@@ -605,7 +636,8 @@ improvement:
 - `swarmup validate [PATH...] [--root NAME] [--strict] [--json] [--write-schemas]` checks each
   root, or the files and stores named. It prints `file:line:col: severity: path: message` and
   exits 0 when there are only warnings, 1 on errors or, with `--strict`, on warnings, and 2 on bad
-  input. Under `--strict` an unknown key is an error.
+  input. Under `--strict` an unknown key is an error. A problem across files, such as a trigger's
+  workflow or a scorer's rubric that is missing, points at the key that names it.
 - `swarmup defs show` prints each root's hash and what its `swarm.yaml` sets under this machine's
   config, with the machine keys that overrode it.
 - `swarmup defs hash` prints the full hash of each root.
@@ -625,7 +657,8 @@ improvement:
   [Workflows](protocol.md#workflows).
 - `swarmup defs import-config` writes the user config's `swarmupd.runtimes.*.{model, effort}` and
   `swarmupd.roles.*` into `swarm.yaml`, keeping its comments, and prints the change. The user
-  config keeps those keys, so this machine still overrides them, unless you pass `--remove`.
+  config keeps those keys, so this machine still overrides them, unless you pass `--remove`,
+  which a running swarmupd reads at once.
 - `swarmup doctor` and `swarmup agents` show the problems of each root with a `swarm.yaml`.
 - The API has `GET /api/defs` (each root's set, what it applied, overrides and conflicts) and
   `POST /api/defs/validate` with `{ file, text, strict? }`, which checks text without writing it.

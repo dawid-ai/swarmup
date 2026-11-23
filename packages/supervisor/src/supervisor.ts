@@ -96,7 +96,7 @@ import {
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
 import type { DefsChecks } from './defs-config.js';
-import { DefsState, readDefsAtRefAsync } from './defs-state.js';
+import { DefsState, keepRefVariants, readDefsAtRefAsync } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
 import { ScoreKeeper } from './score-keeper.js';
@@ -1166,13 +1166,7 @@ export class Supervisor extends EventEmitter {
       orientation: (r) => logOrientation(r.log),
       now: this.now,
       // The score rows rubric scorers gave (W5 phase 5), kept with the built-in ones.
-      extra: () => {
-        try {
-          return this.state?.rubricResults<ScoreResult>() ?? [];
-        } catch {
-          return [];
-        }
-      },
+      extra: () => this.rubricResults(),
     });
     this.bench = new BenchRuns(() => this.benchHost());
     this.improver = new Improver({
@@ -3465,6 +3459,8 @@ export class Supervisor extends EventEmitter {
     }
     if (needsReleases(req.agent)) await this.releasesTick();
     if (req.defsRef !== undefined && !req.defsSnapshot) req = await this.withDefsSnapshot(req);
+    // A `from_ref` variant, named or picked by an experiment, reads its ref off the event loop.
+    if (req.defsRef === undefined && !req.chat) await keepRefVariants(this.defsRoots());
     await this.learnLaunchCheckouts(req);
     // A task worktree that is not there yet is made and installed off the event loop, and the
     // launch runs again once it is (AO-0380). The second launch makes it in place if it must.
@@ -5567,6 +5563,8 @@ export class Supervisor extends EventEmitter {
       await this.testChangesTick();
       // Before the wake plan too, so a Codex PM run that starts in this tick has the releases.
       await this.releasesTick();
+      // Before the wake plan, so a run an experiment gives a `from_ref` variant reads no git.
+      await keepRefVariants(this.defsRoots());
       const states = await this.readCheckouts();
       this.tickStates = states;
       this.dirtyHolds = new Map();
@@ -5793,6 +5791,15 @@ export class Supervisor extends EventEmitter {
       return n;
     } finally {
       clearInterval(watch);
+    }
+  }
+
+  /** The score rows rubric scorers gave (W5 phase 5), kept in state.db; none when it fails. */
+  rubricResults(): ScoreResult[] {
+    try {
+      return this.state?.rubricResults<ScoreResult>() ?? [];
+    } catch {
+      return [];
     }
   }
 
@@ -6523,6 +6530,7 @@ export class Supervisor extends EventEmitter {
       env,
       ...(cfg?.base ? { base: cfg.base } : {}),
       opts,
+      stateDir: this.store.dir,
     });
   }
 

@@ -7,9 +7,9 @@ import { execFileSync } from 'node:child_process';
 import { OpsError } from '../ids.js';
 import { DEF_FOLDERS, normalText } from './hash.js';
 import { SWARM_FILE } from './swarm.js';
+import { DEFS_REF_RE } from './values.js';
 
-/** A git ref as `--defs-ref` takes it: a branch, tag, commit or `HEAD~N`, never an option. */
-export const DEFS_REF_RE = /^(?!-)[A-Za-z0-9._/@{}~^:-]{1,200}$/;
+export { DEFS_REF_RE };
 
 /** Checks a `--defs-ref` value; exit 2 otherwise. */
 export function checkDefsRef(ref: unknown): string {
@@ -96,4 +96,53 @@ export function readDefsAtRef(dir: string, ref: string): DefsRefSnapshot {
     commit,
     texts: snapshotTexts(names.map((n) => [n, gitIn(dir, defsRefGit.show(ref, n))])),
   };
+}
+
+/** Snapshots of `from_ref` variants (W5 phase 5) by store folder and ref, or why git failed. */
+const keptSnapshots = new Map<string, DefsRefSnapshot | { ref: string; error: string }>();
+
+const snapshotKey = (dir: string, ref: string): string => `${dir}\0${ref}`;
+
+/**
+ * Keeps the snapshot of `ref` in the store `dir`, or the reason git could not read it, for the
+ * variants whose `from_ref` names it. swarmupd reads them off the event loop and keeps them here,
+ * so a launch reads no git; see {@link defsSnapshotAt}.
+ */
+export function keepDefsSnapshot(
+  dir: string,
+  ref: string,
+  snap: DefsRefSnapshot | { error: string },
+): void {
+  keptSnapshots.set(snapshotKey(dir, ref), { ...snap, ref });
+}
+
+/** The kept snapshot of `ref` in `dir`, or the reason git failed; undefined when none is kept. */
+export function keptDefsSnapshot(
+  dir: string,
+  ref: string,
+): DefsRefSnapshot | { ref: string; error: string } | undefined {
+  return keptSnapshots.get(snapshotKey(dir, ref));
+}
+
+/**
+ * The definitions of the store in `dir` at `ref` for a `from_ref` variant: the kept snapshot, else
+ * read now with {@link readDefsAtRef} and kept. A ref git cannot read throws with exit 2.
+ */
+export function defsSnapshotAt(dir: string, ref: string): DefsRefSnapshot {
+  let kept = keptDefsSnapshot(dir, ref);
+  if (!kept) {
+    try {
+      kept = readDefsAtRef(dir, ref);
+    } catch (err) {
+      kept = { ref, error: (err as Error).message };
+    }
+    keepDefsSnapshot(dir, ref, kept);
+  }
+  if ('error' in kept) throw new OpsError(kept.error, 2);
+  return kept;
+}
+
+/** Forgets every kept snapshot. */
+export function clearDefsSnapshots(): void {
+  keptSnapshots.clear();
 }

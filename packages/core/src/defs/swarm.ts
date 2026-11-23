@@ -3,14 +3,15 @@
  * `runtimes.<rt>.{model, effort}`, `roles` and `policy`; `work_types` give new tasks their
  * default criteria and workflow; `improvement` is the W6 policy; `checks` are merge checks that
  * run only on a machine that trusts them (W5 phase 4); `experiments` give a share of matching
- * task runs a variant, and `scoring` runs the rubric scorers (W5 phase 5). The other top-level
- * keys are accepted and warned about until their phase lands.
+ * task runs a variant, `variants` describe variants or point them at a git ref, and `scoring`
+ * runs the rubric scorers (W5 phase 5).
  */
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
 import { any, bool, enumOf, int, list, map, num, obj, oneOf, ref, str } from './schema.js';
 import type { Schema } from './schema.js';
 import {
+  DEFS_REF_RE,
   EFFORT_HINT,
   EFFORT_RE,
   MODEL_HINT,
@@ -118,6 +119,15 @@ export interface SwarmCheck {
   description?: string;
 }
 
+/**
+ * A variant named in `swarm.yaml` (W5 phase 5): a `description` for `variants/<name>/`, or, with
+ * `from_ref`, a variant whose definitions are the store's definitions at that git ref.
+ */
+export interface SwarmVariant {
+  description?: string;
+  from_ref?: string;
+}
+
 /** Which task runs an experiment takes: every list that is set must match. */
 export interface SwarmExperimentScope {
   /** Agent ids, such as `claude:engineer`. */
@@ -161,6 +171,8 @@ export interface SwarmDefs {
   /** Experiments, in order: the first one that takes a task run decides its variant. */
   experiments?: SwarmExperiment[];
   scoring?: SwarmScoring;
+  /** Variants by name: a description, or a git ref the variant's definitions come from. */
+  variants?: Record<string, SwarmVariant>;
 }
 
 /** The tokens rubric scorers may spend on a store's work per day when `scoring` sets none. */
@@ -253,8 +265,6 @@ const roleSchema = ref(
     ),
   { nullable: true },
 );
-
-const later = (phase: string): Schema => any({ inactive: phase });
 
 /** An experiment's id: lowercase letters, digits and dashes. */
 export const EXPERIMENT_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -401,7 +411,25 @@ export const SWARM_SCHEMA: Schema = obj(
         doc: 'Merge checks: commands swarmupd runs on approved work before the base moves. They run on a machine only after a person there runs `swarmup defs trust`, and any change to them needs a new trust. A machine that sets `swarmupd.merge.<root>.checks` keeps its own.',
       },
     ),
-    variants: later('variants come in phase 5'),
+    variants: map(
+      obj(
+        {
+          description: str({ doc: 'What the variant tries; `swarmup defs variants` shows it.' }),
+          from_ref: str({
+            pattern: DEFS_REF_RE,
+            hint: 'name a branch, tag or commit, such as main or v1.2',
+            doc: "The variant's definitions are the store's definitions at this git ref, read with `git show` and never checked out. Without it, the variant is the folder `variants/<name>/`.",
+          }),
+        },
+        { doc: 'One variant: what it tries, and the git ref its definitions come from.' },
+      ),
+      {
+        keyPattern: /^[a-z0-9][a-z0-9-]{0,39}$/,
+        keyHint: 'name a variant with lowercase letters, digits and dashes',
+        nullable: true,
+        doc: 'Variants by name. An entry with `from_ref` is a variant of the definitions at a git ref, usable wherever a variant name is (`--variant`, experiments); one without describes the folder `variants/<name>/`. A name is a folder or a `from_ref` variant, not both.',
+      },
+    ),
     experiments: list(
       obj(
         {
@@ -613,6 +641,20 @@ export function swarmDefs(value: unknown): SwarmDefs {
     const runsOn = strings(v.scoring.runs_on);
     if (runsOn && runsOn.length > 0) sc.runs_on = runsOn.map((m) => m.trim());
     out.scoring = sc;
+  }
+  if (isRecord(v.variants)) {
+    const variants: Record<string, SwarmVariant> = {};
+    for (const [name, e] of Object.entries(v.variants)) {
+      if (!isRecord(e)) {
+        if (e === null || e === undefined) variants[name] = {};
+        continue;
+      }
+      variants[name] = {
+        ...(typeof e.description === 'string' ? { description: e.description } : {}),
+        ...(typeof e.from_ref === 'string' ? { from_ref: e.from_ref } : {}),
+      };
+    }
+    if (Object.keys(variants).length > 0) out.variants = variants;
   }
   if (Array.isArray(v.experiments)) {
     out.experiments = v.experiments.filter(isRecord).flatMap((e) => {

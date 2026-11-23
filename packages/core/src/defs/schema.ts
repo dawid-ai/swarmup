@@ -363,28 +363,53 @@ export function checkYaml(schema: Schema, text: string, opts: CheckOptions): Che
       ),
     });
   }
-  // The key of the deepest pair on the path that exists, or the document's start.
-  const at: Locate = (keys) => {
-    for (let n = keys.length; n > 0; n--) {
-      const parent = resolveNode(
-        ctx,
-        n === 1 ? doc.contents : doc.getIn(keys.slice(0, n - 1), true),
-      );
-      if (!isMap(parent)) continue;
-      const pair = parent.items.find((it) => {
-        const k = resolveNode(ctx, it.key);
-        return String(isScalar(k) ? k.value : k) === String(keys[n - 1]);
-      });
-      if (pair) return posOf(ctx, pair.key);
-    }
-    return posOf(ctx, doc.contents);
-  };
+  const at = locator(ctx);
   if (doc.errors.length > 0) return { doc, at, value: undefined, problems: ctx.problems };
   const contents = doc.contents;
   // An empty document is an empty set of fields.
   const root = contents === null ? new YAML.YAMLMap() : contents;
   check(schema, root, '', ctx, root);
   return { doc, at, value: doc.toJS() ?? {}, problems: ctx.problems };
+}
+
+/**
+ * The key of the deepest pair on the path that exists, or the item of a list at a numeric key;
+ * the document's start when none does.
+ */
+function locator(ctx: Ctx): Locate {
+  const doc = ctx.doc;
+  return (keys) => {
+    for (let n = keys.length; n > 0; n--) {
+      const parent = resolveNode(
+        ctx,
+        n === 1 ? doc.contents : doc.getIn(keys.slice(0, n - 1), true),
+      );
+      const key = keys[n - 1];
+      if (isSeq(parent) && /^\d+$/.test(String(key))) {
+        const item = parent.items[Number(key)];
+        if (item !== undefined) return posOf(ctx, item);
+        continue;
+      }
+      if (!isMap(parent)) continue;
+      const pair = parent.items.find((it) => {
+        const k = resolveNode(ctx, it.key);
+        return String(isScalar(k) ? k.value : k) === String(key);
+      });
+      if (pair) return posOf(ctx, pair.key);
+    }
+    return posOf(ctx, doc.contents);
+  };
+}
+
+/**
+ * Where the value at a key path starts in YAML `text`, as {@link Checked.at} finds it, for checks
+ * that run after the file's own (such as checks across files). Line 1, column 1 when the text
+ * does not parse.
+ */
+export function locateYaml(text: string, opts: { lineOffset?: number } = {}): Locate {
+  const lc = new YAML.LineCounter();
+  const doc = YAML.parseDocument(text, { lineCounter: lc, prettyErrors: false });
+  return locator({ file: '', doc, lc, problems: [], ...opts });
 }
 
 /** Checks a plain value, such as parsed JSON; problems carry line 1, column 1. */

@@ -36,6 +36,12 @@ ref), and read the result in the scores. W5 phase 5; see `docs/definitions.md` (
   `RunDefs` gets the snapshot's hash, `ref` and `commit`, `run-start` gets `defs_ref`, and the
   files go in `state.db` `definitions`. `swarmup bench run --defs-ref` puts the role file in the
   prompt and `summary.json` `role` records `ref` and `commit`.
+- A `swarm.yaml` `variants.<name>.from_ref` is a variant of the definitions at that ref: `load.ts`
+  `loadRefVariant` reads it through `defsSnapshotAt` (the snapshot `keepDefsSnapshot` holds, else
+  `readDefsAtRef`), so `--variant`, bench and experiments take it by name. swarmupd's
+  `keepRefVariants` (`defs-state.ts`, each tick and in `launchFresh`) reads the snapshots off the
+  event loop, again only when the ref's commit moves. `validate` (`checkRefs`) refuses a ref git
+  cannot read and a name that is a folder variant too.
 - `rubric-scorers.ts` `runRubricScorers` (supervisor `rubricTick`, once a minute, only with
   `swarmupd.judge.scorers`): for each store's `kind: rubric` scorers, judges closed tasks that
   `applies_to` takes and `sha256("rubric-sample:" + id + ref) < sample` picks, once each (failures again after 6 h), with the diff from the task's

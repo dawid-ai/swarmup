@@ -1,4 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -208,5 +210,39 @@ describe('trigger consent', () => {
     expect(other.err.join('\n')).toContain(
       "schedule 'digest' works on other/AO-12, a task of another store; a trigger of demo cannot",
     );
+  });
+
+  it('has a running swarmupd read the user config again after --remove', async () => {
+    const p = project();
+    writeFileSync(
+      p.config,
+      'me: human:dawid\nswarmupd:\n  schedules:\n    - {name: digest, every: 24h, agent: claude:pm, prompt: Write it.}\n',
+    );
+    // A stand-in swarmupd that records the calls it gets.
+    const seen: string[] = [];
+    const server = createServer((req, res) => {
+      const parts: Buffer[] = [];
+      req.on('data', (c: Buffer) => parts.push(c));
+      req.on('end', () => {
+        seen.push(`${req.method} ${req.url} ${Buffer.concat(parts).toString()}`);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      mkdirSync(p.state, { recursive: true });
+      writeFileSync(
+        join(p.state, 'opsd.json'),
+        JSON.stringify({ pid: process.pid, port, token: 't', started_at: '', version: '' }),
+      );
+      const res = await cli(p, ['defs', 'import-schedules', '--apply', '--remove']);
+      expect(res.code).toBe(0);
+      expect(readFileSync(p.config, 'utf8')).not.toContain('schedules');
+      expect(seen).toEqual(['POST /api/settings {"patch":{}}']);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

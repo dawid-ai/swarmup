@@ -35,6 +35,21 @@ function cli(
   return { code, out, err };
 }
 
+/** {@link cli} for a command that may tell swarmupd to reload, which is asynchronous. */
+async function acli(
+  dir: string,
+  config: string,
+  ...argv: string[]
+): Promise<{ code: number; out: string[]; err: string[] }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const env: NodeJS.ProcessEnv = { ...process.env, SWARMUP_CONFIG: config };
+  delete env.SWARMUP_ROOTS;
+  delete env.SWARMUP_AGENT;
+  const code = await run(argv, { out: (l) => out.push(l), err: (l) => err.push(l), env, cwd: dir });
+  return { code, out, err };
+}
+
 const BAD = [
   'swarmup_defs: 1',
   'runtimes:',
@@ -163,7 +178,7 @@ describe('swarmup defs', () => {
     expect(cli(dir, config, 'defs', 'diff', 'no-such-ref').code).toBe(2);
   });
 
-  it('imports runtime models and roles from the user config, and removes them only with --remove', () => {
+  it('imports runtime models and roles from the user config, and removes them only with --remove', async () => {
     const { dir, store, config } = project();
     writeFileSync(
       config,
@@ -177,7 +192,7 @@ describe('swarmup defs', () => {
       }),
     );
     writeFileSync(join(store, 'swarm.yaml'), '# Team settings\nswarmup_defs: 1\n');
-    const res = cli(dir, config, 'defs', 'import-config');
+    const res = await acli(dir, config, 'defs', 'import-config');
     expect(res.code).toBe(0);
     expect(res.out).toContain('+runtimes:');
     const text = readFileSync(join(store, 'swarm.yaml'), 'utf8');
@@ -189,9 +204,9 @@ describe('swarmup defs', () => {
     });
     // The user config is left as it was.
     expect(YAML.parse(readFileSync(config, 'utf8')).swarmupd.runtimes.claude.model).toBe('opus');
-    expect(cli(dir, config, 'defs', 'import-config').out[0]).toMatch(/already up to date/);
+    expect((await acli(dir, config, 'defs', 'import-config')).out[0]).toMatch(/already up to date/);
 
-    expect(cli(dir, config, 'defs', 'import-config', '--remove').code).toBe(0);
+    expect((await acli(dir, config, 'defs', 'import-config', '--remove')).code).toBe(0);
     const user = YAML.parse(readFileSync(config, 'utf8'));
     expect(user.swarmupd.runtimes.claude).toEqual({ command: 'claude' });
     // A machine-only key stays, and keeps the role.
@@ -199,9 +214,9 @@ describe('swarmup defs', () => {
     expect(cli(dir, config, 'validate').code).toBe(0);
   });
 
-  it('says when there is nothing to import, and writes no file', () => {
+  it('says when there is nothing to import, and writes no file', async () => {
     const { dir, store, config } = project();
-    expect(cli(dir, config, 'defs', 'import-config').out[0]).toMatch(/nothing to import/);
+    expect((await acli(dir, config, 'defs', 'import-config')).out[0]).toMatch(/nothing to import/);
     expect(existsSync(join(store, 'swarm.yaml'))).toBe(false);
   });
 });

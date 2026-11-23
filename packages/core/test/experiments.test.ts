@@ -143,7 +143,7 @@ describe('experiments in swarm.yaml', () => {
       ].join('\n'),
     );
     expect(loadDefinitions(root).problems.map((p) => `${p.path}: ${p.message}`)).toEqual([
-      'experiments.0.variant: no variants/missing/ in this store',
+      'experiments.0.variant: no variants/missing/ in this store and no variants.missing.from_ref',
       'experiments.0.until: 2026-02-31 is no day',
       'experiments.1.id: experiment trial is named twice',
     ]);

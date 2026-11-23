@@ -1,0 +1,1 @@
+- `variants.<name>` in `swarm.yaml` is active: `description` shows in `swarmup defs variants`, and `from_ref` makes a variant of the store's definitions at a git ref, usable with `--variant` in `launch` and `bench run` and in `experiments`. `swarmup validate` checks that the ref resolves.
