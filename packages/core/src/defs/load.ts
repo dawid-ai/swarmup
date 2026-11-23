@@ -20,7 +20,7 @@ import { clearDefsSnapshots, defsSnapshotAt } from './ref.js';
 import { definitionHash, digestFiles, fingerprintOf, listDefFiles, normalText } from './hash.js';
 import type { DefProblem, Locate } from './schema.js';
 
-import { checkYaml } from './schema.js';
+import { checkYaml, locateYaml } from './schema.js';
 import type { SwarmDefs } from './swarm.js';
 import { SWARM_FILE, SWARM_SCHEMA, swarmDefs } from './swarm.js';
 import { secretProblems, validateDefinitions } from './validate.js';
@@ -356,6 +356,9 @@ function checkSet(
     problems.push(...w.problems);
     workflows.push(w);
   }
+  // The texts of trigger and scorer files by file, so checks across files point at the key.
+  const sources = new Map<string, string>();
+  const locateIn = sourceLocator(sources);
   // Triggers (W5 phase 4): each file against its schema; their targets are checked below.
   const triggers: TriggerInfo[] = [];
   for (const [path, text] of texts) {
@@ -371,8 +374,11 @@ function checkSet(
     const t = checkTriggerText(name, text, { file: fileOf(path), strict: opts.strict });
     problems.push(...t.problems);
     triggers.push(t);
+    sources.set(t.file, text);
   }
-  problems.push(...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts));
+  problems.push(
+    ...triggerTargetProblems(rootDir, triggers, workflows, read.agents, opts, locateIn),
+  );
   // Scorers (W5 phase 4): each file against its schema, then their rubrics and overlaps.
   const scorers: ScorerFileInfo[] = [];
   for (const [path, text] of texts) {
@@ -388,8 +394,9 @@ function checkSet(
     const sc = checkScorerText(id, text, { file: fileOf(path), strict: opts.strict });
     problems.push(...sc.problems);
     scorers.push(sc);
+    sources.set(sc.file, text);
   }
-  problems.push(...scorerProblems(texts, scorers, workflows));
+  problems.push(...scorerProblems(texts, scorers, workflows, locateIn));
   // Work types name workflows that exist, and criteria that read.
   if (swarm?.work_types) {
     const swarmFile = fileOf(SWARM_FILE);
@@ -508,6 +515,21 @@ function checkSet(
   };
 }
 
+/** Where a key path starts in one of `sources` (file to text), each file parsed once when asked. */
+type SourceLocate = (file: string, path: string) => { line: number; col: number };
+
+function sourceLocator(sources: ReadonlyMap<string, string>): SourceLocate {
+  const parsed = new Map<string, Locate>();
+  return (file, path) => {
+    let at = parsed.get(file);
+    if (!at) {
+      at = locateYaml(normalText(sources.get(file) ?? ''));
+      parsed.set(file, at);
+    }
+    return at(path.split('.'));
+  };
+}
+
 /**
  * Checks across scorer files: a rubric scorer's rubric exists in the store and reads (errors),
  * one file per built-in scorer (an error on each), and workflows `applies_to` names exist (a
@@ -517,10 +539,16 @@ function scorerProblems(
   texts: ReadonlyMap<string, string>,
   scorers: readonly ScorerFileInfo[],
   workflows: readonly WorkflowInfo[],
+  locateIn: SourceLocate,
 ): DefProblem[] {
   const out: DefProblem[] = [];
-  const add = (sc: ScorerFileInfo, path: string, severity: DefProblem['severity'], m: string) =>
-    out.push({ file: sc.file, path, line: 1, col: 1, severity, message: m });
+  const add = (
+    sc: ScorerFileInfo,
+    path: string,
+    severity: DefProblem['severity'],
+    m: string,
+    where = path,
+  ) => out.push({ file: sc.file, path, ...locateIn(sc.file, where), severity, message: m });
   const byBuiltin = new Map<string, ScorerFileInfo[]>();
   for (const sc of scorers) {
     const d = sc.def;
@@ -551,11 +579,12 @@ function scorerProblems(
         }
       }
     }
-    for (const w of d.applies_to?.workflows ?? []) {
+    (d.applies_to?.workflows ?? []).forEach((w, i) => {
       if (!workflows.some((x) => x.id === w)) {
-        add(sc, 'applies_to.workflows', 'warning', `no workflows/${w}.yaml in this store`);
+        const m = `no workflows/${w}.yaml in this store`;
+        add(sc, 'applies_to.workflows', 'warning', m, `applies_to.workflows.${i}`);
       }
-    }
+    });
   }
   for (const [builtin, files] of byBuiltin) {
     if (files.length < 2) continue;
@@ -582,10 +611,11 @@ function triggerTargetProblems(
   workflows: readonly WorkflowInfo[],
   agents: readonly AgentDef[],
   opts: LoadOptions,
+  locateIn: SourceLocate,
 ): DefProblem[] {
   const out: DefProblem[] = [];
   const add = (t: TriggerInfo, path: string, severity: DefProblem['severity'], message: string) =>
-    out.push({ file: t.file, path, line: 1, col: 1, severity, message });
+    out.push({ file: t.file, path, ...locateIn(t.file, path), severity, message });
   for (const t of triggers) {
     const d = t.def;
     if (!d) continue;

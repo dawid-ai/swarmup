@@ -635,7 +635,8 @@ improvement:
 - `swarmup validate [PATH...] [--root NAME] [--strict] [--json] [--write-schemas]` checks each
   root, or the files and stores named. It prints `file:line:col: severity: path: message` and
   exits 0 when there are only warnings, 1 on errors or, with `--strict`, on warnings, and 2 on bad
-  input. Under `--strict` an unknown key is an error.
+  input. Under `--strict` an unknown key is an error. A problem across files, such as a trigger's
+  workflow or a scorer's rubric that is missing, points at the key that names it.
 - `swarmup defs show` prints each root's hash and what its `swarm.yaml` sets under this machine's
   config, with the machine keys that overrode it.
 - `swarmup defs hash` prints the full hash of each root.

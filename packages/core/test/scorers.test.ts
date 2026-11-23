@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   checkDefinitionText,
@@ -108,11 +108,16 @@ describe('scorers in a store', () => {
       'review-rounds': false,
       rounds: false,
     });
-    expect(set.problems.map((p) => `${p.severity}: ${p.path}: ${p.message}`)).toEqual(
+    // Each problem across files points at the key (or list item) that names the target.
+    expect(
+      set.problems.map(
+        (p) => `${basename(p.file)}:${p.line}:${p.col}: ${p.severity}: ${p.path}: ${p.message}`,
+      ),
+    ).toEqual(
       expect.arrayContaining([
-        'error: rubric: no rubrics/lost.md in this store',
-        'error: scorer: 2 files set the built-in scorer review-rounds (review-rounds, rounds); keep one',
-        'warning: applies_to.workflows: no workflows/nope.yaml in this store',
+        'lost.yaml:2:1: error: rubric: no rubrics/lost.md in this store',
+        'rounds.yaml:2:1: error: scorer: 2 files set the built-in scorer review-rounds (review-rounds, rounds); keep one',
+        'rounds.yaml:3:26: warning: applies_to.workflows: no workflows/nope.yaml in this store',
       ]),
     );
     // A rubric scorer has no tree for the judge to read: repo and files stay empty.

@@ -1,0 +1,1 @@
+- `swarmup validate` points a missing workflow, repeat, agent or rubric named in a trigger or scorer file at the key that names it, instead of line 1, column 1.

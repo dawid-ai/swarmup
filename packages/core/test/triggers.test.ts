@@ -1,5 +1,5 @@
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -299,12 +299,15 @@ describe('triggers in a store', () => {
     expect(set.files.map((f) => f.path)).toContain('triggers/good.yaml');
     const defs = Object.fromEntries(set.triggers.map((t) => [t.name, t.def !== null]));
     expect(defs).toEqual({ gone: false, good: true, lost: false, week: true, who: true });
-    const messages = set.problems.map((p) => `${p.severity}: ${p.path}: ${p.message}`);
+    // Each problem across files points at the key that names the missing target.
+    const messages = set.problems.map(
+      (p) => `${basename(p.file)}:${p.line}:${p.col}: ${p.severity}: ${p.path}: ${p.message}`,
+    );
     expect(messages).toEqual(
       expect.arrayContaining([
-        'error: repeat: no repeats/nope.md in this store',
-        'error: workflow: no workflows/nope.yaml in this store',
-        "warning: agent: claude:ghost has no agent file in this store and is not in this machine's swarmupd.agents",
+        'gone.yaml:3:1: error: repeat: no repeats/nope.md in this store',
+        'lost.yaml:3:1: error: workflow: no workflows/nope.yaml in this store',
+        "who.yaml:3:1: warning: agent: claude:ghost has no agent file in this store and is not in this machine's swarmupd.agents",
       ]),
     );
   });
