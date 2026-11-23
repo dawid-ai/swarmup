@@ -40,6 +40,8 @@ import {
   assertActor,
   loadDefinitions,
   SCRATCH_WRITER_ROLES,
+  TRIGGER_ACTOR,
+  untrustedTriggersText,
   VARIANTS_DIR,
   canClaimType,
   editUserConfig,
@@ -85,6 +87,7 @@ import {
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import type { DefsRoot, DefsView } from './defs-state.js';
+import type { DefsChecks } from './defs-config.js';
 import { DefsState } from './defs-state.js';
 import { StateDb } from './state-db.js';
 import { logOrientation } from './orientation.js';
@@ -95,6 +98,8 @@ import type { ImproveState } from './improve.js';
 import { Improver } from './improve.js';
 import type { ScoreResult } from './scores.js';
 import { scorerSettings } from './scores.js';
+import type { DueTrigger } from './triggers.js';
+import { dueTriggers, TRIGGERS_STATE } from './triggers.js';
 import { Merger } from './merger.js';
 import type { MergeAttempt, MergeCount, RunRow } from './state-db.js';
 import { isMergeConflictBack, resolutionNote } from './merge-conflict.js';
@@ -289,10 +294,17 @@ export function reviewArtifactsOf(ws: Workspace, ref: string): ReviewArtifactsPr
 
 /**
  * The folders of a task store that no run may edit: role files and variants (W6), which change
- * only through `swarmup defs propose`, and rubrics, workflows and triggers (W8), the yardsticks a
- * run is judged by and what starts runs.
+ * only through `swarmup defs propose`, and rubrics, workflows, triggers and scorers (W8, W5), the
+ * yardsticks a run is judged by and what starts runs.
  */
-export const RUN_DENIED_STORE_DIRS = ['agents', VARIANTS_DIR, 'rubrics', 'workflows', 'triggers'];
+export const RUN_DENIED_STORE_DIRS = [
+  'agents',
+  VARIANTS_DIR,
+  'rubrics',
+  'workflows',
+  'triggers',
+  'scorers',
+];
 
 /** The folders under the store `dir` that a run may not edit. */
 export function runDeniedDirs(dir: string): string[] {
@@ -1101,6 +1113,8 @@ export class Supervisor extends EventEmitter {
   private readonly signInRuns = new Set<Promise<SignInAnswer>>();
   /** Providers whose first sign-in check after swarmupd started has not answered yet. */
   private readonly startChecks = new Set<string>();
+  /** Git trigger sets swarmupd warned are not trusted, by root and hash: one warning each. */
+  private readonly triggerWarned = new Set<string>();
   /** Whether live runs keep going after this swarmupd exits; see `RUNS_OUTLIVE_OPSD`. */
   readonly runsOutlive: boolean;
   /** The desktop chat with the orchestrator; each turn is a run under the usual limits. */
@@ -1188,6 +1202,11 @@ export class Supervisor extends EventEmitter {
   /** The roots' definitions, what they set in the config and which machine keys overrode them. */
   defsView(): DefsView {
     return this.defsState.view();
+  }
+
+  /** Where root `root`'s `swarm.yaml` merge checks stand on this machine; undefined for none. */
+  defsChecks(root: string): DefsChecks | undefined {
+    return this.defsState.checks(root);
   }
 
   /** Resolves when the definition commit lookups started so far have ended. */
@@ -6364,6 +6383,7 @@ export class Supervisor extends EventEmitter {
   }
 
   private runSchedules(): void {
+    this.safe(() => this.runTriggers());
     if (this.config.schedules.length === 0) return;
     const last = this.store.readJson<Record<string, number>>('schedules.json', {});
     const now = this.now();
@@ -6386,6 +6406,100 @@ export class Supervisor extends EventEmitter {
       });
     }
     if (changed) this.store.writeJson('schedules.json', last);
+  }
+
+  /**
+   * Fires the git triggers due on this machine (W5 phase 4): those of the roots it turned triggers
+   * on for (`swarmupd.triggers.<root>`) whose `runs_on` names it. Paused swarmupd fires none; on
+   * resume each fires once for the latest time it missed. A `run` trigger is recorded once its run
+   * started, so one that waits for room starts later; a `workflow` or `repeat` trigger is recorded
+   * before it acts, so a failure never repeats it every tick.
+   */
+  private runTriggers(): void {
+    if (this.config.paused || this.stopping) return;
+    if (!Object.values(this.config.triggers).some(Boolean)) return;
+    const state = this.store.readJson<Record<string, number>>(TRIGGERS_STATE, {});
+    const now = this.now();
+    const { due, baselines, active, untrusted } = dueTriggers(
+      this.defsRoots(),
+      this.config,
+      this.user.machine,
+      state,
+      now,
+    );
+    for (const u of untrusted) {
+      const told = `triggers\0${u.root}\0${u.hash}`;
+      if (this.triggerWarned.has(told)) continue;
+      this.triggerWarned.add(told);
+      this.emit('warn', untrustedTriggersText(u.root, u.trust, u.count));
+    }
+    const record = (key: string): void => {
+      state[key] = now;
+      this.store.writeJson(TRIGGERS_STATE, state);
+    };
+    // A trigger that stopped firing here loses its record, so when it fires again it starts
+    // from then: never for a time it missed while off, untrusted or disabled.
+    const live = new Set(active);
+    let changed = false;
+    for (const key of Object.keys(state)) {
+      if (!live.has(key)) {
+        delete state[key];
+        changed = true;
+      }
+    }
+    for (const key of baselines) {
+      state[key] = now;
+      changed = true;
+    }
+    if (changed) this.store.writeJson(TRIGGERS_STATE, state);
+    for (const t of due) {
+      if (this.stopping) return;
+      if (t.def.action === 'run') {
+        this.safe(() => this.fireRunTrigger(t, () => record(t.key)));
+        continue;
+      }
+      record(t.key);
+      this.safe(() => this.fireTrigger(t));
+    }
+  }
+
+  /**
+   * Starts a `run` trigger's run under the usual limits, on a task of the trigger's own store
+   * only. `record` marks the fire just before the launch, so a crash never starts it twice; a
+   * trigger that waits for room is not recorded and starts once there is room.
+   */
+  private fireRunTrigger(t: DueTrigger, record: () => void): void {
+    const agent = t.def.agent!;
+    if (t.def.task?.includes('/')) {
+      throw new OpsError(`trigger ${t.key}: task ${t.def.task} is not a task of ${t.root}`);
+    }
+    const task = t.def.task ? `${t.root}/${t.def.task}` : undefined;
+    const ws = this.ws(agent);
+    if (task && ws.resolve(task).root.name !== t.root) {
+      throw new OpsError(`trigger ${t.key}: task ${t.def.task} is not a task of ${t.root}`);
+    }
+    const s: ScheduleConfig = { name: t.key, agent, ...(task ? { task } : {}) };
+    if (this.scheduleBlocker(ws, s)) return;
+    if (task && this.liveRecords().some((r) => r.task === ws.resolve(task).id)) return;
+    record();
+    this.launch({ agent, task, extra: t.def.prompt || undefined, schedule: `trigger ${t.key}` });
+  }
+
+  /** Starts a `workflow` trigger's workflow, or creates a `repeat` trigger's task. */
+  private fireTrigger(t: DueTrigger): void {
+    const ws = this.ws(TRIGGER_ACTOR);
+    if (t.def.action === 'workflow') {
+      const res = ws.workflowStart(t.def.workflow!, {
+        root: t.root,
+        ...(t.def.params ? { params: t.def.params } : {}),
+        ...(t.def.title ? { title: t.def.title } : {}),
+        message: `Started by trigger \`${t.key}\`.`,
+      });
+      this.emit('trigger', { key: t.key, action: 'workflow', task: res.milestone.id });
+      return;
+    }
+    const meta = ws.runRepeat(`${t.root}/${t.def.repeat!}`, { trigger: t.key });
+    this.emit('trigger', { key: t.key, action: 'repeat', task: meta.id });
   }
 
   /**

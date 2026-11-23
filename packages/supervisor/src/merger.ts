@@ -13,6 +13,7 @@ import {
   Workspace,
   MERGE_ACTOR,
   PUBLISH_TYPE,
+  untrustedChecksText,
 } from '@swarmup/core';
 import { Checkout, leftoverBranch } from './checkout.js';
 import { StoredMap, StoredSet } from './state-db.js';
@@ -428,6 +429,17 @@ export class Merger {
    */
   mergeChanged(): void {
     this.sup.emit('merge-status', this.mergeStatus());
+  }
+
+  /**
+   * A line in opsd.log when the root's `swarm.yaml` names merge checks this merge skips: a person
+   * has not trusted them on this machine, or they changed since (W5 phase 4).
+   */
+  gitChecksLine(ref: string, root: string): void {
+    const c = this.sup.defsChecks(root);
+    if (c?.use === 'skipped' && c.trust !== 'trusted') {
+      this.mergeLine(ref, untrustedChecksText(root, c.trust, c.count));
+    }
   }
 
   /** A line in opsd.log on the merge of `ref` (AO-0161). */
@@ -979,6 +991,7 @@ export class Merger {
         // the time (AO-0385). A machine busy with agents' own test runs is what usually slows them.
         const retry = this.mergeTimedOut.has(ref);
         if (retry) this.mergeQuiet = ref;
+        this.gitChecksLine(ref, job.root);
         // Only the checks whose paths the work changes run, both sides of a rename (AO-0382).
         const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, r.head));
         skipped = picked.skipped;
@@ -1404,6 +1417,7 @@ export class Merger {
           lead,
           `checks the batch of ${items.length} (${named}) once, as ${short(head)}`,
         );
+        this.gitChecksLine(lead, root);
         // Only the checks whose paths a task of the batch changes run, both sides of a rename
         // (AO-0382).
         const picked = checksFor(cfg.checks ?? [], await repo.touchedFiles(onto, head));

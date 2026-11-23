@@ -216,6 +216,8 @@ export function setup(
      * (AO-0154). Without it, the fake runtime has no sign-in check.
      */
     signIn?: string;
+    /** The user config's top-level keys, such as `machine`. */
+    user?: { machine?: string };
   } = {},
 ) {
   const repo = opts.repo ?? temp();
@@ -261,7 +263,7 @@ export function setup(
     const s = new Supervisor({
       env,
       cwd: repo,
-      user: {},
+      user: opts.user ?? {},
       config,
       now: opts.now,
       freeMem: opts.freeMem ?? (() => 64 * 2 ** 30),

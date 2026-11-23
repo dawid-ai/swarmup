@@ -79,13 +79,14 @@ describe('workspace_types', () => {
 });
 
 describe('the run deny list', () => {
-  it("covers the store's rubrics, workflows and triggers next to agents and variants", () => {
+  it("covers the store's rubrics, workflows, triggers and scorers next to agents and variants", () => {
     expect(RUN_DENIED_STORE_DIRS).toEqual([
       'agents',
       'variants',
       'rubrics',
       'workflows',
       'triggers',
+      'scorers',
     ]);
     const store = join(tmpdir(), 'store', '.swarmup');
     const args = invocation(

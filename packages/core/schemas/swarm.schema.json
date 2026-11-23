@@ -186,10 +186,52 @@
       }
     },
     "scoring": {
-      "description": "Accepted but not active yet: scorers in git come in phase 4."
+      "description": "Accepted but not active yet: judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now."
     },
     "checks": {
-      "description": "Accepted but not active yet: checks in git come in phase 4, after `swarmup defs trust`."
+      "description": "Merge checks: commands swarmupd runs on approved work before the base moves. They run on a machine only after a person there runs `swarmup defs trust`, and any change to them needs a new trust. A machine that sets `swarmupd.merge.<root>.checks` keeps its own.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,59}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          {
+            "description": "A check with the paths it checks.",
+            "type": "object",
+            "properties": {
+              "run": {
+                "description": "The command.",
+                "type": "string",
+                "pattern": "\\S"
+              },
+              "paths": {
+                "description": "Run only when the merge changes one of these paths (the `test_changes` pattern syntax; `!` takes paths out).",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?!!?\\s*$)"
+                }
+              },
+              "description": {
+                "description": "What the check is for.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "run"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "variants": {
       "description": "Accepted but not active yet: variants come in phase 5."
@@ -217,7 +259,7 @@
           }
         },
         "frozen": {
-          "description": "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
+          "description": "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**`, `triggers/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
           "type": "array",
           "items": {
             "type": "string"

@@ -3,6 +3,8 @@ import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpConfig, UserConfig } from '@swarmup/core';
 import {
+  CHECKS_HASH_RE,
+  TRIGGERS_HASH_RE,
   checkEffort,
   checkMcpConfig,
   checkModel,
@@ -395,6 +397,17 @@ export interface OpsdConfig {
   agents: Record<string, AgentRunConfig>;
   schedules: ScheduleConfig[];
   /**
+   * Per root name, whether this machine runs the root's git triggers (`triggers/*.yaml`, W5).
+   * Off unless set to true: git never starts runs on a machine without its consent.
+   */
+  triggers: Record<string, boolean>;
+  /**
+   * Per root name, what a person trusted of the root's git definitions on this machine
+   * (`swarmup defs trust`, W5 phase 4): the hash of the `swarm.yaml` merge checks (`checks`) and
+   * of the trigger set (`triggers`). Each runs only while the root's set has the hash kept here.
+   */
+  trusted_defs: Record<string, TrustedDefs>;
+  /**
    * Create tasks from the roots' repeats (`repeats/*.md`) each tick. On by default; set it to
    * false on every PC but one that shares a task store, so two PCs never fire the same slot.
    */
@@ -578,6 +591,8 @@ export function opsdConfig(
     // `claude:qa:` with nothing after it names the agent with no settings of its own.
     agents: Object.fromEntries(Object.entries(raw.agents ?? {}).map(([id, a]) => [id, a ?? {}])),
     schedules: raw.schedules ?? [],
+    triggers: checkRootFlags((raw as { triggers?: unknown }).triggers, 'triggers'),
+    trusted_defs: checkTrustedDefs((raw as { trusted_defs?: unknown }).trusted_defs),
     repeats: raw.repeats ?? true,
     notify: checkNotify((raw as { notify?: unknown }).notify),
     chat: {
@@ -936,13 +951,58 @@ export function checkImprove(raw: unknown): ImproveConfig {
 }
 
 function checkPushBranches(raw: unknown): Record<string, boolean> {
+  return checkRootFlags(raw, 'push_branches');
+}
+
+/** What a person trusted of one root's git definitions (`swarmupd.trusted_defs.<root>`). */
+export interface TrustedDefs {
+  /** `c:` and the SHA-256 of the merge checks. */
+  checks?: string;
+  /** `t:` and the SHA-256 of the triggers. */
+  triggers?: string;
+}
+
+function checkTrustedDefs(raw: unknown): Record<string, TrustedDefs> {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new OpsError('swarmupd.push_branches: use one entry per root name, true or false', 2);
+    throw new OpsError(
+      'swarmupd.trusted_defs: use one entry per root name; swarmup defs trust writes them',
+      2,
+    );
+  }
+  const out: Record<string, TrustedDefs> = {};
+  const usage = (root: string): string =>
+    `swarmupd.trusted_defs.${root}: use what swarmup defs trust writes: checks (c: and 64 hex digits) and triggers (t: and 64 hex digits)`;
+  for (const [root, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new OpsError(usage(root), 2);
+    const { checks, triggers, ...rest } = v as Record<string, unknown>;
+    if (Object.keys(rest).length > 0) throw new OpsError(usage(root), 2);
+    if (checks !== undefined && (typeof checks !== 'string' || !CHECKS_HASH_RE.test(checks))) {
+      throw new OpsError(usage(root), 2);
+    }
+    if (
+      triggers !== undefined &&
+      (typeof triggers !== 'string' || !TRIGGERS_HASH_RE.test(triggers))
+    ) {
+      throw new OpsError(usage(root), 2);
+    }
+    out[root] = {
+      ...(checks !== undefined ? { checks: checks as string } : {}),
+      ...(triggers !== undefined ? { triggers: triggers as string } : {}),
+    };
+  }
+  return out;
+}
+
+/** A map of root names to true or false, such as `swarmupd.triggers`. */
+function checkRootFlags(raw: unknown, key: string): Record<string, boolean> {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError(`swarmupd.${key}: use one entry per root name, true or false`, 2);
   }
   for (const [root, on] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof on !== 'boolean') {
-      throw new OpsError(`swarmupd.push_branches.${root}: use true or false`, 2);
+      throw new OpsError(`swarmupd.${key}.${root}: use true or false`, 2);
     }
   }
   return { ...(raw as Record<string, boolean>) };

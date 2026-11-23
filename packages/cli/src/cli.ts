@@ -97,6 +97,7 @@ import type {
 import {
   buildReport,
   computeScores,
+  gitScorers,
   logOrientation,
   ScoreKeeper,
   scoreTasks,
@@ -141,6 +142,7 @@ import type { ReviewSourceFields } from '@swarmup/core';
 import { installClaudeHooks, mergeClaudeHooks } from './hooks.js';
 import { definitionProblemLines, defsCommand, validateCommand } from './defs-cmd.js';
 import { benchCommand } from './bench-cmd.js';
+import { triggersCommand } from './triggers-cmd.js';
 import { mapCommand } from './map-cmd.js';
 import { mcpCommand } from './mcp-cmd.js';
 import { banner, colorLevel } from './banner.js';
@@ -2923,6 +2925,7 @@ const COMMANDS: Record<string, Command> = {
   validate: validateCommand,
   defs: defsCommand,
   bench: benchCommand,
+  triggers: triggersCommand,
   kb: {
     usage:
       'kb [WORDS...] [--topic T] [--read TOPIC/SLUG] [--usage | --stale | --promote] [--days N] [--shown N] [--reads N] [--agent ID] | kb archive TOPIC/SLUG... (-m WHY | --body-file F)',
@@ -3862,7 +3865,7 @@ const COMMANDS: Record<string, Command> = {
       const tasks = scoreTasks(ws, { root: ws.scope, since: sinceIso });
       const results = computeScores(
         { tasks, runs, orientation: (r) => logOrientation(r.log) },
-        { settings, ...(since !== undefined ? { from: since } : {}) },
+        { settings, stores: gitScorers(ws), ...(since !== undefined ? { from: since } : {}) },
       );
       const task = str(ctx.opts.task);
       if (task) {

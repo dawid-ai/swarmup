@@ -88,6 +88,7 @@ State lives in `~/.swarmup/swarmupd/` (or `SWARMUP_STATE_DIR`) and is never comm
 | `runs/<id>.json`     | one record per run: agent, task, pid, budget, tokens, outcome                                                                                                                                                                                    |
 | `logs/<id>.log`      | the run's output (Claude `stream-json`, Codex `--json`)                                                                                                                                                                                          |
 | `schedules.json`     | when each schedule last ran                                                                                                                                                                                                                      |
+| `triggers.json`      | when each git trigger (`<root>/<name>`) last fired on this machine, or when this machine first saw it                                                                                                                                            |
 | `wake.json`          | which inbox items each waking agent was last started for                                                                                                                                                                                         |
 
 ## State on this PC
@@ -1154,6 +1155,8 @@ swarmupd:
       agent: claude:pm
       prompt: Write the daily digest of open tasks and post it to the swarmup channel.
       paused: false # true keeps it without starting runs
+  triggers: # per root: run the root's git triggers (triggers/*.yaml) on this machine; off by default
+    v2: true
   repeats: true # create the tasks of due repeats; false on every PC but one that shares a store
   test_changes: # per root: the test and check configuration files a review prompt lists changes of
     v2: { tests: ['**/test/**', '*.test.*'], checks: [package.json, 'vitest.config.*'] }
@@ -1180,6 +1183,12 @@ swarmupd:
   reads it, or once a run works on the task it is about.
 - **Schedules** start their agent when due and the limits have room. The desktop **Schedules**
   view and `/api/schedules` add, change, pause, run and delete them in the user config.
+- **Git triggers** (`triggers/<name>.yaml` in a task store, see
+  [Triggers](definitions.md#triggers)) fire in the same step as schedules, on a machine whose
+  `swarmupd.triggers.<root>` is true, that trusts the store's exact trigger set
+  (`swarmupd.trusted_defs.<root>.triggers`, written by `swarmup defs trust`) and that their
+  `runs_on` names; a `run` trigger also needs the agent's `wake: true`. `triggers.json` records when
+  each last fired here, so each fire time starts once, across restarts.
 - **Repeats** (repeating tasks, see [the protocol](protocol.md#repeating-tasks)) create their
   task each tick when a slot is due or a condition holds, before the wake plan, so the new task
   can start in the same tick. A schedule starts an agent run; a repeat creates a task. Paused
@@ -1342,7 +1351,12 @@ swarmup scores --refresh                # compute again and keep them in state.d
     scorers:
       review-rounds: { pass: 2 } # pass with up to 2 rounds
       orientation: { enabled: false }
+      copy-quality: { sample: 0.1 } # a rubric scorer in git: judge at most 10% here
   ```
+
+- A task store can set a scorer's threshold and filters for its own work in
+  `scorers/<id>.yaml` (see [Scorers in git](definitions.md#scorers-in-git)). The user config
+  still wins: its `pass` over the store's, and its `enabled: false` everywhere.
 
 swarmupd computes the scores a minute after it starts and then at most once a minute, only when a
 task or run changed, such as a run end, a verdict or a merge. It reads only the events of tasks
@@ -1469,6 +1483,13 @@ swarmupd:
       batch: 8 # most approved tasks merged together with one run of `checks`; 1 merges each alone
 ```
 
+- **Checks in git.** A store's `swarm.yaml` can keep the merge checks too (`checks.<name>`, see
+  [Merge checks in git](definitions.md#merge-checks-in-git)). They run only on a machine where a
+  person ran `swarmup defs trust`, which keeps the hash of the exact set in
+  `swarmupd.trusted_defs.<root>.checks`; any change to a command or its paths skips them again until a
+  person trusts the new set, and each merge says so in `opsd.log`. A machine that sets
+  `swarmupd.merge.<root>.checks` runs its own list instead. `base`, `checkout`, `build` and
+  `install` stay in the user config.
 - **Rubric criteria.** With `swarmupd.judge.at_merge: true`, after the task's `command` and
   `check` criteria pass, swarmupd judges its `rubric` criteria against the diff of the rebased
   work from the base, with the judge of `swarmupd.judge`. A score below a criterion's `pass` sends

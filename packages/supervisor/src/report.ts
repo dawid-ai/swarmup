@@ -4,6 +4,7 @@ import type { LoopsReport, LoopsTask } from './loops.js';
 import { buildLoops, median } from './loops.js';
 import type { RunRecord } from './runs.js';
 import type { AgentScores, ScoreTask } from './scores.js';
+import { gitScorers } from './git-scorers.js';
 import { computeScores, scorerLineText, scorerSettings, summarizeScores } from './scores.js';
 
 export interface ProjectReport {
@@ -465,7 +466,10 @@ function reportScores(
   } catch {
     // `swarmup scores` reports the setting's error.
   }
-  return summarizeScores(computeScores({ tasks, runs }, { settings, from, to }), { settings });
+  return summarizeScores(
+    computeScores({ tasks, runs }, { settings, from, to, stores: gitScorers(ws) }),
+    { settings },
+  );
 }
 
 /** The loop figures as report lines; a figure with nothing to count has no line. */

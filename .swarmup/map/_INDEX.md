@@ -16,6 +16,7 @@
 - `core/search` — module — Search over tasks, threads, notes, posts and votes; the activity feed and the replay timeline
 - `core/store` — data — Data root layout on disk; config, ids, ULIDs, event model, frontmatter, roles, channels and attachments
 - `core/sync` — flow — swarmup sync: commits, pulls and pushes a data root by policy; git step generators and the Master Repo mirror
+- `core/triggers` — module — Definitions as code, phase 4: git triggers with a cron parser; checks behind trust; scorers
 - `core/workspace` — module — The Workspace facade; every command (new, claim, review, verdict, ask, inbox, next) goes through it
 - `desktop` — area — The Electron app: main process, tray and service control, updates, Add project, installer build
 - `desktop/replay` — component — Replay; animated scenes of a root's timeline, with GIF, MP4 and still exports

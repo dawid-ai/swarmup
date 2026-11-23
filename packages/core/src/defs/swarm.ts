@@ -1,8 +1,9 @@
 /**
  * `swarm.yaml`: the team's settings kept in the task store, in git. swarmupd reads `defaults`,
  * `runtimes.<rt>.{model, effort}`, `roles` and `policy`; `work_types` give new tasks their
- * default criteria and workflow; `improvement` is the W6 policy. The other top-level keys are
- * accepted and warned about until their phase lands.
+ * default criteria and workflow; `improvement` is the W6 policy; `checks` are merge checks that
+ * run only on a machine that trusts them (W5 phase 4). The other top-level keys are accepted and
+ * warned about until their phase lands.
  */
 import YAML from 'yaml';
 import { OpsError } from '../ids.js';
@@ -105,6 +106,17 @@ export interface SwarmWorkType {
   done_when?: unknown[];
 }
 
+/**
+ * A merge check kept in git (W5 phase 4): a command swarmupd runs on approved work before the
+ * base moves, only when the merge changes one of `paths` when they are set. It never runs on a
+ * machine until a person trusts the store's check set there (`swarmup defs trust`).
+ */
+export interface SwarmCheck {
+  run: string;
+  paths?: string[];
+  description?: string;
+}
+
 /** The part of `swarm.yaml` swarmupd applies. */
 export interface SwarmDefs {
   swarmup_defs: number;
@@ -114,6 +126,8 @@ export interface SwarmDefs {
   policy?: SwarmPolicy;
   work_types?: SwarmWorkType[];
   improvement?: SwarmImprovement;
+  /** Merge checks by name; they run only on a machine that trusts this exact set. */
+  checks?: Record<string, SwarmCheck>;
 }
 
 export const modelSchema = (doc?: string): Schema =>
@@ -291,8 +305,30 @@ export const SWARM_SCHEMA: Schema = obj(
       ),
       { nullable: true, doc: 'Kinds of work, with default criteria and workflow.' },
     ),
-    scoring: later('scorers in git come in phase 4'),
-    checks: later('checks in git come in phase 4, after `swarmup defs trust`'),
+    scoring: later(
+      'judge-based scoring comes later; scorers/<id>.yaml sets the built-in scorers now',
+    ),
+    checks: map(
+      oneOf([
+        str({ pattern: /\S/, hint: 'name the command to run' }),
+        obj(
+          {
+            run: str({ pattern: /\S/, hint: 'name the command to run', doc: 'The command.' }),
+            paths: list(str({ pattern: /^(?!!?\s*$)/, hint: 'use a path pattern' }), {
+              doc: 'Run only when the merge changes one of these paths (the `test_changes` pattern syntax; `!` takes paths out).',
+            }),
+            description: str({ doc: 'What the check is for.' }),
+          },
+          { required: ['run'], doc: 'A check with the paths it checks.' },
+        ),
+      ]),
+      {
+        keyPattern: /^[a-z0-9][a-z0-9_-]{0,59}$/,
+        keyHint: 'name a check with lowercase letters, digits, _ and -',
+        nullable: true,
+        doc: 'Merge checks: commands swarmupd runs on approved work before the base moves. They run on a machine only after a person there runs `swarmup defs trust`, and any change to them needs a new trust. A machine that sets `swarmupd.merge.<root>.checks` keeps its own.',
+      },
+    ),
     variants: later('variants come in phase 5'),
     experiments: later('experiments come in phase 5'),
     improvement: obj(
@@ -306,7 +342,7 @@ export const SWARM_SCHEMA: Schema = obj(
           doc: "Globs of the paths a proposal's overlay may change. Default `agents/*.md`, `agents/*/*.md` and `workflows/**`.",
         }),
         frozen: list(str(), {
-          doc: "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
+          doc: "Globs of the paths a proposal never changes; they win over `may_change`. Default `scorers/**`, `benchmarks/**`, `rubrics/**`, `triggers/**` and `swarm.yaml`. An agent's `tools`, `writes`, `can_claim` and `id` are always frozen.",
         }),
         max_open_proposals: int({
           min: 0,
@@ -439,6 +475,21 @@ export function swarmDefs(value: unknown): SwarmDefs {
       imp.requires = req;
     }
     out.improvement = imp;
+  }
+  if (isRecord(v.checks)) {
+    const checks: Record<string, SwarmCheck> = {};
+    for (const [name, c] of Object.entries(v.checks)) {
+      if (typeof c === 'string' && c.trim()) checks[name] = { run: c };
+      else if (isRecord(c) && typeof c.run === 'string' && c.run.trim()) {
+        const paths = strings(c.paths);
+        checks[name] = {
+          run: c.run,
+          ...(paths && paths.length > 0 ? { paths } : {}),
+          ...(typeof c.description === 'string' ? { description: c.description } : {}),
+        };
+      }
+    }
+    if (Object.keys(checks).length > 0) out.checks = checks;
   }
   return out;
 }

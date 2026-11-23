@@ -489,6 +489,9 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   sup.on('worktree', (m: string) => log(`${stamp()} worktree ${m}`));
   sup.on('review-checks', (m: string) => log(`${stamp()} review-checks ${m}`));
   sup.on('repair', (m: string) => log(`${stamp()} repair ${m}`));
+  sup.on('trigger', (t: { key: string; action: string; task: string }) =>
+    log(`${stamp()} trigger ${t.key} ${t.action} ${t.task}`),
+  );
   const syncLog = new SyncLog();
   sup.on('sync', (s: SyncLogEntry) => {
     const line = syncLog.line(s);

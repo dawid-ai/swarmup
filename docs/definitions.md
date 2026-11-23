@@ -17,11 +17,14 @@ nothing new.
   agents/<role>/<runtime>.md  # optional: what one runtime of the role does differently
   agents/<runtime>-<role>.md  # a legacy agent file, still read
   workflows/<id>.yaml         # repeatable milestone plans: see Workflows in the protocol
+  triggers/<name>.yaml        # when swarmupd starts something: see Triggers
+  scorers/<id>.yaml           # a built-in scorer's threshold and filters, or a rubric scorer
   variants/<name>/            # sparse overlays: see Variants
   .schemas/*.schema.json      # optional: `swarmup validate --write-schemas` writes them for editors
 ```
 
-The definition hash covers `swarm.yaml` and every file under `agents/` and `workflows/`. It is `d:` and the SHA-256
+The definition hash covers `swarm.yaml` and every file under `agents/`, `workflows/`,
+`triggers/` and `scorers/`. It is `d:` and the SHA-256
 of a header line plus one line per file, its path and the SHA-256 of its text, sorted by path. The
 text is read with the BOM removed and CRLF turned into LF, so line ends and file order never change
 the hash. `swarmup defs hash` prints it.
@@ -149,6 +152,144 @@ its legacy file, and refuses a legacy file that does not read.
 The template `packages/core/templates/swarm.yaml` is a commented example.
 `swarmup defs import-config` starts a `swarm.yaml` from your user config.
 
+## Triggers
+
+A trigger in `triggers/<name>.yaml` says when swarmupd starts something, and what. It is the git
+form of a machine's `swarmupd.schedules`, with cron times, workflows and repeats besides runs:
+
+```yaml
+# triggers/standup.yaml
+cron: '0 9 * * mon-fri' # or every: 30m, or at: '09:00'
+action: run # run | workflow | repeat
+agent: claude:pm
+prompt: Post the standup in the channel.
+runs_on: [desk] # machine names; unset means every consenting machine (run only)
+enabled: true # optional; false keeps the file and fires nothing
+```
+
+- **When:** exactly one of `every` (a duration such as `30m` or `1d`), `at` (a daily local time
+  such as `09:00`) and `cron`. `cron` takes five fields, minute, hour, day of month, month and
+  day of week, in the local time of the machine that runs it. Each field takes `*`, a value, a
+  range `a-b`, a step `*/s`, `a-b/s` or `a/s`, and lists joined by commas; months take `jan` to
+  `dec` and days of the week `sun` to `sat` (0 or 7 is Sunday). When both day fields are
+  restricted, a day that matches either one fires, as in Vixie cron.
+- **What:** `action: run` starts `agent` with `prompt` (the standard prompt without one) on
+  `task` (an `ID` of this store; a trigger never starts another store's task), under the usual
+  limits, as a schedule does.
+  `action: workflow` starts `workflow` with `params` and an optional milestone `title`, through
+  the same path as `swarmup workflow start`. `action: repeat` creates the task of
+  `repeats/<repeat>.md` now, as `swarmup repeat run` does. swarmupd starts workflows and repeats
+  as `opsd:trigger`, never as a person, so a `starter` workflow still waits for a person's
+  approval.
+- **Consent:** git never starts anything on a machine without its consent. A trigger fires on a
+  machine only when all of these hold:
+  - The machine turned the store's triggers on: `swarmupd.triggers.<root>: true`, which
+    `swarmup triggers on --root NAME` writes.
+  - A person trusted the store's exact trigger set there (Decision 7, as for merge checks):
+    `swarmup defs trust --root NAME`, or `swarmup triggers on --root NAME --trust`, keeps
+    `t:` and a SHA-256 in `swarmupd.trusted_defs.<root>.triggers`. The hash covers every field
+    that changes what fires: name, `every`, `at`, `cron`, `action`, `agent`, `prompt`, `task`,
+    `workflow`, `params`, `title`, `repeat`, `runs_on` and `enabled`, not `description`. Any
+    change stops every trigger of the store until a person trusts the new set, since a run can
+    write `triggers/` with a shell command and store sync commits it. `validate` and `doctor`
+    (on a machine that turned the store's triggers on), `swarmup triggers list` and swarmupd's
+    log say so.
+  - `runs_on` names the machine (`machine` in its user config), or is unset. `action: workflow`
+    and `action: repeat` need `runs_on`, so one fire time starts one workflow or task, not one
+    per consenting machine.
+  - For `action: run`: the agent may be woken on this machine (`swarmupd.agents.<id>.wake:
+true`) and has a role file in the store with `status: active`.
+  - `swarmup triggers on|off`, `defs trust` and `defs import-schedules --apply` refuse an agent
+    and anyone inside a run: only a person decides what git may start.
+- **Once per fire time:** swarmupd records in `triggers.json`, in its state folder, when each
+  trigger last fired on this machine, so a restart never fires one fire time twice. A new
+  `every` trigger fires at once; a new `at` or `cron` trigger fires first at its next time after
+  this machine first sees it. A trigger that stops firing here (turned off, untrusted, disabled,
+  `runs_on` no longer naming the machine) loses its record, so when it fires again it starts
+  from then, never for a time weeks ago. After a pause or a stop of swarmupd, each trigger fires
+  once for the latest time it missed. Each fire is recorded before it acts (for a `run`, once
+  the limits have room, just before the launch), so a crash or a failure never starts it twice.
+  A cron time that a spring-forward change skips fires at the first minute after the gap, as in
+  Vixie cron; a cron that names no date that comes, such as `0 0 30 2 *`, is an error.
+- **webhook:** accepted and listed, with a warning; webhook triggers come in W8 phase 4, and a
+  trigger with only `webhook` never fires.
+
+`swarmup validate` checks each trigger's schema and its targets: the workflow and the repeat must
+exist in the store (errors), and the agent should have an agent file or a machine entry (a
+warning). A trigger with an error never fires. `swarmup triggers list` prints each trigger, what
+it does, and whether and when it fires next on this machine.
+
+`swarmup defs import-schedules [--root NAME]` prints each `swarmupd.schedules` entry as a trigger
+file, with `runs_on` set to this machine when the user config names it. `--apply` writes the
+files, never over a different one, and `--remove` also takes the schedules out of the user config
+and turns on `swarmupd.triggers.<root>`, so nothing fires twice; the new triggers fire once a
+person trusts them. A schedule on a task of another store is refused.
+
+## Merge checks in git
+
+`swarm.yaml` can keep the commands swarmupd runs on approved work before it moves the base, the
+git half of `swarmupd.merge.<root>.checks`:
+
+```yaml
+checks:
+  test: pnpm test # runs on every merge
+  lint:
+    run: pnpm lint
+    paths: ['**/*.ts', '!docs/**'] # runs only when the merge changes one of these
+    description: Lint the code
+```
+
+Git never names a command swarmupd runs without the machine's trust (Decision 7):
+
+- The checks run on a machine only after a person runs `swarmup defs trust [--root NAME]` there,
+  outside any run. It prints the commands and keeps the hash of the exact set, each check's name,
+  command and paths, in the user config as `swarmupd.trusted_defs.<root>.checks`. An agent, or
+  anyone
+  inside a run, cannot trust them.
+- Any change to a command or its paths untrusts the set: merges skip the git checks, and
+  `swarmup validate`, `swarmup doctor`, `swarmup defs show`, swarmupd's log and each merge's line
+  in `opsd.log` say so, until a person trusts the new set. A change to a `description` keeps the
+  trust. `swarmup defs trust --revoke` takes the trust back.
+- The machine still wins: a machine that sets `swarmupd.merge.<root>.checks` runs its own list,
+  and the git list is recorded as overridden. The git checks need a `swarmupd.merge.<root>` entry
+  on the machine, since `base`, `checkout`, `build` and `install` stay machine-only.
+
+## Scorers in git
+
+`scorers/<id>.yaml` keeps a scorer's settings with the store:
+
+```yaml
+# scorers/review-rounds.yaml: the built-in scorer of the same name, for this store's work
+kind: builtin
+pass: 0 # in the scorer's unit and direction; `swarmup scores` lists the defaults
+applies_to: # optional; every list that is set must match
+  types: [bug, feature]
+  labels: [ui] # a task carries one of them
+  roles: [engineer] # the role of the agent whose work it is
+  workflows: [bugfix] # the workflow its milestone started from
+```
+
+- **kind: builtin** sets one of the built-in scorers ([Scores](supervisor.md#scores)): the file
+  id names it, or `scorer:` when the file has another name. swarmupd, `swarmup scores` and
+  `swarmup report` score the store's work with its `pass`, and only the work `applies_to` takes;
+  other stores' work keeps the default. `enabled: false` turns the scorer off for the store's
+  work. One file per built-in scorer and store.
+- **kind: rubric** names a rubric (`rubrics/<id>.md`, which must exist and read), a `judge`
+  (`runtime`, `model`, `effort`; `swarmupd.judge` fills the rest), a `sample` (the share of
+  subjects judged, default 1), `pass` (a share from 0 to 1) and `blind` (default true: the judge
+  does not see which agent did the work). Rubric scorers are checked and listed, but swarmupd's
+  scoring loop does not run judge-based scorers yet: `swarmup defs scorers` shows them as
+  `not run yet`.
+- **The machine wins:** `swarmupd.scorers.<id>.pass` beats the store's `pass`, and
+  `enabled: false` there turns a built-in scorer off for every store. For a rubric scorer a
+  machine may only lower `sample` (`swarmupd.scorers.<id>.sample`); a higher value is ignored.
+- An agent-level scorer (`recommendation-acceptance`, `stuck-runs`) counts an agent across
+  stores: it scores once, over the work every store's `applies_to` takes, with the stores'
+  `pass` when they agree, else the default.
+
+`swarmup defs scorers [--root NAME] [--json]` lists each scorer file with what this machine uses
+of it. Runs may not edit `scorers/`, and a proposal never changes it by default.
+
 ## Precedence
 
 More specific beats less specific, and at equal specificity the machine beats git:
@@ -164,6 +305,8 @@ More specific beats less specific, and at equal specificity the machine beats gi
   `policy.budget_minutes`, then 180.
 - **Policy:** a top-level key the user config sets, then `swarm.yaml` `policy`, then the built-in
   default.
+- **Merge checks:** `swarmupd.merge.<root>.checks` when the user config sets it, then the trusted
+  `swarm.yaml` `checks`, then none.
 
 With several roots, swarmupd merges their `swarm.yaml` files in root order: for a key two roots
 set, the first wins and swarmupd warns once. A root whose `swarm.yaml` has errors keeps its last
@@ -268,7 +411,7 @@ Runs can't edit `agents/` or `variants/`: they change definitions only through `
 improvement:
   agent: claude:improver # who writes proposals
   may_change: ['agents/*.md', 'agents/*/*.md', 'workflows/**'] # the default
-  frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'swarm.yaml'] # the default
+  frozen: ['scorers/**', 'benchmarks/**', 'rubrics/**', 'triggers/**', 'swarm.yaml'] # the default
   max_open_proposals: 2
   requires:
     benchmark: true # a finished benchmark of the variant before promote; default false
@@ -295,10 +438,18 @@ improvement:
 - `swarmup defs show` prints each root's hash and what its `swarm.yaml` sets under this machine's
   config, with the machine keys that overrode it.
 - `swarmup defs hash` prints the full hash of each root.
+- `swarmup defs scorers [--root NAME]` lists the scorers in git; see
+  [Scorers in git](#scorers-in-git).
+- `swarmup defs trust [--root NAME] [--revoke]` trusts the merge checks of each root's
+  `swarm.yaml` on this machine; see [Merge checks in git](#merge-checks-in-git).
 - `swarmup defs diff [REF]` lists the definition files that changed since a git ref, `HEAD` by
   default, with both hashes.
 - `swarmup defs migrate [--apply] [--prune]` moves legacy agent files into agent folders; see
   [Migrate legacy files](#migrate-legacy-files).
+- `swarmup triggers list [--root NAME] [--json]` lists the triggers, with whether and when each
+  fires next on this machine; `swarmup triggers on|off --root NAME [--trust]` turns a root's
+  triggers on or off here, and `on` lists what would fire; `--trust` also trusts that set. `swarmup defs import-schedules [--apply] [--remove]` moves `swarmupd.schedules` into
+  `triggers/`; see [Triggers](#triggers).
 - `swarmup workflow list|show|start` lists, shows and starts the store's workflows; see
   [Workflows](protocol.md#workflows).
 - `swarmup defs import-config` writes the user config's `swarmupd.runtimes.*.{model, effort}` and

@@ -1,10 +1,12 @@
 /**
- * Definitions as code (W5): `swarm.yaml`, the agent files and the workflows in a task store,
+ * Definitions as code (W5): `swarm.yaml`, the agent files, the workflows and the triggers in a task store,
  * checked against schemas, hashed, and merged under the machine's settings by swarmupd.
  */
 import { ADDENDUM_SCHEMA, AGENT_SCHEMA, FOLDER_AGENT_SCHEMA } from './agent.js';
 import { toJsonSchema } from './schema.js';
 import { SWARM_SCHEMA } from './swarm.js';
+import { SCORER_SCHEMA } from './scorer.js';
+import { TRIGGER_SCHEMA } from './trigger.js';
 import { WORKFLOW_SCHEMA } from './workflow.js';
 
 export { ADDENDUM_SCHEMA, AGENT_SCHEMA, agentRuntimeValues, FOLDER_AGENT_SCHEMA } from './agent.js';
@@ -34,7 +36,18 @@ export {
   JSON_SCHEMA_DIALECT,
   toJsonSchema,
 } from './schema.js';
+export type { ChecksTrust, GitMergeCheck } from './checks.js';
+export {
+  CHECKS_HASH_PREFIX,
+  CHECKS_HASH_RE,
+  checksHash,
+  checksTrust,
+  checksTrustProblem,
+  gitMergeChecks,
+  untrustedChecksText,
+} from './checks.js';
 export type {
+  SwarmCheck,
   SwarmDefs,
   SwarmImport,
   SwarmImprovement,
@@ -125,6 +138,41 @@ export {
   workflowParams,
   WORKFLOWS_DIR,
 } from './workflow.js';
+export type { Cron } from './cron.js';
+export { CRON_HINT, cronMatches, nextCron, parseCron } from './cron.js';
+export type { ScorerAppliesTo, ScorerDef, ScorerFileInfo } from './scorer.js';
+export {
+  BUILTIN_SCORER_IDS,
+  checkScorerText,
+  effectiveSample,
+  SCORER_ID_RE,
+  SCORER_SCHEMA,
+  scorerIdOf,
+  SCORERS_DIR,
+} from './scorer.js';
+export type { TriggerAction, TriggerDef, TriggerInfo } from './trigger.js';
+export {
+  checkTriggerText,
+  nextTriggerFire,
+  scheduleTriggerText,
+  TRIGGER_ACTIONS,
+  TRIGGER_ACTOR,
+  TRIGGER_NAME_RE,
+  TRIGGER_SCHEMA,
+  TRIGGERS_HASH_PREFIX,
+  TRIGGERS_HASH_RE,
+  triggersHash,
+  triggersTrust,
+  triggersTrustProblem,
+  untrustedTriggersText,
+  triggerCron,
+  triggerDue,
+  triggerNameOf,
+  triggerRunsOn,
+  TRIGGERS_DIR,
+  triggerTarget,
+  triggerWhen,
+} from './trigger.js';
 export type { ValidateInput } from './validate.js';
 export { secretProblems, validateDefinitions } from './validate.js';
 export {
@@ -170,6 +218,18 @@ export function schemaFiles(): Record<string, string> {
       id: `${SCHEMA_BASE}workflow.schema.json`,
       title: 'Workflow',
       description: 'A SwarmUp workflow (`workflows/<id>.yaml`): a repeatable milestone plan.',
+    }),
+    'scorer.schema.json': toJsonSchema(SCORER_SCHEMA, {
+      id: `${SCHEMA_BASE}scorer.schema.json`,
+      title: 'Scorer',
+      description:
+        'A SwarmUp scorer in git (`scorers/<id>.yaml`): settings of a built-in scorer, or a rubric scorer.',
+    }),
+    'trigger.schema.json': toJsonSchema(TRIGGER_SCHEMA, {
+      id: `${SCHEMA_BASE}trigger.schema.json`,
+      title: 'Trigger',
+      description:
+        'A SwarmUp git trigger (`triggers/<name>.yaml`): when swarmupd starts something.',
     }),
   };
   return Object.fromEntries(

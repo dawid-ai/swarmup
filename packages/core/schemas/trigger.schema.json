@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swarmup.tech/schemas/trigger.schema.json",
+  "title": "Trigger",
+  "description": "A git trigger: when swarmupd starts something. A machine runs it only after `swarmupd.triggers.<root>: true`.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "description": "What the trigger is for.",
+      "type": "string"
+    },
+    "every": {
+      "description": "Fire at this interval, such as `30m` or `24h`. A new trigger fires at once.",
+      "type": "string",
+      "pattern": "^(\\d+|(\\d+(\\.\\d+)?d)?(\\d+(\\.\\d+)?h)?(\\d+(\\.\\d+)?m)?)$"
+    },
+    "at": {
+      "description": "Fire once a day at this local time, such as `09:00`.",
+      "type": "string",
+      "pattern": "^([01]?\\d|2[0-3]):[0-5]\\d$"
+    },
+    "cron": {
+      "description": "Fire on a five-field cron expression in local time, such as `0 9 * * mon-fri`.",
+      "type": "string"
+    },
+    "webhook": {
+      "description": "Accepted but not active yet: webhook triggers come in W8 phase 4."
+    },
+    "action": {
+      "description": "run: start an agent. workflow: start a store workflow. repeat: create the task of a repeat.",
+      "enum": [
+        "run",
+        "workflow",
+        "repeat"
+      ]
+    },
+    "agent": {
+      "description": "run: the agent to start.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$"
+    },
+    "prompt": {
+      "description": "run: instructions for the run; the standard prompt without them.",
+      "type": "string"
+    },
+    "task": {
+      "description": "run: the task of this store the run works on.",
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9]*-\\d+$"
+    },
+    "workflow": {
+      "description": "workflow: the workflow (`workflows/<id>.yaml`) to start.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "params": {
+      "description": "workflow: parameter values.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      }
+    },
+    "title": {
+      "description": "workflow: the milestone title instead of the workflow's.",
+      "type": "string"
+    },
+    "repeat": {
+      "description": "repeat: the repeat (`repeats/<name>.md`) whose task to create now.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,59}$"
+    },
+    "runs_on": {
+      "description": "Machines (`machine` in each user config) that run the trigger; unset: every machine that turned triggers on for this store. Required for action workflow and repeat, so one fire time starts once.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "enabled": {
+      "description": "Default true; false keeps the file and fires nothing.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "additionalProperties": false
+}
