@@ -155,21 +155,44 @@ describe('Mark published', () => {
 });
 
 describe('Publish with an adapter', () => {
-  it('runs the adapter the publish:<name> label names, once more only with Again', async () => {
+  it('publishes what the preview read with the publish:<name> adapter, once more only with Again', async () => {
+    const call = window.swarmup!.call;
+    window.swarmup!.call = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+      path === `${TASK_PATH}/preview`
+        ? Promise.resolve({
+            ok: true,
+            data: {
+              commit: 'abcdef1234567890',
+              files: [{ path: 'posts/x.md', kind: 'markdown', text: '# Launch' }],
+            },
+          })
+        : call(method, path, body);
     detail = { ...detail, task: task({ labels: ['publish:blog'] }) };
     await mount();
     expect(button('Mark published')).toBeDefined();
     await click(button('Publish')!);
+    await settle();
     const form = box.querySelector('[data-publish-adapter]')!;
     expect(form.textContent).toContain('blog');
+    // The files and commit it will send, from the preview.
+    expect(form.querySelector('[data-publish-files]')?.textContent).toBe(
+      'At abcdef1234: posts/x.md',
+    );
     await click(button('Publish now')!);
-    expect(posts).toEqual([{ path: `${TASK_PATH}/publish`, body: { as: 'human:dawid' } }]);
+    const pinned = {
+      as: 'human:dawid',
+      adapter: 'blog',
+      commit: 'abcdef1234567890',
+      artifacts: ['posts/x.md'],
+    };
+    expect(posts).toEqual([{ path: `${TASK_PATH}/publish`, body: pinned }]);
     expect(box.querySelector('[data-publish-adapter]')).toBeNull();
     await click(button('Publish')!);
+    await settle();
     const again = box.querySelector<HTMLInputElement>('[data-publish-adapter] input')!;
     await click(again);
     await click(button('Publish now')!);
-    expect(posts[1]!.body).toEqual({ as: 'human:dawid', again: true });
+    expect(posts[1]!.body).toEqual({ ...pinned, again: true });
   });
 
   it('is not offered without the label', async () => {
