@@ -127,6 +127,7 @@ describe('add project handlers', () => {
     expect(p.plan.tasks.map((t) => t.title)).toEqual([
       'Record the baseline: build and test shop',
       'Write AGENTS.md for shop',
+      'Build the project map of shop',
       'Run the build and tests in CI',
       'Add a linter and a formatter',
     ]);
@@ -140,7 +141,7 @@ describe('add project handlers', () => {
   it('create the store in the repo, with the edited name, prefix and ticked tasks', async () => {
     const repo = fixtureRepo();
     await proposal(repo);
-    const res = await h.create(PAGE, { name: 'store', prefix: 'st', tasks: [0, 2], where: 'repo' });
+    const res = await h.create(PAGE, { name: 'store', prefix: 'st', tasks: [0, 3], where: 'repo' });
     expect(res).toMatchObject({
       ok: true,
       data: { name: 'store', dir: join(repo, '.swarmup'), store: null, reloaded: true },

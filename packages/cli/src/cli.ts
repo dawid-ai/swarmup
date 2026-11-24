@@ -2021,11 +2021,12 @@ const COMMANDS: Record<string, Command> = {
   },
   adopt: {
     usage:
-      'adopt [DIR] [--apply] [--store DIR] [--name NAME] [--prefix P] [--human human:NAME] [--agents ID,...]',
+      'adopt [DIR] [--apply] [--store DIR] [--name NAME] [--prefix P] [--human human:NAME] [--agents ID,...] [--no-map]',
     summary:
-      'survey an existing repo and propose a project root with roles and first tasks; --apply creates it, --store in a folder apart from the repo',
+      'survey an existing repo and propose a project root with roles and first tasks (including building the project map; --no-map skips it); --apply creates it, --store in a folder apart from the repo',
     options: {
       apply: { type: 'boolean' },
+      'no-map': { type: 'boolean' },
       store: { type: 'string' },
       name: { type: 'string' },
       prefix: { type: 'string' },
@@ -2040,6 +2041,7 @@ const COMMANDS: Record<string, Command> = {
         prefix: str(ctx.opts.prefix),
         agents: list(ctx.opts.agents),
         store: store ? resolve(ctx.io.cwd, store) : undefined,
+        ...(ctx.opts['no-map'] ? { map: false } : {}),
       };
       if (!ctx.opts.apply) {
         const survey = surveyRepo(dir);
@@ -2074,11 +2076,12 @@ const COMMANDS: Record<string, Command> = {
   },
   'new-project': {
     usage:
-      'new-project DIR --template T [--store DIR] [--no-tasks] [--name NAME] [--prefix P] [--human human:NAME] | new-project --list',
+      'new-project DIR --template T [--store DIR] [--no-tasks] [--no-map] [--name NAME] [--prefix P] [--human human:NAME] | new-project --list',
     summary:
-      'start a project in an empty folder from a template (web-app, library, docs-site, campaign, content): files, roles and first tasks; --store puts the tasks in a folder apart and adds the root to the user config',
+      'start a project in an empty folder from a template (web-app, library, docs-site, campaign, content): files, a starter project map (--no-map skips it), roles and first tasks; --store puts the tasks in a folder apart and adds the root to the user config',
     options: {
       template: { type: 'string', short: 't' },
+      'no-map': { type: 'boolean' },
       store: { type: 'string' },
       'no-tasks': { type: 'boolean' },
       list: { type: 'boolean' },
@@ -2101,6 +2104,7 @@ const COMMANDS: Record<string, Command> = {
         prefix: str(ctx.opts.prefix),
         ...(store ? { store: resolve(ctx.io.cwd, store) } : {}),
         ...(ctx.opts['no-tasks'] ? { tasks: [] } : {}),
+        ...(ctx.opts['no-map'] ? { map: false } : {}),
       });
       if (ctx.opts.json) return void ctx.io.out(JSON.stringify(res, null, 2));
       if (res.gitInit) ctx.io.out(`git init ${res.project}`);

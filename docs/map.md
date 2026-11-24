@@ -6,8 +6,11 @@ its campaigns, audiences and channels for marketing work. A run reads the one or
 needs instead of reading the whole project, and agents keep the nodes true as part of each
 change. `swarmup map check` finds what a change left out, with no model.
 
-The map is opt-in per project: a folder without `.swarmup/map/` gets no checks and no prompt
-block. This repo has one; `swarmup map` in a checkout lists its nodes.
+Every project gets one by default: `swarmup new-project` writes a starter map (the root node,
+which agents fill in as the work takes shape), and `swarmup adopt` and the app's **Add project**
+file a first task, "Build the project map", whose check is the map check. Pass `--no-map` to
+either to skip it. A folder without `.swarmup/map/` gets no checks and no prompt block. This
+repo has one; `swarmup map` in a checkout lists its nodes.
 
 ## Where it lives
 
