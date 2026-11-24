@@ -52,7 +52,7 @@ describe('keepTasks', () => {
   it('keeps the chosen tasks and renumbers what they wait for', () => {
     const base = tmp();
     const plan = adoptPlan(surveyRepo(goRepo(base)));
-    const kept = keepTasks(plan, [3, 0, 3, 99]);
+    const kept = keepTasks(plan, [4, 0, 4, 99]);
     expect(kept.tasks.map((t) => t.title)).toEqual([
       'Record the baseline: build and test billing',
       'Write a README for billing',

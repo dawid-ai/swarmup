@@ -129,8 +129,14 @@ describe('adoptPlan', () => {
     expect(plan.tasks.map((t) => t.title)).toEqual([
       'Record the baseline: build and test shop-front',
       'Write AGENTS.md for shop-front',
+      'Build the project map of shop-front',
     ]);
     expect(plan.tasks[0]!.body).toContain('`npm test`');
+    // The map task's check is the map check; --no-map leaves it out.
+    expect(plan.tasks[2]!.done_when?.[0]).toEqual({ id: 'map', kind: 'map' });
+    expect(
+      adoptPlan(surveyRepo(webRepo()), { map: false }).tasks.map((t) => t.title),
+    ).not.toContain('Build the project map of shop-front');
   });
 
   it('proposes tests, a README, CI and a linter for a bare repo', () => {
@@ -142,6 +148,7 @@ describe('adoptPlan', () => {
     expect(plan.tasks.map((t) => t.title)).toEqual([
       'Record the baseline: build and test billing',
       'Write AGENTS.md for billing',
+      'Build the project map of billing',
       'Write the first tests with go test',
       'Write a README for billing',
       'Run the build and tests in CI',
@@ -183,7 +190,7 @@ describe('applyPlan', () => {
       'codex-backend.md',
       'cursor-frontend.md',
     ]);
-    expect(res.tasks.map((t) => t.id)).toEqual(['SF-0001', 'SF-0002']);
+    expect(res.tasks.map((t) => t.id)).toEqual(['SF-0001', 'SF-0002', 'SF-0003']);
     const ws = new Workspace({ cwd: d, env: env(d), actor: 'human:dawid' });
     const second = ws.view('SF-0002');
     expect(second.meta.blocked_by).toEqual(['SF-0001']);
@@ -212,7 +219,24 @@ describe('newProject', () => {
     expect(res.gitInit).toBe(true);
     expect(existsSync(join(target, '.git'))).toBe(true);
     expect(readFileSync(join(target, 'README.md'), 'utf8')).toMatch(/^# tiny-lib/);
-    expect(res.files).toEqual(['README.md', 'AGENTS.md', '.gitignore']);
+    expect(res.files).toEqual([
+      'README.md',
+      'AGENTS.md',
+      '.gitignore',
+      '.swarmup/map/index.md',
+      '.swarmup/map/ignore',
+      '.swarmup/map/README.md',
+      '.swarmup/map/_INDEX.md',
+    ]);
+    expect(readFileSync(join(target, '.swarmup', 'map', 'index.md'), 'utf8')).toContain(
+      '# tiny-lib',
+    );
+    const bare = newProject(join(parent, 'no-map-lib'), 'library', {
+      actor: 'human:dawid',
+      env: env(parent),
+      map: false,
+    });
+    expect(bare.files).toEqual(['README.md', 'AGENTS.md', '.gitignore']);
     expect(res.agents).toContain('claude:release');
     expect(res.tasks.map((t) => t.id)).toEqual(['TL-0001', 'TL-0002', 'TL-0003', 'TL-0004']);
     expect(res.tasks[0]!.title).toBe('Pick the language and scaffold tiny-lib');

@@ -20,7 +20,7 @@ import type { DoneWhenEntry } from './criteria.js';
 import { deleteEnvVars, envVar } from './env.js';
 import { assertActor, OpsError } from './ids.js';
 import { initRoot, templateAgentIds } from './init.js';
-import { initMap, readMap, writeMapIndex } from './map.js';
+import { detectMapType, initMap, mapDirOf, readMap, writeMapIndex } from './map.js';
 import type { Priority } from './model.js';
 import { Workspace } from './workspace.js';
 
@@ -43,6 +43,8 @@ export interface RepoSurvey {
   agentDocs: string[];
   /** True when the repo has a data root (`.swarmup/` or the old `.agent-ops/`) already. */
   hasRoot: boolean;
+  /** True when the repo has a project map (`.swarmup/map/`) already. */
+  hasMap?: boolean;
 }
 
 export interface PlannedTask {
@@ -363,6 +365,7 @@ export function surveyRepo(target: string): RepoSurvey {
     ci,
     agentDocs: ['AGENTS.md', 'CLAUDE.md'].filter(has),
     hasRoot: has(join(ROOT_DIR_NAME, 'config.yml')) || has(join(OLD_ROOT_DIR_NAME, 'config.yml')),
+    hasMap: mapDirOf(dir) !== null,
   };
 }
 
@@ -404,7 +407,7 @@ export function stackLine(s: RepoSurvey): string {
 /** Proposes a project root for a surveyed repo: roles that fit its stack and first tasks. */
 export function adoptPlan(
   s: RepoSurvey,
-  opts: { name?: string; prefix?: string } = {},
+  opts: { name?: string; prefix?: string; map?: boolean } = {},
 ): ProjectPlan {
   const name = opts.name ?? s.name;
   const fw = new Set(s.frameworks);
@@ -463,6 +466,27 @@ export function adoptPlan(
         '- Code conventions, branch and commit rules, and what never to touch.',
         '- Keep it under a page; link to existing docs instead of copying them.',
       ].join('\n'),
+    });
+  }
+  // Every project gets a map (W2), so a run starts oriented instead of reading the repo again.
+  if (!s.hasMap && opts.map !== false) {
+    tasks.push({
+      title: `Build the project map of ${name}`,
+      priority: 'p2',
+      after: [0],
+      body: [
+        'A run reads the map instead of the whole repo, so it starts oriented. Build the first one.',
+        '',
+        '- Run `swarmup map init` at the top of the repo, then write the root summary in',
+        '  `.swarmup/map/index.md`.',
+        '- Add one node per main area (module, flow, page or content source): what it is for, how it',
+        '  works, the files it `covers`, and its `links`. Keep each node short.',
+        '- Run `swarmup map index` and `swarmup map check`, and commit the map.',
+      ].join('\n'),
+      done_when: [
+        { id: 'map', kind: 'map' },
+        'Every top-level source folder is covered by a node or listed in `.swarmup/map/ignore`.',
+      ],
     });
   }
   if (!s.tests.files) {
@@ -955,6 +979,8 @@ export interface AdoptOptions extends ApplyOptions {
   agents?: string[];
   /** Indexes of the proposed tasks to create; default all of them. */
   tasks?: number[];
+  /** False: no "Build the project map" task for a repo without a map (`--no-map`). */
+  map?: boolean;
   /**
    * Add the new root to `roots` in the user config. Always on with `store`, whose code checkout
    * the user config has to name.
@@ -982,7 +1008,7 @@ export interface AdoptedProject extends AppliedPlan {
 
 /** The plan `adoptRepo` applies for a survey: the proposal, with the options' changes. */
 export function adoptProposal(s: RepoSurvey, opts: AdoptOptions = {}): ProjectPlan {
-  const plan = adoptPlan(s, { name: opts.name, prefix: opts.prefix });
+  const plan = adoptPlan(s, { name: opts.name, prefix: opts.prefix, map: opts.map });
   if (opts.agents?.length) {
     plan.agents = opts.agents.map((id) => ({ id, why: 'chosen with --agents' }));
   }
@@ -1072,6 +1098,8 @@ export interface NewProjectOptions extends ApplyOptions {
   checkConfig?: (next: UserConfig) => void;
   /** Indexes of the template's tasks to file; default all, `[]` none. */
   tasks?: number[];
+  /** False: no starter project map (`--no-map`). Content templates always bring theirs. */
+  map?: boolean;
 }
 
 export interface NewProject extends AppliedPlan {
@@ -1164,6 +1192,12 @@ export function newProject(
     }
     writeMapIndex(readMap(project)!);
     for (const f of ['.swarmup/map/ignore', '.swarmup/map/README.md', '.swarmup/map/_INDEX.md']) {
+      if (!files.includes(f)) files.push(f);
+    }
+  } else if (opts.map !== false) {
+    // Every project starts with a map (W2): a root node agents fill in as the code takes shape.
+    const made = initMap(project, { type: detectMapType(project), name });
+    for (const f of made.files.map((x) => `.swarmup/map/${x}`)) {
       if (!files.includes(f)) files.push(f);
     }
   }
