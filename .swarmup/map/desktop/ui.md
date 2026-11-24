@@ -39,7 +39,8 @@ What the person sees: one React app with a view per area.
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel,
   and `ui/score-breakdown.tsx` opens a score's breakdown and "How scores work" from each of them;
-  `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`); `ui/gate.tsx` is
+  `ui/proposals.tsx` is the Agents view's **Proposals** list with the improver's state and
+  **Propose a change** (see `/improve`); `ui/gate.tsx` is
   a gate's **Approve** and **Reject** (Inbox **Gates**, the task panel), `ui/workflow.tsx` the
   **Start a workflow** dialog that **New task** and `views/Workflows.tsx` open (the Workflows
   view's editor writes the YAML through `lib/workflow-yaml.ts`, which keeps comments), and `ui/roles.tsx` edits a folder agent's

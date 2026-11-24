@@ -301,6 +301,19 @@ export function applySettings(sup: Supervisor, patch: SettingsPatch): void {
           // On is the default, so turning it on removes the key: a `false` someone wrote by
           // hand goes too, and the file keeps only what differs from the default.
           setOrDelete(doc, [daemonKeyIn(doc), k], v === true ? null : v);
+        } else if (k === 'improve') {
+          // The app's switches for the improvement loop (W6): only on or off. The rest of
+          // `swarmupd.improve`, such as the benchmark gate that spends tokens, stays in the file.
+          for (const [ik, iv] of Object.entries(obj(v, 'swarmupd.improve'))) {
+            if (ik !== 'enabled' && ik !== 'notes') {
+              throw new OpsError(`swarmupd.improve.${ik} is not editable here`, 2);
+            }
+            if (typeof iv !== 'boolean') {
+              throw new OpsError(`swarmupd.improve.${ik}: use true or false`, 2);
+            }
+            // Off is the default, so turning it off removes the key.
+            setOrDelete(doc, [daemonKeyIn(doc), 'improve', ik], iv ? true : null);
+          }
         } else if (k === 'paused') {
           // Resuming removes the key, so the file keeps only what differs from the default.
           setOrDelete(doc, [daemonKeyIn(doc), 'paused'], v === false ? null : v);

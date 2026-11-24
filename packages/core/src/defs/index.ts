@@ -136,6 +136,7 @@ export {
   mergeValues,
   mergeYamlText,
   overlayAgents,
+  overlayFromFiles,
   overlayTargets,
   PROPOSAL_FILE,
   readOverlay,

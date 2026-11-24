@@ -436,9 +436,23 @@ The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
   that waits for you: the variant and its hash, the agents and scorers it addresses, who proposed
   it and why, a link to its task, the diff of each file against the base, and its benchmark
   (**better**, **worse** or **same**, with the change in pass rate, hidden pass rate and cost, or
-  that it runs or failed). **Promote** writes it onto the definition files; **Reject** asks for a
-  note for the improver. Both are yours alone: a run can't call them. The list shows only while a
-  variant waits.
+  that it runs or failed), and what the store's `improvement.requires` still needs before a
+  promote, or that it is met. **Promote** writes it onto the definition files; **Reject** asks
+  for a note for the improver. Both are yours alone: a run can't call them. The list always
+  shows: with nothing waiting, it says what a proposal is and how one appears.
+  - The improver's state heads the list: **Files tasks from failing scores** and **Folds learn
+    notes into roles** turn `swarmupd.improve.enabled` and `swarmupd.improve.notes` on or off in
+    your user config (`POST /api/improve/settings`); the benchmark gate, set as
+    `swarmupd.improve.benchmark` in the user config, or that it is off; and per store, whether a
+    promote needs a benchmark and how many proposals are open of `max_open_proposals`, with a link
+    to **Settings > Definitions**, where `swarm.yaml`'s `improvement` section sets them. The page
+    reads `GET /api/improve`.
+  - **Propose a change** lets you write a proposal yourself: pick an agent with a role file, edit
+    the file's text (it opens with the file as it is), say why, and optionally name a task to link
+    it to. Without a task, it files an improvement task for you, labeled `improve`. The change is
+    recorded as variant `<role>-by-hand` (numbered when taken) with `POST /api/defs/propose`; the
+    role file stays as it is until you promote it. A run's token, or an `as` that is not a person,
+    gets 403.
 - **Reports.** The **Scores** table adds a trend under each value, over the report's own window:
   one point per hour for **Day**, else per day. Hover a column header for what the scorer
   measures, its threshold and what to change. **Worst tasks** lists the five worst tasks or runs

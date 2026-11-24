@@ -2,8 +2,29 @@
 // tasks for the improver, whose proposals (variant overlays recorded with `swarmup defs propose`)
 // swarmupd benchmarks, base against variant, before a person promotes or rejects them. Nothing
 // here changes a definition file: only a person's `swarmup defs promote` does.
-import type { PromoteCandidate, TaskMeta, VariantInfo, Workspace } from '@swarmup/core';
-import { IMPROVE_BENCH_ACTOR, isHuman, OPEN_STATUSES, shortHash } from '@swarmup/core';
+import { readFileSync } from 'node:fs';
+import { relative, sep } from 'node:path';
+import type {
+  DefsProposeResult,
+  ImprovementPolicy,
+  PromoteCandidate,
+  TaskMeta,
+  VariantInfo,
+  Workspace,
+} from '@swarmup/core';
+import {
+  IMPROVE_BENCH_ACTOR,
+  improvementPolicy,
+  isHuman,
+  listVariantNames,
+  loadDefinitions,
+  normalText,
+  OPEN_STATUSES,
+  OpsError,
+  requiresProblems,
+  shortHash,
+  VARIANT_NAME_RE,
+} from '@swarmup/core';
 import type { BenchRunRequest, BenchRunView } from './bench-runs.js';
 import type { Comparison, SummaryOverall } from './bench.js';
 import { compareMarkdown } from './bench.js';
@@ -228,6 +249,40 @@ export interface ProposalView extends VariantInfo {
   /** Per changed file, the `+` and `-` lines against the base. */
   diffs: Array<{ path: string; kind: string; lines: string[] }>;
   benchmark?: GateState;
+  /**
+   * The store's `improvement.requires` and why it refuses a promote now (empty when it would
+   * pass). Absent for a variant from a git ref, which is never promoted.
+   */
+  requires?: ImprovementPolicy['requires'] & { problems: string[] };
+}
+
+/** The improver as the app shows it: this machine's loop and each store's policy. */
+export interface ImproveStatus {
+  /** `swarmupd.improve.enabled`: files improvement tasks from failing scores on its own. */
+  enabled: boolean;
+  /** `swarmupd.improve.notes`: files one for learn notes that keep mattering. */
+  notes: boolean;
+  agent: string;
+  threshold: number;
+  max_age_days: number;
+  check_hours: number;
+  /** `swarmupd.improve.benchmark`: the set each proposal is replayed on; null when off. */
+  benchmark: { set: string; repo: string; repeat: number; entries?: string[] } | null;
+  /** Per store, `improvement` in `swarm.yaml` with defaults, and the proposals that wait. */
+  roots: Array<{ root: string; policy: ImprovementPolicy; open: number }>;
+}
+
+/** What a person sends to propose a change to an agent's role file by hand. */
+export interface HandProposal {
+  agent: string;
+  /** The role file's new text, whole. */
+  text: string;
+  /** Why: the proposal's message. */
+  message: string;
+  /** The linked task; without one, an improvement task is filed for the person. */
+  task?: string;
+  /** The variant name; by default `<role>-by-hand`, numbered when taken. */
+  name?: string;
 }
 
 export class Improver {
@@ -460,6 +515,101 @@ export class Improver {
     return this.fileNotes(ws, agent, res.candidates, res.days);
   }
 
+  /** This machine's improvement loop and each own store's policy and open proposals. */
+  status(): ImproveStatus {
+    const cfg = this.host.config();
+    const ws = this.host.ws();
+    const roots = ws.roots
+      .filter((r) => !r.isMirror)
+      .map((r) => {
+        let policy: ImprovementPolicy;
+        try {
+          policy = improvementPolicy(loadDefinitions(r.dir).swarm);
+        } catch {
+          policy = improvementPolicy(null);
+        }
+        return { root: r.name, policy, open: listVariantNames(r.dir).length };
+      });
+    const b = cfg.benchmark;
+    return {
+      enabled: cfg.enabled,
+      notes: cfg.notes,
+      agent: cfg.agent,
+      threshold: cfg.threshold,
+      max_age_days: cfg.max_age_days,
+      check_hours: cfg.check_hours,
+      benchmark: b
+        ? {
+            set: b.set,
+            repo: b.repo,
+            repeat: b.repeat,
+            ...(b.entries ? { entries: b.entries } : {}),
+          }
+        : null,
+      roots,
+    };
+  }
+
+  /**
+   * A person's own proposal (W6): the new text of an agent's role file as a variant of the store
+   * that holds it, linked to `task` or to an improvement task filed for the person, then
+   * benchmarked and promoted or rejected like the improver's. `actor` must be a person.
+   */
+  proposeByHand(actor: string, input: HandProposal): DefsProposeResult {
+    if (!isHuman(actor)) throw new OpsError(`only a person proposes from the app; ${actor} cannot`);
+    const ws = this.host.ws(actor);
+    const def = ws.agent(input.agent);
+    if (!def) throw new OpsError(`no role file for ${input.agent}`, 2);
+    const root = ws.roots.find((r) => def.file.startsWith(r.dir + sep));
+    if (!root || root.isMirror) {
+      throw new OpsError(
+        `${input.agent}'s role file is in no own store; propose in its project`,
+        2,
+      );
+    }
+    const path = relative(root.dir, def.file).split(sep).join('/');
+    const before = normalText(readFileSync(def.file));
+    if (normalText(input.text) === before) {
+      throw new OpsError(`the text is ${path} as it is; change it first`, 2);
+    }
+    const message = input.message.trim();
+    if (!message) throw new OpsError('say why you propose the change', 2);
+    const taken = new Set(listVariantNames(root.dir));
+    let name = input.name?.trim() || `${input.agent.slice(input.agent.indexOf(':') + 1)}-by-hand`;
+    if (!input.name?.trim()) {
+      const base = name.slice(0, 32);
+      name = base;
+      for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+    }
+    if (!VARIANT_NAME_RE.test(name)) {
+      throw new OpsError(
+        `bad variant name '${name}': use lowercase letters, digits and dashes, such as engineer-tests-first`,
+        2,
+      );
+    }
+    const task =
+      input.task?.trim() ||
+      (() => {
+        const t = ws.newTask(
+          {
+            title: `Improve ${input.agent}: a change proposed by ${actor}`,
+            type: 'task',
+            owner: actor,
+            labels: [IMPROVE_LABEL],
+            body: `${message}\n\nAgent: ${input.agent}`,
+          },
+          root,
+        );
+        return `${root.name}/${t.id}`;
+      })();
+    return ws.defsPropose(task, {
+      files: { [path]: input.text },
+      name,
+      message,
+      agents: [input.agent],
+    });
+  }
+
   /**
    * The benchmark gate: starts a base run and a variant run of the configured set for each new
    * proposal, and when both end, posts the comparison on the proposal's task. Off without
@@ -600,19 +750,39 @@ export class Improver {
   /** The variants of every root, with their diffs against the base and their benchmark. */
   proposals(): ProposalView[] {
     const state = this.state();
-    return this.host
-      .ws()
-      .variants()
-      .map((v) => ({
-        ...v,
-        diffs: v.files.map((f) => ({
-          path: f.path,
-          kind: f.kind,
-          lines: lineDiff(f.before, f.after),
-        })),
-        ...(state.gates[`${v.root}/${v.name}@${v.hash}`]
-          ? { benchmark: state.gates[`${v.root}/${v.name}@${v.hash}`] }
-          : {}),
-      }));
+    const ws = this.host.ws();
+    const policies = new Map<string, ImprovementPolicy>();
+    const policyOf = (rootName: string): ImprovementPolicy => {
+      let p = policies.get(rootName);
+      if (!p) {
+        const r = ws.roots.find((x) => x.name === rootName);
+        try {
+          p = improvementPolicy(r ? loadDefinitions(r.dir).swarm : null);
+        } catch {
+          p = improvementPolicy(null);
+        }
+        policies.set(rootName, p);
+      }
+      return p;
+    };
+    return ws.variants().map((v) => ({
+      ...v,
+      diffs: v.files.map((f) => ({
+        path: f.path,
+        kind: f.kind,
+        lines: lineDiff(f.before, f.after),
+      })),
+      ...(state.gates[`${v.root}/${v.name}@${v.hash}`]
+        ? { benchmark: state.gates[`${v.root}/${v.name}@${v.hash}`] }
+        : {}),
+      ...(v.from_ref
+        ? {}
+        : {
+            requires: {
+              ...policyOf(v.root).requires,
+              problems: requiresProblems(policyOf(v.root), v.proposal, v.hash),
+            },
+          }),
+    }));
   }
 }

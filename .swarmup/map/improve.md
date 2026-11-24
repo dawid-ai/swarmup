@@ -6,6 +6,7 @@ covers:
   - packages/core/templates/agents/claude-improver.md
   - packages/desktop/ui/src/ui/proposals.tsx
   - packages/supervisor/test/improve.test.ts
+  - packages/supervisor/test/propose-api.test.ts
   - packages/core/test/variants.test.ts
   - packages/cli/test/defs-propose.test.ts
   - packages/desktop/test/proposals-view.test.ts
@@ -38,7 +39,13 @@ definition file.
   the app; `gateTick` starts a base and a variant bench run per new proposal through `BenchRuns`
   when `swarmupd.improve.benchmark` is set, and comments the `compareMarkdown` table and verdict
   on the task when both end, recording the result in the proposal (`record`). State (`checkedAt`, gates by `root/variant@hash`) is `improve.json`
-  in the state folder. `proposals()` backs `GET /api/defs/variants` with line diffs.
+  in the state folder. `proposals()` backs `GET /api/defs/variants` with line diffs and each
+  store's `improvement.requires` with what it still refuses; `status()` backs `GET /api/improve`
+  (the loop's switches, the gate, each store's policy), and `POST /api/improve/settings` turns
+  `enabled` and `notes` on or off through `applySettings`. `proposeByHand` backs
+  `POST /api/defs/propose`: a person's new role-file text becomes variant `<role>-by-hand`
+  (`Workspace.defsPropose` with `files` instead of a folder, `overlayFromFiles`) on the task
+  named or a new `improve` task for the person.
 - With `swarmupd.improve.notes`, `triggerTick` also files a learn-note task per agent with
   promotion candidates (`Workspace.kbPromote`) that no earlier improvement task of the agent
   named (`improveNotesBody`, with `Agent:` and `Notes:` lines); `requestNotes` files it on
@@ -48,14 +55,16 @@ definition file.
 - The improver template (`claude-improver.md`) is a read-only role (`READ_ONLY_ROLES`) whose
   Claude runs may edit only in their scratch folder (`SCRATCH_WRITER_ROLES`, `invocation`).
 - `desktop/ui/src/ui/proposals.tsx` is the **Proposals** list in the Agents view: agents,
-  scorers, diff, benchmark, **Promote** and **Reject**; `score-agent.tsx` offers **Propose an
+  scorers, diff, benchmark, `improvement.requires`, **Promote** and **Reject**, the improver's
+  state, an empty state, and **Propose a change**; `score-agent.tsx` offers **Propose an
   improvement** on a failing scorer.
 
 ## Invariants
 
 - A proposal never changes `tools`, `writes`, `can_claim` or `id`, nor a frozen path; at most
   `max_open_proposals` wait per store.
-- Promote and reject are for a person only, in the CLI and the API.
+- Promote and reject are for a person only, in the CLI and the API; so are a proposal from the
+  app and the loop's switches.
 - The trigger, its learn-note half and the gate are off by default; the gate spends tokens.
 - Nothing archives a note on its own: a person runs `swarmup kb archive` after the promote.
 - Runs never edit `agents/` or `variants/` directly.

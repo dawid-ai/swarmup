@@ -25,6 +25,7 @@ import {
   loadDefinitions,
   overlayAgents,
   overlayFrom,
+  overlayFromFiles,
   policyProblems,
   readPromoted,
   readProposal,
@@ -482,7 +483,9 @@ export interface EventMark {
 /** What `swarmup defs propose` takes (W6). */
 export interface DefsProposeInput {
   /** The folder that holds the overlay, laid out as the definitions are. */
-  dir: string;
+  dir?: string;
+  /** Or the overlay itself: file texts by store path, such as `agents/claude-engineer.md`. */
+  files?: Record<string, string>;
   /** The variant's name: `variants/<name>/`. */
   name: string;
   /** Why: the start of the event body. */
@@ -4104,7 +4107,10 @@ export class Workspace {
     if (root.isMirror) {
       throw new OpsError(`${root.name} is a mirror; propose in the project's own root`, 2);
     }
-    const overlay = overlayFrom(input.dir);
+    let overlay: Map<string, string>;
+    if (input.files) overlay = overlayFromFiles(input.files);
+    else if (input.dir) overlay = overlayFrom(input.dir);
+    else throw new OpsError('name the overlay: --dir DIR', 2);
     for (const text of overlay.values()) assertNoSecret(text);
     const task = root.readTask(id);
     const marked = (label: string): string[] => {

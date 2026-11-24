@@ -71,6 +71,13 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/automation')).toBe(false);
     expect(allowedCall('POST', '/api/automation/other')).toBe(false);
     expect(allowedCall('POST', '/api/automation/trust/x')).toBe(false);
+    // Proposals: the improver's state and switches, and a person's own proposal.
+    expect(allowedCall('GET', '/api/improve')).toBe(true);
+    expect(allowedCall('POST', '/api/improve/settings')).toBe(true);
+    expect(allowedCall('GET', '/api/improve/settings')).toBe(false);
+    expect(allowedCall('POST', '/api/defs/propose')).toBe(true);
+    expect(allowedCall('GET', '/api/defs/propose')).toBe(false);
+    expect(allowedCall('POST', '/api/improve/other')).toBe(false);
     // Workflows: the list and templates; the check while editing, a person's save and delete.
     expect(allowedCall('GET', '/api/workflows')).toBe(true);
     expect(allowedCall('GET', '/api/workflows/templates')).toBe(true);

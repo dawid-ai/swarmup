@@ -653,6 +653,9 @@ export interface RoleFile {
   layers?: { role: RoleLayer; runtime: RoleLayer | null };
   /** Its run settings and where each comes from. */
   settings?: RoleSetting[];
+  /** The role file's store path and whole text, for **Propose a change**; absent before W6. */
+  path?: string;
+  text?: string;
 }
 
 /** One workflow of a root (`GET /api/workflows`, W5). */
@@ -1931,6 +1934,28 @@ export interface ProposalView {
   };
   diffs: Array<{ path: string; kind: 'added' | 'changed' | 'removed'; lines: string[] }>;
   benchmark?: ProposalBenchmark;
+  /** The store's `improvement.requires`, and why it refuses a promote now (empty: it passes). */
+  requires?: { benchmark: boolean; min_delta: number; problems: string[] };
+}
+
+/** `GET /api/improve`: this machine's improvement loop and each store's policy (W6). */
+export interface ImproveStatus {
+  enabled: boolean;
+  notes: boolean;
+  agent: string;
+  threshold: number;
+  max_age_days: number;
+  check_hours: number;
+  benchmark: { set: string; repo: string; repeat: number; entries?: string[] } | null;
+  roots: Array<{
+    root: string;
+    open: number;
+    policy: {
+      agent: string;
+      max_open_proposals: number;
+      requires: { benchmark: boolean; min_delta: number };
+    };
+  }>;
 }
 
 /** One MCP server in **Settings > MCP servers** (W8); a secret shows only whether it is set. */

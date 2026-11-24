@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type {
   AgentDef,
   MarkInput,
@@ -964,6 +964,57 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, 200, view());
       }
     }
+    // The improver's state for the Proposals list (W6): this machine's loop, the benchmark gate,
+    // and each store's `improvement` policy. A person turns the loop's switches on or off.
+    if (area === 'improve' && method === 'GET' && !id) {
+      return send(res, 200, sup.improver.status());
+    }
+    if (area === 'improve' && method === 'POST' && id === 'settings') {
+      humanOnly('changing the improvement loop');
+      const who = wsAs().actor;
+      if (!who || !isHuman(who)) {
+        throw new HttpError(
+          403,
+          `only a person changes the improvement loop${who ? `; ${who} cannot` : ''}`,
+        );
+      }
+      const patch: Record<string, boolean> = {};
+      for (const k of ['enabled', 'notes'] as const) {
+        if (body[k] === undefined) continue;
+        if (typeof body[k] !== 'boolean') throw new HttpError(400, `${k}: use true or false`);
+        patch[k] = body[k];
+      }
+      applySettings(sup, { opsd: { improve: patch } });
+      return send(res, 200, sup.improver.status());
+    }
+    // **Propose a change** (W6): a person's own edit of an agent's role file, recorded as a
+    // variant proposal like the improver's, on the task named or on a new improvement task.
+    if (area === 'defs' && method === 'POST' && id === 'propose' && !action) {
+      humanOnly('proposing a definition change');
+      const who = wsAs().actor;
+      if (!who || !isHuman(who)) {
+        throw new HttpError(
+          403,
+          `only a person proposes from the app${who ? `; ${who} cannot` : ''}`,
+        );
+      }
+      const text = body.text;
+      if (typeof text !== 'string') throw new HttpError(400, 'text: send the role file text');
+      const done = sup.improver.proposeByHand(who, {
+        agent: need(body.agent, 'agent'),
+        text,
+        message: str(body.message) ?? '',
+        task: str(body.task) || undefined,
+        name: str(body.name) || undefined,
+      });
+      await sup.tick();
+      return send(res, 201, {
+        variant: done.variant,
+        root: done.root,
+        task: done.proposal.task,
+        proposal: done.proposal,
+      });
+    }
     // **Propose an improvement** on an agent's failing scorer: the improvement task, now (W6).
     // `{ kind: 'notes' }` files the one that folds the agent's learn-note candidates in.
     if (method === 'POST' && area === 'improve' && !id) {
@@ -1044,10 +1095,14 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'GET' && id) {
         const def = ws.agent(id);
         if (!def) throw new HttpError(404, `no role file for ${id}`);
-        const root = ws.roots.find((r) => def.file.startsWith(r.dir + sep))?.name ?? null;
+        const holder = ws.roots.find((r) => def.file.startsWith(r.dir + sep));
+        const root = holder?.name ?? null;
         return send(res, 200, {
           ...roleOut(def),
           root,
+          // The file itself, for **Propose a change**: its store path and its whole text.
+          ...(holder ? { path: relative(holder.dir, def.file).split(sep).join('/') } : {}),
+          text: readFileSync(def.file, 'utf8').replace(/\r\n/g, '\n'),
           ...(def.folder ? { layers: readAgentLayers(def) } : {}),
           settings: roleSettings(sup, def),
         });
