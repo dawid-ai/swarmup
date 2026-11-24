@@ -74,7 +74,7 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
           {p.root}/{p.name}
         </span>
         <span className="font-mono text-xs text-fg-4">{p.hash.slice(0, 14)}</span>
-        <span className="text-xs text-fg-3">{p.status}</span>
+        <span className="text-xs text-fg-3">{p.from_ref ? 'from a git ref' : p.status}</span>
         {p.stale && (
           <span className="text-xs text-warn" title="The base definitions changed since">
             base changed
@@ -134,7 +134,15 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
         </ul>
       )}
       <ErrorLine error={act.error} />
-      {rejecting ? (
+      {p.description && <p className="text-xs text-fg-2">{p.description}</p>}
+      {p.from_ref ? (
+        <p className="text-xs text-fg-3" data-testid="variant-from-ref">
+          The definitions at <span className="font-mono">{p.from_ref}</span>
+          {p.commit ? <span className="font-mono"> ({p.commit.slice(0, 10)})</span> : null}. Change
+          or remove it in <span className="font-mono">swarm.yaml</span>; there is nothing to
+          promote.
+        </p>
+      ) : rejecting ? (
         <div className="flex flex-wrap items-center gap-2">
           <Input
             value={note}
