@@ -62,8 +62,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `bench/runs/${SEG}/attempt`,
     // Settings > MCP servers (W8): servers, secret names and each agent's servers.
     'mcp',
-    // Workflows (W5): each root's workflows, for the start dialog.
+    // Workflows (W5): each root's workflows with their text, and the starter templates.
     'workflows',
+    'workflows/templates',
     // Automation: git triggers, merge-check trust and the inbound webhook listener.
     'automation',
   ].map((p) => new RegExp(`^/api/${p}${QUERY}$`)),
@@ -112,8 +113,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     // Settings > MCP servers (W8). Not resolve: that is for runs, and holds secret values.
     'mcp/(servers|secrets|strict)',
     `mcp/servers/${SEG}/delete`,
-    // A person starts a workflow (W5): a milestone with the workflow's plan.
-    'workflows/start',
+    // A person starts a workflow (W5): a milestone with the workflow's plan. The editor checks
+    // its text as you type, and a person saves or deletes the file.
+    'workflows/(start|check|save|delete)',
     // Automation: a person turns triggers on or off, trusts or revokes git definitions, turns the
     // inbound listener on or off and approves direct webhook actions.
     'automation/(triggers|trust|revoke|hooks|direct)',

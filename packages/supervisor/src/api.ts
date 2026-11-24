@@ -15,7 +15,6 @@ import type {
 import {
   agentRuntimeValues,
   readAgentLayers,
-  readWorkflows,
   checkDefinitionText,
   COMMAND_TIMEOUT_MS,
   loadDefinitions,
@@ -57,6 +56,7 @@ import { HOOKS_LOG } from './hooks.js';
 import { NoArtifact } from './artifact-api.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
+import { checkWorkflow, listWorkflows, workflowTemplates } from './workflow-api.js';
 import {
   deleteMcpServer,
   McpResolveError,
@@ -1069,29 +1069,53 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, body.create === true ? 201 : 200, roleOut(def));
       }
     }
-    // Workflows (W5): each root's list, one compiled with sample values, and a start.
+    // Workflows (W5): each root's list with its text and stages, the starter templates, a check
+    // of edited text with a compiled preview, a start, and a person's save and delete.
     if (area === 'workflows') {
       const ws = wsAs();
-      if (method === 'GET' && !id) {
+      if (method === 'GET' && !id) return send(res, 200, listWorkflows(ws));
+      if (method === 'GET' && id === 'templates') return send(res, 200, workflowTemplates());
+      if (method === 'POST' && id === 'check') {
+        const text = body.text;
+        if (typeof text !== 'string') throw new HttpError(400, 'text: send the workflow text');
+        const raw = body.params ?? {};
+        if (typeof raw !== 'object' || Array.isArray(raw) || raw === null) {
+          throw new HttpError(400, 'params: expected an object of names to values');
+        }
         return send(
           res,
           200,
-          ws.roots
-            .filter((r) => !r.isMirror)
-            .flatMap((r) =>
-              readWorkflows(r.dir).map((w) => ({
-                root: r.name,
-                id: w.id,
-                title: w.def?.title,
-                description: w.def?.description,
-                approval: w.def ? (w.def.approval ?? 'proposal') : undefined,
-                params: w.def?.params ?? {},
-                stages: w.def?.stages.length ?? 0,
-                ok: w.def !== null,
-                problems: w.problems.map((p) => `${p.path}: ${p.message}`),
-              })),
+          checkWorkflow(ws, {
+            id: need(body.id, 'id'),
+            text,
+            root: str(body.root) || undefined,
+            params: Object.fromEntries(
+              Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')]),
             ),
+          }),
         );
+      }
+      if (method === 'POST' && (id === 'save' || id === 'delete')) {
+        const what = id === 'save' ? 'editing workflows' : 'deleting workflows';
+        humanOnly(what);
+        const who = ws.actor;
+        if (!who || !isHuman(who)) {
+          throw new HttpError(403, `only a person does ${what}${who ? `; ${who} cannot` : ''}`);
+        }
+        const wid = need(body.id, 'id');
+        const root = str(body.root) || undefined;
+        const expect = typeof body.expect === 'string' ? body.expect : undefined;
+        if (id === 'delete') {
+          const gone = ws.workflowDelete(wid, { root, expect });
+          await sup.tick();
+          return send(res, 200, gone);
+        }
+        const text = body.text;
+        if (typeof text !== 'string') throw new HttpError(400, 'text: send the workflow text');
+        const create = body.create === true;
+        const saved = ws.workflowSave(wid, text, { root, expect, create });
+        await sup.tick();
+        return send(res, create ? 201 : 200, saved);
       }
       if (method === 'POST' && id === 'start') {
         humanOnly('starting a workflow');

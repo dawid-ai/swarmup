@@ -157,11 +157,18 @@ export type {
   WorkflowStage,
 } from './workflow.js';
 export {
+  assertWorkflowUnchanged,
+  BLANK_WORKFLOW,
   checkWorkflowText,
   compileWorkflow,
   gateBody,
   readWorkflow,
+  readWorkflowText,
   readWorkflows,
+  removeWorkflowFile,
+  sampleParams,
+  workflowFile,
+  writeWorkflowFile,
   WORKFLOW_ID_RE,
   WORKFLOW_SCHEMA,
   workflowIdOf,

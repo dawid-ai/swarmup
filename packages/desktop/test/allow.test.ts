@@ -71,6 +71,16 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/automation')).toBe(false);
     expect(allowedCall('POST', '/api/automation/other')).toBe(false);
     expect(allowedCall('POST', '/api/automation/trust/x')).toBe(false);
+    // Workflows: the list and templates; the check while editing, a person's save and delete.
+    expect(allowedCall('GET', '/api/workflows')).toBe(true);
+    expect(allowedCall('GET', '/api/workflows/templates')).toBe(true);
+    for (const w of ['start', 'check', 'save', 'delete']) {
+      expect(allowedCall('POST', `/api/workflows/${w}`)).toBe(true);
+      expect(allowedCall('GET', `/api/workflows/${w}`)).toBe(false);
+    }
+    expect(allowedCall('POST', '/api/workflows')).toBe(false);
+    expect(allowedCall('POST', '/api/workflows/other')).toBe(false);
+    expect(allowedCall('POST', '/api/workflows/save/x')).toBe(false);
     expect(allowedCall('GET', '/api/bench/sets')).toBe(true);
     expect(allowedCall('GET', '/api/bench/runs')).toBe(true);
     expect(allowedCall('GET', '/api/bench/runs/demo-20261121-120000')).toBe(true);

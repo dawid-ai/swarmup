@@ -10,9 +10,14 @@ import type {
 import {
   applyVariantToBase,
   checkVariantName,
+  assertWorkflowUnchanged,
+  checkWorkflowText,
   compileWorkflow,
   gateBody,
   readWorkflow,
+  removeWorkflowFile,
+  workflowFile,
+  writeWorkflowFile,
   formatProblem,
   improvementPolicy,
   listVariantNames,
@@ -3810,6 +3815,62 @@ export class Workspace {
       message: `Approved on start: workflow ${id} has approval: starter.`,
     });
     return { milestone, compiled, proposed, approved };
+  }
+
+  /** The root a person edits workflows in: the one named, else the default; never a mirror. */
+  private workflowRoot(rootName: string | undefined): Root {
+    const root = rootName ? this.roots.find((r) => r.name === rootName) : this.defaultRoot();
+    if (!root) throw new OpsError(`no root named '${rootName}'`, 2);
+    if (root.isMirror)
+      throw new OpsError(`${root.name} is a mirror; edit workflows in its own root`, 2);
+    return root;
+  }
+
+  /**
+   * Writes workflow `id` (`workflows/<id>.yaml`) of a store from the app's editor: a person only.
+   * The text must check (schema and a compile with sample values) and hold no secret. `create`
+   * refuses a workflow that exists; `expect`, the text the editor started from, refuses a file
+   * that changed since. swarmupd's sync commits the file like any other store change.
+   */
+  workflowSave(
+    id: string,
+    text: string,
+    opts: { root?: string; expect?: string; create?: boolean } = {},
+  ): { root: string; id: string; file: string } {
+    const actor = this.requireActor();
+    if (!isHuman(actor)) throw new OpsError(`only a person edits workflows; ${actor} cannot`);
+    const root = this.workflowRoot(opts.root);
+    const file = workflowFile(root.dir, id);
+    const checked = checkWorkflowText(id, text, { file });
+    const error = checked.problems.find((p) => p.severity === 'error');
+    if (error) {
+      throw new OpsError(
+        `workflows/${id}.yaml would not check (line ${error.line}: ${error.message}); nothing was written`,
+        1,
+      );
+    }
+    assertNoSecret(text);
+    return root.lock('workflows', () => {
+      assertWorkflowUnchanged(file, id, opts);
+      writeWorkflowFile(root, id, text);
+      return { root: root.name, id, file };
+    });
+  }
+
+  /** Deletes workflow `id` of a store: a person only; `expect` as in {@link workflowSave}. */
+  workflowDelete(
+    id: string,
+    opts: { root?: string; expect?: string } = {},
+  ): { root: string; id: string; file: string } {
+    const actor = this.requireActor();
+    if (!isHuman(actor)) throw new OpsError(`only a person deletes workflows; ${actor} cannot`);
+    const root = this.workflowRoot(opts.root);
+    const file = workflowFile(root.dir, id);
+    return root.lock('workflows', () => {
+      assertWorkflowUnchanged(file, id, opts);
+      removeWorkflowFile(file);
+      return { root: root.name, id, file };
+    });
   }
 
   /**

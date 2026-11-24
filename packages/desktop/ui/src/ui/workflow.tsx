@@ -38,6 +38,8 @@ export function StartWorkflow(props: {
   onStarted: (ref: string) => void;
   /** Opens with this workflow chosen, as `root/id` or `id`. */
   initial?: string;
+  /** Opens the Workflows view, where a person creates one. */
+  onOpenWorkflows?: () => void;
 }) {
   const list = useData<WorkflowInfo[]>('/api/workflows');
   const usable = useMemo(() => (list.data ?? []).filter((w) => w.ok), [list.data]);
@@ -84,10 +86,17 @@ export function StartWorkflow(props: {
       <div className="flex flex-col gap-4" data-start-workflow>
         <ErrorLine error={list.error} />
         {list.data && usable.length === 0 && (
-          <p className="text-sm text-fg-3" data-no-workflows>
-            No workflows yet. Add <span className="font-mono">workflows/&lt;id&gt;.yaml</span> to a
-            project's data root; new projects from a template come with starter workflows.
-          </p>
+          <div className="flex flex-col items-start gap-2 text-sm text-fg-3" data-no-workflows>
+            <p>
+              No workflows yet. Create one in <b>Workflows</b>, under Agents in the sidebar, from a
+              starter template (feature, bug fix, content piece, campaign launch) or blank.
+            </p>
+            {props.onOpenWorkflows && (
+              <Button icon={Workflow} onClick={props.onOpenWorkflows}>
+                Open Workflows
+              </Button>
+            )}
+          </div>
         )}
         {usable.length > 0 && (
           <Field label="Workflow">

@@ -669,6 +669,76 @@ export interface WorkflowInfo {
   stages: number;
   ok: boolean;
   problems: string[];
+  /** The file and its text, problems with lines, and the checked definition; absent from an older swarmupd. */
+  file?: string;
+  text?: string;
+  issues?: DefProblem[];
+  def?: WorkflowDefView | null;
+}
+
+/** A workflow stage as the file sets it (`packages/core/src/defs/workflow.ts`). */
+export interface WorkflowStageView {
+  key: string;
+  title?: string;
+  owner?: string;
+  estimate?: string;
+  after?: string[];
+  review?: string;
+  type?: string;
+  priority?: string;
+  labels?: string[];
+  body?: string;
+  done_when?: unknown;
+  gate?: { ask: string; to?: string; options?: string[]; on_reject?: 'park' | 'revise' };
+  when?: { param: string; equals: string | string[] };
+}
+
+/** A checked workflow file. */
+export interface WorkflowDefView {
+  id: string;
+  title?: string;
+  description?: string;
+  params?: WorkflowInfo['params'] | null;
+  milestone: { title: string; done_when: unknown };
+  approval?: 'proposal' | 'starter';
+  stages: WorkflowStageView[];
+}
+
+/** A starter template for a new workflow: `GET /api/workflows/templates`. */
+export interface WorkflowTemplate {
+  id: string;
+  title: string;
+  description?: string;
+  text: string;
+}
+
+/** One item of a compiled workflow plan. */
+export interface WorkflowPlanItem {
+  key: string;
+  title: string;
+  owner: string;
+  estimate: string;
+  after?: string[];
+  type?: string;
+  priority?: string;
+  labels?: string[];
+  done_when?: unknown;
+  gate?: { ask: string; options?: string[]; on_reject?: 'park' | 'revise' };
+}
+
+/** `POST /api/workflows/check`: problems with lines and the plan a preview compiles to. */
+export interface WorkflowCheck {
+  ok: boolean;
+  problems: DefProblem[];
+  def: WorkflowDefView | null;
+  params?: Record<string, string>;
+  plan?: {
+    milestone: { title: string; done_when: unknown };
+    approval: 'proposal' | 'starter';
+    dropped: string[];
+    items: WorkflowPlanItem[];
+  };
+  preview_error?: string;
 }
 
 export interface Decision {

@@ -29,6 +29,7 @@ import {
   Vote,
   X,
   Download,
+  Workflow as WorkflowIcon,
   Zap,
 } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
@@ -81,6 +82,7 @@ import { Runs } from './views/Runs';
 import { Repeating } from './views/Repeating';
 import { Schedules } from './views/Schedules';
 import { Automation } from './views/Automation';
+import { Workflows } from './views/Workflows';
 import { Settings } from './views/Settings';
 import { Setup } from './views/Setup';
 import { Search } from './views/Search';
@@ -104,6 +106,7 @@ export type View =
   | 'runs'
   | 'schedules'
   | 'automation'
+  | 'workflows'
   | 'repeating'
   | 'decisions'
   | 'chat'
@@ -143,6 +146,7 @@ const GROUPS: Array<{
       ['runs', 'Runs', Activity],
       ['schedules', 'Schedules', CalendarClock],
       ['automation', 'Automation', Zap],
+      ['workflows', 'Workflows', WorkflowIcon],
       ['repeating', 'Repeating', Repeat],
     ],
   },
@@ -904,6 +908,7 @@ export function App() {
             {view === 'runs' && <Runs nav={nav} selected={arg} />}
             {view === 'schedules' && <Schedules nav={nav} selected={arg} />}
             {view === 'automation' && <Automation nav={nav} />}
+            {view === 'workflows' && <Workflows nav={nav} />}
             {view === 'repeating' && <Repeating nav={nav} />}
             {view === 'decisions' && <Decisions key={arg ?? ''} nav={nav} selected={arg} />}
             {view === 'chat' && <Chat nav={nav} />}
@@ -984,6 +989,10 @@ export function App() {
           onCreated={(id) => {
             closeForm();
             setTask(id);
+          }}
+          onOpenWorkflows={() => {
+            closeForm();
+            nav.go('workflows');
           }}
         />
       )}
