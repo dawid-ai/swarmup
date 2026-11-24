@@ -279,6 +279,43 @@ export function plainNotes(notes: string | undefined): string | undefined {
 export const UPDATE_STOP_WAIT_MS = 120_000;
 
 /**
+ * How long an update keeps waiting after that, once swarmupd has accepted the shutdown and is
+ * only finishing its work: a slow network can hold a push for minutes, and failing then leaves an
+ * update that never installs.
+ */
+export const UPDATE_STOP_GRACE_MS = 15 * 60_000;
+
+/**
+ * Stops swarmupd for an update, and waits for it to exit when it accepted the shutdown but is
+ * still finishing a sync or merge ("did not stop in time"), up to {@link UPDATE_STOP_GRACE_MS}.
+ * Any other error (such as 409, runs are live) comes back at once, as does the timeout when the
+ * grace runs out.
+ */
+export async function stopUntilGone(steps: {
+  stop: () => Promise<unknown>;
+  running: () => boolean;
+  wait: (ms: number) => Promise<void>;
+  /** Called once when it starts waiting for swarmupd to finish. */
+  waiting?: () => void;
+  graceMs?: number;
+  now?: () => number;
+}): Promise<void> {
+  try {
+    await steps.stop();
+    return;
+  } catch (err) {
+    if (!(err instanceof Error) || !/did not stop in time/.test(err.message)) throw err;
+    const now = steps.now ?? Date.now;
+    const end = now() + (steps.graceMs ?? UPDATE_STOP_GRACE_MS);
+    steps.waiting?.();
+    while (steps.running()) {
+      if (now() >= end) throw err;
+      await steps.wait(2000);
+    }
+  }
+}
+
+/**
  * The note an update leaves for the app it relaunches: start in the tray when the old app had no
  * window open, so an update at night opens no window. Read once, then deleted.
  */

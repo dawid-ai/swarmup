@@ -16,6 +16,7 @@ import {
   notesText,
   plainNotes,
   scheduleUpdateChecks,
+  stopUntilGone,
   takeRelaunch,
   UPDATE_CHECK_INTERVAL_MS,
   writeRelaunch,
@@ -415,5 +416,54 @@ describe('locked download retry', () => {
     expect(delays).toEqual(LOCKED_DOWNLOAD_RETRY_MS);
     expect(lockedDownloadRetry(eperm, LOCKED_DOWNLOAD_RETRY_MS.length)).toBeNull();
     expect(lockedDownloadRetry('HttpError: 404', 0)).toBeNull();
+  });
+});
+
+describe('stopping swarmupd for an update', () => {
+  const late = () =>
+    Promise.reject(new Error('swarmupd pid 22924 did not stop in time; see opsd.log'));
+
+  it('waits for a swarmupd that is still finishing its sync, then goes on', async () => {
+    let alive = 3;
+    let waited = 0;
+    let told = 0;
+    await stopUntilGone({
+      stop: late,
+      running: () => alive > 0,
+      wait: async () => {
+        alive--;
+        waited++;
+      },
+      waiting: () => told++,
+    });
+    expect(waited).toBe(3);
+    expect(told).toBe(1);
+  });
+
+  it('passes any other error on at once, such as live runs', async () => {
+    const busy = Object.assign(new Error('runs are live'), { status: 409 });
+    await expect(
+      stopUntilGone({
+        stop: () => Promise.reject(busy),
+        running: () => true,
+        wait: async () => {},
+      }),
+    ).rejects.toBe(busy);
+  });
+
+  it('gives up after the grace, with the timeout', async () => {
+    let t = 0;
+    await expect(
+      stopUntilGone({
+        stop: late,
+        running: () => true,
+        wait: async (ms) => {
+          t += ms;
+        },
+        now: () => t,
+        graceMs: 10_000,
+      }),
+    ).rejects.toThrow(/did not stop in time/);
+    expect(t).toBe(10_000);
   });
 });

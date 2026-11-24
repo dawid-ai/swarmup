@@ -65,6 +65,7 @@ import {
   plainNotes,
   scheduleUpdateChecks,
   takeRelaunch,
+  stopUntilGone,
   UPDATE_STOP_WAIT_MS,
   writeRelaunch,
 } from './updates.js';
@@ -594,6 +595,19 @@ async function updateNotice(message: string, resumed = true): Promise<void> {
   });
 }
 
+/**
+ * Stops swarmupd for an update. It finishes a sync or merge under way before it exits, so when it
+ * takes longer than the stop waits, the update waits on for it instead of failing.
+ */
+async function stopForUpdate(o: { killRuns: boolean; ifIdle: boolean }): Promise<void> {
+  await stopUntilGone({
+    stop: () => stopDaemon({ env: process.env, ...o, waitMs: UPDATE_STOP_WAIT_MS }),
+    running: () => readDaemon() !== null,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    waiting: () => setUpdate({ status: 'installing', error: undefined }),
+  });
+}
+
 /** Runs at most one Auto install for the downloaded version. */
 function startAutoUpdate(): void {
   if (!updatable || update.mode !== 'auto' || update.status !== 'ready' || autoInstall) return;
@@ -606,12 +620,7 @@ function startAutoUpdate(): void {
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     install: async (resume) => {
       try {
-        await stopDaemon({
-          env: process.env,
-          killRuns: false,
-          ifIdle: true,
-          waitMs: UPDATE_STOP_WAIT_MS,
-        });
+        await stopForUpdate({ killRuns: false, ifIdle: true });
         info = null;
         writeRelaunch(
           app.getPath('userData'),
@@ -743,7 +752,7 @@ async function installUpdate(asked: boolean): Promise<UpdateState> {
     },
     stop: async ({ ifIdle, killRuns }) => {
       try {
-        await stopDaemon({ env: process.env, killRuns, ifIdle, waitMs: UPDATE_STOP_WAIT_MS });
+        await stopForUpdate({ killRuns, ifIdle });
       } catch (err) {
         // 409: a run is live, so swarmupd kept running and nothing was cut off.
         if (err instanceof DaemonCallError && err.status === 409) return 'busy';
