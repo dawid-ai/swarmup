@@ -136,6 +136,7 @@ starting it again shows the open one.
 | **Runs**       | Every run with its log, followed live; readable or **raw**; its processes and **Kill leftovers**; **Start a run**; each run's model, effort, definition stamp, **resumed** badge and orientation; filters for resumed runs and by model                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Schedules**  | Recurring runs (swarmupd's cron): add, edit, pause, **Run now**, delete; templates for standups, inbox sweeps, nightly QA                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Automation** | Git triggers, merge-check trust and inbound webhooks on this machine: **Turn on here**, **Review and trust**, **Revoke trust**, the listener and **Direct action**; see **Automation** below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Workflows**  | Each project's workflows (`workflows/<id>.yaml`) with parameters, stages and gates: **New workflow** from a starter template or blank, **Edit** in a form or as YAML with a live check and a compiled preview, **Start**, **Delete**; see **Workflows** below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Repeating**  | Repeating tasks: a template that creates a task once, daily, weekly, on chosen weekdays, monthly, yearly, or when a task or all its subtasks close; add, edit, pause, **Run now**, delete; state, next slot, last task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Chat**       | One conversation with the orchestrator: replies stream in, what it changed shows as task links, `@*:orchestrator` posts from channels join it; **Stop**, **New conversation** (see [the supervisor](supervisor.md#chat))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **Channels**   | **New channel**, read and post; `@id` in a message puts it in that inbox                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -224,7 +225,8 @@ that model, and says which model's runs wait while the others go on.
   and **Start**. A workflow with `approval: starter` is approved by your start and its tasks are
   created; any other waits in **Plans**. In a milestone's plan a gate item shows a **Gate** badge
   with its question; the gate's own task panel has **Your decision** with **Approve** and
-  **Reject**. Approve calls `done`; Reject calls `park` and needs a note.
+  **Reject**. Approve calls `done`; Reject calls `park` and needs a note. When the project has
+  no workflow, the dialog says so and **Open Workflows** goes to the Workflows view.
 
 - **MCP servers.** **Settings > MCP servers** lists the servers this machine defines
   (`swarmupd.mcp.servers`, see [MCP servers](supervisor.md#mcp-servers)), each with its command,
@@ -338,7 +340,8 @@ failure shows under the button and leaves a comment on the task.
 
 **Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
 `GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what
-it measures, its threshold and what to change when it fails.
+it measures, its threshold and what to change when it fails. Click a value for its breakdown
+(see [Scores in the app](#scores-in-the-app)); **How scores work** explains the scorers.
 
 **Resumed runs.** A `run-start` event of a run that resumed the session of an earlier one (see
 [Resume after changes](supervisor.md#resume-after-changes)) shows **Resumed** in the thread; hover
@@ -404,6 +407,22 @@ The settings live under `desktop.voice` in the user config: `engine` (`off`, `lo
 
 The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
 
+- **Breakdown.** Every score value is a link: on an agent card, in the **Reports** table, under
+  **Worst tasks** (a scorer's name, across agents) and in a task's **Scores**. It opens the
+  scorer's breakdown for that agent or task: what the scorer measures, the threshold and what
+  pass means, the definition to change when it fails, the mean and how many pass, then every
+  scored task or run, worst first, with its value, **pass** or **fail**, its note and its
+  evidence. A task's title links to the task panel, a run to the run, and an event to the task
+  scrolled to it. The criteria scorers (`criteria-pass-rate`, `verdict-completeness`) list each
+  criterion of the approving verdict with **pass**, **fail**, **na** or **unmarked**, its note
+  and its evidence; `cost-per-merged-task` lists the runs it summed with their tokens;
+  `stuck-runs` lists the failed runs with why they ended; a rubric scorer shows the judge's
+  score per rubric criterion and its reasons. Reports covers the report's window; the agent card
+  and the task cover all time. The breakdown uses `GET /api/scores?scorer=S&agent=A&detail=1`
+  (with `task=` or `since=` to narrow it).
+- **How scores work**, next to the scores on an agent card, in Reports and in a task, explains
+  where the data comes from (task events and run records; rubric scorers add an LLM judge), what
+  pass means, and each scorer's description, threshold and lever.
 - **Agents.** Each agent card lists its scorers: the value (an agent score, or the mean over every
   scored task or run), the count, the pass rate, **pass** or **fail** against the threshold, and a
   line of the last 30 local days, one point per day. Hover a point for its day, value and count.
@@ -417,9 +436,23 @@ The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
   that waits for you: the variant and its hash, the agents and scorers it addresses, who proposed
   it and why, a link to its task, the diff of each file against the base, and its benchmark
   (**better**, **worse** or **same**, with the change in pass rate, hidden pass rate and cost, or
-  that it runs or failed). **Promote** writes it onto the definition files; **Reject** asks for a
-  note for the improver. Both are yours alone: a run can't call them. The list shows only while a
-  variant waits.
+  that it runs or failed), and what the store's `improvement.requires` still needs before a
+  promote, or that it is met. **Promote** writes it onto the definition files; **Reject** asks
+  for a note for the improver. Both are yours alone: a run can't call them. The list always
+  shows: with nothing waiting, it says what a proposal is and how one appears.
+  - The improver's state heads the list: **Files tasks from failing scores** and **Folds learn
+    notes into roles** turn `swarmupd.improve.enabled` and `swarmupd.improve.notes` on or off in
+    your user config (`POST /api/improve/settings`); the benchmark gate, set as
+    `swarmupd.improve.benchmark` in the user config, or that it is off; and per store, whether a
+    promote needs a benchmark and how many proposals are open of `max_open_proposals`, with a link
+    to **Settings > Definitions**, where `swarm.yaml`'s `improvement` section sets them. The page
+    reads `GET /api/improve`.
+  - **Propose a change** lets you write a proposal yourself: pick an agent with a role file, edit
+    the file's text (it opens with the file as it is), say why, and optionally name a task to link
+    it to. Without a task, it files an improvement task for you, labeled `improve`. The change is
+    recorded as variant `<role>-by-hand` (numbered when taken) with `POST /api/defs/propose`; the
+    role file stays as it is until you promote it. A run's token, or an `as` that is not a person,
+    gets 403.
 - **Reports.** The **Scores** table adds a trend under each value, over the report's own window:
   one point per hour for **Day**, else per day. Hover a column header for what the scorer
   measures, its threshold and what to change. **Worst tasks** lists the five worst tasks or runs
@@ -463,6 +496,41 @@ The actions:
   it. Your user config keeps every key, so this machine still overrides them; the app never
   removes them.
 - **Create swarm.yaml**, on a project without one, writes the commented template.
+
+## Workflows
+
+**Workflows**, in the sidebar under **Agents**, lists each project's workflows
+(`workflows/<id>.yaml` in the task store, see [Workflows](protocol.md#workflows)): the title, the
+file, whether your start approves the plan, the description, the parameters (required ones
+marked `*`, options and defaults shown), the milestone and its check, and the stages in a row.
+A gate stage is marked with its question and its person. A workflow that does not check shows
+its problems by line. Each card has **Start** (the **Start a workflow** dialog with it chosen),
+**Edit** and **Delete**.
+
+- **New workflow** asks for the project, a starter template (feature, bug fix, content piece,
+  campaign launch) or **Blank**, and the id (the file name), then opens the editor.
+- The editor has three tabs. **Form** edits the common fields: title, description, approval,
+  parameters (description, default, options, required; **Add parameter**, remove), the
+  milestone's title and check, and each stage's key, title, owner, estimate, after, type,
+  labels and check, with **A person approves here (gate)** for the gate's question, person and
+  what a rejection does. **Add stage** and **Remove stage** change the list. The form writes the
+  YAML in place, so comments and keys it does not show stay. **YAML** edits everything else,
+  such as `when`, `rework`, `criteria` and typed checks. **Preview** compiles the workflow for
+  values you type (defaults, else the first option, else `example`) and lists the milestone and
+  each task with its owner, estimate, after and gate.
+- Under the tabs, the problems of the text show as `line:col` and the message, from the schema
+  and the compile, as you type (`POST /api/workflows/check`). **Save** stays off while there is
+  an error.
+- **Save** writes `workflows/<id>.yaml` in the store, and swarmupd's sync commits it like any
+  other store change. A new workflow is refused when the id is taken; an edit is refused when the
+  file changed since you opened it. **Delete** asks first, then removes the file; milestones it
+  started keep their tasks.
+
+The page uses `GET /api/workflows` (each workflow with `file`, `text`, `issues` and `def`),
+`GET /api/workflows/templates`, `POST /api/workflows/check` (`{ id, text, root, params }`),
+`POST /api/workflows/save` (`{ root, id, text, expect }` or `create: true`) and
+`POST /api/workflows/delete` (`{ root, id, expect }`). Save and delete answer a run token, and an
+`as` that is not a person, with 403; runs may read and check.
 
 ## Automation
 

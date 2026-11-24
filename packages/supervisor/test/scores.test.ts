@@ -774,6 +774,16 @@ describe('scores in the report and the API', () => {
         expect.objectContaining({ id: 'review-rounds', pass: 1, lever: expect.any(String) }),
       ]),
     );
+    // A breakdown: every subject of one scorer for the agent, with the task's title.
+    const detail = await call('GET', `/api/scores?scorer=review-rounds&agent=${ENG}&detail=1`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.detail).toMatchObject({
+      scorer: { id: 'review-rounds', lever: expect.any(String) },
+      agent: ENG,
+      rows: [{ subject: 'test/T-0001', title: 'Parser', value: 1 }],
+    });
+    expect((await call('GET', '/api/scores?detail=1')).status).toBe(400);
+    expect((await call('GET', '/api/scores?scorer=nope&detail=1')).status).toBe(404);
     const history = await call('GET', `/api/scores/history?agent=${ENG}&tz=-60`);
     expect(history.status).toBe(200);
     expect(history.body.bucket).toBe('day');

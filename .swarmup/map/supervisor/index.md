@@ -15,6 +15,7 @@ covers:
   - packages/supervisor/src/state-db.ts
   - packages/supervisor/src/migrate.ts
   - packages/supervisor/src/api.ts
+  - packages/supervisor/src/workflow-api.ts
   - packages/supervisor/src/task-criteria.ts
   - packages/supervisor/src/admin.ts
   - packages/supervisor/src/doctor.ts
@@ -48,7 +49,8 @@ watches them, merges approved work, syncs the roots and serves the desktop app.
   Schedules and Standups. Runs get their own run token, never the human's. `state.db` also
   serves score history (`agentScoreHistory`) to `GET /api/scores/history`. `/api/defs/*` and
   `/api/bench/*` live in `defs-import.ts` and `bench-runs.ts` (see `core/defs` and `bench`);
-  `/api/workflows` lists and starts workflows, and `/api/roles/:id` gives a folder agent's
+  `/api/workflows` lists, checks, starts, saves and deletes workflows (`workflow-api.ts`; save
+  and delete are a person's), and `/api/roles/:id` gives a folder agent's
   `layers` and each agent's run `settings` with their source;
 
   `swarmupd.bench` names extra benchmark sets and results folders, and model prices for estimated

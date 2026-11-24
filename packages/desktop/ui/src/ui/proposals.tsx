@@ -1,13 +1,25 @@
 // Proposals (W6): changes to the definitions the improver recorded as variants, each with the
 // agents and scorers it addresses, its diff against the base, its benchmark, and Promote and
 // Reject for the person. Shown in the Agents view, beside the scores that led to them.
-import { Check, FlaskConical, GitPullRequestArrow, X } from 'lucide-react';
+import { Bot, Check, FlaskConical, GitPullRequestArrow, ShieldCheck, X } from 'lucide-react';
 import { useState } from 'react';
 import type { Nav } from '../App';
 import { api, refreshSoon, useData } from '../api';
-import { Button, ErrorLine, Input, cx, toast, useAction } from '../components';
+import {
+  Button,
+  ErrorLine,
+  Field,
+  Input,
+  Modal,
+  Select,
+  TextArea,
+  Toggle,
+  cx,
+  toast,
+  useAction,
+} from '../components';
 import { ago } from '../lib/format';
-import type { ProposalBenchmark, ProposalView } from '../types';
+import type { Agent, ImproveStatus, ProposalBenchmark, ProposalView, RoleFile } from '../types';
 import { Markdown } from './markdown';
 
 const pts = (v: number | null | undefined): string =>
@@ -117,6 +129,15 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
         <FlaskConical size={12} />
         {benchmarkText(p.benchmark)}
       </div>
+      {p.requires && (
+        <div
+          className={cx('flex items-start gap-1.5 text-xs', requiresText(p.requires).tone)}
+          data-testid="proposal-requires"
+        >
+          <ShieldCheck size={12} className="mt-0.5 shrink-0" />
+          {requiresText(p.requires).text}
+        </div>
+      )}
       {p.diffs.map((d) => (
         <div key={d.path} className="flex flex-col gap-1">
           <div className="text-xs">
@@ -183,25 +204,276 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
   );
 }
 
-/** The Proposals list; nothing while no variant waits. */
+/** `improvement.requires` of a proposal's store, and whether it lets a promote through now. */
+export function requiresText(r: ProposalView['requires']): { text: string; tone: string } {
+  if (!r) return { text: '', tone: 'text-fg-4' };
+  if (!r.benchmark) {
+    return { text: 'improvement.requires: no benchmark; you may promote it', tone: 'text-fg-3' };
+  }
+  const min = `${r.min_delta > 0 ? '+' : ''}${Math.round(r.min_delta * 100)} pts`;
+  if (r.problems.length === 0) {
+    return {
+      text: `improvement.requires: a benchmark at ${min} or better; met`,
+      tone: 'text-ok',
+    };
+  }
+  return {
+    text: `improvement.requires: a benchmark at ${min} or better; not met: ${r.problems.join('; ')}`,
+    tone: 'text-warn',
+  };
+}
+
+/** The improver's state: its switches on this machine, the benchmark gate, each store's policy. */
+function ImproverStatus({ nav }: { nav: Nav }) {
+  const status = useData<ImproveStatus>('/api/improve');
+  const act = useAction();
+  const s = status.data;
+  const turn = (patch: { enabled?: boolean; notes?: boolean }): void =>
+    act.run(async () => {
+      const next = await api<ImproveStatus>('POST', '/api/improve/settings', {
+        as: nav.me,
+        ...patch,
+      });
+      if (next && Array.isArray(next.roots)) status.set(next);
+    });
+  // An older swarmupd has no improver state to show; the list works without it.
+  if (status.error || !s || !Array.isArray(s.roots)) return null;
+  return (
+    <div
+      className="panel flex flex-col gap-2 px-4 py-3 text-xs text-fg-3"
+      data-testid="improver-status"
+    >
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <span className="flex items-center gap-1.5 text-fg-2">
+          <Bot size={13} className="text-signal" />
+          Improver <span className="font-mono text-fg-4">{s.agent}</span>
+        </span>
+        <span data-improve-switch="enabled">
+          <Toggle
+            checked={s.enabled}
+            onChange={(v) => turn({ enabled: v })}
+            label="Files tasks from failing scores"
+          />
+        </span>
+        <span data-improve-switch="notes">
+          <Toggle
+            checked={s.notes}
+            onChange={(v) => turn({ notes: v })}
+            label="Folds learn notes into roles"
+          />
+        </span>
+      </div>
+      <div>
+        {s.enabled
+          ? `Every ${s.check_hours} h, an agent with ${s.threshold} or more failing task and run scores in ${s.max_age_days} days gets an improvement task.`
+          : 'Off: improvement tasks come only from Propose an improvement on a failing score.'}{' '}
+        These switches set <code>swarmupd.improve.enabled</code> and{' '}
+        <code>swarmupd.improve.notes</code> in your user config.
+      </div>
+      <div data-testid="benchmark-gate">
+        <FlaskConical size={12} className="mr-1 inline" />
+        {s.benchmark ? (
+          <>
+            Benchmark gate: each proposal is replayed on set{' '}
+            <span className="font-mono">{s.benchmark.set}</span>
+            {s.benchmark.entries?.length ? ` (${s.benchmark.entries.join(', ')})` : ''} against{' '}
+            <span className="font-mono">{s.benchmark.repo}</span>, {s.benchmark.repeat} repeat(s)
+            per side.
+          </>
+        ) : (
+          <>
+            Benchmark gate: off. Set <code>swarmupd.improve.benchmark</code> (a set and the repo
+            under test) in your user config to replay each proposal against the base; it spends
+            tokens. See <b>Benchmarks</b> for the sets.
+          </>
+        )}
+      </div>
+      {s.roots.map((r) => (
+        <div key={r.root} data-improve-root={r.root}>
+          <span className="font-mono text-fg-2">{r.root}</span>:{' '}
+          {r.policy.requires.benchmark
+            ? `a promote needs a benchmark at ${r.policy.requires.min_delta > 0 ? '+' : ''}${Math.round(r.policy.requires.min_delta * 100)} pts or better`
+            : 'a promote needs no benchmark'}
+          ; {r.open} of {r.policy.max_open_proposals} proposals open.{' '}
+          <button
+            type="button"
+            className="text-signal hover:underline"
+            onClick={() => nav.go('settings', 'definitions')}
+          >
+            Set in swarm.yaml (improvement)
+          </button>
+        </div>
+      ))}
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+/**
+ * **Propose a change**: a person edits an agent's role file and records it as a variant
+ * proposal, on a task they name or a new improvement task. Nothing changes until a promote.
+ */
+export function ProposeDialog({
+  me,
+  onClose,
+  onDone,
+}: {
+  me: string | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const agents = useData<Agent[]>('/api/agents');
+  const withFile = (agents.data ?? []).filter((a) => a.file);
+  const [agent, setAgent] = useState('');
+  const chosen = agent || withFile[0]?.id || '';
+  const role = useData<RoleFile>(chosen ? `/api/roles/${encodeURIComponent(chosen)}` : null);
+  const [text, setText] = useState<string | null>(null);
+  const [why, setWhy] = useState('');
+  const [task, setTask] = useState('');
+  const act = useAction();
+  const start = role.data?.text ?? '';
+  const shown = text ?? start;
+  const changed = role.data?.text !== undefined && shown !== start;
+  const submit = (): void =>
+    act.run(async () => {
+      const res = await api<{ variant: string; task: string }>('POST', '/api/defs/propose', {
+        as: me,
+        agent: chosen,
+        text: shown,
+        message: why.trim(),
+        ...(task.trim() ? { task: task.trim() } : {}),
+      });
+      toast(`Proposed ${res.variant} on ${res.task}`, { tone: 'ok' });
+      refreshSoon();
+      onDone();
+    });
+  return (
+    <Modal
+      title="Propose a change"
+      icon={GitPullRequestArrow}
+      onClose={onClose}
+      width={820}
+      dirty={changed || Boolean(why.trim())}
+    >
+      <div className="flex flex-col gap-3" data-propose-change>
+        <p className="text-sm text-fg-3">
+          Edit the agent's role file and say why. It is recorded as a variant proposal: the file
+          stays as it is until you promote the proposal, and with a benchmark gate swarmupd replays
+          it against the base first.
+        </p>
+        <ErrorLine error={agents.error ?? role.error} />
+        <Field label="Agent">
+          <Select
+            value={chosen}
+            onChange={(v) => {
+              setAgent(v);
+              setText(null);
+            }}
+            options={withFile.map((a): [string, string] => [
+              a.id,
+              a.name ? `${a.id} (${a.name})` : a.id,
+            ])}
+          />
+        </Field>
+        {agents.data && withFile.length === 0 && (
+          <p className="text-sm text-warn">
+            No agent has a role file yet; create one with Create role.
+          </p>
+        )}
+        {role.data && (
+          <Field label={role.data.path ?? 'Role file'}>
+            <textarea
+              aria-label="Role file"
+              value={shown}
+              spellCheck={false}
+              onChange={(e) => setText(e.target.value)}
+              className="h-72 w-full resize-y rounded-lg border border-white/10 bg-ink-950/60 p-2.5 font-mono text-[12px] leading-5 outline-none focus:border-signal/60"
+            />
+          </Field>
+        )}
+        <Field
+          label="Why"
+          hint="The proposal's message: what fails today and what the change fixes."
+        >
+          <TextArea value={why} onChange={setWhy} rows={3} />
+        </Field>
+        <Field
+          label="Task"
+          hint="An existing task to link it to; empty files an improvement task for you."
+        >
+          <Input value={task} onChange={setTask} placeholder="T-0042" />
+        </Field>
+        <ErrorLine error={act.error} />
+        <div className="flex items-center gap-2">
+          <Button
+            kind="primary"
+            icon={GitPullRequestArrow}
+            disabled={act.busy || !chosen || !changed || !why.trim()}
+            onClick={submit}
+          >
+            Propose
+          </Button>
+          <Button kind="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          {role.data && !changed && (
+            <span className="text-xs text-fg-4">Change the file to propose it</span>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** The Proposals list, with the improver's state; an empty state says what a proposal is. */
 export function Proposals({ nav }: { nav: Nav }) {
   const list = useData<ProposalView[]>('/api/defs/variants');
-  if (!list.data?.length && !list.error) return null;
+  const [proposing, setProposing] = useState(false);
+  const count = list.data?.length ?? 0;
   return (
     <section data-testid="proposals">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="label-caps">Proposals</span>
-        <span className="font-mono text-xs text-fg-4">{list.data?.length ?? 0}</span>
+        <span className="font-mono text-xs text-fg-4">{count}</span>
         <span className="text-xs text-fg-4">
           Changes to agent definitions; a person promotes or rejects each one.
         </span>
+        <span className="ml-auto">
+          <Button size="sm" icon={GitPullRequestArrow} onClick={() => setProposing(true)}>
+            Propose a change
+          </Button>
+        </span>
       </div>
-      <ErrorLine error={list.error} />
       <div className="flex flex-col gap-3">
+        <ImproverStatus nav={nav} />
+        <ErrorLine error={list.error} />
+        {list.data && count === 0 && (
+          <div className="panel px-4 py-3 text-sm text-fg-3" data-testid="proposals-empty">
+            <p className="text-fg-2">No proposal waits for you.</p>
+            <p className="mt-1">
+              A proposal is a reviewed change to an agent's definition, such as its role file, kept
+              as a variant beside the files until you promote or reject it. The improver writes one
+              when an agent's scores keep failing (from <b>Propose an improvement</b> on a failing
+              score, or on its own when the switch above is on) or when learn notes keep mattering.
+              You write one with <b>Propose a change</b>. Each shows its diff, its benchmark and
+              what <code>improvement.requires</code> still needs.
+            </p>
+          </div>
+        )}
         {(list.data ?? []).map((p) => (
           <ProposalCard key={`${p.root}/${p.name}`} p={p} nav={nav} onDone={list.reload} />
         ))}
       </div>
+      {proposing && (
+        <ProposeDialog
+          me={nav.me}
+          onClose={() => setProposing(false)}
+          onDone={() => {
+            setProposing(false);
+            list.reload();
+          }}
+        />
+      )}
     </section>
   );
 }

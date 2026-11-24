@@ -8,6 +8,7 @@ covers:
   - packages/supervisor/src/scores.ts
   - packages/supervisor/src/score-keeper.ts
   - packages/supervisor/src/score-history.ts
+  - packages/supervisor/src/score-detail.ts
   - packages/supervisor/src/orientation.ts
 links: [/core/search, /desktop/replay]
 ---
@@ -38,6 +39,9 @@ cards.
   agent's trend per scorer, a point per hour or day, for `GET /api/scores/history` and the
   desktop's Agents and Reports views. The keeper also hands the Runs view each run's orientation
   from memory.
+- `score-detail.ts` breaks one scorer down for an agent or a task (`GET /api/scores?detail=1`):
+  every scored subject worst first, with the approving verdict's criteria, the runs a token or
+  stuck-runs score counted, and a rubric row's judge scores, for the app's breakdown dialog.
 - `wrapped.ts` turns the report and the replay timeline of one window into a short card
   sequence.
 

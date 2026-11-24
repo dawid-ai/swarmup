@@ -29,7 +29,7 @@ What the person sees: one React app with a view per area.
 ## How it works
 
 - `App.tsx` routes between `views/*.tsx`: Inbox, Board, List, TaskPanel, Chat, Runs, Agents,
-  Schedules, Automation, Repeating, Channels, Decisions, Findings, Knowledge, Map, Search, Activity,
+  Schedules, Automation, Workflows, Repeating, Channels, Decisions, Findings, Knowledge, Map, Search, Activity,
   Reports, Bench, Replay, Settings, Setup, AddProject, NewTask and Standups.
 - `api.ts` holds the hooks and calls to swarmupd through the main process; `types.ts` the shapes.
 - `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the
@@ -37,10 +37,13 @@ What the person sees: one React app with a view per area.
   goal brief in `brief.tsx`, the task panel's **Work** section in `work.tsx`: review artifacts
   at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
-  the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel;
-  `ui/proposals.tsx` is the Agents view's **Proposals** list (see `/improve`); `ui/gate.tsx` is
+  the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel,
+  and `ui/score-breakdown.tsx` opens a score's breakdown and "How scores work" from each of them;
+  `ui/proposals.tsx` is the Agents view's **Proposals** list with the improver's state and
+  **Propose a change** (see `/improve`); `ui/gate.tsx` is
   a gate's **Approve** and **Reject** (Inbox **Gates**, the task panel), `ui/workflow.tsx` the
-  **Start a workflow** dialog that **New task** opens, and `ui/roles.tsx` edits a folder agent's
+  **Start a workflow** dialog that **New task** and `views/Workflows.tsx` open (the Workflows
+  view's editor writes the YAML through `lib/workflow-yaml.ts`, which keeps comments), and `ui/roles.tsx` edits a folder agent's
   `agent.md` or runtime addendum with each setting's source (see `/core/defs`);
 
   `lib/*.ts` are pure helpers (formatting, threads, filters, keys, markdown, history, map).

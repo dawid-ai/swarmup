@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type {
   AgentDef,
   MarkInput,
@@ -15,7 +15,6 @@ import type {
 import {
   agentRuntimeValues,
   readAgentLayers,
-  readWorkflows,
   checkDefinitionText,
   COMMAND_TIMEOUT_MS,
   loadDefinitions,
@@ -57,6 +56,7 @@ import { HOOKS_LOG } from './hooks.js';
 import { NoArtifact } from './artifact-api.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
+import { checkWorkflow, listWorkflows, workflowTemplates } from './workflow-api.js';
 import {
   deleteMcpServer,
   McpResolveError,
@@ -68,6 +68,7 @@ import {
 } from './mcp-api.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
+import { scoreDetail } from './score-detail.js';
 import { scorerCatalog, scorerSettings, summarizeScores } from './scores.js';
 import { historyBucket } from './score-history.js';
 import { buildWrapped } from './wrapped.js';
@@ -963,6 +964,57 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, 200, view());
       }
     }
+    // The improver's state for the Proposals list (W6): this machine's loop, the benchmark gate,
+    // and each store's `improvement` policy. A person turns the loop's switches on or off.
+    if (area === 'improve' && method === 'GET' && !id) {
+      return send(res, 200, sup.improver.status());
+    }
+    if (area === 'improve' && method === 'POST' && id === 'settings') {
+      humanOnly('changing the improvement loop');
+      const who = wsAs().actor;
+      if (!who || !isHuman(who)) {
+        throw new HttpError(
+          403,
+          `only a person changes the improvement loop${who ? `; ${who} cannot` : ''}`,
+        );
+      }
+      const patch: Record<string, boolean> = {};
+      for (const k of ['enabled', 'notes'] as const) {
+        if (body[k] === undefined) continue;
+        if (typeof body[k] !== 'boolean') throw new HttpError(400, `${k}: use true or false`);
+        patch[k] = body[k];
+      }
+      applySettings(sup, { opsd: { improve: patch } });
+      return send(res, 200, sup.improver.status());
+    }
+    // **Propose a change** (W6): a person's own edit of an agent's role file, recorded as a
+    // variant proposal like the improver's, on the task named or on a new improvement task.
+    if (area === 'defs' && method === 'POST' && id === 'propose' && !action) {
+      humanOnly('proposing a definition change');
+      const who = wsAs().actor;
+      if (!who || !isHuman(who)) {
+        throw new HttpError(
+          403,
+          `only a person proposes from the app${who ? `; ${who} cannot` : ''}`,
+        );
+      }
+      const text = body.text;
+      if (typeof text !== 'string') throw new HttpError(400, 'text: send the role file text');
+      const done = sup.improver.proposeByHand(who, {
+        agent: need(body.agent, 'agent'),
+        text,
+        message: str(body.message) ?? '',
+        task: str(body.task) || undefined,
+        name: str(body.name) || undefined,
+      });
+      await sup.tick();
+      return send(res, 201, {
+        variant: done.variant,
+        root: done.root,
+        task: done.proposal.task,
+        proposal: done.proposal,
+      });
+    }
     // **Propose an improvement** on an agent's failing scorer: the improvement task, now (W6).
     // `{ kind: 'notes' }` files the one that folds the agent's learn-note candidates in.
     if (method === 'POST' && area === 'improve' && !id) {
@@ -1043,10 +1095,14 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
       if (method === 'GET' && id) {
         const def = ws.agent(id);
         if (!def) throw new HttpError(404, `no role file for ${id}`);
-        const root = ws.roots.find((r) => def.file.startsWith(r.dir + sep))?.name ?? null;
+        const holder = ws.roots.find((r) => def.file.startsWith(r.dir + sep));
+        const root = holder?.name ?? null;
         return send(res, 200, {
           ...roleOut(def),
           root,
+          // The file itself, for **Propose a change**: its store path and its whole text.
+          ...(holder ? { path: relative(holder.dir, def.file).split(sep).join('/') } : {}),
+          text: readFileSync(def.file, 'utf8').replace(/\r\n/g, '\n'),
           ...(def.folder ? { layers: readAgentLayers(def) } : {}),
           settings: roleSettings(sup, def),
         });
@@ -1069,29 +1125,53 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, body.create === true ? 201 : 200, roleOut(def));
       }
     }
-    // Workflows (W5): each root's list, one compiled with sample values, and a start.
+    // Workflows (W5): each root's list with its text and stages, the starter templates, a check
+    // of edited text with a compiled preview, a start, and a person's save and delete.
     if (area === 'workflows') {
       const ws = wsAs();
-      if (method === 'GET' && !id) {
+      if (method === 'GET' && !id) return send(res, 200, listWorkflows(ws));
+      if (method === 'GET' && id === 'templates') return send(res, 200, workflowTemplates());
+      if (method === 'POST' && id === 'check') {
+        const text = body.text;
+        if (typeof text !== 'string') throw new HttpError(400, 'text: send the workflow text');
+        const raw = body.params ?? {};
+        if (typeof raw !== 'object' || Array.isArray(raw) || raw === null) {
+          throw new HttpError(400, 'params: expected an object of names to values');
+        }
         return send(
           res,
           200,
-          ws.roots
-            .filter((r) => !r.isMirror)
-            .flatMap((r) =>
-              readWorkflows(r.dir).map((w) => ({
-                root: r.name,
-                id: w.id,
-                title: w.def?.title,
-                description: w.def?.description,
-                approval: w.def ? (w.def.approval ?? 'proposal') : undefined,
-                params: w.def?.params ?? {},
-                stages: w.def?.stages.length ?? 0,
-                ok: w.def !== null,
-                problems: w.problems.map((p) => `${p.path}: ${p.message}`),
-              })),
+          checkWorkflow(ws, {
+            id: need(body.id, 'id'),
+            text,
+            root: str(body.root) || undefined,
+            params: Object.fromEntries(
+              Object.entries(raw as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')]),
             ),
+          }),
         );
+      }
+      if (method === 'POST' && (id === 'save' || id === 'delete')) {
+        const what = id === 'save' ? 'editing workflows' : 'deleting workflows';
+        humanOnly(what);
+        const who = ws.actor;
+        if (!who || !isHuman(who)) {
+          throw new HttpError(403, `only a person does ${what}${who ? `; ${who} cannot` : ''}`);
+        }
+        const wid = need(body.id, 'id');
+        const root = str(body.root) || undefined;
+        const expect = typeof body.expect === 'string' ? body.expect : undefined;
+        if (id === 'delete') {
+          const gone = ws.workflowDelete(wid, { root, expect });
+          await sup.tick();
+          return send(res, 200, gone);
+        }
+        const text = body.text;
+        if (typeof text !== 'string') throw new HttpError(400, 'text: send the workflow text');
+        const create = body.create === true;
+        const saved = ws.workflowSave(wid, text, { root, expect, create });
+        await sup.tick();
+        return send(res, create ? 201 : 200, saved);
       }
       if (method === 'POST' && id === 'start') {
         humanOnly('starting a workflow');
@@ -1216,6 +1296,21 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         );
         const agent = q.get('agent') || undefined;
         const task = q.get('task') || undefined;
+        // A breakdown (`detail=1`): every subject `scorer` scored for the agent or task, worst
+        // first, with the criteria, runs or judge scores behind each value.
+        if (q.get('detail') === '1') {
+          const scorer = q.get('scorer') || '';
+          if (!scorer) throw new HttpError(400, 'scorer: name the scorer to break down');
+          const catalog = scorerCatalog({ settings });
+          const detail = scoreDetail(
+            { ws: () => wsAs(), runs: () => sup.runs() },
+            results,
+            catalog,
+            { scorer, agent, task },
+          );
+          if (!detail) throw new HttpError(404, `no scorer '${scorer}' and no scores from it`);
+          return send(res, 200, { scorers: catalog, detail });
+        }
         // A task's own scores, and the run scores (orientation) of its runs.
         let mine: typeof results = [];
         if (task) {

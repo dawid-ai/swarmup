@@ -653,6 +653,9 @@ export interface RoleFile {
   layers?: { role: RoleLayer; runtime: RoleLayer | null };
   /** Its run settings and where each comes from. */
   settings?: RoleSetting[];
+  /** The role file's store path and whole text, for **Propose a change**; absent before W6. */
+  path?: string;
+  text?: string;
 }
 
 /** One workflow of a root (`GET /api/workflows`, W5). */
@@ -669,6 +672,76 @@ export interface WorkflowInfo {
   stages: number;
   ok: boolean;
   problems: string[];
+  /** The file and its text, problems with lines, and the checked definition; absent from an older swarmupd. */
+  file?: string;
+  text?: string;
+  issues?: DefProblem[];
+  def?: WorkflowDefView | null;
+}
+
+/** A workflow stage as the file sets it (`packages/core/src/defs/workflow.ts`). */
+export interface WorkflowStageView {
+  key: string;
+  title?: string;
+  owner?: string;
+  estimate?: string;
+  after?: string[];
+  review?: string;
+  type?: string;
+  priority?: string;
+  labels?: string[];
+  body?: string;
+  done_when?: unknown;
+  gate?: { ask: string; to?: string; options?: string[]; on_reject?: 'park' | 'revise' };
+  when?: { param: string; equals: string | string[] };
+}
+
+/** A checked workflow file. */
+export interface WorkflowDefView {
+  id: string;
+  title?: string;
+  description?: string;
+  params?: WorkflowInfo['params'] | null;
+  milestone: { title: string; done_when: unknown };
+  approval?: 'proposal' | 'starter';
+  stages: WorkflowStageView[];
+}
+
+/** A starter template for a new workflow: `GET /api/workflows/templates`. */
+export interface WorkflowTemplate {
+  id: string;
+  title: string;
+  description?: string;
+  text: string;
+}
+
+/** One item of a compiled workflow plan. */
+export interface WorkflowPlanItem {
+  key: string;
+  title: string;
+  owner: string;
+  estimate: string;
+  after?: string[];
+  type?: string;
+  priority?: string;
+  labels?: string[];
+  done_when?: unknown;
+  gate?: { ask: string; options?: string[]; on_reject?: 'park' | 'revise' };
+}
+
+/** `POST /api/workflows/check`: problems with lines and the plan a preview compiles to. */
+export interface WorkflowCheck {
+  ok: boolean;
+  problems: DefProblem[];
+  def: WorkflowDefView | null;
+  params?: Record<string, string>;
+  plan?: {
+    milestone: { title: string; done_when: unknown };
+    approval: 'proposal' | 'starter';
+    dropped: string[];
+    items: WorkflowPlanItem[];
+  };
+  preview_error?: string;
 }
 
 export interface Decision {
@@ -1132,6 +1205,44 @@ export interface ScoreResult {
   at: string;
   extra?: Record<string, number>;
   note?: string;
+}
+
+/** One scored subject of a breakdown, with what the scorer read in it. */
+export interface ScoreDetailRow extends ScoreResult {
+  title?: string;
+  /** The rubric a rubric scorer judged against; `extra` then holds the judge's scores. */
+  rubric?: { id: string; pass: number };
+  criteria?: Array<{
+    id: string;
+    kind?: string;
+    text?: string;
+    result?: string;
+    score?: number;
+    note?: string;
+    evidence?: string;
+  }>;
+  runs?: Array<{
+    id: string;
+    agent: string;
+    tokens: number;
+    started_at: string;
+    ended_at?: string;
+    review?: boolean;
+    status?: string;
+    reason?: string;
+    exit?: number | null;
+  }>;
+}
+
+/** `GET /api/scores?scorer=&detail=1`: one scorer's subjects for an agent or a task. */
+export interface ScoreBreakdown {
+  scorer: ScorerInfo;
+  agent?: string;
+  task?: string;
+  mean: number | null;
+  passed: number;
+  judged: number;
+  rows: ScoreDetailRow[];
 }
 
 /** `GET /api/scores`: per agent, the scorers, and with `task=` that task's scores. */
@@ -1823,6 +1934,28 @@ export interface ProposalView {
   };
   diffs: Array<{ path: string; kind: 'added' | 'changed' | 'removed'; lines: string[] }>;
   benchmark?: ProposalBenchmark;
+  /** The store's `improvement.requires`, and why it refuses a promote now (empty: it passes). */
+  requires?: { benchmark: boolean; min_delta: number; problems: string[] };
+}
+
+/** `GET /api/improve`: this machine's improvement loop and each store's policy (W6). */
+export interface ImproveStatus {
+  enabled: boolean;
+  notes: boolean;
+  agent: string;
+  threshold: number;
+  max_age_days: number;
+  check_hours: number;
+  benchmark: { set: string; repo: string; repeat: number; entries?: string[] } | null;
+  roots: Array<{
+    root: string;
+    open: number;
+    policy: {
+      agent: string;
+      max_open_proposals: number;
+      requires: { benchmark: boolean; min_delta: number };
+    };
+  }>;
 }
 
 /** One MCP server in **Settings > MCP servers** (W8); a secret shows only whether it is set. */

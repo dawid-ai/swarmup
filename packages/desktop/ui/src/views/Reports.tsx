@@ -211,7 +211,13 @@ export function Reports({ nav }: { nav: Nav }) {
           </div>
         )}
         {r?.scores && r.scores.length > 0 && (
-          <ScoresTable scores={r.scores} history={series} bucket={trends.data?.bucket} nav={nav} />
+          <ScoresTable
+            scores={r.scores}
+            history={series}
+            bucket={trends.data?.bucket}
+            nav={nav}
+            since={r.from}
+          />
         )}
         {r && r.decisions.length > 0 && (
           <div className="panel p-4">

@@ -7,7 +7,7 @@
  * and `{{human}}` is the store's person; there are no expressions. A stage with `when` is left out unless the parameter has the value; a
  * stage with `gate` becomes a `gate` item that a person approves or rejects.
  */
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DoneWhenEntry } from '../criteria.js';
 import { parseDoneWhen } from '../criteria.js';
@@ -283,6 +283,97 @@ export function readWorkflows(rootDir: string): WorkflowInfo[] {
     out.push(checkWorkflowText(id, readFileSync(file, 'utf8'), { file }));
   }
   return out;
+}
+
+/** The text of a new blank workflow: one stage and a milestone, which checks as it is. */
+export const BLANK_WORKFLOW = `# yaml-language-server: $schema=../.schemas/workflow.schema.json
+title: New workflow
+description: When to use it.
+params:
+  topic:
+    description: What the milestone is about, in a few words
+    required: true
+milestone:
+  title: '{{topic}}'
+  done_when: '{{topic}} is done and checked'
+approval: proposal
+stages:
+  - key: build
+    title: 'Build {{topic}}'
+    owner: '*:engineer'
+    estimate: 2h
+    done_when: '{{topic}} works and its tests pass'
+`;
+
+/** Parameter values to compile a workflow with for a preview: each default, else its first option, else `example`. */
+export function sampleParams(def: Pick<WorkflowDef, 'params'>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, p] of Object.entries(def.params ?? {})) {
+    out[k] = p?.default ?? p?.options?.[0] ?? 'example';
+  }
+  return out;
+}
+
+/** The file of workflow `id` in the store `rootDir`, refusing a bad id. */
+export function workflowFile(rootDir: string, id: string): string {
+  if (!WORKFLOW_ID_RE.test(id)) {
+    throw new OpsError(
+      `bad workflow id '${id}': use lowercase letters, digits and dashes, such as bugfix`,
+      2,
+    );
+  }
+  return join(rootDir, WORKFLOWS_DIR, `${id}.yaml`);
+}
+
+/** The text of workflow file `file`, or undefined when it is not there. */
+export function readWorkflowText(file: string): string | undefined {
+  return plain(file, 'file') ? normalText(readFileSync(file)) : undefined;
+}
+
+/**
+ * Checks that workflow file `file` is still the text the caller read (`expect`), or that it is not
+ * there yet (`create`). Refuses with exit 1 so a stale editor never overwrites a newer change.
+ */
+export function assertWorkflowUnchanged(
+  file: string,
+  id: string,
+  opts: { expect?: string; create?: boolean },
+): void {
+  const now = readWorkflowText(file);
+  if (opts.create) {
+    if (now !== undefined) throw new OpsError(`workflow ${id} exists already; open it to edit`, 1);
+    return;
+  }
+  if (now === undefined) throw new OpsError(`no workflow '${id}'; it was moved or deleted`, 1);
+  if (opts.expect !== undefined && now !== normalText(opts.expect)) {
+    throw new OpsError(
+      `workflows/${id}.yaml changed since you opened it; open it again before you save`,
+      1,
+    );
+  }
+}
+
+/**
+ * Writes `text` as workflow `id` of `store` through its atomic write, ending in a newline. Refuses
+ * a `workflows/` folder that is a link.
+ */
+export function writeWorkflowFile(
+  store: { dir: string; writeAtomic(path: string, content: string): void },
+  id: string,
+  text: string,
+): string {
+  const file = workflowFile(store.dir, id);
+  const dir = join(store.dir, WORKFLOWS_DIR);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!plain(dir, 'dir'))
+    throw new OpsError('workflows/ is a link; workflows go in a real folder', 2);
+  store.writeAtomic(file, text.endsWith('\n') ? text : `${text}\n`);
+  return file;
+}
+
+/** Removes a workflow file. */
+export function removeWorkflowFile(file: string): void {
+  rmSync(file);
 }
 
 /** Workflow `id` of the store in `rootDir`; refuses one that is missing or does not check. */

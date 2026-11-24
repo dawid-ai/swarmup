@@ -161,10 +161,13 @@ export function NewTask({
   project: shownProject,
   added,
   search,
+  onOpenWorkflows,
 }: {
   me: string | null;
   onClose: () => void;
   onCreated: (id: string) => void;
+  /** Opens the Workflows view from Start a workflow, when the project has none. */
+  onOpenWorkflows?: () => void;
   /** The loaded data roots, the default one first (`rootList` of the settings). */
   roots?: RootInfo[];
   /** The tasks App has loaded: they say which root a filtered project's tasks live in. */
@@ -258,7 +261,14 @@ export function NewTask({
   };
   // A repeatable milestone from the project's workflows (W5) replaces the form.
   if (fromWorkflow) {
-    return <StartWorkflow me={me} onClose={onClose} onStarted={onCreated} />;
+    return (
+      <StartWorkflow
+        me={me}
+        onClose={onClose}
+        onStarted={onCreated}
+        onOpenWorkflows={onOpenWorkflows}
+      />
+    );
   }
   return (
     <Modal

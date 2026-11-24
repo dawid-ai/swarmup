@@ -94,6 +94,31 @@ export function readOverlay(dir: string): Map<string, string> {
   return new Map([...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
+/**
+ * An overlay from file texts by store path, as the app sends one (W6): each path relative, with
+ * `/` and plain name segments, and the same limits as {@link readOverlay}.
+ */
+export function overlayFromFiles(files: Readonly<Record<string, unknown>>): Map<string, string> {
+  const entries = Object.entries(files);
+  if (entries.length === 0) throw new OpsError('the overlay holds no files', 2);
+  if (entries.length > OVERLAY_MAX_FILES) {
+    throw new OpsError(`an overlay holds at most ${OVERLAY_MAX_FILES} files`, 2);
+  }
+  const out = new Map<string, string>();
+  for (const [path, text] of entries) {
+    const segs = path.split('/');
+    if (segs.some((s) => !/^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(s))) {
+      throw new OpsError(`bad overlay path '${path}'`, 2);
+    }
+    if (typeof text !== 'string') throw new OpsError(`${path}: send the file text`, 2);
+    if (Buffer.byteLength(text) > OVERLAY_MAX_BYTES) {
+      throw new OpsError(`${path} is over ${OVERLAY_MAX_BYTES / 1024} KB`, 2);
+    }
+    out.set(path, normalText(text));
+  }
+  return new Map([...out].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 

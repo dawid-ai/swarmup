@@ -1,4 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
@@ -27,6 +34,21 @@ export function templateWorkflowIds(): string[] {
     .filter((f) => f.endsWith('.yaml'))
     .map((f) => f.slice(0, -5))
     .sort();
+}
+
+/** The text of starter workflow `id` from `templates/workflows/`; refuses an unknown id. */
+export function templateWorkflowText(id: string): string {
+  const known = templateWorkflowIds();
+  if (!known.includes(id)) {
+    throw new OpsError(
+      `no starter workflow '${id}'${known.length ? `: use ${known.join(', ')}` : ''}`,
+      2,
+    );
+  }
+  return readFileSync(join(TEMPLATES_DIR, 'workflows', `${id}.yaml`), 'utf8').replace(
+    /\r\n/g,
+    '\n',
+  );
 }
 
 /** Role and people templates shipped with the core package. */
