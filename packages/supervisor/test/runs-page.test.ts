@@ -196,7 +196,12 @@ describe('GET /api/runs', () => {
     delete env.SWARMUP_ROOTS;
     delete env.SWARMUP_RUN_TOKEN;
     delete env.SWARMUP_RUN_STATE_DIR;
-    const sup = new Supervisor({ env, cwd: repo, user: { me: 'human:dawid' } });
+    const sup = new Supervisor({
+      env,
+      cwd: repo,
+      user: { me: 'human:dawid' },
+      freeMem: () => 64 * 2 ** 30,
+    });
     closers.push(() => sup.close());
     const api = await startApi(sup, { port: 0, token: 'tok', version: 't', build: '1' });
     closers.unshift(api.close);
@@ -286,7 +291,12 @@ describe('runs in state.db', () => {
     // A run file kept before state.db: imported when swarmupd starts.
     const old = new RunStore(state);
     old.save(rec('01OLD'));
-    const sup = new Supervisor({ env, cwd: repo, user: { me: 'human:dawid' } });
+    const sup = new Supervisor({
+      env,
+      cwd: repo,
+      user: { me: 'human:dawid' },
+      freeMem: () => 64 * 2 ** 30,
+    });
     closers.push(() => sup.close());
     sup.store.save(rec('01NEW', { tokens: 7 }));
     expect(sup.store.list().map((r) => r.id)).toEqual(['01OLD', '01NEW'].sort().reverse());
@@ -296,7 +306,12 @@ describe('runs in state.db', () => {
     expect(sup.store.get('01NEW')).toMatchObject({ tokens: 7 });
     expect(sup.store.list()).toHaveLength(2);
     await sup.close();
-    const next = new Supervisor({ env, cwd: repo, user: { me: 'human:dawid' } });
+    const next = new Supervisor({
+      env,
+      cwd: repo,
+      user: { me: 'human:dawid' },
+      freeMem: () => 64 * 2 ** 30,
+    });
     closers.push(() => next.close());
     expect(next.store.list().map((r) => r.id)).toEqual(['01OLD', '01NEW'].sort().reverse());
   });
