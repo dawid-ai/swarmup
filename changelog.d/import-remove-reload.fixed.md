@@ -1,1 +1,0 @@
-- `swarmup defs import-schedules --remove` and `swarmup defs import-config --remove` have a running swarmupd read the user config again at once, as `defs trust` and `triggers on|off` do, so the removed schedules stop and the triggers apply without a restart.

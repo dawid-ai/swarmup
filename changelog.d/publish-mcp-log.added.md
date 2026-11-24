@@ -1,1 +1,0 @@
-- The `mcp` publish adapter logs each tool call to `publish-mcp.log` in swarmupd's state folder (time, server, tool, task, adapter, attempt, outcome, and a hash of the arguments), as `swarmup mcp exec` does in a run's `mcp.log`.

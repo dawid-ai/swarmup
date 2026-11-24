@@ -3,6 +3,13 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.24 (2026-11-24)
+
+- **Judge scores in reports.** **Reports** now include the scores from a project's rubric scorers.
+- **Compare against an earlier version.** A project can name a variant that is its own agent definitions as of an earlier commit, to benchmark or trial against the current ones.
+- **Clearer problems.** `swarmup validate` points at the exact line of a trigger or scorer that names something missing.
+- **Fixes.** Moving schedules into the project takes effect without a restart, publishing logs each tool call, and a failed publish keeps its note even when the error quotes a token.
+
 ## v0.3.0-beta.23 (2026-11-23)
 
 - **Automation in the app.** A new **Automation** view shows each project's scheduled triggers and merge checks, whether this PC runs them, and lets you turn them on, review the exact set and approve it, or revoke it.

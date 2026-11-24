@@ -6,6 +6,21 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.24 (2026-11-24)
+
+### Added
+
+- The `mcp` publish adapter logs each tool call to `publish-mcp.log` in swarmupd's state folder (time, server, tool, task, adapter, attempt, outcome, and a hash of the arguments), as `swarmup mcp exec` does in a run's `mcp.log`.
+- `variants.<name>` in `swarm.yaml` is active: `description` shows in `swarmup defs variants`, and `from_ref` makes a variant of the store's definitions at a git ref, usable with `--variant` in `launch` and `bench run` and in `experiments`. `swarmup validate` checks that the ref resolves.
+
+### Fixed
+
+- `swarmup defs import-schedules --remove` and `swarmup defs import-config --remove` have a running swarmupd read the user config again at once, as `defs trust` and `triggers on|off` do, so the removed schedules stop and the triggers apply without a restart.
+- A publish adapter failure whose error quotes something that looks like a token now still
+  leaves its note on the task, with that line removed, instead of losing the note.
+- `swarmup report` and the desktop **Reports** view list rubric scorers' scores for the report's window after the built-in scorers, as `swarmup scores` does.
+- `swarmup validate` points a missing workflow, repeat, agent or rubric named in a trigger or scorer file at the key that names it, instead of line 1, column 1.
+
 ## 0.3.0-beta.23 (2026-11-23)
 
 ### Added
