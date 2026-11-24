@@ -997,10 +997,12 @@ export async function publishWithAdapter(o: {
   const base = { adapter: name, commit, files: paths, attempt: attempt.id, output: outcome.output };
   if (!outcome.ok || !outcome.url) {
     const why = outcome.why ?? 'it failed';
+    // An adapter's error can quote a token; the comment is synced to git and read by agents, and
+    // a secret in it would make the write refuse, losing the note on what to do next.
     const res = ws.comment(
       o.ref,
       [
-        `${id}: publish adapter ${name} failed (${why}); attempt ${attempt.id} stands.`,
+        `${id}: publish adapter ${name} failed (${redactSecrets(why)}); attempt ${attempt.id} stands.`,
         '',
         `- If it went live anyway, record it: \`swarmup published ${id} --url URL\``,
         `- Else fix the adapter and run \`swarmup publish ${id} --again\``,
