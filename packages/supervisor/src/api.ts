@@ -68,6 +68,7 @@ import {
 } from './mcp-api.js';
 import { doctor, installUserSkills } from './doctor.js';
 import { buildReportAsync, ReportEvents, reportWindow } from './report.js';
+import { scoreDetail } from './score-detail.js';
 import { scorerCatalog, scorerSettings, summarizeScores } from './scores.js';
 import { historyBucket } from './score-history.js';
 import { buildWrapped } from './wrapped.js';
@@ -1240,6 +1241,21 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         );
         const agent = q.get('agent') || undefined;
         const task = q.get('task') || undefined;
+        // A breakdown (`detail=1`): every subject `scorer` scored for the agent or task, worst
+        // first, with the criteria, runs or judge scores behind each value.
+        if (q.get('detail') === '1') {
+          const scorer = q.get('scorer') || '';
+          if (!scorer) throw new HttpError(400, 'scorer: name the scorer to break down');
+          const catalog = scorerCatalog({ settings });
+          const detail = scoreDetail(
+            { ws: () => wsAs(), runs: () => sup.runs() },
+            results,
+            catalog,
+            { scorer, agent, task },
+          );
+          if (!detail) throw new HttpError(404, `no scorer '${scorer}' and no scores from it`);
+          return send(res, 200, { scorers: catalog, detail });
+        }
         // A task's own scores, and the run scores (orientation) of its runs.
         let mine: typeof results = [];
         if (task) {

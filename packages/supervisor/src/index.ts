@@ -48,3 +48,4 @@ export * from './hooks.js';
 export * from './rubric-scorers.js';
 export * from './automation-api.js';
 export * from './workflow-api.js';
+export * from './score-detail.js';

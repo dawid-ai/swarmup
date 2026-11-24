@@ -622,7 +622,7 @@ export function TaskPanel({
 
           {t && <WorkSection task={id} events={events} focus={artifactFocus} />}
 
-          {t && <TaskScoresSection task={`${t.root}/${t.id}`} />}
+          {t && <TaskScoresSection task={`${t.root}/${t.id}`} nav={nav} />}
 
           <h3 className="label-caps mt-7 mb-3 flex items-center gap-1.5">
             <History size={12} /> Conversation and history

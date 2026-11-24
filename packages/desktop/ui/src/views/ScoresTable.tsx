@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Nav } from '../App';
 import { Who, cx } from '../components';
 import type { AgentScores, ScoreSeries, ScorerLine } from '../types';
@@ -9,6 +10,8 @@ import {
   Sparkline,
   SubjectLink,
 } from '../ui/score';
+import type { BreakdownTarget } from '../ui/score-breakdown';
+import { ScoreBreakdownDialog, ScoresHelpButton, ScoresHelpDialog } from '../ui/score-breakdown';
 
 /** A cell's tooltip: what it is over, its pass rate and its worst subjects. */
 function cellTitle(l: ScorerLine): string {
@@ -63,12 +66,17 @@ export function ScoresTable({
   history,
   bucket = 'day',
   nav,
+  since,
 }: {
   scores: AgentScores[];
   history?: ScoreSeries[];
   bucket?: 'hour' | 'day';
   nav: Nav;
+  /** The report's window start: a breakdown covers the same task and run scores. */
+  since?: string;
 }) {
+  const [breakdown, setBreakdown] = useState<BreakdownTarget | null>(null);
+  const [help, setHelp] = useState(false);
   const shown = SCORER_LABELS.filter(([id]) =>
     scores.some((a) => a.scorers.some((l) => l.scorer === id)),
   );
@@ -77,7 +85,13 @@ export function ScoresTable({
     .filter((w) => w.list.length > 0);
   return (
     <div className="panel overflow-x-auto" data-testid="report-scores">
-      <div className="label-caps border-b border-white/6 px-4 py-2.5">Scores</div>
+      <div className="flex items-center gap-3 border-b border-white/6 px-4 py-2.5">
+        <span className="label-caps">Scores</span>
+        <span className="text-[11px] text-fg-4">Click a value for every task or run behind it</span>
+        <span className="ml-auto">
+          <ScoresHelpButton onClick={() => setHelp(true)} />
+        </span>
+      </div>
       <table className="w-full text-sm">
         <thead className="text-left text-xs text-fg-4">
           <tr>
@@ -112,9 +126,12 @@ export function ScoresTable({
                 const series = seriesOf(history, a.agent, id);
                 return (
                   <td key={id} title={cellTitle(l)} className="px-2 py-2 text-right align-top">
-                    <div
+                    <button
+                      type="button"
+                      data-score-cell={`${a.agent}/${id}`}
+                      onClick={() => setBreakdown({ scorer: id, agent: a.agent, since })}
                       className={cx(
-                        'tabular-nums',
+                        'tabular-nums underline decoration-white/15 decoration-dotted underline-offset-4 hover:text-signal',
                         rate === null
                           ? ''
                           : rate >= 0.8
@@ -126,7 +143,7 @@ export function ScoresTable({
                     >
                       {scoreValue(l.mean, l.unit)}
                       <span className="ml-1 text-xs text-fg-4">{l.n}</span>
-                    </div>
+                    </button>
                     {series && series.points.length > 1 && (
                       <div className="mt-1 flex justify-end">
                         <Sparkline series={series} bucket={bucket} width={64} height={16} />
@@ -145,9 +162,14 @@ export function ScoresTable({
           <div className="grid grid-cols-1 gap-x-6 gap-y-2 lg:grid-cols-2">
             {worst.map((w) => (
               <div key={w.id} className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
-                <span className="w-28 shrink-0 cursor-help text-fg-3" title={headerTitle(w.line)}>
+                <button
+                  type="button"
+                  className="w-28 shrink-0 text-left text-fg-3 hover:text-signal"
+                  title={headerTitle(w.line)}
+                  onClick={() => setBreakdown({ scorer: w.id, since })}
+                >
                   {w.label}
-                </span>
+                </button>
                 {w.list.map((s) => (
                   <SubjectLink
                     key={`${s.agent}-${s.subject}`}
@@ -162,6 +184,10 @@ export function ScoresTable({
           </div>
         </div>
       )}
+      {breakdown && (
+        <ScoreBreakdownDialog target={breakdown} nav={nav} onClose={() => setBreakdown(null)} />
+      )}
+      {help && <ScoresHelpDialog onClose={() => setHelp(false)} />}
     </div>
   );
 }

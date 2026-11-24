@@ -1,10 +1,12 @@
 // One agent's scores for its card in the Agents view (W4): per scorer the value, pass rate, count,
 // pass or fail against the threshold, a trend, and, opened, what to change and the worst tasks.
-import { ChevronDown, ChevronRight, Sparkles, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, ListTree, Sparkles, Wrench } from 'lucide-react';
 import { useState } from 'react';
 import type { Nav } from '../App';
 import { cx } from '../components';
 import type { AgentScores, ScoreSeries, ScorerLine } from '../types';
+import type { BreakdownTarget } from './score-breakdown';
+import { ScoreBreakdownDialog, ScoresHelpButton, ScoresHelpDialog } from './score-breakdown';
 import {
   linePasses,
   PassChip,
@@ -34,6 +36,7 @@ function ScoreRow({
   bucket,
   nav,
   onPropose,
+  onBreakdown,
 }: {
   line: ScorerLine;
   series?: ScoreSeries;
@@ -41,6 +44,8 @@ function ScoreRow({
   nav: Nav;
   /** Files an improvement task for the agent now (W6); only on a failing scorer. */
   onPropose?: () => void;
+  /** Opens every scored task or run behind the value. */
+  onBreakdown: () => void;
 }) {
   const pass = linePasses(line);
   const [open, setOpen] = useState(pass === false);
@@ -55,30 +60,38 @@ function ScoreRow({
       : line.worst.map((w) => ({ subject: w.subject, value: scoreValue(w.value, line.unit) }));
   return (
     <div data-testid={`agent-score-${line.scorer}`} className="rounded-md hover:bg-white/3">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        title={hint}
-        className="flex w-full items-center gap-2 px-1.5 py-1 text-left text-xs"
-      >
-        {open ? (
-          <ChevronDown size={12} className="shrink-0 text-fg-4" />
-        ) : (
-          <ChevronRight size={12} className="shrink-0 text-fg-4" />
-        )}
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-fg-2">{scorerLabel(line.scorer)}</span>
-          <span className="truncate text-[11px] text-fg-4">{overText(line)}</span>
-        </span>
-        {series ? (
-          <Sparkline series={series} bucket={bucket} width={56} height={16} />
-        ) : (
-          <span className="w-14 shrink-0" />
-        )}
-        <span className="w-14 shrink-0 text-right font-mono text-fg tabular-nums">
+      <div className="flex w-full items-center gap-2 px-1.5 py-1 text-xs">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          title={hint}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          {open ? (
+            <ChevronDown size={12} className="shrink-0 text-fg-4" />
+          ) : (
+            <ChevronRight size={12} className="shrink-0 text-fg-4" />
+          )}
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-fg-2">{scorerLabel(line.scorer)}</span>
+            <span className="truncate text-[11px] text-fg-4">{overText(line)}</span>
+          </span>
+          {series ? (
+            <Sparkline series={series} bucket={bucket} width={56} height={16} />
+          ) : (
+            <span className="w-14 shrink-0" />
+          )}
+        </button>
+        <button
+          type="button"
+          data-score-value={line.scorer}
+          onClick={onBreakdown}
+          title="Open the breakdown: every scored task or run, worst first"
+          className="w-14 shrink-0 rounded text-right font-mono text-fg tabular-nums underline decoration-white/20 decoration-dotted underline-offset-4 hover:text-signal"
+        >
           {scoreValue(line.mean, line.unit)}
-        </span>
+        </button>
         <PassChip
           pass={pass}
           title={
@@ -87,7 +100,7 @@ function ScoreRow({
               : `${mean}${scoreValue(line.mean, line.unit)}, passes at ${thresholdText(line)}`
           }
         />
-      </button>
+      </div>
       {open && (
         <div className="flex flex-col gap-1.5 pt-0.5 pr-1.5 pb-2 pl-6 text-xs">
           {line.description && (
@@ -111,6 +124,14 @@ function ScoreRow({
               ))}
             </div>
           )}
+          <button
+            type="button"
+            className="flex items-center gap-1.5 self-start text-fg-3 hover:text-signal hover:underline"
+            onClick={onBreakdown}
+          >
+            <ListTree size={12} />
+            Breakdown: every {line.level === 'agent' ? 'piece of evidence' : `scored ${line.level}`}
+          </button>
           {pass === false && onPropose && (
             <button
               type="button"
@@ -142,6 +163,8 @@ export function AgentScoresBlock({
   nav: Nav;
   onPropose?: () => void;
 }) {
+  const [breakdown, setBreakdown] = useState<BreakdownTarget | null>(null);
+  const [help, setHelp] = useState(false);
   if (!scores || scores.scorers.length === 0) return null;
   const failing = scores.scorers.filter((l) => linePasses(l) === false).length;
   return (
@@ -153,8 +176,11 @@ export function AgentScoresBlock({
         ) : (
           <span className="text-xs text-fg-4">none failing</span>
         )}
+        <span className="ml-auto">
+          <ScoresHelpButton onClick={() => setHelp(true)} />
+        </span>
         <span
-          className="ml-auto text-[10px] text-fg-4"
+          className="text-[10px] text-fg-4"
           title="Values cover every scored task and run; the line shows the last 30 days"
         >
           30-day trend
@@ -168,8 +194,13 @@ export function AgentScoresBlock({
           bucket={bucket}
           nav={nav}
           onPropose={onPropose}
+          onBreakdown={() => setBreakdown({ scorer: l.scorer, agent: scores.agent })}
         />
       ))}
+      {breakdown && (
+        <ScoreBreakdownDialog target={breakdown} nav={nav} onClose={() => setBreakdown(null)} />
+      )}
+      {help && <ScoresHelpDialog onClose={() => setHelp(false)} />}
     </div>
   );
 }

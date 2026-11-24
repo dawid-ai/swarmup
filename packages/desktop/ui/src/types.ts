@@ -1204,6 +1204,44 @@ export interface ScoreResult {
   note?: string;
 }
 
+/** One scored subject of a breakdown, with what the scorer read in it. */
+export interface ScoreDetailRow extends ScoreResult {
+  title?: string;
+  /** The rubric a rubric scorer judged against; `extra` then holds the judge's scores. */
+  rubric?: { id: string; pass: number };
+  criteria?: Array<{
+    id: string;
+    kind?: string;
+    text?: string;
+    result?: string;
+    score?: number;
+    note?: string;
+    evidence?: string;
+  }>;
+  runs?: Array<{
+    id: string;
+    agent: string;
+    tokens: number;
+    started_at: string;
+    ended_at?: string;
+    review?: boolean;
+    status?: string;
+    reason?: string;
+    exit?: number | null;
+  }>;
+}
+
+/** `GET /api/scores?scorer=&detail=1`: one scorer's subjects for an agent or a task. */
+export interface ScoreBreakdown {
+  scorer: ScorerInfo;
+  agent?: string;
+  task?: string;
+  mean: number | null;
+  passed: number;
+  judged: number;
+  rows: ScoreDetailRow[];
+}
+
 /** `GET /api/scores`: per agent, the scorers, and with `task=` that task's scores. */
 export interface ScoresAnswer {
   agents: AgentScores[];

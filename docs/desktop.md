@@ -340,7 +340,8 @@ failure shows under the button and leaves a comment on the task.
 
 **Scores.** A task with scores shows **Scores**: the task's scores and its runs' orientation from
 `GET /api/scores?task=<root>/<ID>`, each with its value and pass or fail. Hover a score for what
-it measures, its threshold and what to change when it fails.
+it measures, its threshold and what to change when it fails. Click a value for its breakdown
+(see [Scores in the app](#scores-in-the-app)); **How scores work** explains the scorers.
 
 **Resumed runs.** A `run-start` event of a run that resumed the session of an earlier one (see
 [Resume after changes](supervisor.md#resume-after-changes)) shows **Resumed** in the thread; hover
@@ -406,6 +407,22 @@ The settings live under `desktop.voice` in the user config: `engine` (`off`, `lo
 
 The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
 
+- **Breakdown.** Every score value is a link: on an agent card, in the **Reports** table, under
+  **Worst tasks** (a scorer's name, across agents) and in a task's **Scores**. It opens the
+  scorer's breakdown for that agent or task: what the scorer measures, the threshold and what
+  pass means, the definition to change when it fails, the mean and how many pass, then every
+  scored task or run, worst first, with its value, **pass** or **fail**, its note and its
+  evidence. A task's title links to the task panel, a run to the run, and an event to the task
+  scrolled to it. The criteria scorers (`criteria-pass-rate`, `verdict-completeness`) list each
+  criterion of the approving verdict with **pass**, **fail**, **na** or **unmarked**, its note
+  and its evidence; `cost-per-merged-task` lists the runs it summed with their tokens;
+  `stuck-runs` lists the failed runs with why they ended; a rubric scorer shows the judge's
+  score per rubric criterion and its reasons. Reports covers the report's window; the agent card
+  and the task cover all time. The breakdown uses `GET /api/scores?scorer=S&agent=A&detail=1`
+  (with `task=` or `since=` to narrow it).
+- **How scores work**, next to the scores on an agent card, in Reports and in a task, explains
+  where the data comes from (task events and run records; rubric scorers add an LLM judge), what
+  pass means, and each scorer's description, threshold and lever.
 - **Agents.** Each agent card lists its scorers: the value (an agent score, or the mean over every
   scored task or run), the count, the pass rate, **pass** or **fail** against the threshold, and a
   line of the last 30 local days, one point per day. Hover a point for its day, value and count.
