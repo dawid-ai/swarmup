@@ -241,6 +241,28 @@ describe('publishWithAdapter', () => {
     expect(fake.calls).toHaveLength(2);
   });
 
+  it('keeps the failure note when the error quotes a token, with the token redacted', async () => {
+    const s = setup();
+    // Built at runtime, so the leak check never sees a token in this file.
+    const token = ['ghp', 'x'.repeat(36)].join('_');
+    const fake = fakeCommand({ ok: false, output: '', why: `401 for token ${token}` });
+    const failed = await publishWithAdapter({
+      ws: s.as('human:dawid'),
+      ref: '2',
+      publish: PUBLISH,
+      mcp: checkMcpConfig(undefined),
+      top: s.repo,
+      git: s.gitRun,
+      env: s.env,
+      runners: fake.runners,
+    });
+    expect(failed.ok).toBe(false);
+    const last = s.as('human:dawid').showEvents('2').events.at(-1)!;
+    expect(last.type).toBe('comment');
+    expect(last.body).toContain('publish adapter blog failed ([line removed: it looks like');
+    expect(last.body).not.toContain(token);
+  });
+
   it('refuses agents, runs, manual adapters, unknown adapters and tasks with none', async () => {
     const s = setup([]);
     const base = {
