@@ -1808,6 +1808,11 @@ export interface ProposalView {
   agents: string[];
   ok: boolean;
   problems: string[];
+  /** `variants.<name>.description` in `swarm.yaml`. */
+  description?: string;
+  /** A variant of the definitions at a git ref (`variants.<name>.from_ref`), and its commit. */
+  from_ref?: string;
+  commit?: string;
   proposal?: {
     task: string;
     agents: string[];

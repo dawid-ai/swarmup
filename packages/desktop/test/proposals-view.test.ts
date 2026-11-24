@@ -139,6 +139,31 @@ describe('Proposals', () => {
     });
   });
 
+  it('shows a variant from a git ref with its ref and commit, and offers no promote', async () => {
+    list = [
+      {
+        ...PROPOSAL,
+        name: 'last-week',
+        status: 'draft',
+        proposal: undefined,
+        benchmark: undefined,
+        description: 'The engineer as it was before the tests-first rule.',
+        from_ref: 'HEAD~20',
+        commit: 'abcdef1234567890',
+      },
+    ];
+    await render();
+    const card = document.querySelector('[data-testid="proposal-last-week"]')!;
+    expect(card.textContent).toContain('from a git ref');
+    expect(card.textContent).toContain('The engineer as it was before the tests-first rule.');
+    expect(card.querySelector('[data-testid="variant-from-ref"]')!.textContent).toContain(
+      'HEAD~20 (abcdef1234)',
+    );
+    expect([...card.querySelectorAll('button')].map((b) => b.textContent?.trim())).not.toContain(
+      'Promote',
+    );
+  });
+
   it('renders nothing while no variant waits', async () => {
     list = [];
     await render();
