@@ -15,3 +15,6 @@ packages/desktop/release/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Chromium crash reporter log Electron writes into its working folder
+debug.log
