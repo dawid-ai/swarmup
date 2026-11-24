@@ -81,6 +81,8 @@ function supervisor(
   const sup = new Supervisor({
     env: s.env,
     cwd: s.repo,
+    // The real free memory can sit at the 4 GB minimum under the full suite (AO-0287).
+    freeMem: () => 64 * 2 ** 30,
     user: {},
     config: opsdConfig({ opsd: { sync: false, runtimes: {}, ...opsd } }),
     now,
@@ -350,6 +352,8 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     const sup = new Supervisor({
       env: s.env,
       cwd: s.repo,
+      // The real free memory can sit at the 4 GB minimum under the full suite (AO-0287).
+      freeMem: () => 64 * 2 ** 30,
       user: {},
       config: opsdConfig({ opsd: { sync: false, runtimes: {} } }),
       sandboxOwned: async () => {
@@ -379,6 +383,8 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     const sup = new Supervisor({
       env: s.env,
       cwd: s.repo,
+      // The real free memory can sit at the 4 GB minimum under the full suite (AO-0287).
+      freeMem: () => 64 * 2 ** 30,
       user: {},
       config: opsdConfig({
         opsd: {
@@ -551,6 +557,8 @@ describe('store repair after Codex sandbox sessions (AO-0287)', () => {
     const sup = new Supervisor({
       env: s.env,
       cwd: s.repo,
+      // The real free memory can sit at the 4 GB minimum under the full suite (AO-0287).
+      freeMem: () => 64 * 2 ** 30,
       user: {},
       config: opsdConfig({
         opsd: {

@@ -650,6 +650,7 @@ describe('api', () => {
       cwd: alpha,
       user: {},
       config: opsdConfig({ opsd: { sync: false } }),
+      freeMem: () => 64 * 2 ** 30,
     });
     sups.push(sup);
     const as = (actor: string, root?: string) =>
