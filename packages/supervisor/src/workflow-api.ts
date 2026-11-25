@@ -13,6 +13,7 @@ import {
   templateWorkflowIds,
   templateWorkflowText,
   WORKFLOW_ID_RE,
+  workflowCommandParams,
   workflowFile,
 } from '@swarmup/core';
 
@@ -27,6 +28,11 @@ export interface WorkflowListItem {
   description?: string;
   approval?: 'proposal' | 'starter';
   params: NonNullable<WorkflowDef['params']>;
+  /**
+   * The parameters whose value goes into a command criterion, which swarmupd runs in a shell:
+   * a start refuses a value with anything but letters, digits and `. _ / : @ -` in them.
+   */
+  command_params: string[];
   /** The number of stages; `def` has them in full. */
   stages: number;
   ok: boolean;
@@ -50,6 +56,11 @@ export function listWorkflows(ws: Workspace): WorkflowListItem[] {
         description: w.def?.description,
         approval: w.def ? (w.def.approval ?? 'proposal') : undefined,
         params: w.def?.params ?? {},
+        command_params: w.def
+          ? [...new Set(workflowCommandParams(w.def).map((u) => u.param))].filter((k) =>
+              Object.hasOwn(w.def!.params ?? {}, k),
+            )
+          : [],
         stages: w.def?.stages.length ?? 0,
         ok: w.def !== null,
         problems: w.problems.map((p) => `${p.path}: ${p.message}`),
@@ -135,7 +146,9 @@ export function checkWorkflow(
   out.params = params;
   try {
     const human = root?.config.human || 'human:you';
-    const c = compileWorkflow(checked.def, { params, human });
+    // The sample values only stand in; what the person typed is checked as a start checks it.
+    const placeholders = Object.keys(params).filter((k) => !Object.hasOwn(given, k));
+    const c = compileWorkflow(checked.def, { params, human, placeholders });
     out.plan = {
       milestone: c.milestone,
       approval: c.approval,

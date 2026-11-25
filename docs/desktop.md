@@ -219,7 +219,9 @@ that model, and says which model's runs wait while the others go on.
 - **Workflows.** **New task** has **Start a workflow**: pick one of the project's workflows
   (`workflows/<id>.yaml`, see [Workflows](protocol.md#workflows)), fill in its parameters
   (required ones are marked; a list of options shows as a choice), optionally a milestone title,
-  and **Start**. A workflow with `approval: starter` is approved by your start and its tasks are
+  and **Start**. A parameter that goes into a check command says so, and a value with anything
+  but letters, digits and `. _ / : @ -` (or one that misses the parameter's `pattern`) shows
+  why under the field and keeps **Start** off. A workflow with `approval: starter` is approved by your start and its tasks are
   created; any other waits in **Plans**. In a milestone's plan a gate item shows a **Gate** badge
   with its question; the gate's own task panel has **Your decision** with **Approve** and
   **Reject**. Approve calls `done`; Reject calls `park` and needs a note. When the project has

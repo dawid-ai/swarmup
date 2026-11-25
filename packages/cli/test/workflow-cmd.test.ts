@@ -184,6 +184,60 @@ describe('swarmup workflow', () => {
     });
   });
 
+  it('refuses a parameter value that would change a command criterion, and shows it as <name>', () => {
+    const { dir, store, config } = project();
+    mkdirSync(join(store, 'workflows'), { recursive: true });
+    writeFileSync(
+      join(store, 'workflows', 'check.yaml'),
+      [
+        'params:',
+        '  target: {required: true}',
+        'milestone:',
+        "  title: 'Check {{target}}'",
+        "  done_when: '{{target}} passes'",
+        'approval: starter',
+        'stages:',
+        '  - key: test',
+        "    title: 'Test {{target}}'",
+        "    owner: '*:engineer'",
+        '    estimate: 1h',
+        "    done_when: {kind: command, run: 'npm test -- {{target}}'}",
+        '',
+      ].join('\n'),
+    );
+    const show = cli(dir, config, 'workflow', 'show', 'check', '--yaml');
+    expect(show.code).toBe(0);
+    expect(show.out.join('\n')).toContain('npm test -- <target>');
+    const bad = cli(
+      dir,
+      config,
+      'workflow',
+      'start',
+      'check',
+      '--param',
+      'target=a.ts; rm -rf ~',
+      '--as',
+      'human:dawid',
+    );
+    expect(bad.code).toBe(2);
+    expect(bad.err.join('\n')).toContain(
+      "workflow check, stage 'test': --param target goes into a command criterion",
+    );
+    expect(existsSync(join(store, 'tasks', 'T-0001'))).toBe(false);
+    const ok = cli(
+      dir,
+      config,
+      'workflow',
+      'start',
+      'check',
+      '--param',
+      'target=test/a.test.ts',
+      '--as',
+      'human:dawid',
+    );
+    expect(ok.code).toBe(0);
+  });
+
   it('proposes a workflow on a held milestone with plan propose --workflow', () => {
     const { dir, config } = withWorkflows();
     cli(

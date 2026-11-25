@@ -52,6 +52,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "pattern": {
+            "description": "A regular expression every value must match in full, such as `[0-9]+` or `v[0-9.]+`.",
+            "type": "string"
           }
         },
         "additionalProperties": false

