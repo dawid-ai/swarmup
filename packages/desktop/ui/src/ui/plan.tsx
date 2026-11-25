@@ -19,7 +19,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { Nav } from '../App';
 import { api, q, refreshSoon, useData } from '../api';
 import { Button, ErrorLine, StatusTag, TextArea, toast, useAction, Who, cx } from '../components';
@@ -30,6 +30,8 @@ import {
   checkHistory,
   doneWhenText,
   editRows,
+  GATE,
+  gatePatch,
   minutesText,
   moveRow,
   planEdited,
@@ -41,6 +43,7 @@ import {
 } from '../lib/plan';
 import type { OpsEvent, PlanReport, PlanRow } from '../types';
 import { Markdown } from './markdown';
+import { useDirectory } from './pickers';
 
 /** The types a plan item's task may have; the empty choice leaves it to the default, `task`. */
 const TYPES: Array<[string, string]> = [
@@ -131,6 +134,10 @@ export function MilestonePlan(props: {
 
   const history = checkHistory(props.events);
   const live = rows ? rowsMinutes(rows) : null;
+  // The people a gate can ask: you and every person swarmupd knows.
+  const people = useDirectory(nav.me)
+    .map((e) => e.id)
+    .filter((e) => e.startsWith('human:'));
   return (
     <div data-milestone-plan className="mt-4 flex flex-col gap-4">
       <div className="panel p-4">
@@ -223,7 +230,7 @@ export function MilestonePlan(props: {
           )}
 
           {rows ? (
-            <Editor rows={rows} onChange={setRows} />
+            <Editor rows={rows} onChange={setRows} me={nav.me} people={people} />
           ) : (
             <div className="mt-3">
               <PlanTable rows={pending.items} tasks={Boolean(p.approval)} nav={nav} root={p.root} />
@@ -455,6 +462,8 @@ function Txt(props: {
   disabled?: boolean;
   mono?: boolean;
   className?: string;
+  /** The id of a `<datalist>` whose values the field suggests. */
+  list?: string;
 }) {
   return (
     <label className={cx('flex min-w-0 flex-col gap-1', props.className)}>
@@ -465,6 +474,7 @@ function Txt(props: {
         value={props.value}
         disabled={props.disabled}
         placeholder={props.placeholder}
+        list={props.list}
         onChange={(e) => props.onChange(e.target.value)}
         className={cx(FIELD, props.mono && 'font-mono')}
       />
@@ -502,21 +512,44 @@ function Pick(props: {
 
 /**
  * Edit mode: every item as a row of fields, with rows added, removed and reordered. A row whose
- * item already has a task keeps its title, `done_when`, reviewer, type and priority read-only,
- * since no event changes a task's file; **Replace item** swaps it for a new item.
+ * item already has a task keeps its title, `done_when`, reviewer, type, priority and gate
+ * read-only, since no event changes a task's file; **Replace item** swaps it for a new item.
+ * **A person approves here (gate)** makes a row a gate: it asks a person (`people` suggests
+ * them), has no reviewer, and takes a question, answers and what a rejection does.
  */
-function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[]) => void }) {
+function Editor({
+  rows,
+  onChange,
+  me,
+  people,
+}: {
+  rows: EditRow[];
+  onChange: (rows: EditRow[]) => void;
+  me: string | null;
+  people: readonly string[];
+}) {
   const set = (uid: number, patch: Partial<EditRow>): void =>
     onChange(rows.map((r) => (r.uid === uid ? { ...r, ...patch } : r)));
+  const peopleList = useId();
   return (
     <div className="mt-3 flex flex-col gap-2" data-plan-editor>
+      <datalist id={peopleList}>
+        {people.map((p) => (
+          <option key={p} value={p} />
+        ))}
+      </datalist>
       {rows.map((r, i) => {
         const fixed = Boolean(r.task);
+        const gate = r.type === GATE;
         return (
           <div
             key={r.uid}
             data-edit-row={r.key}
-            className="rounded-lg border border-white/8 bg-ink-900/70 p-2.5"
+            data-edit-gate={gate ? r.key : undefined}
+            className={cx(
+              'rounded-lg border p-2.5',
+              gate ? 'border-warn/30 bg-warn/5' : 'border-white/8 bg-ink-900/70',
+            )}
           >
             <div className="flex items-center gap-1.5">
               <span className="w-5 text-center font-mono text-[11px] text-fg-4">{i + 1}</span>
@@ -584,10 +617,11 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
             <div className="mt-2 grid grid-cols-[1fr_80px_1fr] gap-2">
               <Txt
                 name="owner"
-                label="Owner"
+                label={gate ? 'Asks' : 'Owner'}
                 mono
                 value={r.owner}
-                placeholder="*:engineer"
+                placeholder={gate ? 'human:<name>' : '*:engineer'}
+                list={gate ? peopleList : undefined}
                 onChange={(owner) => set(r.uid, { owner })}
               />
               <Txt
@@ -627,8 +661,8 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
                 label="Review"
                 mono
                 value={r.review}
-                disabled={fixed}
-                placeholder="codex:qa"
+                disabled={fixed || gate}
+                placeholder={gate ? 'none: a person decides' : 'codex:qa'}
                 onChange={(review) => set(r.uid, { review })}
               />
               <Pick
@@ -637,7 +671,7 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
                 value={r.type}
                 disabled={fixed}
                 options={TYPES}
-                onChange={(type) => set(r.uid, { type })}
+                onChange={(type) => set(r.uid, { ...gatePatch(r, type === GATE, me), type })}
               />
               <Pick
                 name="priority"
@@ -648,6 +682,17 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
                 onChange={(priority) => set(r.uid, { priority })}
               />
             </div>
+            <label className="mt-2 flex items-center gap-1.5 text-xs text-fg-2">
+              <input
+                type="checkbox"
+                name="gate"
+                checked={gate}
+                disabled={fixed}
+                onChange={(e) => set(r.uid, gatePatch(r, e.target.checked, me))}
+              />
+              A person approves here (gate)
+            </label>
+            {gate && <GateFields row={r} fixed={fixed} onChange={(patch) => set(r.uid, patch)} />}
           </div>
         );
       })}
@@ -656,6 +701,64 @@ function Editor({ rows, onChange }: { rows: EditRow[]; onChange: (rows: EditRow[
           Add item
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A gate row's own fields: the question (the title when empty), the answers, one per line, and
+ * what a rejection does. A gate whose task exists keeps them read-only. Warns when the gate asks
+ * no person, which swarmupd refuses.
+ */
+function GateFields(props: {
+  row: EditRow;
+  fixed: boolean;
+  onChange: (patch: Partial<EditRow>) => void;
+}) {
+  const { row: r, fixed } = props;
+  return (
+    <div className="mt-2 flex flex-col gap-2" data-gate-fields>
+      {!r.owner.trim().startsWith('human:') && (
+        <div className="flex items-center gap-1.5 text-xs text-warn" data-gate-owner-warning>
+          <TriangleAlert size={13} className="shrink-0" />A gate asks a person: set Asks to
+          human:&lt;name&gt;. An agent never approves a gate.
+        </div>
+      )}
+      <div className="grid grid-cols-[1fr_150px] gap-2">
+        <Txt
+          name="gateAsk"
+          label="Question"
+          value={r.gateAsk}
+          disabled={fixed}
+          placeholder={r.title.trim() || 'What the person decides'}
+          onChange={(gateAsk) => props.onChange({ gateAsk })}
+        />
+        <Pick
+          name="gateOnReject"
+          label="On reject"
+          value={r.gateOnReject === 'revise' ? 'revise' : ''}
+          disabled={fixed}
+          options={[
+            ['', 'park the rest'],
+            ['revise', 'reopen earlier items'],
+          ]}
+          onChange={(v) => props.onChange({ gateOnReject: v })}
+        />
+      </div>
+      <label className="flex min-w-0 flex-col gap-1">
+        <span className="text-[10px] tracking-wider text-fg-4 uppercase">
+          Answers, one per line
+        </span>
+        <textarea
+          name="gateOptions"
+          rows={2}
+          value={r.gateOptions}
+          disabled={fixed}
+          placeholder={'yes\nyes, with notes'}
+          onChange={(e) => props.onChange({ gateOptions: e.target.value })}
+          className={cx(FIELD, 'h-auto py-1.5')}
+        />
+      </label>
     </div>
   );
 }

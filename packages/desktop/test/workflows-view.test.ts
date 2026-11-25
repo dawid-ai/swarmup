@@ -9,7 +9,14 @@ import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allowedCall } from '../src/allow';
 import type { Nav } from '../ui/src/App';
-import { newStageKey, readWorkflowYaml, setYaml, textList } from '../ui/src/lib/workflow-yaml';
+import {
+  linesText,
+  newStageKey,
+  readWorkflowYaml,
+  setYaml,
+  textLines,
+  textList,
+} from '../ui/src/lib/workflow-yaml';
 import type { WorkflowCheck, WorkflowInfo, WorkflowTemplate } from '../ui/src/types';
 import { StartWorkflow } from '../ui/src/ui/workflow';
 import { Workflows } from '../ui/src/views/Workflows';
@@ -251,6 +258,34 @@ describe('Workflows view', () => {
     const save = calls.find((c) => c.path === '/api/workflows/save')!;
     expect(save.body).toMatchObject({ id: 'bugfix', root: 'r', expect: TEXT });
     expect(String(save.body!.text)).toContain('title: Hotfix');
+  });
+
+  it('edits a gate’s answers one per line and a parameter’s pattern in the form', async () => {
+    expect(linesText(['yes', 'yes, with notes'])).toBe('yes\nyes, with notes');
+    expect(textLines(' yes \r\n\nyes, with notes\n')).toEqual(['yes', 'yes, with notes']);
+    await mount(createElement(Workflows, { nav: nav() }));
+    await click(button('Edit'));
+    const form = document.querySelector('[data-testid="workflow-form"]')!;
+    const gate = form.querySelector('[data-stage-form="ok"]')!;
+    const answers = [...gate.querySelectorAll('label')]
+      .find((l) => l.textContent?.startsWith('Gate answers'))!
+      .querySelector('textarea')!;
+    await type(answers, 'yes\nyes, with notes');
+    const param = form.querySelector('[data-param="bug"]')!;
+    const pattern = [...param.querySelectorAll('label')]
+      .find((l) => l.textContent?.startsWith('Pattern'))!
+      .querySelector('input')!;
+    await type(pattern, '[a-z ]+');
+    await click(button('YAML'));
+    const yaml = document.querySelector(
+      'textarea[aria-label="Workflow YAML"]',
+    ) as HTMLTextAreaElement;
+    const value = readWorkflowYaml(yaml.value).value!;
+    expect((value.stages as Array<Record<string, unknown>>)[1]!.gate).toEqual({
+      ask: 'Ship it?',
+      options: ['yes', 'yes, with notes'],
+    });
+    expect((value.params as Record<string, Record<string, unknown>>).bug!.pattern).toBe('[a-z ]+');
   });
 
   it('shows problems with their lines and keeps Save off while the text has errors', async () => {
