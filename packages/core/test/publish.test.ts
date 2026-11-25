@@ -154,6 +154,23 @@ describe('review artifacts', () => {
     );
   });
 
+  it('keep run artifacts (W4): a file name, its run, size, type and SHA-256', () => {
+    const kept: ReviewArtifact = {
+      kind: 'run',
+      ref: 'home.png',
+      run: '01RUNARTIFACTS0000000000AB',
+      label: 'Home',
+      bytes: 12,
+      type: 'image/png',
+      sha256: 'A'.repeat(64),
+    };
+    expect(checkArtifacts([kept])).toEqual([{ ...kept, sha256: 'a'.repeat(64) }]);
+    expect(() => checkArtifacts([{ ...kept, run: undefined }])).toThrow(/names its run id/);
+    expect(() => checkArtifacts([{ ...kept, ref: '../x.png' }])).toThrow(/a file name, not a path/);
+    expect(() => checkArtifacts([{ ...kept, bytes: -1 }])).toThrow(/whole number/);
+    expect(() => checkArtifacts([{ ...kept, sha256: 'xyz' }])).toThrow(/64 hex digits/);
+  });
+
   it('name artifacts instead of commands in the evidence note of a task with no command', () => {
     const lines = ['voice (rubric)'];
     expect(evidenceNotes('drafted', lines, { commands: false, artifacts: 0 })[0]).toMatch(

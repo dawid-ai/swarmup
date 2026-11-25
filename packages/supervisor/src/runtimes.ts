@@ -630,6 +630,9 @@ function scratchLines(scratch: string): string[] {
     '  ($SWARMUP_SCRATCH; TEMP points there too). swarmupd removes it some days after the run.',
     '  Never leave them in the repo, its `out/` folder or the folder that holds the repo; what',
     '  must last goes in a commit, a task comment or `swarmup attach`.',
+    '- Screenshots, rendered images, reports and test output a reviewer should see go in',
+    '  $SWARMUP_SCRATCH/artifacts/ (or `swarmup run artifact PATH --label TEXT`): swarmupd keeps',
+    '  them with the run, and `swarmup review` attaches them.',
   ];
 }
 
@@ -650,6 +653,11 @@ export function artifactLines(task: string, a: ReviewArtifactsPrompt): string[] 
       const label = x.label ? ` (${x.label})` : '';
       if (x.kind === 'url' || x.kind === 'doc') {
         return `  ${i + 1}. ${x.kind} ${x.ref}${x.rev ? ` revision ${x.rev}` : ''}${label}`;
+      }
+      if (x.kind === 'run') {
+        // A file the run kept outside git (W4): read it through swarmup, not git.
+        const size = x.bytes !== undefined ? `, ${x.bytes} bytes` : '';
+        return `  ${i + 1}. run artifact \`${x.ref}\` (${x.type ?? 'file'}${size})${label}: \`swarmup artifact ${task} ${i + 1} --out FILE\``;
       }
       const show = a.commit ? `\`git show ${a.commit.slice(0, 10)}:${x.ref}\`` : `\`${x.ref}\``;
       return `  ${i + 1}. ${x.kind} \`${x.ref}\`${label}: ${show}`;

@@ -9,7 +9,7 @@ import { parseDoc } from './frontmatter.js';
 import { OpsError } from './ids.js';
 
 /** What a rubric may ask to see besides its own text. */
-export const RUBRIC_INPUTS = ['diff', 'task', 'repo', 'files'] as const;
+export const RUBRIC_INPUTS = ['diff', 'task', 'repo', 'files', 'artifacts'] as const;
 export type RubricInput = (typeof RUBRIC_INPUTS)[number];
 
 /** One weighted criterion of a rubric. `weight` is normalized: a rubric's weights sum to 1. */
@@ -26,7 +26,10 @@ export interface Rubric {
   file?: string;
   scale: { min: number; max: number };
   criteria: RubricCriterion[];
-  /** `diff` (the change), `task` (its text), `repo` (the files it touches, after it), `files`. */
+  /**
+   * `diff` (the change), `task` (its text), `repo` (the files it touches, after it), `files`,
+   * `artifacts` (the files the work's run kept, W4).
+   */
   inputs: RubricInput[];
   /** Globs of files to show the judge, from the worktree's top, for the `files` input. */
   files: string[];
@@ -181,6 +184,22 @@ export interface JudgeFile {
   text: string;
 }
 
+/**
+ * A file the work's run kept (W4), for the `artifacts` input. The judge has no tools, so it reads
+ * only what the prompt holds: text files in full (capped), other files by name, type and size.
+ */
+export interface JudgeArtifact {
+  name: string;
+  type: string;
+  bytes: number;
+  label?: string;
+  /** A text file's content; absent for images and other binary files. */
+  text?: string;
+}
+
+/** Most characters of all run artifacts' text a prompt holds. */
+export const ARTIFACTS_CAP = 30_000;
+
 /** What the judge sees of the work. Only what the rubric's `inputs` name goes in the prompt. */
 export interface JudgeInputs {
   /** The task's text: its title as a heading, then its body. */
@@ -191,6 +210,8 @@ export interface JudgeInputs {
   repo?: JudgeFile[];
   /** The files the rubric's globs match (`files`). */
   files?: JudgeFile[];
+  /** The files the work's run kept (`artifacts`). */
+  artifacts?: JudgeArtifact[];
   /** The `rubric` criterion of the task or entry: its id and optional description. */
   criterion?: { id: string; text?: string };
 }
@@ -355,6 +376,27 @@ export function judgePrompt(rubric: Rubric, inputs: JudgeInputs): string {
       `# Files (${rubric.files.map((g) => `\`${g}\``).join(', ')})`,
       capFiles(inputs.files ?? []),
     );
+  }
+  if (want.has('artifacts')) {
+    lines.push('', "# Files the work's run kept (`artifacts`)", '');
+    const list = inputs.artifacts ?? [];
+    if (list.length === 0) lines.push('(none)');
+    let left = ARTIFACTS_CAP;
+    for (const a of list) {
+      const label = a.label ? `: ${a.label}` : '';
+      lines.push(`- \`${a.name}\` (${a.type}, ${a.bytes} bytes)${label}`);
+      if (a.text === undefined) {
+        if (a.type.startsWith('image/')) lines.push('  (an image: not shown here)');
+        continue;
+      }
+      if (left <= 0) {
+        lines.push('  (text left out: the files before it reached the size cap)');
+        continue;
+      }
+      const text = capText(a.text, Math.min(FILE_CAP, left), 'file');
+      left -= text.length;
+      lines.push('', block(text), '');
+    }
   }
   const example = Object.fromEntries(
     rubric.criteria.map((k) => [k.id, `<${num(min)} to ${num(max)}>`]),

@@ -23,6 +23,7 @@ import type {
   DefinitionSet,
   DefsRefSnapshot,
   ExperimentPick,
+  JudgeArtifact,
   Criterion,
   OpsEvent,
   Priority,
@@ -152,6 +153,18 @@ import type { KillResult, ProcEntry, ProcInfo, ProcLedger, ProcLister, ProcView 
 import { applyKills, startMs, survivors, systemLister, track, viewLedger } from './procs.js';
 import type { Leftovers, RunDefs, RunRecord } from './runs.js';
 import { RunStore } from './runs.js';
+import type { RunArtifact, RunArtifactManifest, RunArtifactView } from './run-artifacts.js';
+import {
+  ARTIFACTS_FOLDER,
+  artifactBriefs,
+  keepRunArtifacts,
+  pruneRunArtifacts,
+  artifactView,
+  judgeArtifactsOf,
+  readManifest,
+  readRunArtifact,
+  runReviewArtifacts,
+} from './run-artifacts.js';
 import type { RunFailure } from './stuck.js';
 import {
   changesRounds,
@@ -1959,6 +1972,7 @@ export class Supervisor extends EventEmitter {
       else this.kept = new Map();
       await this.pruneScratch();
       await this.pruneLogs();
+      await this.pruneArtifacts();
     })()
       .catch((err: unknown) => {
         this.emit('warn', `housekeeping failed: ${String(err)}`);
@@ -2470,6 +2484,26 @@ export class Supervisor extends EventEmitter {
         this.scratchStuck.set(path, now);
       }
     }
+  }
+
+  /**
+   * Removes the kept artifacts of runs that ended more than `artifacts.keep_days` ago (W4), off
+   * the event loop.
+   */
+  private async pruneArtifacts(): Promise<void> {
+    await pruneRunArtifacts(
+      this.store.dir,
+      this.config.artifacts.keep_days,
+      this.now(),
+      (id) => {
+        if (this.live.has(id) || this.ending.has(id)) return 'running';
+        const r = this.store.get(id);
+        if (!r) return undefined;
+        if (r.status === 'running' || !r.ended_at) return 'running';
+        return Date.parse(r.ended_at);
+      },
+      () => this.stopping,
+    );
   }
 
   /**
@@ -3905,6 +3939,8 @@ export class Supervisor extends EventEmitter {
     // here instead of the repo, `out/` or the folder above it (AO-0230).
     const scratch = join(this.store.dir, 'scratch', id);
     mkdirSync(scratch, { recursive: true });
+    // What the run writes here swarmupd keeps with the run record when it ends (W4).
+    mkdirSync(join(scratch, ARTIFACTS_FOLDER), { recursive: true });
     // The variant's role file as resolved, where the run reads it instead of the store's.
     let roleFile = def?.file;
     if (variantRole) {
@@ -4444,6 +4480,8 @@ export class Supervisor extends EventEmitter {
       // The commit step reads the git top of the run's folder and of each live run's.
       await Promise.all([r, ...this.liveRecords()].map((o) => this.gitTopAsync(resolve(o.cwd))));
       await this.commitStep(r, helpers);
+      // After the reap, so nothing of the run still writes its artifacts.
+      await this.keepArtifactsAtEnd(r);
     }
     const left = r.leftovers ?? null;
     if (r.task && r.root) {
@@ -4549,6 +4587,93 @@ export class Supervisor extends EventEmitter {
     });
   }
 
+  /** Copies what the run declared or wrote into `<scratch>/artifacts/` to its kept folder (W4). */
+  private async keepArtifactsAtEnd(r: RunRecord): Promise<void> {
+    if (!r.scratch) return;
+    try {
+      const m = await keepRunArtifacts(this.artifactJob(r));
+      if (m.artifacts.length > 0 || r.artifacts) this.noteArtifacts(r, m);
+      for (const s of m.skipped ?? []) {
+        this.emit('warn', `run ${r.id}: artifact ${s.path} not kept: ${s.why}`);
+      }
+    } catch (err) {
+      this.emit('warn', `run ${r.id}: cannot keep its artifacts: ${String(err)}`);
+    }
+  }
+
+  /** What `keepRunArtifacts` needs of a run: its scratch folder, its worktree and the limits. */
+  private artifactJob(r: RunRecord, declare?: { path: string; label?: string }) {
+    const cwd = resolve(r.cwd);
+    return {
+      stateDir: this.store.dir,
+      run: r.id,
+      scratch: r.scratch,
+      roots: [this.gitTopOf(cwd) ?? cwd],
+      limits: this.config.artifacts,
+      now: () => this.now(),
+      ...(declare ? { declare } : {}),
+    };
+  }
+
+  /** Saves the kept artifacts onto the run's record, live or stored. */
+  private noteArtifacts(r: RunRecord, m: RunArtifactManifest): void {
+    const artifacts = m.artifacts.length > 0 ? artifactBriefs(m) : undefined;
+    r.artifacts = artifacts;
+    const live = this.live.get(r.id)?.record ?? this.ending.get(r.id);
+    if (live && live !== r) live.artifacts = artifacts;
+    const stored = this.store.get(r.id);
+    this.store.save({ ...(stored ?? r), artifacts });
+  }
+
+  /**
+   * Keeps a run's artifacts now (W4): with `declare`, after adding that path, which must be a
+   * file in the run's scratch folder or worktree. `swarmup run artifact` declares; `swarmup review`
+   * from a run keeps what is there so the review can name it. Only a live run declares.
+   */
+  async keepArtifacts(
+    id: string,
+    declare?: { path: string; label?: string },
+  ): Promise<RunArtifactManifest> {
+    const r = this.run(id);
+    if (declare && r.status !== 'running') {
+      throw new OpsError(`run ${id} has ended; only a live run declares artifacts`, 2);
+    }
+    if (!r.scratch) throw new OpsError(`run ${id} has no scratch folder to keep artifacts from`, 2);
+    const m = await keepRunArtifacts(this.artifactJob(r, declare));
+    if (m.artifacts.length > 0 || r.artifacts) this.noteArtifacts(r, m);
+    return m;
+  }
+
+  /** The manifest of a run's kept artifacts; one with none when it kept nothing. */
+  async runArtifacts(id: string): Promise<RunArtifactManifest> {
+    const r = this.run(id);
+    return (
+      (await readManifest(this.store.dir, r.id)) ?? {
+        run: r.id,
+        kept_at: r.ended_at ?? r.started_at,
+        artifacts: [],
+        declared: [],
+      }
+    );
+  }
+
+  /** The run artifacts the task's review names, for rubrics with the `artifacts` input (W4). */
+  judgeArtifacts(events: readonly OpsEvent[]): Promise<JudgeArtifact[]> {
+    return judgeArtifactsOf(this.store.dir, events);
+  }
+
+  /** One kept file of a run, with its bytes; `NoRunArtifact` when the run kept none by that name. */
+  runArtifactFile(id: string, name: string): Promise<{ artifact: RunArtifact; data: Buffer }> {
+    return readRunArtifact(this.store.dir, this.run(id).id, name);
+  }
+
+  /** One kept file of a run as the desktop shows it: an image, text, or a file to download. */
+  async runArtifactView(id: string, name: string): Promise<RunArtifactView> {
+    const r = this.run(id);
+    const { artifact, data } = await readRunArtifact(this.store.dir, r.id, name);
+    return artifactView(this.store.dir, artifact, r.id, data);
+  }
+
   /** Frees the run's task, or sends it for review with what swarmupd committed. */
   private settleTask(r: RunRecord, ws: Workspace, ref: string, left: Leftovers | null): void {
     const id = r.id;
@@ -4558,7 +4683,15 @@ export class Supervisor extends EventEmitter {
       if (ws.holdsClaim(ref) && (v.status === 'claimed' || v.status === 'in-progress')) {
         if (left && !r.review) {
           try {
-            ws.review(ref, leftoverReview(r, left, false), this.reviewerFor(ws, v, r.agent));
+            // The files the run kept go with the review swarmupd asks for (W4).
+            const kept = runReviewArtifacts(r.id, r.artifacts ?? []);
+            ws.review(
+              ref,
+              leftoverReview(r, left, false),
+              this.reviewerFor(ws, v, r.agent),
+              undefined,
+              kept.length > 0 ? { source: { artifacts: kept } } : {},
+            );
             return;
           } catch (err) {
             this.emit('warn', `run ${id}: cannot send ${ref} for review: ${String(err)}`);

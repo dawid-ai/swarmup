@@ -24,6 +24,7 @@ export * from './report.js';
 export * from './loops.js';
 export * from './wrapped.js';
 export * from './runs.js';
+export * from './run-artifacts.js';
 export * from './runtimes.js';
 export * from './stuck.js';
 export * from './supervisor.js';

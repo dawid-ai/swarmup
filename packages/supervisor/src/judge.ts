@@ -15,6 +15,7 @@ import type {
   Criterion,
   CriterionVerdict,
   JudgeFile,
+  JudgeArtifact,
   JudgeInputs,
   Rubric,
 } from '@swarmup/core';
@@ -572,6 +573,8 @@ export interface JudgeSource {
   cwd?: string;
   diff: string;
   task: string;
+  /** The files the work's run kept (W4), for the `artifacts` input. */
+  artifacts?: JudgeArtifact[];
 }
 
 async function gitText(cwd: string, args: string[]): Promise<string> {
@@ -614,6 +617,7 @@ export async function judgeInputs(
       ? { criterion: { id: criterion.id, ...(criterion.text ? { text: criterion.text } : {}) } }
       : {}),
   };
+  if (rubric.inputs.includes('artifacts')) inputs.artifacts = src.artifacts ?? [];
   if (src.cwd && rubric.inputs.includes('repo')) {
     const paths = diffPaths(src.diff).slice(0, FILES_MAX + 20);
     const files = await Promise.all(paths.map((p) => readText(src.cwd!, p)));
@@ -723,6 +727,8 @@ export interface TaskJudgeOptions extends JudgeOptions {
   storeDir?: string;
   /** The task's title as a heading, then its body. */
   task: string;
+  /** The files the task's reviewed run kept (W4), for rubrics with the `artifacts` input. */
+  artifacts?: JudgeArtifact[];
   onResult?: (id: string, outcome: JudgeOutcome) => void;
   onStart?: (id: string) => void;
 }
@@ -754,7 +760,7 @@ export async function judgeTask(o: TaskJudgeOptions): Promise<TaskJudgement> {
   const diff = await gitText(o.cwd, ['diff', mergeBase, head]);
   const outcomes = await judgeCriteria({
     ...o,
-    source: { cwd: o.cwd, diff, task: o.task },
+    source: { cwd: o.cwd, diff, task: o.task, ...(o.artifacts ? { artifacts: o.artifacts } : {}) },
     loadRubric: taskRubricLoader(o.cwd, mergeBase, o.storeDir),
   });
   const results: CriteriaResults = {};

@@ -1884,7 +1884,8 @@ export class Merger {
       `judges its rubric criteria with ${cfg.runtime}: ${criteria.map((c) => c.id).join(', ')}`,
     );
     const ws = this.sup.ws();
-    const { meta, body } = ws.showEvents(ref);
+    const { meta, body, events } = ws.showEvents(ref);
+    const artifacts = await this.sup.judgeArtifacts(events);
     const stop = new AbortController();
     const watch = setInterval(() => {
       if (this.sup.stopping) stop.abort();
@@ -1898,6 +1899,7 @@ export class Merger {
         head,
         storeDir: ws.resolve(ref).root.dir,
         task: `# ${meta.title}\n\n${body}`.trim(),
+        artifacts,
         config: cfg,
         env: this.sup.commandEnv(),
         runtimes: this.sup.config.runtimes,
