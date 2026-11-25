@@ -196,6 +196,7 @@ describe('status changes need a click on the confirming button', () => {
         open: t,
         onMove,
         onNew: vi.fn(),
+        onStartWorkflow: vi.fn(),
         onHelp: vi.fn(),
         onClose: vi.fn(),
       }),

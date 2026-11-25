@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 // The whole app, rendered (AO-0323): New task has a project dropdown with search, keyboard choice
 // and Add project as its last row; it opens with the project the Board or List is filtered to;
-// and it sends the chosen project's root, so the task lands in that project's store.
+// and it sends the chosen project's root, so the task lands in that project's store. The command
+// palette's Start a workflow opens the same flow as New task > Start a workflow.
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
@@ -67,6 +68,21 @@ let box: HTMLDivElement;
 let roots: Array<{ name: string; dir: string; isMaster?: boolean }>;
 /** The bodies of POST /api/tasks. */
 let posted: Array<Record<string, unknown>>;
+/** The bodies of POST /api/workflows/start. */
+let started: Array<Record<string, unknown>>;
+
+const WORKFLOWS = [
+  {
+    root: 'acme',
+    id: 'bug-fix',
+    title: 'Bug fix',
+    approval: 'starter',
+    params: { area: { required: true } },
+    stages: 2,
+    ok: true,
+    problems: [],
+  },
+];
 
 function stubBridge(): void {
   const off = (): (() => void) => () => {};
@@ -97,6 +113,14 @@ function stubBridge(): void {
       };
     },
     call: async (method: 'GET' | 'POST', path: string, body?: Record<string, unknown>) => {
+      if (method === 'POST' && path === '/api/workflows/start') {
+        started.push(body ?? {});
+        return {
+          ok: true,
+          data: { milestone: { id: 'AO-0100' }, approved: true, created: [{}, {}] },
+        };
+      }
+      if (path === '/api/workflows') return { ok: true, data: WORKFLOWS };
       if (method === 'POST' && path === '/api/tasks') {
         posted.push(body ?? {});
         return { ok: true, data: { root: body?.root ?? 'acme', id: 'X-0001' } };
@@ -118,6 +142,7 @@ beforeEach(() => {
     { name: 'docs-site', dir: 'C:\\dev\\docs' },
   ];
   posted = [];
+  started = [];
   setViewProject(undefined);
   stubBridge();
   box = document.createElement('div');
@@ -372,5 +397,40 @@ describe('New task: project dropdown', () => {
     click(button('New task'));
     expect(combo().value).toBe('acme');
     await settle();
+  });
+
+  it('starts a workflow from the command palette, through the New task flow', async () => {
+    await start();
+    key(document.body, 'k', { ctrlKey: true });
+    const palette = document.body.querySelector<HTMLElement>('[data-modal]')!;
+    click(button('Start a workflow', palette));
+    await settle();
+    expect(dialog('New task')).toBeNull();
+    const flow = dialog('Start a workflow')!;
+    expect(flow).not.toBeNull();
+    expect(flow.querySelector('[data-start-workflow]')).not.toBeNull();
+    expect(button('Start', flow).disabled).toBe(true);
+    const area = [...flow.querySelectorAll('input')].find((i) => i.placeholder === '')!;
+    type(area, 'login');
+    click(button('Start', flow));
+    await settle();
+    expect(started).toEqual([
+      expect.objectContaining({ id: 'bug-fix', root: 'acme', params: { area: 'login' } }),
+    ]);
+    // Closing the flow and opening New task again shows the form, not the workflow step.
+    expect(dialog('Start a workflow')).toBeNull();
+    click(button('New task'));
+    expect(dialog('New task')).not.toBeNull();
+  });
+
+  it('finds Start a workflow by typing in the palette', async () => {
+    await start();
+    key(document.body, 'k', { ctrlKey: true });
+    // The palette is the only open overlay.
+    const palette = document.body.querySelector<HTMLElement>('[data-modal]')!;
+    type(palette.querySelector('input')!, 'workflow');
+    const labels = [...palette.querySelectorAll('button')].map((b) => b.textContent?.trim());
+    expect(labels.some((l) => l?.startsWith('Start a workflow'))).toBe(true);
+    expect(labels.some((l) => l?.startsWith('New task'))).toBe(false);
   });
 });

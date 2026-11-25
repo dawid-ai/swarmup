@@ -364,6 +364,8 @@ export function App() {
   }, []);
   const update = useUpdate();
   const [creating, setCreating] = useState(false);
+  /** New task opens on its Start a workflow step: the palette's Start a workflow. */
+  const [workflowFirst, setWorkflowFirst] = useState(false);
   /** The project Add project created while New task was open: the form selects it (AO-0323). */
   const [addedProject, setAddedProject] = useState<string | undefined>(undefined);
   /** The screenshot run opens New task with its project list open and this text typed. */
@@ -371,6 +373,7 @@ export function App() {
   const shotForm = useRef(false);
   const closeForm = useCallback((): void => {
     setCreating(false);
+    setWorkflowFirst(false);
     setAddedProject(undefined);
     setFormSearch(undefined);
   }, []);
@@ -957,6 +960,10 @@ export function App() {
           open={findTask(allTasks.data ?? tasks.data ?? [], task)}
           onMove={mover.request}
           onNew={() => setCreating(true)}
+          onStartWorkflow={() => {
+            setWorkflowFirst(true);
+            setCreating(true);
+          }}
           onHelp={() => setHelp(true)}
           onClose={() => setPalette(false)}
         />
@@ -985,6 +992,7 @@ export function App() {
           project={viewProject()}
           added={addedProject}
           search={formSearch}
+          workflow={workflowFirst}
           onClose={closeForm}
           onCreated={(id) => {
             closeForm();

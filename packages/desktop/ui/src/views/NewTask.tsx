@@ -161,6 +161,7 @@ export function NewTask({
   project: shownProject,
   added,
   search,
+  workflow = false,
   onOpenWorkflows,
 }: {
   me: string | null;
@@ -178,8 +179,14 @@ export function NewTask({
   added?: string;
   /** Opens the project list with this text typed, for the screenshot run. */
   search?: string;
+  /** Opens on Start a workflow, as its button in the form does (the palette's entry). */
+  workflow?: boolean;
 }) {
-  const [fromWorkflow, setFromWorkflow] = useState(false);
+  const [fromWorkflow, setFromWorkflow] = useState(workflow);
+  // The palette's Start a workflow while the form is open moves it to that step too.
+  useEffect(() => {
+    if (workflow) setFromWorkflow(true);
+  }, [workflow]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [owner, setOwner] = useState<string[]>([]);

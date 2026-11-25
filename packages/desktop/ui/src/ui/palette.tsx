@@ -10,6 +10,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Workflow,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Nav, View } from '../App';
@@ -51,6 +52,8 @@ export function Palette(props: {
   open: Task | undefined;
   onMove: (t: Task, target: Status) => void;
   onNew: () => void;
+  /** Opens New task on its Start a workflow step, as the form's own button does. */
+  onStartWorkflow: () => void;
   onHelp: () => void;
   onClose: () => void;
 }) {
@@ -108,6 +111,15 @@ export function Palette(props: {
         hint: 'n',
         icon: Plus,
         run: props.onNew,
+      });
+    }
+    if (has('start a workflow milestone create')) {
+      out.push({
+        key: 'workflow',
+        group: 'Create',
+        label: 'Start a workflow',
+        icon: Workflow,
+        run: props.onStartWorkflow,
       });
     }
     if (has('keyboard shortcuts help')) {
