@@ -85,12 +85,14 @@ export const WIN = process.platform === 'win32';
 
 /**
  * A git timeout that stops only the command a test hangs, whose arguments start with `hung`,
- * after 4 s, and gives every other command a minute. Under full-suite load on Windows, commands
+ * after 12 s, and gives every other command a minute. Under full-suite load on Windows, commands
  * that start the test's hook took past 4 s and then past 10 s, so the merge ended in the wrong
  * stage (AO-0213).
  */
 export function hangOnly(...hung: string[]): MergeGitTimeout {
-  return (args) => (hung.every((a, i) => args[i] === a) ? 4_000 : 60_000);
+  // 12 s, not 4: under the full suite git can take seconds to reach the ref update that runs the
+  // hook, and a timeout before it leaves no hook to outlive git (AO-0251, 2026-11-25).
+  return (args) => (hung.every((a, i) => args[i] === a) ? 12_000 : 60_000);
 }
 
 /**
