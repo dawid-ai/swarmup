@@ -550,9 +550,9 @@ waits` says `starts once swarmupd has run the checks of the reviewed commit` mea
   ```yaml
   swarmupd:
     code:
-      agent-ops: C:\dev\swarmup # the root's name: the code checkout
+      swarmup: C:\dev\swarmup # the root's name: the code checkout
     merge:
-      agent-ops:
+      swarmup:
         base: main
         checkout: C:\dev\swarmup
   ```

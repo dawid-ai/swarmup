@@ -93,7 +93,7 @@ Two rules need the clock or other tasks, and `swarmup` applies them when it read
 | `assign ID TO`, `priority ID P`, `park ID MSG`, `reopen ID`                                                                    | Housekeeping. A PM may assign and set the priority of any task nobody holds, and park.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `sync [--pull] [--push] [--auto] [--session-end]`                                                                              | Commits the root, then pulls and pushes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `leaks PATH...`                                                                                                                | Scans files for keys, tokens and webhook URLs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `doctor [--json]`                                                                                                              | Checks this machine: user config, data roots and their upstreams, the swarmupd config, each runtime on PATH and signed in (sign-in files are checked for, never read), user-level copies of the `swarmup` skill (`~/.claude`, `~/.codex`, `~/.agents`) against the one this install ships, swarmupd and its build, free memory and disk. The desktop's **Health checks** can install current Claude and Codex skill copies and safely remove a skill-only `agent-ops` folder. Exit 1 when a check fails.                                                                                                                                                                                                                                                                                                                              |
+| `doctor [--json]`                                                                                                              | Checks this machine: user config, data roots and their upstreams, the swarmupd config, each runtime on PATH and signed in (sign-in files are checked for, never read), user-level copies of the `swarmup` skill (`~/.claude`, `~/.codex`, `~/.agents`) against the one this install ships, swarmupd and its build, free memory and disk. The desktop's **Health checks** can install current Claude and Codex skill copies. Exit 1 when a check fails.                                                                                                                                                                                                                                                                                                                                                                                |
 | `report [--days N] [--from DATE [--to DATE]] [--project NAME] [--post CHANNEL]`                                                | Tasks opened and closed per project, runs and tokens per agent and provider, decisions, verdicts per author and reviewer pair, tokens per merged task, why runs stopped and how long people took to answer, over the last N whole days (default 7) or a date range; `--project` narrows tasks, answers, runs and decisions to one project, and `--root` (or `SWARMUP_ROOT`) to one data root; `--post` sends the summary to a channel, for example from a weekly schedule.                                                                                                                                                                                                                                                                                                                                                            |
 | `wrapped [--days N] [--from DATE [--to DATE]] [--project NAME] [--json]`                                                       | The Wrapped cards for the same window: tasks closed, agent hours in runs against human minutes, busiest agent, longest review rally, fastest answer and most blocked task. Closed, opened, run minutes and the busiest agent are the `swarmup report` figures for the same window and project. The desktop **Replay** view plays them as the **Wrapped** scene and saves each card as PNG.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `scores [--agent ID] [--task ID] [--since DATE] [--refresh] [--json]`                                                          | Scores per agent from task events and run records: review rounds, merge failures, tokens per merged task, human touches, escalations, recommendations taken, stuck runs, orientation; `--task` lists one task's scores with evidence. See [Scores](supervisor.md#scores).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -688,7 +688,7 @@ kind: record
 question: Subtasks of an approved task need no approval
 options: []
 scope: tree
-project: agent-ops
+project: swarmup
 task: AO-0107
 source: AO-0107#01M6GN7Q2K8T4W9XB3C5D6E7F8
 supersedes:
@@ -830,7 +830,7 @@ the earlier outcomes as `revised`.
 Record a decision without a task event:
 
 ```bash
-swarmup decision "No AI attribution in any repo" --project agent-ops
+swarmup decision "No AI attribution in any repo" --project swarmup
 swarmup decision "Subtasks of an approved task need no approval" --source AO-0107#01M6GN7Q
 swarmup decision "The decision log is built as designed" --source chat:01M7B2D4 -m "Context"
 swarmup decision "swarmupd merges approved work" --supersedes D-0007
@@ -845,9 +845,9 @@ The command prints the new id. `-m` or `--body-file` holds context for the body.
 Import old decision tables and decisions-topic learn notes only after a person reviews the dry run:
 
 ```bash
-swarmup decision --import C:/agent-ops/CLAUDE.md --project agent-ops --dry-run
-swarmup decision --import-notes --project agent-ops --dry-run
-swarmup decision --import-notes --project agent-ops \
+swarmup decision --import C:/dev/swarmup/CLAUDE.md --project swarmup --dry-run
+swarmup decision --import-notes --project swarmup --dry-run
+swarmup decision --import-notes --project swarmup \
   --except propose-a-vote-only-when-its-quorum-can-be-reached \
   --supersedes-note ask-dawid-only-for-crucial-decisions-agents-triage-findings=D-0019 \
   --dry-run
@@ -891,15 +891,15 @@ List the log:
 
 ```bash
 swarmup decisions --log                      # in force, every root, newest first
-swarmup decisions --log --project agent-ops  # one project, and what covers the whole root
+swarmup decisions --log --project swarmup    # one project, and what covers the whole root
 swarmup decisions --log --task AO-0110       # in force for one task
 swarmup decisions --log --all                # superseded ones and earlier outcomes too
 swarmup decisions --log --json
 ```
 
 ```text
-D-0042  2026-11-03  project agent-ops  Subtasks of an approved task need no approval   (AO-0107, human:dawid)
-D-0031  2026-11-01  tree AO-0051       Desktop ships as a tray app first               (AO-0051, human:dawid; superseded in project agent-ops by D-0055; in force for AO-0063)
+D-0042  2026-11-03  project swarmup    Subtasks of an approved task need no approval   (AO-0107, human:dawid)
+D-0031  2026-11-01  tree AO-0051       Desktop ships as a tray app first               (AO-0051, human:dawid; superseded in project swarmup by D-0055; in force for AO-0063)
 D-0019  2026-10-20  root               Ship weekly → yes                               (vote, human:dawid)
 ```
 

@@ -24,7 +24,7 @@ export interface Frame extends Stage {
 
 /** Optional words shared by the player and every exported frame. */
 export interface FrameOverlay {
-  /** The complete picker label, such as `agent-ops / docs` or `All projects`. */
+  /** The complete picker label, such as `acme / docs` or `All projects`. */
   projectName?: string;
   showProject?: boolean;
 }

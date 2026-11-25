@@ -5,7 +5,7 @@
 // esbuild for Node; each frame is server-rendered SVG, rasterized offscreen by Electron.
 //
 //   node scripts/replay-stills.mjs --fixture                                # the demo day
-//   node scripts/replay-stills.mjs --store C:/dev/agent-ops --project swarmup --days 7
+//   node scripts/replay-stills.mjs --store C:/dev/swarmup-store --project swarmup --days 7
 //   --scene swimlanes   --at 0.35,0.7,1   --clip 30   --out DIR
 //
 // `--at` takes fractions of the clip, outro card included. Files are named
