@@ -36,12 +36,14 @@ What the person sees: one React app with a view per area.
   map graph, the criteria builder, review, **Run checks** and **Judge** in `criteria.tsx`, the
   goal brief in `brief.tsx`, the task panel's **Work** section in `work.tsx`: review artifacts
   at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`;
-  the files a run kept in `run-artifacts.tsx`, a gallery and a list for **Work** and **Runs**);
+  the files a run kept in `run-artifacts.tsx`, a gallery and a list for **Work** and **Runs**,
+  each file with **Download** through the main process);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel,
   and `ui/score-breakdown.tsx` opens a score's breakdown and "How scores work" from each of them;
-  `ui/proposals.tsx` is the Agents view's **Proposals** list with the improver's state and
-  **Propose a change** (see `/improve`); `ui/gate.tsx` is
+  `ui/proposals.tsx` is the Agents view's **Proposals** list with the improver's state,
+  **Propose a change** and the **Promoted** list with **Roll back** (see `/improve`); the command
+  palette (`ui/palette.tsx`) opens **New task** on its **Start a workflow** step; `ui/gate.tsx` is
   a gate's **Approve** and **Reject** (Inbox **Gates**, the task panel), `ui/workflow.tsx` the
   **Start a workflow** dialog that **New task** and `views/Workflows.tsx` open (the Workflows
   view's editor writes the YAML through `lib/workflow-yaml.ts`, which keeps comments), and `ui/roles.tsx` edits a folder agent's
