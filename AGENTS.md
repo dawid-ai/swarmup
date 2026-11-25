@@ -37,7 +37,7 @@ This repo is the SwarmUp engine, v2. Read [README.md](README.md) and
    work), or to the reviewer the task names: its delegation's, else its plan item's. Add
    `--human` only when the change touches money, accounts, credentials, publishing or releases,
    client-facing output, deleting data, or anything irreversible. No push or PR for this
-   repo; the orchestrator merges into `v2` after approval. If you cannot commit (read-only
+   repo; the orchestrator merges into `main` after approval. If you cannot commit (read-only
    `.git`), name the changed files in the review instead; never ask a person for access.
 5. The human sees only crucial decisions (AO-0173). `swarmup ask` without `--to` goes to the PM,
    which answers it or forwards it; findings from `swarmup finding` or `swarmup new` without
