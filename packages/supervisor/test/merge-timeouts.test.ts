@@ -484,16 +484,19 @@ describe('merging approved work', () => {
 
   it('merges again, keeping the timeout retry, when a check times out as the PC wakes (AO-0170)', async () => {
     // As the AO-0165 merge: the PC sleeps during a check that hangs, and its timeout ends it on
-    // wake. 0.2 min is 12 s, and the retry gets twice that. The clock jumps an hour from 500 ms
-    // into the check step, after the command read its start time and before its timeout: under
-    // the full suite Node can take seconds to start the check, so waiting for the check's own
-    // output raced the timeout, and a 6 s retry timed out before Node started (AO-0170 flakes).
+    // wake. 0.2 min is 12 s, and the retry gets twice that. The clock jumps an hour 3 s after the
+    // check command is announced, after the runner read its start time and before its timeout:
+    // under the full suite Node can take seconds to start the check, so waiting for the check's
+    // own output raced the timeout, and a 6 s retry timed out before Node started (AO-0170
+    // flakes). Counting from the check step instead let the step's git diff and a slow spawn
+    // pass 500 ms, so the runner read its start after the jump and saw no gap.
     let checksAt: number | null = null;
-    const held: { sup?: { mergeStatus(): { step?: string } | null } } = {};
+    const held: { sup?: { mergeStatus(): { step?: string; command?: unknown } | null } } = {};
     const now = (): number => {
       const t = Date.now();
-      if (checksAt === null && held.sup?.mergeStatus()?.step === 'checks') checksAt = t;
-      return checksAt !== null && t - checksAt >= 500 ? t + 60 * 60_000 : t;
+      const m = checksAt === null ? held.sup?.mergeStatus() : null;
+      if (m?.step === 'checks' && m.command) checksAt = t;
+      return checksAt !== null && t - checksAt >= 3_000 ? t + 60 * 60_000 : t;
     };
     const s = mergeSetup({ timeoutMinutes: 0.2, now });
     held.sup = s.sup;
