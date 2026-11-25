@@ -3,6 +3,14 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.27 (2026-11-25)
+
+- **Download what a run made.** Every file a run kept has a **Download** button, including files the app can't show.
+- **Safer agent changes.** In **Agents > Proposals**, **Promote** stays off until a proposal meets what your project requires, unless you promote anyway and say why. Promoted changes are listed with **Roll back**.
+- **Gates in plans.** When you edit a milestone's plan, you can make any step a gate: a person approves before the next steps start.
+- **Start a workflow from anywhere.** Press Ctrl+K and choose **Start a workflow**.
+- **Safer workflow parameters.** A workflow parameter that goes into a check command can't change the command, and a parameter can require a pattern.
+
 ## v0.3.0-beta.26 (2026-11-25)
 
 - **See what a run made.** Screenshots, reports and other files a run produces are kept with the run. Open them under **Runs > Artifacts**, and in the task's **Work** section when the run sent the work for review.

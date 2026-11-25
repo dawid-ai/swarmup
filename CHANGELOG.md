@@ -6,6 +6,42 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.27 (2026-11-25)
+
+### Added
+
+- The command palette (Ctrl+K) has **Start a workflow**, which opens the same flow as
+  **New task > Start a workflow**.
+- The app's milestone plan editor makes and edits gates: **A person approves here (gate)** turns
+  an item into a gate that asks a person you pick, with its question, its answers and what a
+  rejection does. A gate still asks only a person; agents cannot approve one.
+- The workflow editor's **Form** tab edits a gate's answers and a parameter's `pattern`, which
+  were YAML-only.
+- **Agents > Proposals** lists the promoted changes with **Roll back**, which asks why and puts
+  the definition files back as `swarmup defs rollback` does, recorded on the proposal's task.
+- **Runs > Artifacts** and the task panel's **Kept by run** files have **Download** on every
+  file, which saves it where you pick. Files the app cannot show, such as PDFs and ZIPs, offer
+  **Download** instead of the path swarmupd keeps them at.
+- A workflow parameter can declare a `pattern`, a regular expression its whole value must match,
+  such as `pattern: 'v[0-9.]+'`. A start refuses a value that misses it, and `swarmup validate`
+  checks the pattern, the default and the options.
+
+### Changed
+
+- **Promote** in **Agents > Proposals** is off while `improvement.requires` is not met, and its
+  tooltip names what is missing. **Promote anyway…** asks for a reason and records the override
+  on the proposal's task, as `swarmup defs promote --force` does.
+
+### Fixed
+
+- A workflow parameter that fills the command of a `command` check can no longer change that
+  command: `swarmup workflow start` and the app's **Start a workflow** refuse a value with
+  anything but letters, digits and `. _ / : @ -` in it, or one that starts with `-`. Titles and
+  bodies still take any value. The app says which parameters go into a command and why a value
+  is refused before you press **Start**.
+- `swarmup validate` refuses a workflow whose parameter is the program a command runs (unless it
+  lists `options`), and a default or an option that cannot go into the command it fills.
+
 ## 0.3.0-beta.26 (2026-11-25)
 
 ### Added
