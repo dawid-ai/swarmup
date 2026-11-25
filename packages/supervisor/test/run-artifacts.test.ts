@@ -22,7 +22,9 @@ import {
   keepRunArtifacts,
   opsdConfig,
   pruneRunArtifacts,
+  NoRunArtifact,
   readManifest,
+  readRunArtifact,
   runReviewArtifacts,
   safeName,
   startApi,
@@ -189,6 +191,27 @@ describe('keepRunArtifacts', () => {
     });
     expect(m.artifacts).toEqual([]);
     expect(existsSync(join(state, 'artifacts', 'RUN1'))).toBe(false);
+  });
+
+  it('serves only one-segment names, even from a manifest edited by hand', async () => {
+    const { state, scratch } = folders();
+    writeFileSync(join(scratch, 'artifacts', 'report.pdf'), '%PDF');
+    await keepRunArtifacts({
+      stateDir: state,
+      run: 'RUN1',
+      scratch,
+      roots: [],
+      limits: DEFAULT_ARTIFACT_LIMITS,
+    });
+    expect((await readRunArtifact(state, 'RUN1', 'report.pdf')).data.toString()).toBe('%PDF');
+    writeFileSync(join(state, 'secret.txt'), 'secret');
+    const file = join(state, 'artifacts', 'RUN1', 'manifest.json');
+    const m = JSON.parse(readFileSync(file, 'utf8'));
+    for (const name of ['../../secret.txt', '..\\..\\secret.txt', '..']) {
+      m.artifacts = [{ ...m.artifacts[0], name }];
+      writeFileSync(file, JSON.stringify(m));
+      await expect(readRunArtifact(state, 'RUN1', name)).rejects.toBeInstanceOf(NoRunArtifact);
+    }
   });
 });
 

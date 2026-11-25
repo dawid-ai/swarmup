@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 // Run artifacts in the app (W4): the Runs view's run detail shows the files a run kept, images as
 // a gallery and other files as a list, and the task panel's Work section shows the files a run
-// kept that its review names.
+// kept that its review names. Every kept file has Download, which the main process saves.
 import { act, createElement } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pageRuns } from '../../supervisor/src/runs';
+import { artifactPath, artifactRequest } from '../src/artifact-save';
 import type { Nav } from '../ui/src/App';
 import type { OpsEvent, RunArtifactView, RunRecord } from '../ui/src/types';
 import { WorkSection } from '../ui/src/ui/work';
@@ -20,6 +21,12 @@ declare global {
 const RUN = '01RUNARTIFACTS0000000000AB';
 const answers = new Map<string, unknown>();
 const gets: string[] = [];
+/** The files Download asked the main process to save, and what it answers. */
+let saved: Array<[string, string]> = [];
+let saveAnswer: { ok: boolean; data?: { file: string }; error?: string } = {
+  ok: true,
+  data: { file: 'D:/Downloads/x' },
+};
 let runs: RunRecord[] = [];
 let root: Root | undefined;
 let box: HTMLDivElement;
@@ -58,6 +65,8 @@ beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   answers.clear();
   gets.length = 0;
+  saved = [];
+  saveAnswer = { ok: true, data: { file: 'D:/Downloads/x' } };
   answers.set(view('home.png'), IMAGE);
   answers.set(view('report.txt'), TEXT);
   answers.set(view('summary.pdf'), PDF);
@@ -75,6 +84,10 @@ beforeEach(() => {
       }
       if (path.includes('/log')) return Promise.resolve({ ok: true, data: '' });
       return Promise.resolve({ ok: true, data: answers.get(path) ?? [] });
+    },
+    saveArtifact: (run: string, name: string) => {
+      saved.push([run, name]);
+      return Promise.resolve(saveAnswer);
     },
     info: () => Promise.resolve({ me: 'human:dawid', pid: 1, roots: [] }),
     onService: off,
@@ -162,12 +175,42 @@ describe('the Runs view', () => {
       'report.txt',
       'summary.pdf',
     ]);
-    // Files open on a click: text as text, others as where swarmupd keeps them.
+    // Files open on a click: text as text, others with Download.
     expect(gets).not.toContain(view('report.txt'));
     await click(files[0]!.querySelector('button'));
     expect(files[0]!.querySelector('[data-run-artifact-text]')?.textContent).toBe('all green');
     await click(files[1]!.querySelector('button'));
-    expect(files[1]!.querySelector('[data-run-artifact-file]')?.textContent).toContain(PDF.file);
+    const other = files[1]!.querySelector('[data-run-artifact-file]')!;
+    expect(other.textContent).toContain('Download it to open it');
+    expect(other.textContent).not.toContain(PDF.file);
+    expect(other.querySelector('button')?.textContent).toBe('Download');
+  });
+
+  it('offers Download on every kept file and saves it through the main process', async () => {
+    runs = [run()];
+    const nav = { me: null, openTask: vi.fn(), go: vi.fn() } as unknown as Nav;
+    await mount(createElement(Runs, { nav, selected: RUN }));
+    await click(artifactsButton());
+    const panel = box.querySelector('[data-run-artifacts-panel]')!;
+    const downloads = [...panel.querySelectorAll('[data-run-artifact-download]')];
+    expect(downloads.map((b) => b.getAttribute('data-run-artifact-download'))).toEqual([
+      'home.png',
+      'report.txt',
+      'summary.pdf',
+    ]);
+    // Download sits beside the row's toggle, so it saves without opening the row.
+    await click(panel.querySelector('[data-run-artifact-download="summary.pdf"]'));
+    expect(saved).toEqual([[RUN, 'summary.pdf']]);
+    expect(panel.querySelector('[data-run-artifact-file]')).toBeNull();
+    await click(panel.querySelector('[data-run-artifact-download="home.png"]'));
+    expect(saved).toEqual([
+      [RUN, 'summary.pdf'],
+      [RUN, 'home.png'],
+    ]);
+    // A closed save dialog is no error.
+    saveAnswer = { ok: false, error: 'cancelled' };
+    await click(panel.querySelector('[data-run-artifact-download="report.txt"]'));
+    expect(saved).toHaveLength(3);
   });
 
   it('shows no Artifacts button for a run that kept nothing', async () => {
@@ -199,5 +242,22 @@ describe('the Work section', () => {
     // The review's other artifacts stay rows of their own.
     expect(box.querySelector('[data-artifact="https://example.com/preview"]')).toBeTruthy();
     expect(box.querySelector('[data-artifact="home.png"]')).toBeNull();
+  });
+});
+
+describe('the download request', () => {
+  it('takes a run id and a one-segment kept name, and nothing that leaves the route', () => {
+    expect(artifactPath(artifactRequest(RUN, 'summary.pdf'))).toBe(
+      `/api/runs/${RUN}/artifacts/summary.pdf`,
+    );
+    expect(artifactPath(artifactRequest(RUN, 'home page.png'))).toBe(
+      `/api/runs/${RUN}/artifacts/home%20page.png`,
+    );
+    for (const name of ['..', '.', '../x.txt', 'a/b.txt', 'a\b.txt', '.hidden', 'x.', '', 7]) {
+      expect(() => artifactRequest(RUN, name)).toThrow(/bad artifact name/);
+    }
+    for (const run of ['../runs', 'R/1', '', null]) {
+      expect(() => artifactRequest(run, 'x.txt')).toThrow(/bad run id/);
+    }
   });
 });

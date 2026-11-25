@@ -44,6 +44,7 @@ import {
 } from 'electron';
 import electronUpdater from 'electron-updater';
 import { addProjectHandlers } from './add-project.js';
+import { artifactPath, artifactRequest } from './artifact-save.js';
 import { relocateProjectHandler } from './project-relocate.js';
 import { allowedCall, attachmentName, ATTACHMENT_SCHEME } from './allow.js';
 import { imageFiles, writeImages } from './images.js';
@@ -1409,6 +1410,57 @@ ipcMain.handle('swarmup:save-images', async (e, input: unknown) => {
     const dir = pick.filePaths[0];
     if (pick.canceled || !dir) return { ok: false, error: 'cancelled' };
     return { ok: true, data: { dir, files: writeImages(dir, files) } };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+});
+
+/** GETs `path` from swarmupd as bytes; looks swarmupd up once more when it moved ports. */
+async function daemonBytes(path: string): Promise<Buffer> {
+  const get = (d: DaemonInfo): Promise<Response> =>
+    fetch(`http://127.0.0.1:${d.port}${path}`, {
+      headers: { authorization: `Bearer ${d.token}` },
+    });
+  const d = info ?? (await daemon());
+  let res: Response;
+  try {
+    res = await get(d);
+  } catch (err) {
+    const fresh = readDaemon();
+    if (!fresh || (fresh.pid === d.pid && fresh.port === d.port)) throw err;
+    info = fresh;
+    res = await get(fresh);
+  }
+  if (!res.ok) {
+    let why = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (typeof body.error === 'string') why = body.error;
+    } catch {
+      // Not JSON: keep the status.
+    }
+    throw new Error(why);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/**
+ * Download on a run's kept file (W4): reads its bytes through swarmupd and writes them where the
+ * person picks in a save dialog. The page names only the run and the file's name.
+ */
+ipcMain.handle('swarmup:save-artifact', async (e, run: unknown, name: unknown) => {
+  if (!fromPage(e)) return { ok: false, error: 'not allowed from this page' };
+  try {
+    const req = artifactRequest(run, name);
+    if (offscreen) throw new Error('not in screenshot mode');
+    const data = await daemonBytes(artifactPath(req));
+    const pick = await dialog.showSaveDialog(win!, {
+      title: `Save ${req.name}`,
+      defaultPath: join(app.getPath('downloads'), req.name),
+    });
+    if (pick.canceled || !pick.filePath) return { ok: false, error: 'cancelled' };
+    writeFileSync(pick.filePath, data);
+    return { ok: true, data: { file: pick.filePath } };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }

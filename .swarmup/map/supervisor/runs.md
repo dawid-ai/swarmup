@@ -31,7 +31,8 @@ Everything about one run after the launch: where it works, what it may see, what
   `<scratch>/artifacts/` in `<state>/artifacts/<id>/` with a manifest, within
   `swarmupd.artifacts` limits, refusing real paths outside the scratch folder and worktree; the
   wrap-up keeps them after the reap, `swarmup review` from a run attaches them (kind `run`), and
-  housekeeping prunes them after `keep_days`.
+  housekeeping prunes them after `keep_days`. A kept file is served only by a one-segment name
+  found in the run's manifest.
 - `proc.ts` spawns hidden processes that can outlive swarmupd; `procs.ts` records every process a
   run starts and kills only by PID plus creation time.
 - `worktree.ts`: a task of its root's `workspace_types` (core's `workspaceTypes`; default task,
