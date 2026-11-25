@@ -640,7 +640,15 @@ stages:
 
 - **Parameters.** `{{name}}` in any text takes the parameter's value; there are no expressions.
   `{{human}}` is the store's person. A start refuses a missing `required` parameter, one the
-  workflow does not declare, and a value outside `options`.
+  workflow does not declare, a value outside `options`, and a value that does not match
+  `pattern`, a regular expression the whole value must match (such as `pattern: 'v[0-9.]+'`).
+- **Parameters in commands.** swarmupd runs the `run` of a `command` criterion in a shell at
+  merge (`cmd.exe` on Windows, `sh` elsewhere), so a value that fills it could change the
+  command. No quoting is safe in both shells (`cmd.exe` expands `%NAME%` even inside quotes), so
+  such a value may hold only letters, digits and `. _ / : @ -`, must not start with `-`, and is
+  at most 200 characters; anything else is refused at start, in the CLI and the app alike. A
+  parameter that starts a command (the program it runs) needs `options`. Titles, bodies and other
+  text take any value unchanged.
 - **Stages** map one to one onto plan items: `key`, `title`, `owner`, `estimate`, `after`,
   `review`, `type`, `priority`, `labels`, `body` and `done_when`, plus:
   - `gate: { ask, to, options, on_reject }`: a [gate](#gates) item owned by `to`, default the
@@ -665,6 +673,9 @@ stages:
 
 `swarmup validate` checks each workflow against its schema and compiles it once with each
 parameter's default, first option or `example`, so a broken stage shows before anyone starts it.
+It also refuses a bad `pattern`, a default or an option that does not match it, a parameter
+that starts a command without `options`, and a default or an option that cannot go into the
+command it fills.
 `new-project` templates come with starter workflows: `feature` and `bugfix` for code,
 `content-piece` for content, and `content-piece` and `campaign-launch` for a campaign. Copy
 others from `packages/core/templates/workflows/`.

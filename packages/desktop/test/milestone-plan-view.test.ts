@@ -16,6 +16,9 @@ import {
   checkHistory,
   editRows,
   estimateMinutes,
+  gateAnswers,
+  gateOf,
+  gatePatch,
   milestoneOf,
   minutesText,
   moveRow,
@@ -317,6 +320,65 @@ describe('plan helpers', () => {
     expect(out[1]!.uid).not.toBe(rows[1]!.uid);
   });
 
+  it('sends a gate from its fields, or as proposed once it has a task', () => {
+    const proposed = [
+      row('brief', { owner: '*:writer' }),
+      row('ok', {
+        title: 'Brief approved',
+        owner: 'human:dawid',
+        type: 'gate',
+        after: ['brief'],
+        gate: {
+          ask: 'Is the brief right?',
+          options: ['yes', 'yes, with notes'],
+          on_reject: 'park',
+        },
+      }),
+    ];
+    const rows = editRows(proposed);
+    expect(rows[1]).toMatchObject({
+      gateAsk: 'Is the brief right?',
+      gateOptions: 'yes\nyes, with notes',
+      gateOnReject: 'park',
+    });
+    // Unchanged fields send the gate as it was: answers with commas and an explicit park stay.
+    expect(planEdited(rows, proposed)).toBe(false);
+    expect(gateOf(rows[1]!)).toEqual(proposed[1]!.gate);
+    const edited = {
+      ...rows[1]!,
+      gateAsk: '',
+      gateOptions: ' go \n\n stop ',
+      gateOnReject: 'revise',
+    };
+    expect(gateOf(edited)).toEqual({
+      ask: 'Brief approved',
+      options: ['go', 'stop'],
+      on_reject: 'revise',
+    });
+    expect(gateAnswers('a\r\n b \n\n')).toEqual(['a', 'b']);
+    // Not a gate: no gate goes out, whatever the fields hold.
+    expect(gateOf({ ...edited, type: '' })).toBeUndefined();
+    expect(planOf([{ ...edited, type: '' }]).items[0]!.gate).toBeUndefined();
+    // A gate with a task keeps the gate its file holds.
+    expect(gateOf({ ...edited, task: 'T-0009' })).toEqual(proposed[1]!.gate);
+  });
+
+  it('marks a row as a gate: a person owns it, no reviewer, 15m when it has no estimate', () => {
+    const [r] = editRows([row('ci', { owner: '*:engineer', review: 'codex:qa', estimate: '' })]);
+    expect(gatePatch(r!, true, 'human:dawid')).toEqual({
+      type: 'gate',
+      review: '',
+      owner: 'human:dawid',
+      estimate: '15m',
+    });
+    // An agent cannot own a gate, so with no person to hand it to the owner is left empty.
+    expect(gatePatch(r!, true, 'claude:pm')).toMatchObject({ owner: '' });
+    expect(gatePatch({ ...r!, owner: 'human:alex' }, true, 'human:dawid')).toMatchObject({
+      owner: 'human:alex',
+    });
+    expect(gatePatch(r!, false, 'human:dawid')).toEqual({ type: '' });
+  });
+
   it('names the milestone of a card, and groups cards in Milestone lanes by root and id', () => {
     const tasks = [
       task('AO-0120', { type: 'milestone' }),
@@ -611,6 +673,123 @@ describe('the task panel of a milestone', () => {
       { key: 'ci2', title: 'Build, sign and notarize', after: ['apple'] },
       { key: 'smoke', after: ['ci2'] },
     ]);
+  });
+
+  it('makes an item a gate that asks a person, with its question, answers and rejection', async () => {
+    answers.set('/api/directory', [
+      { id: 'human:alex', source: 'config', configured: true },
+      { id: 'claude:engineer', source: 'role', configured: true },
+    ]);
+    await panel(report());
+    await click(button('Edit'));
+    const smoke = (): Element => box.querySelector('[data-edit-row="smoke"]')!;
+    expect(smoke().querySelector('[data-gate-fields]')).toBeNull();
+    await click(field('smoke', 'gate'));
+    expect(field('smoke', 'gate').checked).toBe(true);
+    expect(box.querySelector('[data-edit-gate="smoke"]')).not.toBeNull();
+    expect(field('smoke', 'type').value).toBe('gate');
+    // A gate is a person's: it asks you, has no reviewer, and suggests the people swarmupd knows.
+    expect(field('smoke', 'owner').value).toBe('human:dawid');
+    expect(field('smoke', 'review').disabled).toBe(true);
+    const list = box.querySelector(
+      `datalist[id="${field('smoke', 'owner').getAttribute('list')}"]`,
+    )!;
+    expect([...list.querySelectorAll('option')].map((o) => o.value)).toEqual([
+      'human:dawid',
+      'human:alex',
+    ]);
+    type(field('smoke', 'owner'), '*:qa');
+    expect(smoke().querySelector('[data-gate-owner-warning]')).not.toBeNull();
+    type(field('smoke', 'owner'), 'human:alex');
+    expect(smoke().querySelector('[data-gate-owner-warning]')).toBeNull();
+    expect(field('smoke', 'gateAsk').placeholder).toBe('Smoke check on a clean Mac');
+    type(field('smoke', 'gateAsk'), 'Does it install on a clean Mac?');
+    type(
+      box.querySelector<HTMLTextAreaElement>('[data-edit-row="smoke"] [name="gateOptions"]')!,
+      'yes\nyes, with notes',
+    );
+    const reject = box.querySelector<HTMLSelectElement>(
+      '[data-edit-row="smoke"] [name="gateOnReject"]',
+    )!;
+    act(() => {
+      reject.value = 'revise';
+      reject.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await click(button('Approve plan'));
+    const items = (writes[0]!.body.plan as { items: Array<Record<string, unknown>> }).items;
+    expect(items[2]).toEqual({
+      key: 'smoke',
+      title: 'Smoke check on a clean Mac',
+      owner: 'human:alex',
+      estimate: '1h',
+      after: ['ci'],
+      type: 'gate',
+      gate: {
+        ask: 'Does it install on a clean Mac?',
+        options: ['yes', 'yes, with notes'],
+        on_reject: 'revise',
+      },
+    });
+  });
+
+  it('turns a gate back into a task, and keeps the gate of an item that has a task read-only', async () => {
+    const gate = row('ok', {
+      title: 'Signing approved',
+      owner: 'human:dawid',
+      type: 'gate',
+      after: ['apple'],
+      task: 'AO-0123',
+      gate: { ask: 'Is signing set up?', options: ['yes'] },
+    });
+    const effective = [row('apple', { task: 'AO-0121', status: 'done' }), gate];
+    await panel(
+      report({
+        status: 'blocked',
+        approval: 'E-APPROVE',
+        planner: 'claude:pm',
+        items: effective,
+        minutes: 180,
+        spent: 30,
+        pending: {
+          event: 'E-CHANGE',
+          actor: 'claude:pm',
+          stale: false,
+          base: 'E-APPROVE',
+          items: [
+            ...effective,
+            row('notes', {
+              title: 'Release notes',
+              owner: 'human:dawid',
+              type: 'gate',
+              after: ['ok'],
+              estimate: '15m',
+              gate: { ask: 'Release notes' },
+            }),
+          ],
+          minutes: 195,
+          changes: ['added: notes'],
+        },
+      }),
+      { t: { ...MILESTONE, status: 'blocked', owner: '*:qa', reviewer: null } },
+    );
+    await click(button('Edit'));
+    for (const name of ['gate', 'gateAsk', 'gateOnReject']) {
+      expect(field('ok', name).disabled).toBe(true);
+    }
+    expect(field('ok', 'gateAsk').value).toBe('Is signing set up?');
+    await click(field('notes', 'gate'));
+    expect(box.querySelector('[data-edit-row="notes"] [data-gate-fields]')).toBeNull();
+    type(field('notes', 'owner'), '*:writer');
+    await click(button('Approve plan'));
+    const items = (writes[0]!.body.plan as { items: Array<Record<string, unknown>> }).items;
+    expect(items[1]).toMatchObject({ key: 'ok', type: 'gate', gate: gate.gate });
+    expect(items[2]).toEqual({
+      key: 'notes',
+      title: 'Release notes',
+      owner: '*:writer',
+      estimate: '15m',
+      after: ['ok'],
+    });
   });
 
   it('sends the plan back with a note', async () => {

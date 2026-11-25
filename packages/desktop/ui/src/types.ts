@@ -713,8 +713,19 @@ export interface WorkflowInfo {
   approval?: 'proposal' | 'starter';
   params: Record<
     string,
-    { description?: string; required?: boolean; default?: string; options?: string[] } | null
+    {
+      description?: string;
+      required?: boolean;
+      default?: string;
+      options?: string[];
+      pattern?: string;
+    } | null
   >;
+  /**
+   * The parameters whose value goes into a command criterion, which swarmupd runs in a shell;
+   * absent from an older swarmupd.
+   */
+  command_params?: string[];
   stages: number;
   ok: boolean;
   problems: string[];

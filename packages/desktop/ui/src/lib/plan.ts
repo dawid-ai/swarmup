@@ -47,8 +47,17 @@ export interface EditRow {
   for?: string;
   /** A typed `done_when` criterion, kept as proposed while `done_when` stays empty. */
   typedDoneWhen?: CriterionSpec;
-  /** A gate item's question (W5), kept as proposed: edit mode has no field for it. */
+  /**
+   * A gate item's question, answers and rejection (W5) as proposed. A row with a task sends it
+   * unchanged, since a gate lives in the task's file; any other row sends the gate fields below.
+   */
   gate?: GateSpec;
+  /** The gate's question; the title when empty. */
+  gateAsk: string;
+  /** The answers the person picks from, one per line. */
+  gateOptions: string;
+  /** What a rejection does: `revise`, `park`, or empty for the default, park. */
+  gateOnReject: string;
   /**
    * The task the item already has. Its title, `done_when`, reviewer, type and priority live in
    * the task's file and never change in place, so those fields are read-only; **Replace item**
@@ -76,8 +85,54 @@ export function editRows(items: readonly PlanRow[]): EditRow[] {
     ...(i.body ? { body: i.body } : {}),
     ...(i.for ? { for: i.for } : {}),
     ...(i.gate ? { gate: i.gate } : {}),
+    gateAsk: i.gate?.ask ?? '',
+    gateOptions: (i.gate?.options ?? []).join('\n'),
+    gateOnReject: i.gate?.on_reject ?? '',
     ...(i.task ? { task: i.task } : {}),
   }));
+}
+
+/** The gate type of a plan item: a person approves or rejects before the items after it start. */
+export const GATE = 'gate';
+
+/** The answers of a gate's answers field: one per line, blanks dropped. */
+export function gateAnswers(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The gate a row sends: as proposed for a row that has a task (its file holds the gate), else
+ * from the gate fields, the question defaulting to the title. Undefined for a row that is no gate.
+ */
+export function gateOf(r: EditRow): GateSpec | undefined {
+  if (r.type !== GATE) return undefined;
+  if (r.task && r.gate) return r.gate;
+  const ask = r.gateAsk.trim() || r.title.trim();
+  if (!ask) return undefined;
+  const gate: GateSpec = { ask };
+  const options = gateAnswers(r.gateOptions);
+  if (options.length > 0) gate.options = options;
+  if (r.gateOnReject === 'park' || r.gateOnReject === 'revise') gate.on_reject = r.gateOnReject;
+  return gate;
+}
+
+/**
+ * The change that marks a row as a gate, or back: a gate is a person's (core refuses an agent
+ * owner) and has no reviewer, so marking one hands it to `me` when its owner is no person, and
+ * clears the reviewer; an empty estimate becomes `15m`, as a workflow gate's.
+ */
+export function gatePatch(r: EditRow, on: boolean, me: string | null): Partial<EditRow> {
+  if (!on) return { type: '' };
+  const person = (id: string | null | undefined): id is string => Boolean(id?.startsWith('human:'));
+  return {
+    type: GATE,
+    review: '',
+    owner: person(r.owner.trim()) ? r.owner : person(me) ? me : '',
+    estimate: r.estimate.trim() || '15m',
+  };
 }
 
 /** A `done_when` entry in one line: the text, or a typed criterion's kind and what it checks. */
@@ -136,7 +191,8 @@ export function planOf(
       if (v) item[f] = v;
     }
     if (!item.done_when && r.typedDoneWhen) item.done_when = r.typedDoneWhen;
-    if (r.gate && item.type === 'gate') item.gate = r.gate;
+    const gate = gateOf(r);
+    if (gate) item.gate = gate;
     return item;
   });
   return { ...(notes?.trim() ? { notes: notes.trim() } : {}), items };
@@ -186,6 +242,9 @@ export function addRow(rows: readonly EditRow[]): EditRow[] {
       review: '',
       type: '',
       priority: '',
+      gateAsk: '',
+      gateOptions: '',
+      gateOnReject: '',
     },
   ];
 }

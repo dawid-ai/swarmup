@@ -6,6 +6,13 @@
  * (`validatePlan`, the `plan` and `plan-approve` events). Parameters fill `{{name}}` in any text,
  * and `{{human}}` is the store's person; there are no expressions. A stage with `when` is left out unless the parameter has the value; a
  * stage with `gate` becomes a `gate` item that a person approves or rejects.
+ *
+ * A value that fills the `run` of a `command` criterion becomes part of a shell command line that
+ * swarmupd runs at merge (`cmd.exe /d /s /c` on Windows, `/bin/sh -c` elsewhere). No quoting is
+ * correct for both shells: `cmd.exe` expands `%NAME%` inside double quotes and has no escape for a
+ * quote that every program's argument parser reads back. So such a value may hold only characters
+ * that neither shell treats as syntax ({@link COMMAND_VALUE_RE}), and a parameter never names the
+ * program a command runs unless the workflow lists its `options`.
  */
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,7 +24,7 @@ import { GATE_TYPE, PRIORITIES } from '../model.js';
 import type { PlanDoc } from '../plan.js';
 import { validatePlan } from '../plan.js';
 import { normalText } from './hash.js';
-import type { DefProblem, Schema } from './schema.js';
+import type { DefProblem, Locate, Schema } from './schema.js';
 import { any, checkYaml, enumOf, int, list, map, obj, oneOf, str } from './schema.js';
 
 /** The folder of a store that holds the workflows. */
@@ -36,6 +43,148 @@ export interface WorkflowParam {
   default?: string;
   /** The values it may take. */
   options?: string[];
+  /** A regular expression every value must match in full, such as `[0-9]+`. */
+  pattern?: string;
+}
+
+/**
+ * What a parameter value that goes into a `command` criterion may be: letters, digits and
+ * `. _ / : @ -`, not starting with `-` (an option), 200 characters at most. Neither `cmd.exe` nor
+ * `sh` reads any of these as syntax, so the value stays one plain word of the command.
+ */
+export const COMMAND_VALUE_RE = /^[A-Za-z0-9_./:@][A-Za-z0-9_./:@-]{0,199}$/;
+
+/** The characters {@link COMMAND_VALUE_RE} takes, as a message names them. */
+const COMMAND_VALUE_HINT =
+  "letters, digits and . _ / : @ - (no spaces, quotes or shell characters, and not starting with '-')";
+
+/** Why `value` cannot go into a command, or undefined when it can. */
+export function commandValueProblem(value: string): string | undefined {
+  if (COMMAND_VALUE_RE.test(value)) return undefined;
+  if (value === '') return 'it needs a value';
+  if (value.length > 200) return 'it is longer than 200 characters';
+  return `it may hold only ${COMMAND_VALUE_HINT}`;
+}
+
+/** `pattern` as the regular expression a whole value must match; throws on a bad pattern. */
+function fullMatch(pattern: string): RegExp {
+  return new RegExp(`^(?:${pattern})$`, 'u');
+}
+
+/** Whether `value` matches `pattern` in full; a bad pattern matches nothing. */
+function matches(pattern: string, value: string): boolean {
+  try {
+    return fullMatch(pattern).test(value);
+  } catch {
+    return false;
+  }
+}
+
+/** A `{{name}}` in text; the name is group 1. */
+const FILL_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+
+/**
+ * Whether a `{{name}}` that follows `before` starts a command, so its value names the program:
+ * the word it is in starts the line or follows `;`, `&`, `|`, `(`, a backtick or a line break.
+ */
+function atProgram(before: string): boolean {
+  const rest = before.replace(/[^\s|;&(`]*$/, '').replace(/[ \t]+$/, '');
+  return rest === '' || /[|;&(`\n]$/.test(rest);
+}
+
+/** One `{{name}}` in the `run` of a command criterion, as the workflow writes it. */
+export interface CommandParamUse {
+  param: string;
+  /** Key path of the `run`, such as `['stages', 2, 'done_when', 'run']`. */
+  path: Array<string | number>;
+  /** It starts a command, so its value names the program. */
+  program: boolean;
+}
+
+/**
+ * Each `{{name}}` in the `run` of a command criterion: the milestone's `done_when`, `criteria`,
+ * and each stage's `done_when`. Only these reach a shell; any other text stays text.
+ */
+export function workflowCommandParams(
+  def: Pick<WorkflowDef, 'milestone' | 'criteria' | 'stages'>,
+): CommandParamUse[] {
+  const out: CommandParamUse[] = [];
+  const walk = (value: unknown, path: Array<string | number>): void => {
+    if (Array.isArray(value)) value.forEach((v, i) => walk(v, [...path, i]));
+    else if (isRecord(value)) {
+      for (const [k, v] of Object.entries(value)) {
+        if (k === 'run' && typeof v === 'string' && Object.hasOwn(value, 'kind')) {
+          for (const m of v.matchAll(FILL_RE)) {
+            out.push({ param: m[1]!, path: [...path, k], program: atProgram(v.slice(0, m.index)) });
+          }
+        } else walk(v, [...path, k]);
+      }
+    }
+  };
+  walk(def.milestone?.done_when, ['milestone', 'done_when']);
+  for (const [type, c] of Object.entries(def.criteria ?? {})) walk(c, ['criteria', type]);
+  (def.stages ?? []).forEach((s, i) => walk(s.done_when, ['stages', i, 'done_when']));
+  return out;
+}
+
+/** A key path as problems show it: `stages[2].done_when.run`. */
+function pathText(path: ReadonlyArray<string | number>): string {
+  return path.map((k, i) => (typeof k === 'number' ? `[${k}]` : i === 0 ? k : `.${k}`)).join('');
+}
+
+/**
+ * The problems of a workflow's parameters that a sample compile cannot show: a bad `pattern`, a
+ * default or an option that does not match it, a parameter that names a command's program
+ * without `options`, and a default or an option that cannot go into the command it fills.
+ */
+function paramProblems(def: WorkflowDef, at: Locate, file: string): DefProblem[] {
+  const out: DefProblem[] = [];
+  const add = (path: Array<string | number>, message: string): void => {
+    out.push({ file, path: pathText(path), ...at(path), severity: 'error', message });
+  };
+  const params = def.params ?? {};
+  for (const [k, p] of Object.entries(params)) {
+    if (!p?.pattern) continue;
+    try {
+      fullMatch(p.pattern);
+    } catch (err) {
+      add(['params', k, 'pattern'], `bad pattern: ${(err as Error).message}`);
+      continue;
+    }
+    if (p.default !== undefined && !matches(p.pattern, p.default)) {
+      add(['params', k, 'default'], `the default '${p.default}' does not match ${p.pattern}`);
+    }
+    (p.options ?? []).forEach((o, i) => {
+      if (!matches(p.pattern!, o)) {
+        add(['params', k, 'options', i], `the option '${o}' does not match ${p.pattern}`);
+      }
+    });
+  }
+  const seen = new Set<string>();
+  for (const use of workflowCommandParams(def)) {
+    const p = Object.hasOwn(params, use.param) ? params[use.param] : undefined;
+    // The compile names an unknown {{name}}.
+    if (!p && use.param !== 'human') continue;
+    if (use.program && !p?.options) {
+      add(
+        use.path,
+        `{{${use.param}}} is the program this command runs, so a value could run anything; ` +
+          `give parameter ${use.param} options, or write the program in the command`,
+      );
+    }
+    if (!p || seen.has(use.param)) continue;
+    seen.add(use.param);
+    const where = pathText(use.path);
+    const check = (value: string, path: Array<string | number>, what: string): void => {
+      const why = commandValueProblem(value);
+      if (why) add(path, `${what} '${value}' cannot go into the command at ${where}: ${why}`);
+    };
+    if (p.default !== undefined) check(p.default, ['params', use.param, 'default'], 'the default');
+    (p.options ?? []).forEach((o, i) =>
+      check(o, ['params', use.param, 'options', i], 'the option'),
+    );
+  }
+  return out;
 }
 
 /** A stage's gate: a person approves or rejects before the stages after it start. */
@@ -166,6 +315,9 @@ export const WORKFLOW_SCHEMA: Schema = obj(
           required: { kind: 'bool', doc: 'Start refuses without it, unless it has a default.' },
           default: text('The value when start names none.'),
           options: list(str(), { doc: 'The values it may take.' }),
+          pattern: text(
+            'A regular expression every value must match in full, such as `[0-9]+` or `v[0-9.]+`.',
+          ),
         },
         { nullable: true, doc: 'One parameter.' },
       ),
@@ -251,12 +403,19 @@ export function checkWorkflowText(
     });
     return { id, file: opts.file, def: null, problems };
   }
+  problems.push(...paramProblems(def, checked.at, opts.file));
+  if (problems.some((p) => p.severity === 'error')) {
+    return { id, file: opts.file, def: null, problems };
+  }
   try {
     const sample: Record<string, string> = {};
+    const stand: string[] = [];
     for (const [k, p] of Object.entries(def.params ?? {})) {
-      if (p?.default === undefined) sample[k] = p?.options?.[0] ?? 'example';
+      if (p?.default !== undefined) continue;
+      sample[k] = p?.options?.[0] ?? 'example';
+      if (!p?.options) stand.push(k);
     }
-    compileWorkflow(def, { params: sample, human: 'human:you' });
+    compileWorkflow(def, { params: sample, human: 'human:you', placeholders: stand });
   } catch (err) {
     problems.push({
       file: opts.file,
@@ -417,29 +576,59 @@ export interface CompiledWorkflow {
 export interface CompileOptions {
   /** Values by parameter name. */
   params?: Record<string, string>;
+  /**
+   * Parameters whose value only stands in for a preview or a check, such as `example` or
+   * `<name>`: their value skips the `pattern` and command checks. A start names none.
+   */
+  placeholders?: readonly string[];
   /** The store's human: a gate's owner when it names none. */
   human: string;
   /** The milestone title instead of the workflow's. */
   title?: string;
 }
 
-/** `text` with each `{{name}}` filled in; refuses a name the workflow does not declare. */
-function fill(text: string, values: Record<string, string>, where: string): string {
-  return text.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (_all, name: string) => {
+/** Checks one value that fills a command's `run`; `program` when it is the command's first word. */
+type RunCheck = (name: string, value: string, program: boolean) => void;
+
+/**
+ * `text` with each `{{name}}` filled in; refuses a name the workflow does not declare. `check`
+ * sees each value first: it is set for the `run` of a command criterion.
+ */
+function fill(
+  text: string,
+  values: Record<string, string>,
+  where: string,
+  check?: RunCheck,
+): string {
+  return text.replace(FILL_RE, (_all, name: string, offset: number) => {
     if (!Object.hasOwn(values, name)) {
       throw new OpsError(`${where}: {{${name}}} names no parameter of the workflow`, 2);
     }
+    check?.(name, values[name]!, atProgram(text.slice(0, offset)));
     return values[name]!;
   });
 }
 
-/** `value` with `{{name}}` filled in every text inside it. */
-function fillDeep(value: unknown, values: Record<string, string>, where: string): unknown {
-  if (typeof value === 'string') return fill(value, values, where);
-  if (Array.isArray(value)) return value.map((v) => fillDeep(v, values, where));
+/**
+ * `value` with `{{name}}` filled in every text inside it. The `run` of a criterion (a map with a
+ * `kind`) is a command line: `check` sees each value that fills it.
+ */
+function fillDeep(
+  value: unknown,
+  values: Record<string, string>,
+  where: string,
+  check?: RunCheck,
+  inRun = false,
+): unknown {
+  if (typeof value === 'string') return fill(value, values, where, inRun ? check : undefined);
+  if (Array.isArray(value)) return value.map((v) => fillDeep(v, values, where, check));
   if (isRecord(value)) {
+    const criterion = Object.hasOwn(value, 'kind');
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, fillDeep(v, values, where)]),
+      Object.entries(value).map(([k, v]) => [
+        k,
+        fillDeep(v, values, where, check, criterion && k === 'run'),
+      ]),
     );
   }
   return value;
@@ -455,10 +644,15 @@ function oneCriterion(value: unknown, where: string): DoneWhenEntry | undefined 
   return entries[0];
 }
 
-/** The parameters of a start: the values given, then defaults; refuses a missing or unknown one. */
+/**
+ * The parameters of a start: the values given, then defaults; refuses a missing or unknown one,
+ * a value outside `options` and one that does not match `pattern`. `placeholders` names
+ * parameters whose value only stands in for a preview, which skip the `pattern` check.
+ */
 export function workflowParams(
   def: WorkflowDef,
   given: Record<string, string> = {},
+  opts: { placeholders?: readonly string[] } = {},
 ): Record<string, string> {
   const declared = def.params ?? {};
   for (const k of Object.keys(given)) {
@@ -488,6 +682,13 @@ export function workflowParams(
     if (p?.options && !p.options.includes(v)) {
       throw new OpsError(`--param ${k}: use one of ${p.options.join(', ')}; got '${v}'`, 2);
     }
+    if (p?.pattern && !opts.placeholders?.includes(k) && !matches(p.pattern, v)) {
+      throw new OpsError(
+        `--param ${k}: '${v}' does not match the pattern ${p.pattern}` +
+          (p.description ? ` (${p.description})` : ''),
+        2,
+      );
+    }
     out[k] = v;
   }
   return out;
@@ -516,8 +717,34 @@ export function compileWorkflow(def: WorkflowDef, opts: CompileOptions): Compile
   if (!isHuman(opts.human))
     throw new OpsError(`the store's human '${opts.human}' is no human:<name>`, 2);
   // `{{human}}` is the store's person, for publish stages and gates; a parameter of that name wins.
-  const values: Record<string, string> = { human: opts.human, ...workflowParams(def, opts.params) };
+  const values: Record<string, string> = {
+    human: opts.human,
+    ...workflowParams(def, opts.params, { placeholders: opts.placeholders }),
+  };
   const where = `workflow ${def.id}`;
+  const declared = def.params ?? {};
+  const placeholders = new Set(opts.placeholders ?? []);
+  // A value in a command's `run` must stay one plain word of the command line.
+  const runCheck =
+    (at: string): RunCheck =>
+    (name, value, program) => {
+      if (program && !declared[name]?.options) {
+        throw new OpsError(
+          `${at}: {{${name}}} is the program a command criterion runs, so its value could run ` +
+            `anything; give parameter ${name} options, or write the program in the command`,
+          2,
+        );
+      }
+      if (placeholders.has(name)) return;
+      const why = commandValueProblem(value);
+      if (why) {
+        throw new OpsError(
+          `${at}: --param ${name} goes into a command criterion, which swarmupd runs in a shell ` +
+            `at merge, and ${why}; got ${JSON.stringify(value)}`,
+          2,
+        );
+      }
+    };
   const keep = (s: WorkflowStage): boolean => {
     if (!s.when) return true;
     if (!Object.hasOwn(values, s.when.param)) {
@@ -539,11 +766,19 @@ export function compileWorkflow(def: WorkflowDef, opts: CompileOptions): Compile
       seen.add(k);
       return waitsFor(byKey.get(k)?.after ?? [], seen);
     });
-  const criteria = (fillDeep(def.criteria ?? {}, values, where) ?? {}) as Record<string, unknown>;
+  // Every default fills in once, so a typo shows; a command's values are checked where a kept
+  // stage takes it, since only those run.
+  fillDeep(def.criteria ?? {}, values, where);
+  const criterion = (type: string): unknown => {
+    const at = `${where}, criteria.${type}`;
+    const raw = def.criteria && Object.hasOwn(def.criteria, type) ? def.criteria[type] : undefined;
+    return fillDeep(raw, values, at, runCheck(at));
+  };
   const items: PlanItem[] = [];
   for (const raw of def.stages) {
     if (dropped.includes(raw.key)) continue;
-    const s = fillDeep(raw, values, `${where}, stage '${raw.key}'`) as WorkflowStage;
+    const stageAt = `${where}, stage '${raw.key}'`;
+    const s = fillDeep(raw, values, stageAt, runCheck(stageAt)) as WorkflowStage;
     const at = `${where}, stage '${s.key}'`;
     const isGate = s.gate !== undefined || s.type === GATE_TYPE;
     if (isGate && s.type !== undefined && s.type !== GATE_TYPE) {
@@ -574,7 +809,7 @@ export function compileWorkflow(def: WorkflowDef, opts: CompileOptions): Compile
     if (labels.length > 0) item.labels = [...new Set(labels)];
     const done =
       oneCriterion(s.done_when, at) ??
-      oneCriterion(criteria[type ?? 'task'], `${where}, criteria.${type ?? 'task'}`) ??
+      oneCriterion(criterion(type ?? 'task'), `${where}, criteria.${type ?? 'task'}`) ??
       (isGate ? `A person approved: ${s.gate?.ask ?? title}` : undefined);
     if (done !== undefined) item.done_when = done;
     const body = [
@@ -601,6 +836,7 @@ export function compileWorkflow(def: WorkflowDef, opts: CompileOptions): Compile
     def.milestone,
     values,
     `${where}, milestone`,
+    runCheck(`${where}, milestone`),
   ) as WorkflowDef['milestone'];
   const doneWhen = oneCriterion(milestone.done_when, `${where}, milestone`);
   if (doneWhen === undefined) throw new OpsError(`${where}: the milestone has no done_when`, 2);

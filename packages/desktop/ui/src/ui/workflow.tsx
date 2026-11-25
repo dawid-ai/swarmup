@@ -24,6 +24,40 @@ export function startParams(
   return out;
 }
 
+/**
+ * What a value that goes into a command criterion may be, as core's `COMMAND_VALUE_RE` says:
+ * letters, digits and `. _ / : @ -`, not starting with `-`, 200 characters at most.
+ */
+const COMMAND_VALUE_RE = /^[A-Za-z0-9_./:@][A-Za-z0-9_./:@-]{0,199}$/;
+
+/** The hint under a parameter that goes into a command criterion. */
+export const COMMAND_PARAM_HINT =
+  'Goes into a check command: letters, digits and . _ / : @ - only, not starting with -.';
+
+/**
+ * Why the start would refuse the value of parameter `k`, or null: a value that does not match
+ * the parameter's `pattern`, or one that cannot go into the command criterion it fills. swarmupd
+ * checks the same at start; this says it before you press **Start**.
+ */
+export function paramProblem(w: WorkflowInfo, k: string, value: string): string | null {
+  const p = w.params[k];
+  const v = value.trim() || p?.default || '';
+  if (!v) return null;
+  if (p?.pattern) {
+    let ok = true;
+    try {
+      ok = new RegExp(`^(?:${p.pattern})$`, 'u').test(v);
+    } catch {
+      // A bad pattern is the workflow's problem; swarmupd names it.
+    }
+    if (!ok) return `${k} must match ${p.pattern}`;
+  }
+  if (w.command_params?.includes(k) && !COMMAND_VALUE_RE.test(v)) {
+    return `${k} goes into a check command, so it takes only letters, digits and . _ / : @ - (no spaces or shell characters, not starting with -)`;
+  }
+  return null;
+}
+
 /** The required parameters without a value, by name. */
 export function missingParams(w: WorkflowInfo, values: Record<string, string>): string[] {
   return Object.entries(w.params)
@@ -56,9 +90,15 @@ export function StartWorkflow(props: {
   }, [usable, chosen, props.initial]);
   const w = usable.find((x) => keyOf(x) === chosen);
   const missing = w ? missingParams(w, values) : [];
+  const invalid = w
+    ? Object.keys(w.params).flatMap((k) => {
+        const why = paramProblem(w, k, values[k] ?? '');
+        return why ? [[k, why] as const] : [];
+      })
+    : [];
   const roots = new Set(usable.map((x) => x.root));
   const start = (): void => {
-    if (!w || missing.length > 0) return;
+    if (!w || missing.length > 0 || invalid.length > 0) return;
     act.run(async () => {
       const res = await api<{ milestone: { id: string }; approved: boolean; created: unknown[] }>(
         'POST',
@@ -125,7 +165,21 @@ export function StartWorkflow(props: {
               <Field
                 key={k}
                 label={`${k}${p?.required && p.default === undefined ? ' *' : ''}`}
-                hint={p?.description}
+                hint={
+                  <>
+                    {p?.description}
+                    {w.command_params?.includes(k) && !p?.options && (
+                      <span className="block" data-command-param={k}>
+                        {COMMAND_PARAM_HINT}
+                      </span>
+                    )}
+                    {invalid.some(([n]) => n === k) && (
+                      <span className="block text-bad" data-param-problem={k}>
+                        {invalid.find(([n]) => n === k)![1]}
+                      </span>
+                    )}
+                  </>
+                }
               >
                 {p?.options ? (
                   <Select
@@ -161,7 +215,7 @@ export function StartWorkflow(props: {
           <Button
             kind="primary"
             icon={Play}
-            disabled={act.busy || !w || missing.length > 0}
+            disabled={act.busy || !w || missing.length > 0 || invalid.length > 0}
             onClick={start}
           >
             Start

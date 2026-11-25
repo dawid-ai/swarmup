@@ -71,6 +71,20 @@ export function textList(s: string): string[] {
     .filter(Boolean);
 }
 
+/** A list as lines for a text area, one value per line, for values that may hold commas. */
+export function linesText(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  return (Array.isArray(v) ? v : [v]).map(String).join('\n');
+}
+
+/** A text area's lines as values, blanks dropped. */
+export function textLines(s: string): string[] {
+  return s
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
 /** A key for a new stage that no stage has yet: `stage-2`, `stage-3`. */
 export function newStageKey(stages: unknown): string {
   const keys = new Set(

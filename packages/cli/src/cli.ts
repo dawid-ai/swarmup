@@ -1777,11 +1777,19 @@ function workflowCommand(ctx: Ctx): number | void {
     const given = paramArgs(ctx);
     // Parameters left out show as <name>, so the plan reads without them.
     const sample: Record<string, string> = { ...given };
+    const placeholders: string[] = [];
     for (const [k, p] of Object.entries(def.params ?? {})) {
-      if (sample[k] === undefined && p?.default === undefined)
+      if (sample[k] === undefined && p?.default === undefined) {
         sample[k] = p?.options?.[0] ?? `<${k}>`;
+        if (!p?.options) placeholders.push(k);
+      }
     }
-    const compiled = compileWorkflow(def, { params: sample, human, title: str(ctx.opts.title) });
+    const compiled = compileWorkflow(def, {
+      params: sample,
+      human,
+      title: str(ctx.opts.title),
+      placeholders,
+    });
     if (ctx.opts.json) return void ctx.io.out(JSON.stringify({ def, compiled }, null, 2));
     if (ctx.opts.yaml) return void ctx.io.out(planYaml(compiled.doc).trimEnd());
     const o = ctx.io.out;

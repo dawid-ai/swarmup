@@ -34,7 +34,15 @@ import {
   toast,
   useAction,
 } from '../components';
-import { listText, newStageKey, readWorkflowYaml, setYaml, textList } from '../lib/workflow-yaml';
+import {
+  linesText,
+  listText,
+  newStageKey,
+  readWorkflowYaml,
+  setYaml,
+  textLines,
+  textList,
+} from '../lib/workflow-yaml';
 import type { YamlPath } from '../lib/workflow-yaml';
 import type {
   DefProblem,
@@ -248,11 +256,18 @@ function YField(props: {
   hint?: string;
   placeholder?: string;
   list?: boolean;
+  /** A list edited one value per line in a text area, for values that may hold commas. */
+  lines?: boolean;
   area?: boolean;
   className?: string;
 }) {
-  const shown = props.list ? listText(props.value) : text(props.value);
-  const write = (v: string): void => props.set(props.path, props.list ? textList(v) : v);
+  const shown = props.lines
+    ? linesText(props.value)
+    : props.list
+      ? listText(props.value)
+      : text(props.value);
+  const write = (v: string): void =>
+    props.set(props.path, props.lines ? textLines(v) : props.list ? textList(v) : v);
   // A typed value (a map) is left to the YAML tab: the form shows it but does not overwrite it.
   if (props.value && typeof props.value === 'object' && !Array.isArray(props.value)) {
     return (
@@ -263,7 +278,7 @@ function YField(props: {
   }
   return (
     <Field label={props.label} hint={props.hint} className={props.className}>
-      {props.area ? (
+      {props.area || props.lines ? (
         <TextArea value={shown} onChange={write} rows={2} placeholder={props.placeholder} />
       ) : (
         <Input value={shown} onChange={write} placeholder={props.placeholder} />
@@ -312,7 +327,7 @@ function WorkflowForm({ value, set }: { value: Obj; set: (path: YamlPath, v: unk
             <div
               key={k}
               data-param={k}
-              className="grid grid-cols-[8rem_1fr_7rem_1fr_auto] items-end gap-2 rounded-lg bg-white/3 p-2"
+              className="grid grid-cols-[8rem_1fr_7rem_1fr_7rem_auto] items-end gap-2 rounded-lg bg-white/3 p-2"
             >
               <div className="pb-2 font-mono text-sm text-fg-2">{k}</div>
               <YField
@@ -329,6 +344,13 @@ function WorkflowForm({ value, set }: { value: Obj; set: (path: YamlPath, v: unk
                 set={set}
                 list
                 placeholder="a, b, c"
+              />
+              <YField
+                label="Pattern"
+                value={p.pattern}
+                path={['params', k, 'pattern']}
+                set={set}
+                placeholder="[0-9]+"
               />
               <div className="flex items-center gap-2 pb-1.5">
                 <label className="flex items-center gap-1 text-xs text-fg-3">
@@ -492,6 +514,16 @@ function WorkflowForm({ value, set }: { value: Obj; set: (path: YamlPath, v: unk
                       ]}
                     />
                   </Field>
+                  <YField
+                    label="Gate answers"
+                    value={g.options}
+                    path={['stages', i, 'gate', 'options']}
+                    set={set}
+                    lines
+                    hint="One per line; the person picks one when they approve."
+                    placeholder={'yes\nyes, with notes'}
+                    className="col-span-3"
+                  />
                 </div>
               )}
             </div>

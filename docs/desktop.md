@@ -219,11 +219,21 @@ that model, and says which model's runs wait while the others go on.
 - **Workflows.** **New task** has **Start a workflow**: pick one of the project's workflows
   (`workflows/<id>.yaml`, see [Workflows](protocol.md#workflows)), fill in its parameters
   (required ones are marked; a list of options shows as a choice), optionally a milestone title,
-  and **Start**. A workflow with `approval: starter` is approved by your start and its tasks are
+  and **Start**. A parameter that goes into a check command says so, and a value with anything
+  but letters, digits and `. _ / : @ -` (or one that misses the parameter's `pattern`) shows
+  why under the field and keeps **Start** off. A workflow with `approval: starter` is approved by your start and its tasks are
   created; any other waits in **Plans**. In a milestone's plan a gate item shows a **Gate** badge
   with its question; the gate's own task panel has **Your decision** with **Approve** and
   **Reject**. Approve calls `done`; Reject calls `park` and needs a note. When the project has
   no workflow, the dialog says so and **Open Workflows** goes to the Workflows view.
+- **Gates in a plan.** While a milestone's plan waits, **Edit** opens each item as a row of
+  fields. **A person approves here (gate)** (or the type `gate`) makes an item a gate: **Asks**
+  takes the person it asks (you by default, with the people SwarmUp knows suggested), the
+  reviewer is cleared, and the row gains **Question** (the title when empty), **Answers, one
+  per line** and **On reject** (park the rest, or reopen earlier items). A gate must ask a
+  person (`human:<name>`); the row warns otherwise and swarmupd refuses the plan. A gate whose
+  task exists keeps its question, answers and rejection read-only; **Replace item** adds it
+  again with every field editable.
 
 - **MCP servers.** **Settings > MCP servers** lists the servers this machine defines
   (`swarmupd.mcp.servers`, see [MCP servers](supervisor.md#mcp-servers)), each with its command,
@@ -515,10 +525,10 @@ its problems by line. Each card has **Start** (the **Start a workflow** dialog w
 - **New workflow** asks for the project, a starter template (feature, bug fix, content piece,
   campaign launch) or **Blank**, and the id (the file name), then opens the editor.
 - The editor has three tabs. **Form** edits the common fields: title, description, approval,
-  parameters (description, default, options, required; **Add parameter**, remove), the
+  parameters (description, default, options, pattern, required; **Add parameter**, remove), the
   milestone's title and check, and each stage's key, title, owner, estimate, after, type,
-  labels and check, with **A person approves here (gate)** for the gate's question, person and
-  what a rejection does. **Add stage** and **Remove stage** change the list. The form writes the
+  labels and check, with **A person approves here (gate)** for the gate's question, person,
+  what a rejection does and its answers, one per line. **Add stage** and **Remove stage** change the list. The form writes the
   YAML in place, so comments and keys it does not show stay. **YAML** edits everything else,
   such as `when`, `rework`, `criteria` and typed checks. **Preview** compiles the workflow for
   values you type (defaults, else the first option, else `example`) and lists the milestone and
