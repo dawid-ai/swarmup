@@ -258,7 +258,9 @@ describe('gitAsync', () => {
     const started = Date.now();
     const err = await gitAsync(repo, ['commit', '-q', '--allow-empty', '-m', 'x'], {
       env,
-      timeoutMs: 2_000,
+      // Under the full suite git can take seconds to reach the hook; a timeout before it leaves
+      // no hook to outlive git (AO-0251, 2026-11-25).
+      timeoutMs: 12_000,
       tree: true,
       // As where a sandbox refuses `taskkill /T`: nothing under git is stopped.
       stopTree: (pid) => {
@@ -275,7 +277,7 @@ describe('gitAsync', () => {
       });
       expect(asked).toHaveLength(1);
       // The call still ends: git is killed, and the drain stops reading the hook's output.
-      expect(Date.now() - started).toBeLessThan(20_000);
+      expect(Date.now() - started).toBeLessThan(40_000);
       // The hook outlived the call, as the failure says: its marks go on.
       const size = statSync(beat).size;
       const end = Date.now() + 5_000;

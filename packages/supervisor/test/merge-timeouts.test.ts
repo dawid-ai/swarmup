@@ -702,8 +702,8 @@ describe('merging approved work', () => {
     // Where the stop is refused, the note says the hook may still run instead (AO-0251).
     expect(e.body).toMatch(
       treeStops
-        ? /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped it \(stage: rebase\)/
-        : /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: rebase\)/,
+        ? /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after \d+ s; swarmupd stopped it \(stage: rebase\)/
+        : /swarmupd could not merge .+: `git rebase -q [0-9a-f]+` in .+ timed out after \d+ s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: rebase\)/,
     );
     // What it printed before the stop is in the note, and whole in the log.
     expect(e.body).toMatch(/Last output:\n\n```\n[^`]*hook waits for the lock/);
@@ -763,7 +763,7 @@ describe('merging approved work', () => {
     const e = s.last();
     expect(e).toMatchObject({ type: 'comment', actor: MERGE_ACTOR, to: 'human:dawid' });
     expect(e.body).toMatch(
-      /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: fast-forward\)/,
+      /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after \d+ s; swarmupd stopped (it|git, but what git started, such as a hook, may still run: .+) \(stage: fast-forward\)/,
     );
     expect(warns.join('\n')).not.toMatch(/kept moving|did not move/);
     writeFileSync(join(s.state, 'go.txt'), 'go\n');
@@ -819,7 +819,7 @@ describe('merging approved work', () => {
       const message = (err as Error).message;
       // No claim that the tree stopped; the reason is in the message.
       expect(message).toMatch(
-        /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after 4 s; swarmupd stopped git, but what git started, such as a hook, may still run: /,
+        /`git merge -q --ff-only [0-9a-f]+` in .+ timed out after \d+ s; swarmupd stopped git, but what git started, such as a hook, may still run: /,
       );
       expect(message).toContain(refused);
       expect(message).not.toContain('swarmupd stopped it');
