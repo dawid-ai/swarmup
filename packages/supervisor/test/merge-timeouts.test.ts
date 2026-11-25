@@ -834,7 +834,20 @@ describe('merging approved work', () => {
       // the cleanup removed it (EPERM, AO-0351). Waits for the hook to leave its loop and to let go
       // of both folders.
       writeFileSync(go, 'go\n');
-      await until(() => existsSync(left), 30_000);
+      // The hook writes `left` as it leaves its loop; one that ended already (Windows can end it
+      // with git's tree once the merge is done) writes nothing, but its marks stop: 5 s with no
+      // new mark counts as gone (AO-0251 failed waiting for `left`, 2026-11-25).
+      let marks = existsSync(beat) ? statSync(beat).size : 0;
+      let still = Date.now();
+      const gone = (): boolean => {
+        const now = existsSync(beat) ? statSync(beat).size : 0;
+        if (now !== marks) {
+          marks = now;
+          still = Date.now();
+        }
+        return Date.now() - still > 5_000;
+      };
+      await until(() => existsSync(left) || gone(), 60_000);
       await until(() => removed(repo) && removed(state), 30_000);
     }
   }, 180_000);
