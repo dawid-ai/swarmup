@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type { LeftoverCommit } from './checkout.js';
 import type { ProcLedger } from './procs.js';
 import type { RunArtifactBrief } from './run-artifacts.js';
@@ -337,7 +337,7 @@ export class RunStore {
   /** Reads `get` and `list` from `records` from now on, instead of the run files. */
   hold(records: Iterable<RunRecord>): void {
     const held = new Map<string, RunRecord>();
-    for (const r of records) held.set(r.id, this.withLog(r));
+    for (const r of records) held.set(r.id, r);
     this.held = held;
   }
 
@@ -347,22 +347,10 @@ export class RunStore {
     const file = join(this.dir, 'runs', `${id}.json`);
     if (!existsSync(file)) return undefined;
     try {
-      return this.withLog(JSON.parse(readFileSync(file, 'utf8')) as RunRecord);
+      return JSON.parse(readFileSync(file, 'utf8')) as RunRecord;
     } catch {
       return undefined;
     }
-  }
-
-  /** A record written before the state folder moved (AO-0200) names the log at its old path. */
-  private withLog(record: RunRecord): RunRecord {
-    if (
-      record.log &&
-      !record.log.startsWith(this.dir) &&
-      basename(record.log) === `${record.id}.log`
-    ) {
-      record.log = this.logPath(record.id);
-    }
-    return record;
   }
 
   /** Every run, newest first. */

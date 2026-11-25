@@ -1,14 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statfsSync,
-  statSync,
-} from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statfsSync, statSync } from 'node:fs';
 import { freemem, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,13 +101,11 @@ function signedIn(runtime: string, env: NodeJS.ProcessEnv, home: string): boolea
 const gb = (bytes: number): string => `${(bytes / 2 ** 30).toFixed(1)} GB`;
 
 const SKILL_PATH = join('skills', 'swarmup', 'SKILL.md');
-/** Where the skill sat before the SwarmUp rename; a copy left there is flagged. */
-const OLD_SKILL_PATH = join('skills', 'agent-ops', 'SKILL.md');
 
 interface UserSkillLocation {
   runtime: string;
   dir: string;
-  /** Canonical runtime homes receive the skill; ~/.agents is checked and migrated only. */
+  /** Canonical runtime homes receive the skill; ~/.agents is checked and refreshed only. */
   install: boolean;
 }
 
@@ -129,9 +118,6 @@ export interface SkillInstallOptions {
 
 export interface SkillInstallResult {
   installed: string[];
-  removed: string[];
-  /** Old skill folders kept because they contain something besides SKILL.md. */
-  kept: string[];
 }
 
 /**
@@ -175,22 +161,9 @@ function homeFor(env: NodeJS.ProcessEnv): string {
     : (env.HOME ?? env.USERPROFILE ?? homedir());
 }
 
-/** True only when deleting the old skill folder cannot remove a person's other files. */
-function oldSkillOnly(dir: string): boolean {
-  try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    return (
-      entries.length === 1 && entries[0]!.isFile() && entries[0]!.name.toLowerCase() === 'skill.md'
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Installs the bundled skill into Claude Code and Codex's user homes. An old `agent-ops` folder is
- * removed only when its sole entry is SKILL.md; a folder with any other entry is left untouched.
- * The desktop calls this after an install/update and from Health checks' Fix button.
+ * Installs the bundled skill into Claude Code and Codex's user homes. The desktop calls this after
+ * an install/update and from Health checks' Fix button.
  */
 export function installUserSkills(opts: SkillInstallOptions = {}): SkillInstallResult {
   const env = opts.env ?? process.env;
@@ -210,20 +183,7 @@ export function installUserSkills(opts: SkillInstallOptions = {}): SkillInstallR
     copyFileSync(bundled, file);
     installed.push(file);
   }
-
-  const removed: string[] = [];
-  const kept: string[] = [];
-  for (const location of locations) {
-    const dir = dirname(join(location.dir, OLD_SKILL_PATH));
-    if (!existsSync(dir)) continue;
-    if (!oldSkillOnly(dir)) {
-      kept.push(dir);
-      continue;
-    }
-    rmSync(dir, { recursive: true });
-    removed.push(dir);
-  }
-  return { installed, removed, kept };
+  return { installed };
 }
 
 /** Text with Windows line ends turned into `\n`, so a checkout with autocrlf still matches. */
@@ -247,26 +207,6 @@ function skillChecks(env: NodeJS.ProcessEnv, home: string, bundled: string | nul
     return [];
   }
   const locations = userSkillLocations(env, home);
-  const leftovers = locations.flatMap((location): Check[] => {
-    const file = join(location.dir, OLD_SKILL_PATH);
-    if (!existsSync(file)) return [];
-    const dir = dirname(file);
-    const safe = oldSkillOnly(dir);
-    return [
-      {
-        id: `skill:${file}`,
-        label: `${location.runtime} skill`,
-        status: 'warn',
-        detail:
-          `${file} is the skill under its old name agent-ops; runs now load the swarmup skill` +
-          (safe ? '' : '; the folder has other files, so Fix will keep it'),
-        fix: safe
-          ? 'open Settings > Health checks and click Fix to install the current skill and remove this old folder'
-          : 'open Settings > Health checks and click Fix to install the current skill; move or remove the other files by hand before deleting this old folder',
-        action: 'install-skills',
-      },
-    ];
-  });
   const current = locations.flatMap((location): Check[] => {
     const file = join(location.dir, SKILL_PATH);
     if (!existsSync(file)) {
@@ -315,7 +255,7 @@ function skillChecks(env: NodeJS.ProcessEnv, home: string, bundled: string | nul
       },
     ];
   });
-  return [...current, ...leftovers];
+  return current;
 }
 
 /**

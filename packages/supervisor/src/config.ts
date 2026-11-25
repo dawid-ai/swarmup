@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpConfig, UserConfig } from '@swarmup/core';
@@ -1308,34 +1307,10 @@ function checkTestChanges(raw: unknown): Record<string, TestChangesConfig | fals
   return out;
 }
 
-/** swarmupd's state folder before the rename: `~/.agent-ops/opsd`. */
-export function oldStateDir(): string {
-  return join(homedir(), '.agent-ops', 'opsd');
-}
-
-/** swarmupd's state folder: `~/.swarmup/swarmupd`. */
-export function newStateDir(): string {
-  return join(homedir(), '.swarmup', 'swarmupd');
-}
-
-/** New state folders seen to exist in this process: they never go back to the old one. */
-const stateDirSeen = new Set<string>();
-
 /**
  * Machine-local supervisor state: run records, logs, the API token. Never committed.
- * `SWARMUP_STATE_DIR`, else `~/.swarmup/swarmupd`, else the old `~/.agent-ops/opsd` while it is
- * not moved yet (`migrateStateDir` moves it when swarmupd starts).
+ * `SWARMUP_STATE_DIR`, else `~/.swarmup/swarmupd`.
  */
 export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return envVar(env, 'STATE_DIR') ?? pickStateDir(newStateDir(), oldStateDir());
-}
-
-/** `to`, unless it is missing and `from` exists: then `from`, until the move. */
-export function pickStateDir(to: string, from: string): string {
-  if (stateDirSeen.has(to)) return to;
-  if (existsSync(to)) {
-    stateDirSeen.add(to);
-    return to;
-  }
-  return existsSync(from) ? from : to;
+  return envVar(env, 'STATE_DIR') ?? join(homedir(), '.swarmup', 'swarmupd');
 }

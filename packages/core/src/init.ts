@@ -9,7 +9,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { defaultRootConfig, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME } from './config.js';
+import { defaultRootConfig, ROOT_DIR_NAME } from './config.js';
 import { assertActor, OpsError } from './ids.js';
 
 export interface InitOptions {
@@ -74,17 +74,12 @@ git-ignored.
 
 /**
  * Creates a data root. A path that already ends in `.swarmup` is used as is; any other path
- * gets a `.swarmup` folder inside it. A repo that has an old `.agent-ops/` store is refused:
- * `swarmup migrate` moves that one.
+ * gets a `.swarmup` folder inside it.
  */
 export function initRoot(target: string, opts: InitOptions = {}): string {
   const abs = resolve(target);
   const dir = basename(abs) === ROOT_DIR_NAME ? abs : join(abs, ROOT_DIR_NAME);
   if (existsSync(join(dir, 'config.yml'))) throw new OpsError(`${dir} is already a data root`, 2);
-  const old = join(dirname(dir), OLD_ROOT_DIR_NAME);
-  if (existsSync(join(old, 'config.yml'))) {
-    throw new OpsError(`${old} is already a data root; run swarmup migrate to move it`, 2);
-  }
   if (opts.human) assertActor(opts.human, 'human');
   const prefix = (opts.prefix ?? 'T').toUpperCase();
   if (!/^[A-Z][A-Z0-9]*$/.test(prefix)) throw new OpsError(`bad id prefix '${prefix}'`, 2);

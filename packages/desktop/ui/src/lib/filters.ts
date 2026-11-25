@@ -159,11 +159,6 @@ export interface SavedView {
 }
 
 const KEY = 'swarmup.saved-views';
-/**
- * The key before the rename (AO-0200). Read while the new key is unset, so views saved in Agent
- * Ops stay; the first save writes the new key.
- */
-export const OLD_VIEWS_KEY = 'agent-ops.saved-views';
 export const VIEWS_CHANGED = 'swarmup:saved-views';
 
 const TEXT_KEYS = [
@@ -194,7 +189,7 @@ export function loadViews(
 ): SavedView[] {
   let raw: unknown;
   try {
-    raw = JSON.parse(storage?.getItem(KEY) ?? storage?.getItem(OLD_VIEWS_KEY) ?? '[]');
+    raw = JSON.parse(storage?.getItem(KEY) ?? '[]');
   } catch {
     return [];
   }
@@ -235,8 +230,6 @@ export function storeViews(
 }
 
 const IDEAS_KEY = 'swarmup.board-ideas';
-/** The key before the rename (AO-0200), read while the new one is unset. */
-export const OLD_IDEAS_KEY = 'agent-ops.board-ideas';
 export const IDEAS_CHANGED = 'swarmup:board-ideas';
 
 /** Whether the board shows ideas. Off until someone turns it on or creates an idea. */
@@ -244,7 +237,7 @@ export function boardShowsIdeas(
   storage: Pick<Storage, 'getItem'> | undefined = safeStorage(),
 ): boolean {
   try {
-    return (storage?.getItem(IDEAS_KEY) ?? storage?.getItem(OLD_IDEAS_KEY)) === 'on';
+    return storage?.getItem(IDEAS_KEY) === 'on';
   } catch {
     return false;
   }

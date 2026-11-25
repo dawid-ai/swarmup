@@ -13,7 +13,6 @@ covers:
   - packages/supervisor/src/defs-state.ts
   - packages/supervisor/src/seed.ts
   - packages/supervisor/src/state-db.ts
-  - packages/supervisor/src/migrate.ts
   - packages/supervisor/src/api.ts
   - packages/supervisor/src/workflow-api.ts
   - packages/supervisor/src/task-criteria.ts

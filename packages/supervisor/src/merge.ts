@@ -8,7 +8,7 @@ import {
   reviewCommits,
   reviewSources,
   reviewSourcesOf,
-  ROOT_DIR_NAMES,
+  ROOT_DIR_NAME,
   samePath,
 } from '@swarmup/core';
 import { type GitFailure, gitAsync, type TreeStop } from './git.js';
@@ -599,7 +599,7 @@ export class MergeRepo {
     private readonly gitTimeoutMs: MergeGitTimeout = MERGE_GIT_TIMEOUT_MS,
     private readonly stopTree?: TreeStop,
   ) {
-    this.excludes = ROOT_DIR_NAMES.map((n) => `:(exclude,glob)**/${n}/**`);
+    this.excludes = [`:(exclude,glob)**/${ROOT_DIR_NAME}/**`];
     for (const dir of stores) {
       const rel = relative(resolve(top), resolve(dir));
       if (rel === '' || rel.startsWith('..') || rel.includes(':')) {

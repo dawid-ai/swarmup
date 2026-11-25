@@ -9,8 +9,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const ctrl = process.env.PROMO_CTRL;
-// The deprecated AGENT_OPS_SCREENSHOTS is read until 0.4, as in the app.
-const shots = process.env.SWARMUP_SCREENSHOTS ?? process.env.AGENT_OPS_SCREENSHOTS;
+const shots = process.env.SWARMUP_SCREENSHOTS;
 const W = 3200;
 const H = 1920;
 const NOANIM =

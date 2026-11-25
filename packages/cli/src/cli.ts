@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import type { ParseArgsConfig } from 'node:util';
@@ -57,15 +57,12 @@ import {
   parseCriteriaText,
   runCriteria,
   editUserConfig,
-  discoverRoots,
   initRoot,
   isHuman,
   MAX_REVIEW_ARTIFACTS,
   decisionLines,
   DECISIONS_TOPIC,
   isStoreDirName,
-  moveStore,
-  OLD_ROOT_DIR_NAME,
   localTime,
   masterRoot,
   minutesText,
@@ -4184,52 +4181,6 @@ const COMMANDS: Record<string, Command> = {
       const checks = await doctor({ env: ctx.io.env, cwd: ctx.io.cwd });
       ctx.io.out(ctx.opts.json ? JSON.stringify(checks) : formatChecks(checks));
       return checks.some((c) => c.status === 'fail') ? 1 : 0;
-    },
-  },
-  migrate: {
-    usage: 'migrate [DIR...]',
-    summary:
-      'move task stores from .agent-ops/ to .swarmup/ and commit each move (update SwarmUp on every machine first)',
-    run: (ctx) => {
-      const env = ctx.io.env;
-      if (readDaemon(env)) {
-        throw new OpsError(
-          'swarmupd is running and has the stores open; stop it (swarmup daemon stop), then run swarmup migrate',
-          1,
-        );
-      }
-      // Without DIR: every root this machine loads that still uses the old folder.
-      const repos = ctx.args.length
-        ? ctx.args.map((a) => {
-            const p = resolve(ctx.io.cwd, a);
-            return isStoreDirName(basename(p)) ? dirname(p) : p;
-          })
-        : discoverRoots(ctx.io.cwd, env)
-            .filter((d) => basename(d) === OLD_ROOT_DIR_NAME)
-            .map((d) => dirname(d));
-      if (repos.length === 0) {
-        ctx.io.out('every task store already uses .swarmup/; nothing to move');
-        return 0;
-      }
-      let failed = 0;
-      for (const repo of repos) {
-        try {
-          const moved = moveStore(repo, env);
-          if (!moved) {
-            ctx.io.out(`${repo}: already uses .swarmup/`);
-            continue;
-          }
-          ctx.io.out(
-            moved.commit
-              ? `${repo}: moved .agent-ops/ to .swarmup/ in commit ${moved.commit.slice(0, 8)}; swarmup sync pushes it`
-              : `${repo}: moved .agent-ops/ to .swarmup/`,
-          );
-        } catch (err) {
-          failed++;
-          ctx.io.err(`${repo}: ${(err as Error).message}`);
-        }
-      }
-      return failed ? 1 : 0;
     },
   },
   leaks: {

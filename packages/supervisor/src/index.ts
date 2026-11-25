@@ -15,7 +15,6 @@ export * from './merge.js';
 export * from './merge-conflict.js';
 export * from './merge-checks.js';
 export * from './state-db.js';
-export * from './migrate.js';
 export * from './push.js';
 export * from './doctor.js';
 export * from './proc.js';

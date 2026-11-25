@@ -289,17 +289,12 @@ describe('swarmup doctor', () => {
     expect(none.filter((c) => c.id.startsWith('skill:'))).toEqual([]);
   });
 
-  it('installs the bundled skill for Claude Code and Codex and removes old skill-only folders', () => {
+  it('installs the bundled skill for Claude Code and Codex', () => {
     const bundled = join(temp(), 'SKILL.md');
     writeFileSync(bundled, '# SwarmUp\n');
     const home = temp();
     const claudeDir = temp();
     const codexHome = temp();
-    for (const dir of [claudeDir, codexHome]) {
-      const old = join(dir, 'skills', 'agent-ops');
-      mkdirSync(old, { recursive: true });
-      writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
-    }
 
     const result = installUserSkills({
       env: { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome },
@@ -309,11 +304,8 @@ describe('swarmup doctor', () => {
 
     for (const dir of [claudeDir, codexHome]) {
       expect(readFileSync(join(dir, 'skills', 'swarmup', 'SKILL.md'), 'utf8')).toBe('# SwarmUp\n');
-      expect(existsSync(join(dir, 'skills', 'agent-ops'))).toBe(false);
     }
     expect(result.installed).toHaveLength(2);
-    expect(result.removed).toHaveLength(2);
-    expect(result.kept).toEqual([]);
   });
 
   it('refreshes an existing ~/.agents copy so Fix clears its warning, and never creates one', async () => {
@@ -347,38 +339,6 @@ describe('swarmup doctor', () => {
     expect(readFileSync(agents, 'utf8')).toBe('# SwarmUp\n\n## Rules\n\nr\n');
     const after = await doctor({ env: doctorEnv, cwd: temp(), home, skillFile: bundled });
     expect(byId(after, `skill:${agents}`)?.status).toBe('ok');
-  });
-
-  it('keeps and warns about an old agent-ops skill folder that contains another file', async () => {
-    const bundled = join(temp(), 'SKILL.md');
-    writeFileSync(bundled, '# SwarmUp\n');
-    const home = temp();
-    const claudeDir = temp();
-    const codexHome = temp();
-    const old = join(claudeDir, 'skills', 'agent-ops');
-    mkdirSync(old, { recursive: true });
-    writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
-    writeFileSync(join(old, 'notes.md'), 'keep me\n');
-
-    const result = installUserSkills({
-      env: { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome },
-      home,
-      skillFile: bundled,
-    });
-
-    expect(result.kept).toEqual([old]);
-    expect(readFileSync(join(old, 'notes.md'), 'utf8')).toBe('keep me\n');
-    expect(existsSync(join(old, 'SKILL.md'))).toBe(true);
-
-    const config = join(temp(), 'config.yml');
-    writeFileSync(config, 'me: human:dawid\n');
-    const env = envFor(config, { CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexHome });
-    const checks = await doctor({ env, cwd: temp(), home, skillFile: bundled });
-    expect(byId(checks, `skill:${join(old, 'SKILL.md')}`)).toMatchObject({
-      status: 'warn',
-      detail: expect.stringContaining('folder has other files'),
-      action: 'install-skills',
-    });
   });
 
   it('finds the skill of a source checkout', () => {

@@ -14,7 +14,6 @@ covers:
   - packages/core/src/channels.ts
   - packages/core/src/attachments.ts
   - packages/core/src/presence.ts
-  - packages/core/src/store-move.ts
   - packages/core/src/env.ts
   - packages/core/src/units.ts
   - packages/core/src/lock.ts
@@ -62,10 +61,10 @@ Defines what a data root holds and how each file is named, read and written.
   `READ_ONLY_ROLES` includes the improver, and
   `SCRATCH_WRITER_ROLES` lets it edit in its scratch folder only.
 - `lock.ts` takes file locks with stale takeover; `presence.ts` writes `machines/<name>.json`.
-- `store-move.ts` and `env.ts` keep the old `.agent-ops/` and `OPS_*` names readable.
+- `env.ts` keeps the old `OPS_*` environment variable names readable.
 
 ## Invariants
 
 - Event files are immutable and uniquely named; writers only add files.
-- A root folder is `.swarmup/` (or the old `.agent-ops/`) that holds a `config.yml`.
+- A root folder is `.swarmup/` that holds a `config.yml`.
 - Text is written with LF line endings; CRLF is read as LF.

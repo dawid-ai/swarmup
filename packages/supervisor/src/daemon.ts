@@ -31,7 +31,6 @@ import {
 import { startApi } from './api.js';
 import { HookListener } from './hooks.js';
 import { opsdConfig, stateDir } from './config.js';
-import { migrateStateDir } from './migrate.js';
 import { seedOnStart } from './seed.js';
 import { isAlive, PROC_START_TIMEOUT_MS, processStartSync } from './proc.js';
 import { listSandboxOwned } from './store-repair.js';
@@ -416,8 +415,6 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const log = opts.log ?? ((l: string) => process.stdout.write(`${l}\n`));
   // Checked before the lock, so a broken config never leaves a lock behind.
   opsdConfig(readUserConfig(env));
-  // Before the lock: the lock lives in the state folder this may move (AO-0200).
-  await migrateStateDir(env, { log });
   mkdirSync(stateDir(env), { recursive: true, mode: 0o700 });
   // One swarmupd per state folder: the lock is atomic, so two starts at once cannot both run.
   const lockStart = acquireLock(env);
@@ -551,9 +548,6 @@ export async function startDaemon(
   const env = opts.env ?? process.env;
   const running = readDaemon(env);
   if (running && (await healthy(running))) return running;
-  // Here, not only in the child: the child's log is a file in the state folder, and Windows
-  // cannot rename a folder with an open file in it (AO-0200).
-  await migrateStateDir(env);
   mkdirSync(stateDir(env), { recursive: true, mode: 0o700 });
   // The installed app bundles swarmupd as swarmupd.mjs and names it in SWARMUP_DAEMON_ENTRY. From the
   // sources (tests), start the built entry point.
