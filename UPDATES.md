@@ -3,6 +3,14 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.25 (2026-11-24)
+
+- **Updates always finish.** If SwarmUp is still syncing your projects when an update installs, the update now waits for it to finish instead of giving up.
+- **Build workflows in the app.** **Workflows** in the sidebar lists your workflows and lets you create one from a template or from scratch, edit it with a form or as YAML, see problems as you type, preview the plan, and save.
+- **See what's behind every score.** Click any score to see each task or run behind it, worst first, with notes and links, and **How scores work** explains each one.
+- **Propose agent changes yourself.** **Agents > Proposals** is always there: turn the improver on or off, see what each proposal still needs before you promote it, and use **Propose a change** to edit an agent's role and send it for review.
+- **A map for every project.** New and added projects get a project map, so agents start each task oriented instead of rereading the project.
+
 ## v0.3.0-beta.24 (2026-11-24)
 
 - **Judge scores in reports.** **Reports** now include the scores from a project's rubric scorers.

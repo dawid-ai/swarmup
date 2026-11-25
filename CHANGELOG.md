@@ -6,6 +6,38 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.25 (2026-11-24)
+
+### Added
+
+- The **Proposals** list in **Agents** always shows, with an empty state that says what a
+  proposal is, the improver's switches (`swarmupd.improve.enabled` and `notes`), whether a
+  benchmark gate is set, and each store's `improvement.requires`. Each proposal says what
+  `improvement.requires` still needs before a promote. **Propose a change** records your own edit
+  of an agent's role file as a proposal, on a task you name or a new improvement task.
+- Every score in the app opens a breakdown: each task or run behind it, worst first, with its
+  value, pass or fail, note and linked evidence, the criteria a verdict marked, the runs and
+  tokens of `cost-per-merged-task`, and a rubric judge's scores and reasons. **How scores work**
+  explains what each scorer measures and what pass means. `GET /api/scores` takes `detail=1`
+  with `scorer` for the breakdown.
+- The **Proposals** list in the app shows a variant's description, and for a variant from a git
+  ref, the ref and its commit instead of **Promote** and **Reject**.
+- **Workflows**, under **Agents** in the app's sidebar, lists each project's workflows with their
+  parameters, stages and gates. **New workflow** starts from a starter template or blank, and
+  the editor has a form for the common fields, the YAML for the rest, problems by line as you
+  type, and a preview of the plan it compiles to. **Save** and **Delete** are yours alone.
+
+### Changed
+
+- Every project now gets a project map by default. `swarmup new-project` writes a starter map,
+  and `swarmup adopt` and **Add project** file a first task, "Build the project map", checked by
+  the map check. Pass `--no-map` to skip it.
+
+### Fixed
+
+- An update no longer gives up while swarmupd finishes a store sync or merge: once swarmupd has
+  agreed to stop, the update waits for it to exit, up to 15 minutes, and then installs.
+
 ## 0.3.0-beta.24 (2026-11-24)
 
 ### Added
