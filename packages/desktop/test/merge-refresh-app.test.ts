@@ -24,7 +24,7 @@ const MERGE: MergeStatus = {
   task: 'swarmup/AO-0157',
   what: '0b55674 on branch claude/ao-0157-x',
   base: 'v2',
-  top: 'C:/dev/agent-ops',
+  top: 'C:/dev/acme',
   step: 'checks',
   holds: false,
   started_at: new Date(Date.now() - 60_000).toISOString(),

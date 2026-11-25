@@ -57,7 +57,7 @@ const task = (id: string, root: string, project: string): Task => ({
 
 // The tasks of the root `web-store` carry the project name `swarmup-web`, not the root's name.
 const TASKS = [
-  task('AO-0001', 'agent-ops', 'agent-ops'),
+  task('AO-0001', 'acme', 'acme'),
   task('WEB-0001', 'web-store', 'swarmup-web'),
   task('WEB-0002', 'web-store', 'swarmup-web'),
 ];
@@ -99,7 +99,7 @@ function stubBridge(): void {
     call: async (method: 'GET' | 'POST', path: string, body?: Record<string, unknown>) => {
       if (method === 'POST' && path === '/api/tasks') {
         posted.push(body ?? {});
-        return { ok: true, data: { root: body?.root ?? 'agent-ops', id: 'X-0001' } };
+        return { ok: true, data: { root: body?.root ?? 'acme', id: 'X-0001' } };
       }
       if (path === '/api/settings') return { ok: true, data: { rootList: roots } };
       if (path === '/api/tasks' || path === '/api/tasks?all') return { ok: true, data: TASKS };
@@ -112,7 +112,7 @@ function stubBridge(): void {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   roots = [
-    { name: 'agent-ops', dir: 'C:\\dev\\swarmup-store' },
+    { name: 'acme', dir: 'C:\\dev\\swarmup-store' },
     { name: 'web-store', dir: 'C:\\dev\\web-store' },
     { name: 'hub', dir: 'C:\\dev\\hub', isMaster: true },
     { name: 'docs-site', dir: 'C:\\dev\\docs' },
@@ -244,10 +244,10 @@ describe('New task: project dropdown', () => {
     await start();
     click(button('New task'));
     // No filter: the default root's project. The Master Repo is not a project.
-    expect(combo().value).toBe('agent-ops');
+    expect(combo().value).toBe('acme');
     expect(rows()).toBeNull();
     click(combo());
-    expect(rows()).toEqual(['agent-ops', 'web-store', 'docs-site', 'Add project']);
+    expect(rows()).toEqual(['acme', 'web-store', 'docs-site', 'Add project']);
 
     // A match anywhere in the name, whatever the case; Add project stays last.
     type(combo(), 'S-S');
@@ -270,8 +270,8 @@ describe('New task: project dropdown', () => {
 
     // Esc closes the list and leaves the form and the choice.
     click(combo());
-    type(combo(), 'agent');
-    expect(rows()).toEqual(['agent-ops', 'Add project']);
+    type(combo(), 'acm');
+    expect(rows()).toEqual(['acme', 'Add project']);
     key(combo(), 'Escape');
     expect(rows()).toBeNull();
     expect(dialog('New task')).not.toBeNull();
@@ -304,7 +304,7 @@ describe('New task: project dropdown', () => {
     expect(title().value).toBe('Set up the shop');
     expect(combo().value).toBe('shop');
     click(combo());
-    expect(rows()).toEqual(['agent-ops', 'web-store', 'docs-site', 'shop', 'Add project']);
+    expect(rows()).toEqual(['acme', 'web-store', 'docs-site', 'shop', 'Add project']);
     key(combo(), 'Escape');
     expect(await create()).toMatchObject({ title: 'Set up the shop', root: 'shop' });
   });
@@ -370,7 +370,7 @@ describe('New task: project dropdown', () => {
     click(button('Inbox'));
     await settle();
     click(button('New task'));
-    expect(combo().value).toBe('agent-ops');
+    expect(combo().value).toBe('acme');
     await settle();
   });
 });

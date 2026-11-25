@@ -33,7 +33,7 @@ function stubBridge(): void {
         return {
           ok: true,
           data: {
-            rootList: [{ name: 'agent-ops', dir: 'C:\\dev\\swarmup-store' }],
+            rootList: [{ name: 'acme', dir: 'C:\\dev\\swarmup-store' }],
             opsd: { agents: {}, runtimes: {} },
           },
         };

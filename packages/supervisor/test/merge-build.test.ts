@@ -743,16 +743,16 @@ describe('merging approved work', () => {
         'docs/supervisor.md',
       ]),
     ).toEqual(['packages/supervisor/src/supervisor.ts', 'packages/core/src/workspace.ts']);
-    expect(insideDir('C:/dev/agent-ops', 'C:/dev/agent-ops/packages/supervisor/dist')).toBe(true);
-    expect(insideDir('C:/dev/agent-ops', 'C:/Program Files/SwarmUp/resources/app')).toBe(false);
-    expect(insideDir('C:/dev/agent-ops', 'C:/dev/agent-ops-2/packages')).toBe(false);
+    expect(insideDir('C:/dev/swarmup', 'C:/dev/swarmup/packages/supervisor/dist')).toBe(true);
+    expect(insideDir('C:/dev/swarmup', 'C:/Program Files/SwarmUp/resources/app')).toBe(false);
+    expect(insideDir('C:/dev/swarmup', 'C:/dev/swarmup-2/packages')).toBe(false);
     const o = {
       task: 'AO-0150',
       what: 'ea4cfd5b on branch claude/ao-0150-auth-backoff',
       base: 'v2',
       commit: 'f61d5299aaaa',
       files: ['a.ts', 'b.ts', 'c.ts', 'd.ts'],
-      top: 'C:/dev/agent-ops',
+      top: 'C:/dev/swarmup',
       pid: 1992,
       version: '0.2.0-beta.2',
     };
@@ -760,13 +760,13 @@ describe('merging approved work', () => {
     expect(installed).toMatch(
       /^AO-0150: swarmupd merged ea4cfd5b on branch claude\/ao-0150-auth-backoff into `v2` as f61d529, which changes swarmupd's own code \(`a\.ts`, `b\.ts`, `c\.ts` and 1 more\)\. The running swarmupd \(pid 1992, 0\.2\.0-beta\.2\) does not have it yet\./,
     );
-    expect(installed).toContain('swarmupd runs the installed app, not `C:/dev/agent-ops`');
+    expect(installed).toContain('swarmupd runs the installed app, not `C:/dev/swarmup`');
     expect(installed).toContain('install a new build of the app');
     expect(notLiveNotice({ ...o, runs: 'checkout', built: true })).toContain(
-      'The build in `C:/dev/agent-ops` has it: restart swarmupd with **Restart swarmupd** in the tray',
+      'The build in `C:/dev/swarmup` has it: restart swarmupd with **Restart swarmupd** in the tray',
     );
     expect(notLiveNotice({ ...o, runs: 'checkout', built: false })).toContain(
-      'Build `C:/dev/agent-ops` (`npm run build`), then restart swarmupd',
+      'Build `C:/dev/swarmup` (`npm run build`), then restart swarmupd',
     );
   });
 

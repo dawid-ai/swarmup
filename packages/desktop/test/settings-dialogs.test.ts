@@ -20,7 +20,7 @@ const SETTINGS = {
   },
   set: [],
   kept: [],
-  rootList: [{ name: 'agent-ops', dir: 'C:\\dev\\swarmup-store' }],
+  rootList: [{ name: 'acme', dir: 'C:\\dev\\swarmup-store' }],
 };
 
 const DATA: Record<string, unknown> = {

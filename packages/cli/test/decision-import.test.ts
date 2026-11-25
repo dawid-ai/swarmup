@@ -71,7 +71,7 @@ describe('decision imports', () => {
       '--import',
       dated,
       '--project',
-      'agent-ops',
+      'acme',
       '--dry-run',
     );
     expect(preview).toMatchObject({ code: 0, err: '' });
@@ -86,7 +86,7 @@ describe('decision imports', () => {
       '--import',
       dated,
       '--project',
-      'agent-ops',
+      'acme',
     );
     expect(imported.out).toContain('imported D-0001');
     expect(decisions()).toEqual(['D-0001']);
@@ -104,7 +104,7 @@ describe('decision imports', () => {
       '--import',
       dated,
       '--project',
-      'agent-ops',
+      'acme',
     );
     expect(again.out).toContain('skip');
     expect(again.out).toContain('already imported as D-0001');
@@ -123,7 +123,7 @@ describe('decision imports', () => {
       '--import',
       undated,
       '--project',
-      'agent-ops',
+      'acme',
     );
     expect(skipped.out).toContain('no date in the row or its headings');
     expect(decisions()).toEqual(['D-0001']);

@@ -122,15 +122,15 @@ describe('the root a project filter stands for', () => {
     t('WEB-1', { root: 'web-store', project: 'swarmup-web' }),
     t('WEB-2', { root: 'web-store', project: 'swarmup-web' }),
     // One task of that project filed in another root: the root with most of them wins.
-    t('AO-1', { root: 'agent-ops', project: 'swarmup-web' }),
-    t('AO-2', { root: 'agent-ops', project: 'agent-ops' }),
+    t('AO-1', { root: 'acme', project: 'swarmup-web' }),
+    t('AO-2', { root: 'acme', project: 'acme' }),
     t('OLD-1', { root: 'gone', project: 'legacy' }),
   ];
-  const roots = ['agent-ops', 'web-store', 'docs'];
+  const roots = ['acme', 'web-store', 'docs'];
 
   it('follows the root of the tasks, not the name alone', () => {
     expect(rootOfProject('swarmup-web', tasks, roots)).toBe('web-store');
-    expect(rootOfProject('agent-ops', tasks, roots)).toBe('agent-ops');
+    expect(rootOfProject('acme', tasks, roots)).toBe('acme');
   });
 
   it('falls back to the root of that name, and to nothing for an unknown project', () => {

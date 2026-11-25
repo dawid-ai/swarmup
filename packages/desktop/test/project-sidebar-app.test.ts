@@ -11,10 +11,10 @@ declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
 }
 
-const AGENT_OPS: ListedProject = {
+const ACME: ListedProject = {
   root: 'C:\\dev\\swarmup-store',
-  name: 'agent-ops',
-  label: 'Agent Ops',
+  name: 'acme',
+  label: 'Acme',
   archived: false,
   found: true,
 };
@@ -88,7 +88,7 @@ function stubBridge(): void {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   window.localStorage.clear();
-  projects = [{ ...AGENT_OPS }, { ...SHOP }];
+  projects = [{ ...ACME }, { ...SHOP }];
   calls = [];
   refuse = null;
   relocate = { ok: true, data: projects };
@@ -155,20 +155,20 @@ function menu(): HTMLElement {
 
 describe('project sidebar actions', () => {
   it('lists a project once when the config names its repo and swarmupd loads the store folder in it', async () => {
-    const store = `${AGENT_OPS.root}/.swarmup`;
-    storeDirs = { [AGENT_OPS.root]: store };
-    projects = [{ ...AGENT_OPS, dir: store }, { ...SHOP }];
+    const store = `${ACME.root}/.swarmup`;
+    storeDirs = { [ACME.root]: store };
+    projects = [{ ...ACME, dir: store }, { ...SHOP }];
     await mount();
     const names = [...document.body.querySelector('[data-projects]')!.querySelectorAll('button')]
       .map((item) => item.textContent?.trim())
-      .filter((text) => text === 'Agent Ops');
-    expect(names).toEqual(['Agent Ops']);
+      .filter((text) => text === 'Acme');
+    expect(names).toEqual(['Acme']);
 
-    rightClick(button('Agent Ops'));
+    rightClick(button('Acme'));
     click(button('Archive', menu()));
     await settle();
     // Project actions still name the entry as the user config lists it.
-    expect(calls.at(-1)).toEqual({ path: '/api/projects/archive', body: { root: AGENT_OPS.root } });
+    expect(calls.at(-1)).toEqual({ path: '/api/projects/archive', body: { root: ACME.root } });
   });
 
   it('opens the right-click menu and moves projects through the collapsed Archived group', async () => {
@@ -177,7 +177,7 @@ describe('project sidebar actions', () => {
     expect(archived.getAttribute('aria-expanded')).toBe('false');
     expect(document.body.textContent).not.toContain('Shop archive');
 
-    rightClick(button('Agent Ops'));
+    rightClick(button('Acme'));
     expect([...menu().querySelectorAll('button')].map((item) => item.textContent?.trim())).toEqual([
       'Edit name',
       'Edit location',
@@ -191,10 +191,10 @@ describe('project sidebar actions', () => {
       body: { root: 'C:\\dev\\swarmup-store' },
     });
     expect(button('Archived2').getAttribute('aria-expanded')).toBe('false');
-    expect(document.body.querySelector('[data-projects]')!.textContent).not.toContain('Agent Ops');
+    expect(document.body.querySelector('[data-projects]')!.textContent).not.toContain('Acme');
 
     click(button('Archived2'));
-    expect(document.body.querySelector('[data-projects]')!.textContent).toContain('Agent Ops');
+    expect(document.body.querySelector('[data-projects]')!.textContent).toContain('Acme');
     rightClick(button('Shop archive'));
     expect(button('Unarchive', menu())).toBeDefined();
     click(button('Unarchive', menu()));
@@ -205,7 +205,7 @@ describe('project sidebar actions', () => {
 
   it('shows rename refusals and confirms that Delete leaves every file on disk', async () => {
     await mount();
-    rightClick(button('Agent Ops'));
+    rightClick(button('Acme'));
     click(button('Edit name', menu()));
     const rename = document.body.querySelector<HTMLElement>('[role="dialog"]')!;
     type(rename.querySelector('input')!, 'Control Plane');
@@ -237,13 +237,13 @@ describe('project sidebar actions', () => {
   it('uses the system-folder bridge for Edit location and shows its refusal', async () => {
     await mount();
     relocate = { ok: false, error: 'the selected folder has no data root' };
-    rightClick(button('Agent Ops'));
+    rightClick(button('Acme'));
     click(button('Edit location', menu()));
     await settle();
     expect(document.body.textContent).toContain('the selected folder has no data root');
 
     refuse = 'the project is busy';
-    rightClick(button('Agent Ops'));
+    rightClick(button('Acme'));
     click(button('Archive', menu()));
     await settle();
     expect(document.body.textContent).toContain('the project is busy');

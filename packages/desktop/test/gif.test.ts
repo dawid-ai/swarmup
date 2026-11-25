@@ -57,8 +57,8 @@ describe('GIF export', () => {
     expect(GIF_WIDTH).toBe(960);
     expect(gifStage(aspectById('16x9'))).toEqual({ width: 960, height: 540 });
     expect(gifStage(aspectById('9x16'))).toEqual({ width: 960, height: 1707 });
-    expect(gifFileName('events', 'agent-ops-docs', 960, 15, 30_000)).toBe(
-      'replay-events-agent-ops-docs-960w-15fps-30s.gif',
+    expect(gifFileName('events', 'acme-docs', 960, 15, 30_000)).toBe(
+      'replay-events-acme-docs-960w-15fps-30s.gif',
     );
   });
 
