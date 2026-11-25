@@ -1,14 +1,15 @@
 // @vitest-environment happy-dom
 // Proposals in the Agents view (W6): each variant with its agents, scorers, diff and benchmark,
-// Promote and Reject (with a note), and the routes the page may call for them.
+// Promote and Reject (with a note), Promote turned off while improvement.requires is unmet (with an
+// explicit, recorded override), Roll back on promoted changes, and the routes the page may call.
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { allowedCall } from '../src/allow';
 import type { Nav } from '../ui/src/App';
-import type { ImproveStatus, ProposalView } from '../ui/src/types';
-import { benchmarkText, Proposals, requiresText } from '../ui/src/ui/proposals';
+import type { ImproveStatus, PromotedChange, ProposalView } from '../ui/src/types';
+import { benchmarkText, promoteBlock, Proposals, requiresText } from '../ui/src/ui/proposals';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -18,6 +19,7 @@ let root: Root | undefined;
 let box: HTMLDivElement;
 let calls: Array<{ method: string; path: string; body?: Record<string, unknown> }>;
 let list: ProposalView[];
+let promoted: PromotedChange[] | undefined;
 let opened: string[];
 
 const PROPOSAL: ProposalView = {
@@ -89,10 +91,16 @@ beforeEach(() => {
   opened = [];
   went = [];
   list = [PROPOSAL];
+  promoted = undefined;
   window.swarmup = {
     call: (method: string, path: string, body?: Record<string, unknown>) => {
       calls.push({ method, path, body });
       if (path === '/api/defs/variants') return Promise.resolve({ ok: true, data: list });
+      if (path === '/api/defs/promoted' && method === 'GET') {
+        return Promise.resolve(
+          promoted ? { ok: true, data: promoted } : { ok: false, error: 'no route' },
+        );
+      }
       if (path === '/api/improve' && method === 'GET') {
         return Promise.resolve({ ok: true, data: STATUS });
       }
@@ -282,6 +290,137 @@ describe('Proposals', () => {
     );
   });
 
+  it('turns Promote off while improvement.requires is unmet, with the reason', async () => {
+    const unmet = 'improvement.requires a benchmark, and this proposal has none yet';
+    list = [{ ...PROPOSAL, requires: { benchmark: true, min_delta: 0.1, problems: [unmet] } }];
+    await render();
+    const card = document.querySelector('[data-testid="proposal-engineer-tests-first"]')!;
+    const promote = button('Promote', card);
+    expect(promote.disabled).toBe(true);
+    expect(promote.title).toBe(`improvement.requires is not met: ${unmet}`);
+    expect(card.querySelector('[data-testid="promote-blocked"]')!.textContent).toContain(
+      'Promote is off until improvement.requires is met',
+    );
+    await click(promote);
+    expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
+    // A met requirement, or a store that needs none, leaves Promote on.
+    const met = { benchmark: true, min_delta: 0, problems: [] };
+    expect(promoteBlock({ ...PROPOSAL, requires: met })).toBeNull();
+    expect(promoteBlock(PROPOSAL)).toBeNull();
+    expect(promoteBlock({ ...PROPOSAL, ok: false })).toBe('It does not check');
+  });
+
+  it('promotes over an unmet improvement.requires only with a reason, as a recorded override', async () => {
+    list = [
+      {
+        ...PROPOSAL,
+        requires: { benchmark: true, min_delta: 0.1, problems: ['its benchmark failed: no set'] },
+      },
+    ];
+    await render();
+    await click(button('Promote anyway…'));
+    const box = document.querySelector('[data-testid="promote-anyway"]')!;
+    expect(box.textContent).toContain('swarmup defs promote --force');
+    expect(button('Promote anyway', box).disabled).toBe(true);
+    await type(box.querySelector('input')!, 'The set is broken; the change is a typo fix.');
+    await click(button('Promote anyway', box));
+    expect(calls.find((c) => c.method === 'POST')).toEqual({
+      method: 'POST',
+      path: '/api/defs/variants/engineer-tests-first/promote',
+      body: {
+        root: 'tally',
+        message: 'The set is broken; the change is a typo fix.',
+        force: true,
+      },
+    });
+  });
+
+  it('offers no override while improvement.requires is met', async () => {
+    list = [{ ...PROPOSAL, requires: { benchmark: true, min_delta: 0.1, problems: [] } }];
+    await render();
+    expect(button('Promote').disabled).toBe(false);
+    expect(() => button('Promote anyway…')).toThrow();
+    expect(document.querySelector('[data-testid="promote-blocked"]')).toBeNull();
+  });
+
+  it('lists promoted changes and rolls one back with a reason', async () => {
+    const at = new Date(Date.now() - 3_600_000).toISOString();
+    promoted = [
+      {
+        root: 'tally',
+        variant: 'engineer-tests-first',
+        task: 'tally/TL-0009',
+        by: 'human:dawid',
+        at,
+        from: `d:${'a'.repeat(64)}`,
+        to: `d:${'b'.repeat(64)}`,
+        files: ['agents/claude-engineer.md'],
+        changed: [],
+      },
+      {
+        root: 'tally',
+        variant: 'older',
+        by: 'human:dawid',
+        at,
+        from: `d:${'c'.repeat(64)}`,
+        to: `d:${'a'.repeat(64)}`,
+        files: ['agents/claude-engineer.md'],
+        changed: [],
+        rolled_back: { by: 'human:dawid', at },
+      },
+    ];
+    await render();
+    const card = document.querySelector('[data-testid="promoted-tally-engineer-tests-first"]')!;
+    expect(card.textContent).toContain('tally/engineer-tests-first');
+    expect(card.textContent).toContain('agents/claude-engineer.md');
+    expect(card.textContent).toContain('promoted by human:dawid');
+    // A rolled-back change says so and offers nothing.
+    const old = document.querySelector('[data-testid="promoted-tally-older"]')!;
+    expect(old.querySelector('[data-testid="promoted-rolled-back"]')).toBeTruthy();
+    expect(() => button('Roll back', old)).toThrow();
+    await click(button('Roll back', card));
+    expect(button('Roll back', card).disabled).toBe(true);
+    await type(card.querySelector('input')!, 'Review rounds went up.');
+    await click(button('Roll back', card));
+    expect(calls.find((c) => c.method === 'POST')).toEqual({
+      method: 'POST',
+      path: '/api/defs/promoted/engineer-tests-first/rollback',
+      body: { as: 'human:dawid', root: 'tally', message: 'Review rounds went up.' },
+    });
+  });
+
+  it('asks before a rollback drops a change made after the promote', async () => {
+    promoted = [
+      {
+        root: 'tally',
+        variant: 'engineer-tests-first',
+        by: 'human:dawid',
+        at: new Date().toISOString(),
+        from: `d:${'a'.repeat(64)}`,
+        to: `d:${'b'.repeat(64)}`,
+        files: ['agents/claude-engineer.md'],
+        changed: ['agents/claude-engineer.md'],
+      },
+    ];
+    await render();
+    const card = document.querySelector('[data-testid="promoted-tally-engineer-tests-first"]')!;
+    expect(card.querySelector('[data-testid="promoted-changed"]')!.textContent).toContain(
+      'A rollback drops those changes',
+    );
+    await click(button('Roll back', card));
+    await type(card.querySelector('input')!, 'Back to the old rules.');
+    expect(button('Roll back', card).disabled).toBe(true);
+    await click(card.querySelector('[data-testid="promoted-force"] button')!);
+    expect(button('Roll back', card).disabled).toBe(false);
+    await click(button('Roll back', card));
+    expect(calls.find((c) => c.method === 'POST')?.body).toEqual({
+      as: 'human:dawid',
+      root: 'tally',
+      message: 'Back to the old rules.',
+      force: true,
+    });
+  });
+
   it('proposes a change to a role file with a reason, prefilled from the file', async () => {
     list = [];
     await render();
@@ -318,7 +457,7 @@ describe('Proposals', () => {
 });
 
 describe('proposal routes in the allowlist', () => {
-  it('lets the page list, promote, reject, propose and file an improvement task, and nothing else', () => {
+  it('lets the page list, promote, reject, roll back, propose and file an improvement task, and nothing else', () => {
     expect(allowedCall('POST', '/api/defs/propose')).toBe(true);
     expect(allowedCall('GET', '/api/improve')).toBe(true);
     expect(allowedCall('POST', '/api/improve/settings')).toBe(true);
@@ -326,6 +465,9 @@ describe('proposal routes in the allowlist', () => {
     expect(allowedCall('POST', '/api/defs/variants/engineer-tests-first/promote')).toBe(true);
     expect(allowedCall('POST', '/api/defs/variants/engineer-tests-first/reject')).toBe(true);
     expect(allowedCall('POST', '/api/improve')).toBe(true);
+    expect(allowedCall('GET', '/api/defs/promoted')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/promoted/engineer-tests-first/rollback')).toBe(true);
+    expect(allowedCall('POST', '/api/defs/promoted/x/delete')).toBe(false);
     expect(allowedCall('POST', '/api/defs/variants/x/delete')).toBe(false);
     expect(allowedCall('POST', '/api/defs/variants')).toBe(false);
   });

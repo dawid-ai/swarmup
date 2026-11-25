@@ -28,7 +28,8 @@ roots, resolves `T-0001` or `root/T-0001`, checks who may do what, and appends e
   and the `defs` stamp. `recordCriteriaCheck` writes a `criteria-check` event, with `by: judge`
   for an LLM judge's results.
 - `defsPropose`, `defsPromote`, `defsReject`, `defsRollback` and `variants` record definition
-  proposals as variants (see `/improve`); promote, reject and rollback are for a person only.
+  proposals as variants (see `/improve`); promote, reject and rollback are for a person only;
+  `promotedChanges` lists the recorded promotes for the app's **Roll back**.
 - `finding` names up to 3 tasks of the root with a near-identical title (`similar.ts`, word
   overlap) as possible duplicates in the new finding's body. `ask --reason` records why only a
   person can answer (`ASK_REASONS`).

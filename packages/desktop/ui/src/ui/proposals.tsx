@@ -1,7 +1,18 @@
 // Proposals (W6): changes to the definitions the improver recorded as variants, each with the
 // agents and scorers it addresses, its diff against the base, its benchmark, and Promote and
-// Reject for the person. Shown in the Agents view, beside the scores that led to them.
-import { Bot, Check, FlaskConical, GitPullRequestArrow, ShieldCheck, X } from 'lucide-react';
+// Reject for the person; then the promoted changes, each with Roll back. Shown in the Agents
+// view, beside the scores that led to them.
+import {
+  Bot,
+  Check,
+  FlaskConical,
+  GitPullRequestArrow,
+  History,
+  ShieldAlert,
+  ShieldCheck,
+  Undo2,
+  X,
+} from 'lucide-react';
 import { useState } from 'react';
 import type { Nav } from '../App';
 import { api, refreshSoon, useData } from '../api';
@@ -19,7 +30,14 @@ import {
   useAction,
 } from '../components';
 import { ago } from '../lib/format';
-import type { Agent, ImproveStatus, ProposalBenchmark, ProposalView, RoleFile } from '../types';
+import type {
+  Agent,
+  ImproveStatus,
+  PromotedChange,
+  ProposalBenchmark,
+  ProposalView,
+  RoleFile,
+} from '../types';
 import { Markdown } from './markdown';
 
 const pts = (v: number | null | undefined): string =>
@@ -58,21 +76,34 @@ function Diff({ lines }: { lines: string[] }) {
   );
 }
 
+/** Why Promote is off for a proposal, or null when a click may promote it. */
+export function promoteBlock(p: ProposalView): string | null {
+  if (!p.ok) return 'It does not check';
+  const unmet = p.requires?.problems ?? [];
+  if (unmet.length > 0) return `improvement.requires is not met: ${unmet.join('; ')}`;
+  return null;
+}
+
 function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: () => void }) {
   const act = useAction();
-  const [rejecting, setRejecting] = useState(false);
+  /** Reject asks for a note; Promote anyway asks why the override is right. */
+  const [asking, setAsking] = useState<'reject' | 'force' | null>(null);
   const [note, setNote] = useState('');
   const path = `/api/defs/variants/${encodeURIComponent(p.name)}`;
-  const decide = (verb: 'promote' | 'reject'): void =>
+  const block = promoteBlock(p);
+  const unmet = p.ok && (p.requires?.problems.length ?? 0) > 0;
+  const decide = (verb: 'promote' | 'reject' | 'force'): void =>
     act.run(
       () =>
-        api('POST', `${path}/${verb}`, {
+        api('POST', `${path}/${verb === 'force' ? 'promote' : verb}`, {
           root: p.root,
-          ...(verb === 'reject' ? { message: note.trim() } : {}),
+          ...(verb === 'promote' ? {} : { message: note.trim() }),
+          // The override `swarmup defs promote --force` makes; the task records it and why.
+          ...(verb === 'force' ? { force: true } : {}),
         }),
       () => {
-        toast(verb === 'promote' ? `Promoted ${p.name}` : `Rejected ${p.name}`);
-        setRejecting(false);
+        toast(verb === 'reject' ? `Rejected ${p.name}` : `Promoted ${p.name}`);
+        setAsking(null);
         onDone();
         refreshSoon();
       },
@@ -163,7 +194,7 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
           or remove it in <span className="font-mono">swarm.yaml</span>; there is nothing to
           promote.
         </p>
-      ) : rejecting ? (
+      ) : asking === 'reject' ? (
         <div className="flex flex-wrap items-center gap-2">
           <Input
             value={note}
@@ -180,24 +211,81 @@ function ProposalCard({ p, nav, onDone }: { p: ProposalView; nav: Nav; onDone: (
           >
             Reject
           </Button>
-          <Button kind="ghost" onClick={() => setRejecting(false)}>
+          <Button kind="ghost" onClick={() => setAsking(null)}>
             Cancel
           </Button>
         </div>
+      ) : asking === 'force' ? (
+        <div className="flex flex-col gap-2" data-testid="promote-anyway">
+          <p className="text-xs text-warn">
+            This promotes over <code>improvement.requires</code>, as{' '}
+            <code>swarmup defs promote --force</code> does. The task records the override, what it
+            skipped and your reason.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={note}
+              onChange={setNote}
+              placeholder="Why promote it without the benchmark it needs"
+              className="min-w-64 flex-1"
+              autoFocus
+              onEnter={() => note.trim() && decide('force')}
+            />
+            <Button
+              kind="danger"
+              icon={ShieldAlert}
+              disabled={act.busy || !note.trim()}
+              onClick={() => decide('force')}
+            >
+              Promote anyway
+            </Button>
+            <Button kind="ghost" onClick={() => setAsking(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
       ) : (
-        <div className="flex gap-2">
-          <Button
-            kind="primary"
-            icon={Check}
-            disabled={act.busy || !p.ok}
-            title={p.ok ? 'Write the change onto the definition files' : 'It does not check'}
-            onClick={() => decide('promote')}
-          >
-            Promote
-          </Button>
-          <Button icon={X} disabled={act.busy} onClick={() => setRejecting(true)}>
-            Reject
-          </Button>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              kind="primary"
+              icon={Check}
+              disabled={act.busy || block !== null}
+              title={block ?? 'Write the change onto the definition files'}
+              onClick={() => decide('promote')}
+            >
+              Promote
+            </Button>
+            <Button
+              icon={X}
+              disabled={act.busy}
+              onClick={() => {
+                setNote('');
+                setAsking('reject');
+              }}
+            >
+              Reject
+            </Button>
+            {unmet && (
+              <Button
+                kind="ghost"
+                icon={ShieldAlert}
+                disabled={act.busy}
+                title="Promote over improvement.requires; the task records the override"
+                onClick={() => {
+                  setNote('');
+                  setAsking('force');
+                }}
+              >
+                Promote anyway…
+              </Button>
+            )}
+          </div>
+          {unmet && (
+            <p className="text-xs text-fg-4" data-testid="promote-blocked">
+              Promote is off until <code>improvement.requires</code> is met.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -425,9 +513,157 @@ export function ProposeDialog({
   );
 }
 
+/** One promoted change: what it changed, and **Roll back**, which asks why. */
+function PromotedCard({ c, nav, onDone }: { c: PromotedChange; nav: Nav; onDone: () => void }) {
+  const act = useAction();
+  const [rolling, setRolling] = useState(false);
+  const [note, setNote] = useState('');
+  const [force, setForce] = useState(false);
+  const needsForce = c.changed.length > 0;
+  const rollBack = (): void => {
+    if (!note.trim() || (needsForce && !force)) return;
+    act.run(
+      () =>
+        api('POST', `/api/defs/promoted/${encodeURIComponent(c.variant)}/rollback`, {
+          as: nav.me,
+          root: c.root,
+          message: note.trim(),
+          ...(needsForce ? { force: true } : {}),
+        }),
+      () => {
+        toast(`Rolled back ${c.variant}`);
+        setRolling(false);
+        onDone();
+        refreshSoon();
+      },
+    );
+  };
+  return (
+    <div
+      className="panel flex flex-col gap-2 px-4 py-3"
+      data-testid={`promoted-${c.root}-${c.variant}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <History size={14} className={c.rolled_back ? 'text-fg-4' : 'text-ok'} />
+        <span className="font-mono text-sm text-fg">
+          {c.root}/{c.variant}
+        </span>
+        <span className="font-mono text-xs text-fg-4">
+          {c.from.slice(0, 14)} → {c.to.slice(0, 14)}
+        </span>
+        <span className="text-xs text-fg-3">
+          promoted by {c.by}, {ago(c.at)}
+        </span>
+        {c.rolled_back && (
+          <span className="text-xs text-fg-4" data-testid="promoted-rolled-back">
+            rolled back by {c.rolled_back.by}, {ago(c.rolled_back.at)}
+          </span>
+        )}
+        {c.task && (
+          <button
+            type="button"
+            className="ml-auto font-mono text-xs text-signal hover:underline"
+            onClick={() => nav.openTask(c.task!)}
+          >
+            {c.task}
+          </button>
+        )}
+      </div>
+      <div className="text-xs text-fg-3">
+        <span className="text-fg-4">Files </span>
+        <span className="font-mono">{c.files.join(', ') || '-'}</span>
+      </div>
+      {!c.rolled_back && needsForce && (
+        <p className="text-xs text-warn" data-testid="promoted-changed">
+          Changed after the promote: <span className="font-mono">{c.changed.join(', ')}</span>. A
+          rollback drops those changes.
+        </p>
+      )}
+      <ErrorLine error={act.error} />
+      {c.rolled_back ? null : rolling ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={note}
+              onChange={setNote}
+              placeholder="Why roll it back, for the task and the improver"
+              className="min-w-64 flex-1"
+              autoFocus
+              onEnter={rollBack}
+            />
+            <Button
+              kind="danger"
+              icon={Undo2}
+              disabled={act.busy || !note.trim() || (needsForce && !force)}
+              onClick={rollBack}
+            >
+              Roll back
+            </Button>
+            <Button kind="ghost" onClick={() => setRolling(false)}>
+              Cancel
+            </Button>
+          </div>
+          {needsForce && (
+            <span data-testid="promoted-force">
+              <Toggle
+                checked={force}
+                onChange={setForce}
+                label="Drop the later changes too (--force)"
+              />
+            </span>
+          )}
+        </div>
+      ) : (
+        <div>
+          <Button
+            icon={Undo2}
+            title="Put back the definition files as they were before the promote"
+            onClick={() => {
+              setNote('');
+              setForce(false);
+              setRolling(true);
+            }}
+          >
+            Roll back
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The promoted changes of every store, newest first. An older swarmupd without the route, or no
+ * promote yet, shows nothing.
+ */
+function PromotedList({
+  nav,
+  list,
+}: {
+  nav: Nav;
+  list: { data: PromotedChange[] | undefined; error: string | null; reload: () => void };
+}) {
+  if (list.error || !Array.isArray(list.data) || list.data.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-3" data-testid="promoted">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="label-caps">Promoted</span>
+        <span className="font-mono text-xs text-fg-4">{list.data.length}</span>
+        <span className="text-xs text-fg-4">
+          Roll back puts the files back as they were before the promote.
+        </span>
+      </div>
+      {list.data.map((c) => (
+        <PromotedCard key={`${c.root}/${c.variant}`} c={c} nav={nav} onDone={list.reload} />
+      ))}
+    </div>
+  );
+}
+
 /** The Proposals list, with the improver's state; an empty state says what a proposal is. */
 export function Proposals({ nav }: { nav: Nav }) {
   const list = useData<ProposalView[]>('/api/defs/variants');
+  const promoted = useData<PromotedChange[]>('/api/defs/promoted');
   const [proposing, setProposing] = useState(false);
   const count = list.data?.length ?? 0;
   return (
@@ -461,8 +697,17 @@ export function Proposals({ nav }: { nav: Nav }) {
           </div>
         )}
         {(list.data ?? []).map((p) => (
-          <ProposalCard key={`${p.root}/${p.name}`} p={p} nav={nav} onDone={list.reload} />
+          <ProposalCard
+            key={`${p.root}/${p.name}`}
+            p={p}
+            nav={nav}
+            onDone={() => {
+              list.reload();
+              promoted.reload();
+            }}
+          />
         ))}
+        <PromotedList nav={nav} list={promoted} />
       </div>
       {proposing && (
         <ProposeDialog

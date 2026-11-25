@@ -465,12 +465,23 @@ describe('defs propose, promote and reject', () => {
     const before = loadDefinitions(w.rootDir).hash;
     w.dawid.defsPromote('tests-first');
     expect(existsSync(join(w.rootDir, 'workflows', 'extra.yaml'))).toBe(false);
+    // The app lists the promote for Roll back, with the files it changed.
+    expect(w.dawid.promotedChanges()).toEqual([
+      expect.objectContaining({
+        variant: 'tests-first',
+        by: 'human:dawid',
+        files: ['agents/claude-engineer.md', 'workflows/extra.yaml'],
+        changed: [],
+      }),
+    ]);
+    expect(w.dawid.promotedChanges()[0]!.rolled_back).toBeUndefined();
     expect(() => w.improver.defsRollback('tests-first', 'bad')).toThrow(/only a person rolls back/);
     expect(() => w.dawid.defsRollback('tests-first', ' ')).toThrow(/say why/);
     // A change made after the promote needs --force: the rollback would drop it.
     const file = join(w.rootDir, 'agents', 'claude-engineer.md');
     const promoted = readFileSync(file, 'utf8');
     writeFileSync(file, `${promoted}Edited by hand.\n`);
+    expect(w.dawid.promotedChanges()[0]!.changed).toEqual(['agents/claude-engineer.md']);
     expect(() => w.dawid.defsRollback('tests-first', 'worse')).toThrow(
       /agents\/claude-engineer\.md changed after the promote/,
     );
@@ -484,6 +495,13 @@ describe('defs propose, promote and reject', () => {
     expect(done.events[0]!.body).toContain('Review rounds went up.');
     expect(() => w.dawid.defsRollback('tests-first', 'again')).toThrow(/rolled back already/);
     expect(w.dawid.variants()).toEqual([]);
+    expect(w.dawid.promotedChanges()).toEqual([
+      expect.objectContaining({
+        variant: 'tests-first',
+        changed: [],
+        rolled_back: expect.objectContaining({ by: 'human:dawid' }),
+      }),
+    ]);
   });
 
   it('lets only a person reject: a defs-reject event, the folder goes, the base stays', () => {

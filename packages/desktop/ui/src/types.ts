@@ -1984,6 +1984,23 @@ export interface ProposalView {
   requires?: { benchmark: boolean; min_delta: number; problems: string[] };
 }
 
+/** `GET /api/defs/promoted`: a promote `swarmup defs rollback` can undo (W6). */
+export interface PromotedChange {
+  root: string;
+  variant: string;
+  /** The proposal's task, where the promote and a rollback are recorded. */
+  task?: string;
+  by: string;
+  at: string;
+  /** The definition hashes before and after the promote. */
+  from: string;
+  to: string;
+  files: string[];
+  /** Files changed after the promote: a rollback drops those changes. */
+  changed: string[];
+  rolled_back?: { by: string; at: string };
+}
+
 /** `GET /api/improve`: this machine's improvement loop and each store's policy (W6). */
 export interface ImproveStatus {
   enabled: boolean;
