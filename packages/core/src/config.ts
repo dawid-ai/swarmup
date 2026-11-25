@@ -1,16 +1,11 @@
 import {
   appendFileSync,
-  copyFileSync,
   existsSync,
-  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
-  rmdirSync,
-  rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
@@ -22,13 +17,9 @@ import { assertActor, isHuman, OpsError } from './ids.js';
 export const SYNC_POLICIES = ['manual', 'checkpoint', 'coordinated'] as const;
 export type SyncPolicy = (typeof SYNC_POLICIES)[number];
 
-/**
- * `<root>/config.yml`: shared by everyone who uses the root. A root has `swarmup: 2`; one made
- * before the rename has `agent_ops: 2`, which is still read (AO-0200).
- */
+/** `<root>/config.yml`: shared by everyone who uses the root. A root has `swarmup: 2`. */
 export interface RootConfig {
   swarmup?: 2;
-  agent_ops?: 2;
   name: string;
   /** Task id prefix, such as `T` for `T-0001`. */
   id_prefix: string;
@@ -197,38 +188,17 @@ export function daemonKeyIn(doc: YAML.Document): string {
 
 /** The store folder inside a repo. */
 export const ROOT_DIR_NAME = '.swarmup';
-/**
- * The store folder before the rename. Read until 0.4 when the repo has no `.swarmup/`;
- * `swarmup migrate` moves it (AO-0200).
- */
-export const OLD_ROOT_DIR_NAME = '.agent-ops';
-/** Both store folder names, the current one first. */
-export const ROOT_DIR_NAMES = [ROOT_DIR_NAME, OLD_ROOT_DIR_NAME] as const;
 export const ID_BLOCK_SIZE = 10_000;
 
-/**
- * The store folder of `repo`: `.swarmup/` when it holds a config.yml, else `.agent-ops/`, else
- * null. A repo with a config.yml in both is refused: merging two stores silently could lose
- * events, so a person picks the one to keep.
- */
+/** The store folder of `repo`: `.swarmup/` when it holds a config.yml, else null. */
 export function storeDirIn(repo: string): string | null {
-  const found = ROOT_DIR_NAMES.map((n) => join(repo, n)).filter((d) =>
-    existsSync(join(d, 'config.yml')),
-  );
-  if (found.length > 1) {
-    throw new OpsError(
-      `${repo} has two task stores, ${ROOT_DIR_NAME}/ and ${OLD_ROOT_DIR_NAME}/. ` +
-        `Keep one: move any events only the other has into it, then delete or rename the other. ` +
-        `SwarmUp never merges them by itself.`,
-      2,
-    );
-  }
-  return found[0] ?? null;
+  const dir = join(repo, ROOT_DIR_NAME);
+  return existsSync(join(dir, 'config.yml')) ? dir : null;
 }
 
-/** True when `name` is a store folder name, current or old. */
+/** True when `name` is the store folder name. */
 export function isStoreDirName(name: string): boolean {
-  return (ROOT_DIR_NAMES as readonly string[]).includes(name);
+  return name === ROOT_DIR_NAME;
 }
 
 export function defaultRootConfig(name: string, prefix = 'T', human?: string): RootConfig {
@@ -246,13 +216,12 @@ export function readRootConfig(dir: string): RootConfig {
   const file = join(dir, 'config.yml');
   if (!existsSync(file)) throw new OpsError(`${dir} is not a data root: no config.yml`, 2);
   const raw = (YAML.parse(readFileSync(file, 'utf8')) ?? {}) as Partial<RootConfig>;
-  if (raw.swarmup !== 2 && raw.agent_ops !== 2) {
+  if (raw.swarmup !== 2) {
     throw new OpsError(`${file}: expected 'swarmup: 2'`, 2);
   }
-  // The format key is checked above; the folded config carries neither spelling.
+  // The format key is checked above; the folded config does not carry it.
   const rest = { ...raw };
   delete rest.swarmup;
-  delete rest.agent_ops;
   const base = defaultRootConfig(raw.name ?? 'default', raw.id_prefix ?? 'T', raw.human);
   return {
     ...base,
@@ -263,77 +232,15 @@ export function readRootConfig(dir: string): RootConfig {
   } as RootConfig;
 }
 
-/** The user config folder for `slug`: `%APPDATA%\<slug>` or `~/.config/<slug>`. */
-function userConfigDir(env: NodeJS.ProcessEnv, slug: string): string {
-  if (process.platform === 'win32' && env.APPDATA) return join(env.APPDATA, slug);
-  return join(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), slug);
+/** The user config folder: `%APPDATA%\swarmup` or `~/.config/swarmup`. */
+function userConfigDir(env: NodeJS.ProcessEnv): string {
+  if (process.platform === 'win32' && env.APPDATA) return join(env.APPDATA, 'swarmup');
+  return join(env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'swarmup');
 }
 
-/** Where the user config lived before the rename (`agent-ops` folder). */
-export function oldUserConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(userConfigDir(env, 'agent-ops'), 'config.yml');
-}
-
-/** New user config paths already checked for a copy from the old path, in this process. */
-const userConfigChecked = new Map<string, string>();
-
-/**
- * `SWARMUP_CONFIG`, else `%APPDATA%\swarmup\config.yml` (`~/.config/swarmup/config.yml`). On the
- * first call in a process where that file is missing and the old `agent-ops` one exists, the old
- * one is copied there once (see {@link migrateUserConfig}); when the copy fails, the old path is
- * returned, so the settings still apply.
- */
+/** `SWARMUP_CONFIG`, else `%APPDATA%\swarmup\config.yml` (`~/.config/swarmup/config.yml`). */
 export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  const set = envVar(env, 'CONFIG');
-  if (set) return set;
-  const file = join(userConfigDir(env, 'swarmup'), 'config.yml');
-  const known = userConfigChecked.get(file);
-  if (known) return known;
-  const used = migrateUserConfig(file, oldUserConfigPath(env));
-  userConfigChecked.set(file, used);
-  return used;
-}
-
-/** For tests: forgets which user config paths were checked. */
-export function resetUserConfigCheck(): void {
-  userConfigChecked.clear();
-}
-
-/**
- * Copies the old user config `from` to `to` when `to` is missing and `from` exists, and logs it in
- * the migration log next to `to`. The old file stays, so a build from before the rename still
- * reads it. Runs once: an existing `to` is never replaced, and two processes copying at once
- * leave one complete file (the copy goes to a temporary file and is linked into place). Returns
- * the path to read: `to`, or `from` when the copy failed.
- */
-export function migrateUserConfig(to: string, from: string): string {
-  if (existsSync(to) || !existsSync(from)) return to;
-  const tmp = `${to}.${process.pid}.migrate`;
-  try {
-    mkdirSync(dirname(to), { recursive: true });
-    copyFileSync(from, tmp);
-    try {
-      linkSync(tmp, to);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      return to; // Another process copied it first.
-    }
-    logMigration(dirname(to), `user config: copied ${from} to ${to}; the old file stays`);
-    return to;
-  } catch (err) {
-    logMigration(
-      dirname(to),
-      `user config: could not copy ${from} to ${to} (${(err as Error).message}); reading ${from}`,
-    );
-    return from;
-  } finally {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      // `force` ignores only a missing file: on Linux a file where the folder should be gives
-      // ENOTDIR, and then no temporary file was made either.
-    }
-  }
+  return envVar(env, 'CONFIG') ?? join(userConfigDir(env), 'config.yml');
 }
 
 /** The file migrations log to, in the user config folder: `migrations.log`. */
@@ -354,7 +261,7 @@ export function logMigration(dir: string, line: string): void {
 
 /** The folder of the migration log: the user config folder, whatever `SWARMUP_CONFIG` says. */
 export function migrationLogDir(env: NodeJS.ProcessEnv = process.env): string {
-  return dirname(envVar(env, 'CONFIG') ?? join(userConfigDir(env, 'swarmup'), 'config.yml'));
+  return dirname(userConfigPath(env));
 }
 
 export function readUserConfig(env: NodeJS.ProcessEnv = process.env): UserConfig {
@@ -487,7 +394,7 @@ function addMe(file: string, me: string): SetupResult {
   return { path: file, created: false, changed, me: String(doc.get('me')), roots: listed };
 }
 
-/** A root's store folder (`.swarmup` or `.agent-ops`) stands for the repo that holds it. */
+/** A root's store folder (`.swarmup`) stands for the repo that holds it. */
 function rootFolder(p: string): string {
   return isStoreDirName(basename(p)) ? dirname(p) : p;
 }
@@ -506,7 +413,7 @@ export function findRootUp(start: string): string | null {
   let dir = resolve(start);
   for (;;) {
     const store = storeDirIn(dir);
-    if (store) return adoptLocalState(store);
+    if (store) return store;
     if (existsSync(join(dir, 'config.yml')) && isRootConfig(join(dir, 'config.yml'))) return dir;
     const parent = dirname(dir);
     if (parent === dir) return null;
@@ -516,77 +423,7 @@ export function findRootUp(start: string): string | null {
 
 function isRootConfig(file: string): boolean {
   try {
-    return /^(?:swarmup|agent_ops):\s*2\s*$/m.test(readFileSync(file, 'utf8'));
-  } catch {
-    return false;
-  }
-}
-
-/** `.swarmup` folders already checked for files left in `.agent-ops/`, this process. */
-const adoptChecked = new Set<string>();
-
-/**
- * Moves what a clone left in an `.agent-ops/` that is no store any more (no config.yml) into
- * `store`, a `.swarmup/` folder. A clone that pulls the commit moving the store gets the tracked
- * files in `.swarmup/` from git, while untracked ones stay behind: its local state in `.ops/`
- * (claim tokens, the sync branch, caches) and any event written but not committed yet. A file
- * whose name is taken in `store` is never replaced; it stays where it is. Returns `store`.
- */
-export function adoptLocalState(store: string): string {
-  if (basename(store) !== ROOT_DIR_NAME || adoptChecked.has(store)) return store;
-  adoptChecked.add(store);
-  const old = join(dirname(store), OLD_ROOT_DIR_NAME);
-  if (!existsSync(old) || existsSync(join(old, 'config.yml'))) return store;
-  const count = moveLeftovers(old, store);
-  if (count > 0) {
-    logMigration(
-      migrationLogDir(),
-      `store: moved ${count} file(s) or folder(s) left in ${old} to ${store}${existsSync(old) ? `; the rest stays in ${old}` : ''}`,
-    );
-  }
-  return store;
-}
-
-/**
- * Moves files left in `old` (an `.agent-ops/` folder that is no store any more) into `store`,
- * keeping every file whose name is taken there in place. Returns how many files moved. Empty
- * folders left behind are removed.
- */
-export function moveLeftovers(old: string, store: string): number {
-  let moved = 0;
-  for (const name of readdirSafe(old)) {
-    const src = join(old, name);
-    const dst = join(store, name);
-    if (!existsSync(dst)) {
-      try {
-        renameSync(src, dst);
-        moved++;
-      } catch {
-        // Held open or not allowed: stays where it is.
-      }
-    } else if (isDir(src) && isDir(dst)) {
-      moved += moveLeftovers(src, dst);
-    }
-  }
-  try {
-    rmdirSync(old); // Only when empty.
-  } catch {
-    // Something stayed.
-  }
-  return moved;
-}
-
-function readdirSafe(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function isDir(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
+    return /^swarmup:\s*2\s*$/m.test(readFileSync(file, 'utf8'));
   } catch {
     return false;
   }
@@ -665,13 +502,7 @@ export function discoverRoots(
 /** A path given as a repo or as its data root folder, as the data root folder. */
 export function rootDirOf(path: string): string {
   const p = resolve(path);
-  // A store folder listed by name, such as `repo/.agent-ops`, that moved to `.swarmup/`.
-  if (isStoreDirName(basename(p)) && !existsSync(join(p, 'config.yml'))) {
-    const moved = storeDirIn(dirname(p));
-    if (moved) return adoptLocalState(moved);
-  }
-  const store = storeDirIn(p);
-  return store ? adoptLocalState(store) : p;
+  return storeDirIn(p) ?? p;
 }
 
 function pathKey(p: string): string {

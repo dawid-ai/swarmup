@@ -304,10 +304,10 @@ describe('tray icon', () => {
 
 describe('start at sign-in', () => {
   it('starts the app folder in development and the app itself when packaged', () => {
-    expect(loginArgs({ packaged: false, appPath: 'C:/dev/app', cwd: 'C:/dev/agent-ops' })).toEqual([
+    expect(loginArgs({ packaged: false, appPath: 'C:/dev/app', cwd: 'C:/dev/acme' })).toEqual([
       'C:/dev/app',
       '--background',
-      '--ops-cwd=C:/dev/agent-ops',
+      '--ops-cwd=C:/dev/acme',
     ]);
     expect(loginArgs({ packaged: true, appPath: 'x', cwd: 'C:/work' })).toEqual([
       '--background',
@@ -324,9 +324,7 @@ describe('start at sign-in', () => {
   });
 
   it('reads the folder back from the command line', () => {
-    expect(cwdArg(['electron', '.', '--background', '--ops-cwd=C:/dev/agent-ops'])).toBe(
-      'C:/dev/agent-ops',
-    );
+    expect(cwdArg(['electron', '.', '--background', '--ops-cwd=C:/dev/acme'])).toBe('C:/dev/acme');
     expect(cwdArg(['electron', '.'])).toBeUndefined();
     expect(cwdArg(['--ops-cwd='])).toBeUndefined();
   });
@@ -379,7 +377,7 @@ describe('start at sign-in', () => {
 
     it('turns on, reads back and turns off from the same place', () => {
       const reg = registry();
-      const here = at('C:\\dev\\agent-ops\\electron.exe', 'C:\\dev\\agent-ops');
+      const here = at('C:\\dev\\acme\\electron.exe', 'C:\\dev\\acme');
       expect(reg.read('SwarmUp', here)).toEqual({ command: null, off: false, current: false });
       reg.set('SwarmUp', here, true);
       expect(reg.read('SwarmUp', here)).toMatchObject({ off: false, current: true });
@@ -412,13 +410,13 @@ describe('start at sign-in', () => {
 
     it('sees an entry turned off in Task Manager, and matches paths regardless of case', () => {
       const reg = registry();
-      const here = at('C:\\dev\\agent-ops\\electron.exe', 'C:\\dev\\agent-ops');
+      const here = at('C:\\dev\\acme\\electron.exe', 'C:\\dev\\acme');
       reg.set('SwarmUp', here, true);
       reg.approved.set('SwarmUp', '030000000000000000000000');
       expect(reg.read('SwarmUp', here)).toMatchObject({ off: true, current: true });
       reg.approved.set('SwarmUp', '020000000000000000000000');
       expect(reg.read('SwarmUp', here).off).toBe(false);
-      const upper = at('C:\\DEV\\AGENT-OPS\\electron.exe', 'C:\\DEV\\AGENT-OPS');
+      const upper = at('C:\\DEV\\ACME\\electron.exe', 'C:\\DEV\\ACME');
       expect(reg.read('SwarmUp', upper).current).toBe(true);
     });
   });

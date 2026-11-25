@@ -48,7 +48,6 @@ export const MAP_KINDS: Record<MapType | 'any', string[]> = {
  */
 export const MAP_DEFAULT_IGNORE = [
   '.swarmup/',
-  '.agent-ops/',
   'node_modules/',
   'dist/',
   'build/',
@@ -400,7 +399,7 @@ function isGit(top: string): boolean {
   }
 }
 
-const WALK_SKIP = new Set(['.git', 'node_modules', '.swarmup', '.agent-ops']);
+const WALK_SKIP = new Set(['.git', 'node_modules', '.swarmup']);
 
 /** The project's files, from its top with `/`: what git tracks or would add, else a folder walk. */
 export function projectFiles(top: string): string[] {

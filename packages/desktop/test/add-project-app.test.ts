@@ -95,7 +95,7 @@ beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   pick = { ok: true, data: PROPOSAL };
   created = [];
-  roots = [{ name: 'agent-ops', dir: 'C:\\dev\\swarmup-store' }];
+  roots = [{ name: 'acme', dir: 'C:\\dev\\swarmup-store' }];
   stubBridge();
   box = document.createElement('div');
   document.body.append(box);
@@ -155,7 +155,7 @@ async function start(): Promise<void> {
 describe('Add project', () => {
   it('shows the proposal, creates what was kept, and lists the new project', async () => {
     await start();
-    expect(projects()).toEqual(['agent-ops', 'Add project']);
+    expect(projects()).toEqual(['acme', 'Add project']);
     click(button('Add project'));
     await settle();
     const d = dialog()!;
@@ -188,7 +188,7 @@ describe('Add project', () => {
     await settle(300);
     expect(created).toEqual([{ name: 'web store', prefix: 'WS', tasks: [0, 2], where: 'repo' }]);
     expect(dialog()).toBeNull();
-    expect(projects()).toEqual(['agent-ops', 'web store', 'Add project']);
+    expect(projects()).toEqual(['acme', 'web store', 'Add project']);
     expect(document.body.textContent).toContain('Created web store with 2 tasks');
   });
 
@@ -231,7 +231,7 @@ describe('Add project', () => {
     click(button('Add project'));
     await settle(300);
     expect(dialog()).toBeNull();
-    expect(projects()).toEqual(['agent-ops', 'site', 'Add project']);
+    expect(projects()).toEqual(['acme', 'site', 'Add project']);
     expect(document.body.textContent).toContain('Added site: it has a data root already');
   });
 });

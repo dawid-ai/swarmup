@@ -915,7 +915,7 @@ describe('supervisor commands without swarmupd', () => {
           project: 'swarmup',
           review: false,
           agents: ['claude:engineer'],
-          reason: 'claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/agent-ops',
+          reason: 'claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/acme',
           merge: true,
         },
       ],
@@ -923,7 +923,7 @@ describe('supervisor commands without swarmupd', () => {
         task: 'swarmup/AO-0157',
         what: '0b55674 on branch claude/ao-0157-x',
         base: 'v2',
-        top: 'C:/dev/agent-ops',
+        top: 'C:/dev/acme',
         step: 'checks',
         holds: false,
         started_at: ago(12),
@@ -950,7 +950,7 @@ describe('supervisor commands without swarmupd', () => {
       } as NodeJS.ProcessEnv;
       const io = { out: (l: string) => out.push(l), err: () => {}, env, cwd: d };
       const merging = [
-        'merging: swarmup/AO-0157 into v2 in C:/dev/agent-ops, 12m so far',
+        'merging: swarmup/AO-0157 into v2 in C:/dev/acme, 12m so far',
         '  0b55674 on branch claude/ao-0157-x',
         "  running the checks in swarmupd's worktree: 1/2 `npm test`, 4m of 30m",
       ];
@@ -959,7 +959,7 @@ describe('supervisor commands without swarmupd', () => {
         ...merging,
         '',
         'swarmup/AO-0158 Other work',
-        '  claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/agent-ops',
+        '  claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/acme',
       ]);
       expect(await run(['runs'], io)).toBe(0);
       expect(out.slice(0, 5)).toEqual(['no live runs', '', ...merging]);
@@ -1349,9 +1349,7 @@ describe('a review request records where its work is (AO-0384)', () => {
 
   /** The frontmatter of the task's newest review event, as text. */
   function lastReview(d: string): string {
-    const dir = ['.swarmup', '.agent-ops']
-      .map((s) => join(d, s, 'tasks', 'T-0001', 'events'))
-      .find((p) => existsSync(p))!;
+    const dir = join(d, '.swarmup', 'tasks', 'T-0001', 'events');
     const files = readdirSync(dir).sort();
     const texts = files.map((f) => readFileSync(join(dir, f), 'utf8'));
     return texts

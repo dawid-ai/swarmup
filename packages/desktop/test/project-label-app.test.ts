@@ -32,7 +32,7 @@ const task = (id: string, root: string): Task => ({
   updatedAt: '2026-11-01T00:00:00Z',
 });
 
-const TASKS = [task('AO-0001', 'agent-ops'), task('SHO-0001', 'shop')];
+const TASKS = [task('AO-0001', 'acme'), task('SHO-0001', 'shop')];
 
 let root: Root | undefined;
 let box: HTMLDivElement;
@@ -97,9 +97,9 @@ beforeEach(() => {
   window.localStorage.clear();
   projects = [
     {
-      root: 'C:\\dev\\agent-ops',
-      name: 'agent-ops',
-      label: 'agent-ops',
+      root: 'C:\\dev\\acme',
+      name: 'acme',
+      label: 'acme',
       archived: false,
       found: true,
     },
@@ -169,7 +169,7 @@ describe('a renamed project', () => {
   it('shows its label in the list, its filter, the task panel and New task', async () => {
     act(() => root!.render(createElement(App)));
     await settle();
-    await rename('agent-ops', 'Control Plane');
+    await rename('acme', 'Control Plane');
 
     // The sidebar opens the list filtered by the root's name; the chip and the row show the label.
     click(button('Control Plane', document.body.querySelector('[data-projects]')!));
@@ -179,7 +179,7 @@ describe('a renamed project', () => {
     expect(chip.textContent).toContain('Control Plane');
     const row = [...main.querySelectorAll('tr')].find((r) => r.textContent?.includes('AO-0001'))!;
     expect(row.textContent).toContain('Control Plane');
-    expect(row.textContent).not.toContain('agent-ops');
+    expect(row.textContent).not.toContain('acme');
     expect(main.textContent).not.toContain('SHO-0001');
 
     click(row);
@@ -205,13 +205,13 @@ describe('a renamed project', () => {
     type(form.querySelector<HTMLInputElement>('input[placeholder="Task title"]')!, 'Ship it');
     click(button('Create task', form));
     await settle();
-    expect(posted.at(-1)).toMatchObject({ root: 'agent-ops' });
+    expect(posted.at(-1)).toMatchObject({ root: 'acme' });
   });
 
   it('shows its label in the board filter and in Replay', async () => {
     act(() => root!.render(createElement(App)));
     await settle();
-    await rename('agent-ops', 'Control Plane');
+    await rename('acme', 'Control Plane');
 
     click(button('Board'));
     await settle();
@@ -219,7 +219,7 @@ describe('a renamed project', () => {
     click(button('Project', main));
     const rows = [...document.body.querySelectorAll('button')]
       .map((b) => b.textContent?.trim())
-      .filter((text) => text === 'Control Plane' || text === 'agent-ops');
+      .filter((text) => text === 'Control Plane' || text === 'acme');
     // The sidebar row and the filter option; no row shows the root's name.
     expect(rows).toEqual(['Control Plane', 'Control Plane']);
 
@@ -235,13 +235,11 @@ describe('a renamed project', () => {
     ]);
     const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
     act(() => {
-      set.call(select, 'agent-ops');
+      set.call(select, 'acme');
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await settle();
-    expect(paths.some((p) => p.startsWith('/api/timeline') && p.includes('root=agent-ops'))).toBe(
-      true,
-    );
+    expect(paths.some((p) => p.startsWith('/api/timeline') && p.includes('root=acme'))).toBe(true);
     expect(main.querySelector('[data-project-name="true"]')?.textContent).toBe('Control Plane');
 
     // A second rename reaches the open view without a restart.

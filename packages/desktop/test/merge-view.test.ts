@@ -37,7 +37,7 @@ const MERGE: MergeStatus = {
   task: 'swarmup/AO-0157',
   what: '0b55674 on branch claude/ao-0157-x',
   base: 'v2',
-  top: 'C:/dev/agent-ops',
+  top: 'C:/dev/acme',
   step: 'build',
   holds: true,
   started_at: ago(12),
@@ -52,7 +52,7 @@ const HELD: WaitItem = {
   project: 'swarmup',
   review: false,
   agents: ['claude:engineer'],
-  reason: 'claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/agent-ops',
+  reason: 'claude:engineer: swarmupd merges swarmup/AO-0157 into v2 in C:/dev/acme',
   merge: true,
 };
 
@@ -92,7 +92,7 @@ describe('Agents view: the merge under way (AO-0161)', () => {
     // The parts of a row sit apart by layout gaps, not spaces.
     expect(text).toMatch(/swarmupd merges ?AO-0157 ?into v2 ?12m so far/);
     expect(text).toContain('Builds v2: 2/2 npm run build, 4m of its 30m timeout');
-    expect(text).toContain('No new writing run starts in C:/dev/agent-ops until the build ends.');
+    expect(text).toContain('No new writing run starts in C:/dev/acme until the build ends.');
     expect(text).toMatch(/Waiting for it: ?AO-0158/);
     const held = [...panel!.querySelectorAll('button')].find((b) => b.textContent === 'AO-0158');
     act(() => held!.dispatchEvent(new MouseEvent('click', { bubbles: true })));

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { execOffThread, ROOT_DIR_NAMES } from '@swarmup/core';
+import { execOffThread, ROOT_DIR_NAME } from '@swarmup/core';
 import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -148,7 +148,7 @@ export class Checkout {
     }
     const ignored = yield* this.ignored(paths);
     return [
-      ...ROOT_DIR_NAMES.map((n) => `:(exclude,glob)**/${n}/**`),
+      `:(exclude,glob)**/${ROOT_DIR_NAME}/**`,
       ...CACHE_DIRS.map((n) => `:(exclude,glob)**/${n}/**`),
       ...paths.filter((p) => !ignored.has(p)).map((p) => `:(exclude,literal)${p}`),
     ];

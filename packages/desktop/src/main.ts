@@ -50,7 +50,6 @@ import { imageFiles, writeImages } from './images.js';
 import { videoFile, writeVideo } from './videos.js';
 import { gifFile, writeGif } from './gifs.js';
 import { appMenuTemplate, devShortcut } from './menu.js';
-import { migrateUserData } from './migrate.js';
 import { cliModels } from './models.js';
 import { inboxTarget } from './route.js';
 import { runtimeDetail } from './runtime-dialog.js';
@@ -80,7 +79,6 @@ import type {
 import {
   APPROVED_KEY,
   cwdArg,
-  cwdFromCommand,
   desktopSettings,
   endRunsPrompt,
   keptRunsMessage,
@@ -127,22 +125,11 @@ const packaged = app.isPackaged;
 if (packaged) {
   // The `swarmup` command for agent runs: swarmupd puts this folder first on their PATH.
   process.env.SWARMUP_BIN_DIR ??= join(process.resourcesPath, 'bin');
-  // The user data folder (saved views, window state, the relaunch marker): %APPDATA%\SwarmUp,
-  // copied once from the Agent Ops folder of an updated install (AO-0200). A folder given with
-  // --user-data-dir (the packaged smoke test) wins, so that run never touches the person's data.
-  if (!app.commandLine.hasSwitch('user-data-dir')) {
-    app.setPath(
-      'userData',
-      migrateUserData(app.getPath('appData'), (l) => logMigration(migrationLogDir(), l)),
-    );
-  }
 }
 /** The folder swarmupd starts in: the sign-in entry passes the one the person chose it from. */
 const opsCwd = cwdArg(process.argv) ?? envVar(process.env, 'CWD') ?? process.cwd();
 /** Name of the sign-in entry, the same for reading and writing it. */
 const LOGIN_NAME = 'SwarmUp';
-/** The sign-in entry's name in Agent Ops builds; `moveLoginEntry` replaces it (AO-0200). */
-const OLD_LOGIN_NAME = 'Agent Ops';
 
 /**
  * The running swarmupd. With `start`, starts one in the background when none runs; the app does that
@@ -804,50 +791,6 @@ function loginItem(): { path: string; args: string[]; name: string } {
   };
 }
 
-/**
- * Replaces the Agent Ops sign-in entry with a SwarmUp one, once (AO-0200). The old entry starts
- * `Agent Ops.exe`, which the update removed. An entry that was on becomes a SwarmUp entry with
- * the same `--ops-cwd` folder; one turned off in Task Manager is only removed, so the app still
- * does not start at sign-in. An existing SwarmUp entry is kept as it is.
- */
-function moveLoginEntry(): void {
-  if (!loginSupported || !packaged) return;
-  const old = loginEntry(
-    regQuery(RUN_KEY, OLD_LOGIN_NAME),
-    regQuery(APPROVED_KEY, OLD_LOGIN_NAME),
-    OLD_LOGIN_NAME,
-    loginItem(),
-  );
-  if (old.command === null) return;
-  const cwd = cwdFromCommand(old.command) ?? opsCwd;
-  let made = false;
-  if (!old.off && regQuery(RUN_KEY, LOGIN_NAME) === null) {
-    app.setLoginItemSettings({
-      path: process.execPath,
-      args: loginArgs({ packaged: true, appPath: app.getAppPath(), cwd }),
-      name: LOGIN_NAME,
-      openAtLogin: true,
-      enabled: true,
-    });
-    made = true;
-  }
-  for (const key of [RUN_KEY, APPROVED_KEY]) {
-    try {
-      execFileSync('reg', ['delete', key, '/v', OLD_LOGIN_NAME, '/f'], {
-        windowsHide: true,
-        stdio: 'ignore',
-        timeout: 10_000,
-      });
-    } catch {
-      // Not there (StartupApproved has no value for an entry never turned off).
-    }
-  }
-  logMigration(
-    migrationLogDir(),
-    `desktop: removed the "${OLD_LOGIN_NAME}" sign-in entry${made ? ` and made a "${LOGIN_NAME}" one for ${cwd}` : old.off ? ' (it was off)' : ''}`,
-  );
-}
-
 /** `reg query KEY /v NAME` output, or null when the value is not there. */
 function regQuery(key: string, name: string): string | null {
   try {
@@ -955,9 +898,9 @@ async function createWindow(): Promise<void> {
   await win.loadFile(join(here, 'ui', 'index.html'));
 }
 
-/** `SWARMUP_SCREENSHOTS`, else the deprecated `AGENT_OPS_SCREENSHOTS` (until 0.4). */
+/** `SWARMUP_SCREENSHOTS`: the folder to capture views into, if set. */
 function screenshotDir(): string | undefined {
-  return process.env.SWARMUP_SCREENSHOTS ?? process.env.AGENT_OPS_SCREENSHOTS;
+  return process.env.SWARMUP_SCREENSHOTS;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -1004,7 +947,6 @@ async function cancelExport(kind: string): Promise<void> {
 async function screenshots(dir: string): Promise<void> {
   const views = (
     process.env.SWARMUP_VIEWS ??
-    process.env.AGENT_OPS_VIEWS ??
     'inbox,board,list,findings,activity,reports,replay,agents,runs,standups,schedules,automation,workflows,repeating,decisions,chat,channels,knowledge,map,bench,settings:general,settings:projects,settings:agents,settings:runs,settings:definitions,settings:cleanup,settings:updates,settings:notifications,settings:health'
   ).split(',');
   mkdirSync(dir, { recursive: true });
@@ -1610,14 +1552,6 @@ if (!offscreen && !app.requestSingleInstanceLock()) {
       }
     }
     if (!offscreen) {
-      try {
-        moveLoginEntry();
-      } catch (err) {
-        logMigration(
-          migrationLogDir(),
-          `desktop: could not move the sign-in entry: ${(err as Error).message}`,
-        );
-      }
       if (packaged) {
         try {
           installSkillsOnce(app.getPath('userData'), app.getVersion(), () => {

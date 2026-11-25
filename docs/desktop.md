@@ -20,9 +20,7 @@ needed:
 - On its first start and after every update, the packaged app copies its bundled `swarmup` skill to
   Claude Code and Codex's user skill folders, and refreshes a copy in `~\.agents\skills\swarmup`
   when one exists. A restart of the same version leaves the copies as they are, so your edits
-  stay until the next update. **Settings > Health checks > Fix** does the same at once. It
-  removes a leftover `skills\agent-ops` folder only when `SKILL.md` is its sole entry; when the
-  folder contains anything else, Health checks keeps it and says so.
+  stay until the next update. **Settings > Health checks > Fix** does the same at once.
 
 The app checks GitHub Releases 20 seconds after it starts and every 30 minutes, and downloads a new
 version in the background. **Settings > Updates** chooses how a downloaded version installs:
@@ -39,8 +37,7 @@ version in the background. **Settings > Updates** chooses how a downloaded versi
 Settings and the tray show downloading, waiting for live runs, and installing progress. A
 development build run from a checkout never updates itself.
 
-An update cannot safely move an existing installation out of an older install folder from before
-the rename: the updater must replace the running installation in place,
+An update never moves the install folder: the updater replaces the running installation in place,
 and its shortcuts, PATH entry and swarmupd launcher all point there. To move it, let every run end,
 quit SwarmUp from the tray, uninstall it, then run `SwarmUp-Setup.exe` and choose the new folder.
 The installer recreates the shortcuts and PATH entry; do not drag the installed folder elsewhere.
@@ -635,7 +632,7 @@ roots**, adds an existing repo as a project without a terminal:
    other keys stay), and tells swarmupd to read the config again. The project shows in the
    sidebar at once; no restart.
 
-If the folder already has a data root (`.swarmup/` or `.agent-ops/`), **Add project** skips the
+If the folder already has a data root (`.swarmup/`), **Add project** skips the
 proposal and only adds the folder to `roots`. Errors, such as a folder that is not a git repo or
 has no write access, show in the dialog. A project in the sidebar opens **Tasks** filtered to it.
 

@@ -6,7 +6,7 @@ description: Work the SwarmUp task queue as a named agent (<runtime>:<role>) thr
 # SwarmUp
 
 You are one named agent in a team of agents and one human. The team shares a task store: Markdown
-and event files in a git repo (a `.agent-ops/` folder). You read and change it only with `swarmup`.
+and event files in a git repo (a `.swarmup/` folder). You read and change it only with `swarmup`.
 Your id is in `SWARMUP_AGENT`, for example `claude:engineer`. Check it with `swarmup whoami`.
 
 If `swarmup` is not on PATH, run `node <engine>/packages/cli/dist/main.js` instead, where `<engine>` is

@@ -158,18 +158,18 @@ describe('scenes', () => {
         duration: sceneDuration(scene, fixture()),
       };
       const shown = renderToStaticMarkup(
-        renderFrame(scene, data, frame, { projectName: 'agent-ops / docs', showProject: true }),
+        renderFrame(scene, data, frame, { projectName: 'acme / docs', showProject: true }),
       );
       const hidden = renderToStaticMarkup(
-        renderFrame(scene, data, frame, { projectName: 'agent-ops / docs', showProject: false }),
+        renderFrame(scene, data, frame, { projectName: 'acme / docs', showProject: false }),
       );
       const text = (markup: string): string => {
         const host = document.createElement('div');
         host.innerHTML = markup;
         return host.textContent ?? '';
       };
-      expect(text(shown), scene.id).toContain('agent-ops / docs');
-      expect(text(hidden), scene.id).not.toContain('agent-ops / docs');
+      expect(text(shown), scene.id).toContain('acme / docs');
+      expect(text(hidden), scene.id).not.toContain('acme / docs');
       expect(text(shown), scene.id).not.toContain(kind.get(scene.id)!);
     }
   });
@@ -187,7 +187,7 @@ describe('scenes', () => {
       ['wrapped', ['SwarmUp Wrapped', 'Wrapped']],
       ['rally', ['REVIEW RALLY', 'Review rally']],
     ]);
-    const name = 'agent-ops / docs';
+    const name = 'acme / docs';
     const tl = fixture();
     // The report names the picked root and label, as swarmupd does (AO-0301).
     tl.wrapped = { ...tl.wrapped!, project: name };
@@ -235,8 +235,8 @@ describe('timeline path and allow list', () => {
     expect(timelinePath({ ...base, root: 'swarmup-web', query: 'wrapped=1' })).toBe(
       '/api/timeline?days=7&clip=30&root=swarmup-web&wrapped=1',
     );
-    expect(timelinePath({ ...base, root: 'agent ops', project: 'v2' })).toBe(
-      '/api/timeline?days=7&clip=30&root=agent%20ops&project=v2',
+    expect(timelinePath({ ...base, root: 'acme corp', project: 'v2' })).toBe(
+      '/api/timeline?days=7&clip=30&root=acme%20corp&project=v2',
     );
     expect(timelinePath({ ...base, custom: true })).toBeNull();
     const local = (y: number, m: number, d: number) =>
@@ -268,15 +268,15 @@ describe('timeline path and allow list', () => {
 const paths = vi.hoisted(() => [] as string[]);
 const served = vi.hoisted(() => ({
   timeline: null as unknown,
-  // Two roots as in the sidebar: `agent-ops` with two project labels, and `swarmup-web`, whose
+  // Two roots as in the sidebar: `acme` with two project labels, and `swarmup-web`, whose
   // tasks all carry the root's own name. The Master Repo is no project.
   tasks: [
-    { id: 'AO-1', root: 'agent-ops', project: 'agent-ops' },
-    { id: 'AO-2', root: 'agent-ops', project: 'docs' },
+    { id: 'AO-1', root: 'acme', project: 'acme' },
+    { id: 'AO-2', root: 'acme', project: 'docs' },
     { id: 'WEB-1', root: 'swarmup-web', project: 'swarmup-web' },
   ],
   roots: [
-    { name: 'agent-ops', isMaster: false },
+    { name: 'acme', isMaster: false },
     { name: 'swarmup-web', isMaster: false },
     { name: 'master', isMaster: true },
   ],
@@ -505,9 +505,9 @@ describe('Replay view', () => {
     const select = projectSelect();
     expect([...select.options].map((o) => o.textContent)).toEqual([
       'All projects',
-      'agent-ops',
-      'agent-ops / agent-ops',
-      'agent-ops / docs',
+      'acme',
+      'acme / acme',
+      'acme / docs',
       'swarmup-web',
     ]);
     expect(select.value).toBe('');
@@ -547,13 +547,11 @@ describe('Replay view', () => {
       // A label inside a root sends both, and the file name carries both.
       pick(
         projectSelect(),
-        [...projectSelect().options].find((o) => o.textContent === 'agent-ops / docs')!.value,
+        [...projectSelect().options].find((o) => o.textContent === 'acme / docs')!.value,
       );
-      expect(paths.at(-1)).toBe(
-        `/api/timeline?days=30&clip=30&root=agent-ops&project=docs${query()}`,
-      );
+      expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30&root=acme&project=docs${query()}`);
       await act(async () => button('Record MP4').click());
-      expect(saved[1]).toContain('-agent-ops-docs-16x9-');
+      expect(saved[1]).toContain('-acme-docs-16x9-');
       pick(projectSelect(), '');
       expect(paths.at(-1)).toBe(`/api/timeline?days=30&clip=30${query()}`);
     } finally {
@@ -619,7 +617,7 @@ describe('Replay view', () => {
     try {
       act(() => root!.render(createElement(Replay, { record, gif })));
       const nested = [...projectSelect().options].find(
-        (o) => o.textContent === 'agent-ops / docs',
+        (o) => o.textContent === 'acme / docs',
       )!.value;
       pick(projectSelect(), nested);
       const group = byLabel('Exports');
@@ -630,17 +628,17 @@ describe('Replay view', () => {
       ]);
       const project = (): Element | null =>
         box.querySelector('[data-testid="replay-stage"] [data-project-name="true"]');
-      expect(project()?.textContent).toBe('agent-ops / docs');
+      expect(project()?.textContent).toBe('acme / docs');
 
       await act(async () => button('Save frame').click());
       expect(pngSvgs.at(-1)).toContain('data-project-name="true"');
-      expect(pngSvgs.at(-1)).toContain('agent-ops / docs');
+      expect(pngSvgs.at(-1)).toContain('acme / docs');
       await act(async () => button('Record MP4').click());
       await act(async () => button('Save as GIF').click());
-      expect(mp4.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: true });
-      expect(gifs.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: true });
-      expect(names.some((n) => n.includes('agent-ops-docs') && n.endsWith('.mp4'))).toBe(true);
-      expect(names.some((n) => n.includes('agent-ops-docs') && n.endsWith('.gif'))).toBe(true);
+      expect(mp4.at(-1)).toMatchObject({ projectName: 'acme / docs', showProject: true });
+      expect(gifs.at(-1)).toMatchObject({ projectName: 'acme / docs', showProject: true });
+      expect(names.some((n) => n.includes('acme-docs') && n.endsWith('.mp4'))).toBe(true);
+      expect(names.some((n) => n.includes('acme-docs') && n.endsWith('.gif'))).toBe(true);
 
       act(() => (byLabel('Show project name') as HTMLInputElement).click());
       expect(project()).toBeNull();
@@ -648,8 +646,8 @@ describe('Replay view', () => {
       await act(async () => button('Record MP4').click());
       await act(async () => button('Save as GIF').click());
       expect(pngSvgs.at(-1)).not.toContain('data-project-name="true"');
-      expect(mp4.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
-      expect(gifs.at(-1)).toMatchObject({ projectName: 'agent-ops / docs', showProject: false });
+      expect(mp4.at(-1)).toMatchObject({ projectName: 'acme / docs', showProject: false });
+      expect(gifs.at(-1)).toMatchObject({ projectName: 'acme / docs', showProject: false });
     } finally {
       delete window.swarmup;
     }
@@ -669,7 +667,7 @@ describe('Replay view', () => {
       mp4.push(opts);
       return new Uint8Array([1]);
     };
-    setProjectLabels(new Map([['agent-ops', 'Control Plane']]));
+    setProjectLabels(new Map([['acme', 'Control Plane']]));
     try {
       act(() => root!.render(createElement(Replay, { record })));
       const select = projectSelect();
@@ -681,8 +679,8 @@ describe('Replay view', () => {
         'swarmup-web',
       ]);
       // The value still names the root, so swarmupd gets the root's own name.
-      pick(select, 'agent-ops');
-      expect(paths.at(-1)).toContain('&root=agent-ops');
+      pick(select, 'acme');
+      expect(paths.at(-1)).toContain('&root=acme');
       const project = (): Element | null =>
         box.querySelector('[data-testid="replay-stage"] [data-project-name="true"]');
       expect(project()?.textContent).toBe('Control Plane');
@@ -693,7 +691,7 @@ describe('Replay view', () => {
       expect(mp4.at(-1)).toMatchObject({ projectName: 'Control Plane', showProject: true });
 
       // A later rename reaches the open view without a reload.
-      act(() => setProjectLabels(new Map([['agent-ops', 'Ops HQ']])));
+      act(() => setProjectLabels(new Map([['acme', 'Ops HQ']])));
       expect(project()?.textContent).toBe('Ops HQ');
     } finally {
       setProjectLabels(new Map());
@@ -725,11 +723,11 @@ describe('Replay view', () => {
       act(() => button('Wrapped').click());
       // The report of the fixture names no project, and swarmupd names only the label for a
       // label inside a root: the root comes from the picker.
-      pick(projectSelect(), option('agent-ops / docs'));
+      pick(projectSelect(), option('acme / docs'));
       const nested = await saveCards();
       expect(nested.length).toBeGreaterThan(1);
       for (const name of nested) {
-        expect(name).toMatch(/^wrapped-agent-ops-docs-\d{4}-\d\d-\d\d-\d+-/);
+        expect(name).toMatch(/^wrapped-acme-docs-\d{4}-\d\d-\d\d-\d+-/);
       }
       pick(projectSelect(), option('swarmup-web'));
       expect((await saveCards())[0]).toMatch(/^wrapped-swarmup-web-\d{4}-/);

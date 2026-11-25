@@ -51,7 +51,7 @@ export function gifStage(aspect: Aspect, width = GIF_WIDTH): Stage {
   };
 }
 
-/** A scoped GIF name, such as `replay-events-agent-ops-docs-960w-15fps-30s.gif`. */
+/** A scoped GIF name, such as `replay-events-acme-docs-960w-15fps-30s.gif`. */
 export function gifFileName(
   scene: string,
   project: string,

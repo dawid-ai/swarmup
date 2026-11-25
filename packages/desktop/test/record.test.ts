@@ -562,7 +562,7 @@ const KIND: Record<string, string[]> = {
 
 describe('recorded frames', () => {
   it('draw no replay type in MP4 and GIF frames of any scene, and the project name only when on', async () => {
-    const name = 'agent-ops / docs';
+    const name = 'acme / docs';
     // A short clip keeps the test fast; outro cards keep their full length.
     const timeline = clipped(3);
     // The report names the picked root and label, as swarmupd does (AO-0301).

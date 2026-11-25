@@ -390,15 +390,6 @@ export function loginEntry(
   };
 }
 
-/**
- * The `--ops-cwd` folder in a sign-in entry's command line, as `loginArgs` writes it: quoted as a
- * whole when the folder has a space (`"--ops-cwd=C:\My dir"`), bare otherwise.
- */
-export function cwdFromCommand(command: string): string | undefined {
-  const m = /"--ops-cwd=([^"]*)"|--ops-cwd=(\S*)/.exec(command);
-  return (m?.[1] ?? m?.[2]) || undefined;
-}
-
 /** `--ops-cwd=DIR` from the command line, if given. */
 export function cwdArg(argv: string[]): string | undefined {
   const a = argv.find((x) => x.startsWith('--ops-cwd='));

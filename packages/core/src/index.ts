@@ -37,7 +37,6 @@ export * from './roots.js';
 export * from './search.js';
 export * from './search-index.js';
 export * from './secrets.js';
-export * from './store-move.js';
 export * from './sync.js';
 export * from './timeline.js';
 export * from './mirror.js';

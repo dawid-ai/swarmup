@@ -9,8 +9,6 @@
 # Internal paths: git archive leaves them out, and the docs on swarmup.tech skip them (the docs
 # build in dawid-ai/swarmup-web reads these attributes). The task store and the internal docs live
 # in a private repo of their own; these lines keep a stray copy out of both.
-.agent-ops/** export-ignore
-.agent-ops export-ignore
 .swarmup/** export-ignore
 .swarmup export-ignore
 docs/proposals/** export-ignore

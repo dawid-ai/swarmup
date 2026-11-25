@@ -56,13 +56,15 @@ describe('release gate', () => {
   });
 
   it('refuses notes that name the old brand or its commands', () => {
+    // The old brand, built from parts so the repo never spells it out.
+    const installer = `${'Agent'}${'Ops'}-Setup.exe`;
     const d = repo({
-      changelog: `${HEAD}\n## 1.0.0-beta.2 (2026-11-03)\n\n- \`AgentOps-Setup.exe\` is gone\n`,
+      changelog: `${HEAD}\n## 1.0.0-beta.2 (2026-11-03)\n\n- \`${installer}\` is gone\n`,
       updates: UPDATES.replace('The new one.', 'Run `opsd` once more.'),
     });
     const r = node('check-release.mjs', d, 'v1.0.0-beta.2');
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/CHANGELOG\.md:7 names the old brand: "- `AgentOps-Setup\.exe` is gone"/);
+    expect(r.out).toContain(`CHANGELOG.md:7 names the old brand: "- \`${installer}\` is gone"`);
     expect(r.out).toMatch(/UPDATES\.md:5 names the old brand: "Run `opsd` once more\."/);
   });
 

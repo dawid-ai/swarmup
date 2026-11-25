@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -384,9 +384,6 @@ describe('desktop admin api', () => {
     const home = temp();
     const claudeDir = temp();
     const codexHome = temp();
-    const old = join(claudeDir, 'skills', 'agent-ops');
-    mkdirSync(old, { recursive: true });
-    writeFileSync(join(old, 'SKILL.md'), '# Agent Ops\n');
     const { api, call } = await setup({
       HOME: home,
       USERPROFILE: home,
@@ -401,13 +398,10 @@ describe('desktop admin api', () => {
           join(claudeDir, 'skills', 'swarmup', 'SKILL.md'),
           join(codexHome, 'skills', 'swarmup', 'SKILL.md'),
         ],
-        removed: [old],
-        kept: [],
       });
       expect(readFileSync(join(claudeDir, 'skills', 'swarmup', 'SKILL.md'), 'utf8')).toContain(
         'name: swarmup',
       );
-      expect(existsSync(old)).toBe(false);
     } finally {
       await api.close();
     }

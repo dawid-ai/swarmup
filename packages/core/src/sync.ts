@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { UserConfig } from './config.js';
-import { isStoreDirName, OLD_ROOT_DIR_NAME, ROOT_DIR_NAME, ROOT_DIR_NAMES } from './config.js';
 import type { GitSteps } from './git-steps.js';
 import { git, gitAsync, gitOk, gitStep, runSteps, runStepsAsync } from './git-steps.js';
 import { OpsError } from './ids.js';
@@ -502,14 +501,6 @@ function* pullAndOrder(
       throw err;
     }
   }
-  const followed = yield* followStoreMove(root, top);
-  if (followed !== null) {
-    result.notes.push(
-      `the store moved to ${ROOT_DIR_NAME}/ upstream${followed ? `; moved ${followed} local file(s) there` : ''}`,
-    );
-    // The rest works on this root's folder, which is gone; the next sync runs on the new one.
-    return null;
-  }
   if (incoming.length === 0) return null;
 
   const byDir = new Map<string, EventPath>();
@@ -535,55 +526,6 @@ function* pullAndOrder(
 }
 
 /**
- * After a pull that brought the commit moving the store from `.agent-ops/` to `.swarmup/`
- * (`swarmup migrate`, AO-0200): moves the files this clone committed under `.agent-ops/` and
- * had not pushed (events, new tasks) into `.swarmup/` and commits that, so they are not left in
- * a folder no one reads. Git's rebase keeps them at their old path. A file whose path is taken in
- * `.swarmup/` stays where it is. Null when the store did not move; else how many files moved.
- */
-function* followStoreMove(root: Root, top: string): GitSteps<number | null> {
-  if (basename(root.dir) !== OLD_ROOT_DIR_NAME) return null;
-  if (existsSync(join(root.dir, 'config.yml'))) return null;
-  const store = join(dirname(root.dir), ROOT_DIR_NAME);
-  if (!existsSync(join(store, 'config.yml'))) return null;
-  const oldRel = relative(top, root.dir).split(sep).join('/');
-  const newRel = relative(top, store).split(sep).join('/');
-  const left = (yield* gitStep(top, ['ls-files', '-z', '--', oldRel])).split('\0').filter(Boolean);
-  let moved = 0;
-  for (const file of left) {
-    const to = join(top, newRel, file.slice(oldRel.length + 1));
-    if (existsSync(to)) continue;
-    mkdirSync(dirname(to), { recursive: true });
-    renameSync(join(top, file), to);
-    moved++;
-  }
-  if (moved === 0) return 0;
-  // The old folder's .gitignore moved too, so its local state (.ops/) is no longer ignored there.
-  const paths = [oldRel, newRel, `:(exclude)${oldRel}/.ops`];
-  yield* gitStep(top, ['add', '-A', '--', ...paths]);
-  yield* gitStep(top, [
-    'commit',
-    '-q',
-    '-m',
-    `ops: move ${moved} local file(s) to ${ROOT_DIR_NAME}/ after the store moved`,
-    '--',
-    ...paths,
-  ]);
-  return moved;
-}
-
-/**
- * Path prefixes, relative to the repo top, that count as inside a root at `prefix`: the root's
- * folder, and for a store folder also the other store name beside it, so the commits that move a
- * store, and local commits made before a pulled move, push like any store commit (AO-0200).
- */
-function storePrefixes(dir: string, prefix: string): string[] {
-  if (!prefix || !isStoreDirName(basename(dir))) return [prefix];
-  const parent = prefix.slice(0, -1).split('/').slice(0, -1).join('/');
-  return ROOT_DIR_NAMES.map((n) => (parent ? `${parent}/${n}/` : `${n}/`));
-}
-
-/**
  * Path prefixes, relative to the repo top `top`, of the sibling roots in that repo. A root outside
  * the repo adds nothing, and neither does one at the repo top: that would let any file out.
  */
@@ -592,7 +534,7 @@ function siblingPrefixes(top: string, siblings: readonly string[] = []): string[
   for (const dir of siblings) {
     const rel = relative(top, dir);
     if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
-    out.push(...storePrefixes(dir, `${rel.split(sep).join('/')}/`));
+    out.push(`${rel.split(sep).join('/')}/`);
   }
   return out;
 }
@@ -730,7 +672,7 @@ function* syncSteps(
     push = false;
   }
   const touched = new Map<string, Touched>();
-  const inside = [...storePrefixes(root.dir, prefix), ...siblingPrefixes(top, opts.siblings)];
+  const inside = [prefix, ...siblingPrefixes(top, opts.siblings)];
   // Commits to push, when the pull already counted them; null when unknown.
   let knownAhead: number | null = null;
   if (pull) {

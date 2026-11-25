@@ -7,7 +7,6 @@ import {
   checkRoot,
   daemonKeyIn,
   editUserConfig,
-  OLD_ROOT_DIR_NAME,
   readUserConfig,
   ROOT_DIR_NAME,
   rootNameOf,
@@ -41,7 +40,7 @@ export interface RepoSurvey {
   ci: string[];
   /** `AGENTS.md` or `CLAUDE.md`, when the repo already has agent instructions. */
   agentDocs: string[];
-  /** True when the repo has a data root (`.swarmup/` or the old `.agent-ops/`) already. */
+  /** True when the repo has a data root (`.swarmup/`) already. */
   hasRoot: boolean;
   /** True when the repo has a project map (`.swarmup/map/`) already. */
   hasMap?: boolean;
@@ -105,7 +104,6 @@ export interface AppliedPlan {
 const SKIP_DIRS = new Set([
   '.git',
   ROOT_DIR_NAME,
-  OLD_ROOT_DIR_NAME,
   'node_modules',
   'dist',
   'build',
@@ -364,7 +362,7 @@ export function surveyRepo(target: string): RepoSurvey {
     docs,
     ci,
     agentDocs: ['AGENTS.md', 'CLAUDE.md'].filter(has),
-    hasRoot: has(join(ROOT_DIR_NAME, 'config.yml')) || has(join(OLD_ROOT_DIR_NAME, 'config.yml')),
+    hasRoot: has(join(ROOT_DIR_NAME, 'config.yml')),
     hasMap: mapDirOf(dir) !== null,
   };
 }
