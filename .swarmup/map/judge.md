@@ -23,7 +23,8 @@ a result for them instead of `pending` or a reviewer's guess.
 
 - `core/src/rubric.ts` reads a rubric file (frontmatter `id`, `scale`, weighted `criteria`,
   `inputs`; the body is the judge's instructions), builds the judge's prompt from the rubric, the
-  criterion, the task, the diff and files (capped with a note), and parses the answer: the last
+  criterion, the task, the diff and files (capped with a note), and the run artifacts the review
+  names (`artifacts`: text in full, other files by name and size), and parses the answer: the last
   JSON object with `scores` in the output, every score within the scale, the weighted total
   worked out here and normalized to 0..1.
 - `supervisor/src/judge.ts` runs one judgment: `claude -p --output-format json --tools ""` (or

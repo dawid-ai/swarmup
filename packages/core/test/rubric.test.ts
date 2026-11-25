@@ -191,6 +191,28 @@ describe('judgePrompt', () => {
     expect(p.length).toBeLessThan(DIFF_CAP + FILE_CAP + 5000);
   });
 
+  it("shows the run's kept files for the artifacts input: text in full, images by name", () => {
+    const r = parseRubric(
+      RUBRIC.replace('inputs: [diff, task, repo]', 'inputs: [task, artifacts]'),
+      'a.md',
+    );
+    expect(r.inputs).toEqual(['task', 'artifacts']);
+    const p = judgePrompt(r, {
+      task: 't',
+      diff: '+not asked for',
+      artifacts: [
+        { name: 'home.png', type: 'image/png', bytes: 2048, label: 'Home page' },
+        { name: 'report.txt', type: 'text/plain', bytes: 9, text: 'all green' },
+      ],
+    });
+    expect(p).toContain("# Files the work's run kept (`artifacts`)");
+    expect(p).toContain('- `home.png` (image/png, 2048 bytes): Home page');
+    expect(p).toContain('(an image: not shown here)');
+    expect(p).toContain('all green');
+    expect(p).not.toContain('not asked for');
+    expect(judgePrompt(r, { task: 't' })).toMatch(/kept \(`artifacts`\)\n\n\(none\)/);
+  });
+
   it('fences a diff that holds backticks with a longer fence', () => {
     const p = judgePrompt(rubric(), { task: 't', diff: '+```js\n+code\n+```\n' });
     expect(p).toContain('````diff\n+```js');

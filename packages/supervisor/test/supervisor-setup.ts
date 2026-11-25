@@ -190,6 +190,16 @@ else if (mode === 'stray') {
   }
   if (task) ws.done(task, 'left a stray file');
 }
+else if (mode === 'artifacts') {
+  // Writes what a reviewer should see into its scratch folder's artifacts folder (W4).
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const dir = path.join(process.env.SWARMUP_SCRATCH, 'artifacts');
+  fs.mkdirSync(path.join(dir, 'shots'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'shots', 'home.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  fs.writeFileSync(path.join(dir, 'report.txt'), 'all green');
+  if (task) ws.done(task, 'made artifacts');
+}
 else if (mode === 'session-review') {
   // A Claude run: names its session, then asks for review.
   console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-1' }));

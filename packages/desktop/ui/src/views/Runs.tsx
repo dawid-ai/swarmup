@@ -12,6 +12,7 @@ import {
   Eye,
   Fingerprint,
   GitFork,
+  Images,
   Inbox,
   Layers,
   Play,
@@ -46,6 +47,7 @@ import { identity } from '../lib/identity';
 import { runLoop } from '../lib/statusloop';
 import type { ProcView, RunOrientation, RunPage, RunRecord } from '../types';
 import { AgentPicker } from '../ui/pickers';
+import { RunArtifacts } from '../ui/run-artifacts';
 import { StatusLoop } from '../ui/statusloop';
 import { ProjectName } from '../ui/project-label';
 import type { TimeRange } from '../ui/range';
@@ -684,6 +686,7 @@ function RunLog({
   const [log, setLog] = useState('');
   const [raw, setRaw] = useState(false);
   const [showProcs, setShowProcs] = useState(false);
+  const [showArtifacts, setShowArtifacts] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const kill = useAction();
   const box = useRef<HTMLDivElement>(null);
@@ -879,6 +882,17 @@ function RunLog({
                 </button>
               ))}
             </div>
+            {run.artifacts?.length ? (
+              <Button
+                size="sm"
+                kind={showArtifacts ? 'plain' : 'ghost'}
+                icon={Images}
+                onClick={() => setShowArtifacts((v) => !v)}
+              >
+                Artifacts
+                <span className="text-fg-4">{run.artifacts.length}</span>
+              </Button>
+            ) : null}
             <Button
               size="sm"
               kind={showProcs ? 'plain' : 'ghost'}
@@ -894,6 +908,21 @@ function RunLog({
           <BudgetBar run={run} now={now} thick />
         </div>
       </div>
+      {showArtifacts && run.artifacts?.length ? (
+        <div
+          data-run-artifacts-panel
+          className="animate-fade max-h-[28rem] overflow-auto border-b border-white/6 bg-ink-900/60 px-5 py-3"
+        >
+          <div className="mb-2 flex items-center gap-3 text-xs">
+            <span className="label-caps">Artifacts</span>
+            <span className="text-fg-3">
+              {run.artifacts.length} kept with the run
+              {run.status === 'running' ? '; swarmupd keeps the rest when it ends' : ''}
+            </span>
+          </div>
+          <RunArtifacts run={run.id} items={run.artifacts} />
+        </div>
+      ) : null}
       {showProcs && <Procs run={run} />}
       <div
         ref={box}

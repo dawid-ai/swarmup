@@ -183,16 +183,30 @@ export const PLAN_ITEM_TYPES: readonly string[] = [
   GATE_TYPE,
 ];
 
-/** One piece of reviewed work a review event names (W8): a file, a URL, an image or a document. */
+/**
+ * One piece of reviewed work a review event names (W8): a file, a URL, an image or a document,
+ * or a file a run kept outside git (`run`, W4): a screenshot, a report, test output.
+ */
 export interface ReviewArtifact {
-  kind: 'file' | 'url' | 'image' | 'doc';
-  /** A path from the top of the checkout (file, image), or a URL (url, doc). */
+  kind: 'file' | 'url' | 'image' | 'doc' | 'run';
+  /**
+   * A path from the top of the checkout (file, image), a URL (url, doc), or the file's name in
+   * swarmupd's kept folder of the run (run).
+   */
   ref: string;
   /** file, image: the git blob of the path at the reviewed commit. */
   blob?: string;
   /** doc: the document's revision, when its service names one. */
   rev?: string;
   label?: string;
+  /** run: the run that kept it. */
+  run?: string;
+  /** run: its size in bytes. */
+  bytes?: number;
+  /** run: its media type. */
+  type?: string;
+  /** run: the SHA-256 of its bytes. */
+  sha256?: string;
 }
 
 /** What `publish` events record of the edits between approval and publishing (W8 phase 3). */
@@ -206,7 +220,13 @@ export interface PublishEdits {
 }
 
 /** The kinds a review artifact may have. */
-export const ARTIFACT_KINDS: readonly ReviewArtifact['kind'][] = ['file', 'url', 'image', 'doc'];
+export const ARTIFACT_KINDS: readonly ReviewArtifact['kind'][] = [
+  'file',
+  'url',
+  'image',
+  'doc',
+  'run',
+];
 
 /** One item of a milestone's plan: the task an approval creates for it (AO-0110). */
 export interface PlanItem {

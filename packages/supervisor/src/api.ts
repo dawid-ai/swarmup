@@ -54,6 +54,7 @@ import {
 import { createSwarmFile, planDefsImport, writeSwarmFile } from './defs-import.js';
 import { HOOKS_LOG } from './hooks.js';
 import { NoArtifact } from './artifact-api.js';
+import { artifactHeaders, NoRunArtifact } from './run-artifacts.js';
 import { NoDiff } from './diff.js';
 import { mapCheck, mapIndex, mapInit, mapNodeView, mapSearch, mapView } from './map-api.js';
 import { checkWorkflow, listWorkflows, workflowTemplates } from './workflow-api.js';
@@ -218,7 +219,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
   const criteriaJudges = new CriteriaJudges({
     judge: async (job, criteria, on) => {
       const ws = sup.ws(job.by);
-      const { meta, body } = ws.showEvents(job.task);
+      const { meta, body, events } = ws.showEvents(job.task);
       const root = ws.resolve(job.task).root;
       const base = sup.config.merge[root.name]?.base ?? 'main';
       const j = await judgeTask({
@@ -227,6 +228,7 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         base,
         storeDir: root.dir,
         task: `# ${meta.title}\n\n${body}`.trim(),
+        artifacts: await sup.judgeArtifacts(events),
         config: sup.config.judge,
         env: sup.commandEnv(),
         runtimes: sup.config.runtimes,
@@ -595,6 +597,45 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
         return send(res, 200, sup.kill(runId, str(body.reason) ?? 'killed'));
       }
       if (method === 'GET' && action === 'procs') return send(res, 200, await sup.procs(runId));
+      // Run artifacts (W4): anyone reads them, a reviewer run included; only the run itself
+      // declares or keeps them, with its own token.
+      if (action === 'artifacts') {
+        const name = parts[4];
+        if (method === 'GET' && !name) return send(res, 200, await sup.runArtifacts(runId));
+        if (method === 'GET' && name) {
+          try {
+            if (q.get('view') === '1')
+              return send(res, 200, await sup.runArtifactView(runId, name));
+            const { artifact, data } = await sup.runArtifactFile(runId, name);
+            res.writeHead(200, artifactHeaders(artifact, data.length));
+            return void res.end(data);
+          } catch (err) {
+            if (err instanceof NoRunArtifact) throw new HttpError(404, err.message);
+            throw err;
+          }
+        }
+        if (method === 'POST' && !name) {
+          if (!run) {
+            throw new HttpError(
+              403,
+              'a run declares its own artifacts with its token (`swarmup run artifact` inside the run)',
+            );
+          }
+          if (run.id !== runId) {
+            throw new HttpError(403, `run ${run.id} cannot keep the artifacts of run ${runId}`);
+          }
+          const path = str(body.path);
+          const label = str(body.label);
+          return send(
+            res,
+            200,
+            await sup.keepArtifacts(
+              runId,
+              path ? { path, ...(label ? { label } : {}) } : undefined,
+            ),
+          );
+        }
+      }
       // Kills what an ended run left behind.
       if (method === 'POST' && action === 'procs') {
         ownRunOnly(runId, `stopping processes of run ${runId}`);

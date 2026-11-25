@@ -135,6 +135,8 @@ swarmup usage                   # each provider's usage allowance, and whether i
 swarmup waits                   # what waking agents could start, and why each waits (needs swarmupd)
 swarmup spawn -m "look up X"    # inside a run: start a helper under the run's claim
 swarmup procs 7Q2K --kill --pid 4120   # stop one of them, such as an unsure one you checked
+swarmup runs show 7Q2K          # one run, with the artifacts swarmupd kept of it
+swarmup run artifact out/shot.png --label "Home page"   # inside a run: keep a file with the run
 ```
 
 A run with a task:
@@ -154,6 +156,50 @@ The budget comes from `--budget`, then the task's delegation (`swarmup delegate 
 agent's `budget` in the swarmupd config, then the role file's `budget_min`, then `budget_minutes`
 (default 180). The token budget comes from `--tokens`, then the delegation. Tokens counted are
 input, cache writes and output; cache reads are left out.
+
+### Run artifacts
+
+A run's scratch folder is removed `scratch_days` after the run, and only its log and run record
+stay. What a reviewer, the person or a scorer should see besides the commits, such as screenshots,
+rendered images, generated reports, test output files and PDFs, a run keeps as artifacts:
+
+- **Declare a file.** `swarmup run artifact PATH [--label TEXT]`, from inside a run (it needs the
+  run's token). PATH must be a file in the run's scratch folder or in its worktree (the git top of
+  its folder). swarmupd copies it at once, and again at the run's end, so the newest bytes count.
+- **Write into the artifacts folder.** swarmupd makes `<scratch>/artifacts/` when the run starts
+  (`$SWARMUP_SCRATCH/artifacts/`), and keeps what the run leaves there, up to 4 folders deep. The
+  work prompt names the folder and the command in one line. A read-only Codex run cannot reach the
+  API from its sandbox, so the folder is the way it keeps files.
+
+When the run ends, after its processes are reaped, swarmupd copies the declared files, then the
+folder's files in name order, into `<state>/artifacts/<run-id>/` (the state folder, never git),
+with `manifest.json`: for each file its name there, the path it came from, its label, size, media
+type and SHA-256, and the files it left out with why. The run record's `artifacts` lists name,
+label, size and type.
+
+- **Limits.** At most `swarmupd.artifacts.max_files` files (20) and `max_mb` megabytes (25) per
+  run; a declared file over `max_mb` alone is refused, and files past a limit are skipped with a
+  warning. Two files of the same name get `name-2.ext`; odd characters in a name become `_`.
+- **Safety.** A path that leaves the run's folders, through `..`, a symlink or a junction, is
+  refused: swarmupd resolves the real path first. The folder sweep skips symlinks and junctions.
+  Files are only stored and served, never run; the API serves PNG, JPEG, GIF, WebP and AVIF images
+  inline and everything else (SVG, HTML and PDF included) as an `application/octet-stream`
+  download, with `X-Content-Type-Options: nosniff` and a sandboxing CSP.
+- **Pruning.** Housekeeping removes a run's kept folder `swarmupd.artifacts.keep_days` (30) after
+  the run ended.
+- **Review.** `swarmup review` from inside a run asks swarmupd to keep the run's artifacts now and
+  attaches them to the review as artifacts of kind `run` (name, run, size, type, SHA-256), after
+  the `--artifact` or changed files. A review swarmupd sends for a run that ended without one
+  attaches them too. `swarmup artifact ID N` prints a kept text file or saves one with `--out`;
+  the review prompt names that command for each.
+- **Judge.** A rubric with the `artifacts` input gets the kept files the task's latest review
+  names: text files (text, Markdown, CSV, JSON, XML, logs) with their text, cut at 256 KB each and
+  30,000 characters together, and other files, images included, by name, type and size only. The
+  judge runs with no tools, so it cannot open an image; see
+  [Rubric files](protocol.md#rubric-files).
+
+`GET /api/runs/:id/artifacts` and `GET /api/runs/:id/artifacts/:name` serve them; the desktop
+app's **Runs** view and the task panel's **Work** section show them.
 
 ### Learn notes in the prompt
 
@@ -1180,6 +1226,10 @@ swarmupd:
   reclaim_worktrees: true # remove a closed task's clean worktree; its branch stays
   reclaim_after_minutes: 60 # how long a task stays closed before that
   scratch_days: 2 # how long a run's scratch folder stays after the run
+  artifacts: # what swarmupd keeps of each run's artifacts (#run-artifacts)
+    max_files: 20 # files per run
+    max_mb: 25 # megabytes per run, all files together
+    keep_days: 30 # how long they stay after the run ends
   log_days: 14 # how long a run's log and process ledger, and a merge's log, stay
   repair_stores: true # Windows: make what a Codex sandbox session left in a store writable again
   review_checks: false # true: run the merge checks for a Codex reviewer, whose sandbox cannot
@@ -1909,6 +1959,9 @@ restart or another human-only action, use `swarmup ask`.
 | `POST /api/runs`                                             | launch: `agent`, `task`, `prompt`, `cwd`, `budget`, `tokens`; `parent` for a helper of a live run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `POST /api/runs/:id/kill`                                    | stop a run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `GET /api/runs/:id/procs`, `POST /api/runs/:id/procs`        | the run's process ledger with `alive` for each; `POST` kills what an ended run left, or `pid` alone                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `GET /api/runs/:id/artifacts`                                | the run's artifact manifest (`artifacts`, `declared`, `skipped`); empty while it kept none. A person and any run may read it                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `GET /api/runs/:id/artifacts/:name`                          | one kept file: PNG, JPEG, GIF, WebP and AVIF inline, anything else as an `application/octet-stream` download; `?view=1` answers JSON for the app (`kind` `image` with a data URL, `text` with the text, or `file` with where swarmupd keeps it)                                                                                                                                                                                                                                                                                                                                                          |
+| `POST /api/runs/:id/artifacts`                               | the run's own token only: keep its artifacts now, after adding `path` (a file in its scratch folder or worktree) with `label`; answers the manifest. 403 for the full token or another run's token, 400 for a path outside the run's folders                                                                                                                                                                                                                                                                                                                                                             |
 | `GET /api/tasks`, `GET /api/tasks/:id`                       | tasks (`?all` includes closed and archived), one task with its events                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `GET /api/tasks/:id/artifact?path=P&commit=C`                | one file of the task's work (W8), read off the event loop from the root's code checkout: at `commit`, else at the commit of the newest review that records artifacts, else from the checkout's files. Text comes as `text` with `base` (the file at the merge base with the root's base, `null` text when it is new); an image as a `data` URL (8 MB at most). A path outside the workspace is refused with 400, a missing file or commit is 404                                                                                                                                                         |
 | `GET /api/tasks/:id/preview?artifact=P&commit=C`             | what `swarmup preview` renders (W8 phase 3): the task's approved files (or each `artifact`) at the merge base (or `commit`), each with `kind` (`markdown`, `image`, `text`), safe `html`, and `text` or a `data:` URL, plus the whole `page`. Read-only.                                                                                                                                                                                                                                                                                                                                                 |

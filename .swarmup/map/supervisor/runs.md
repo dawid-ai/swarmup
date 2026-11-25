@@ -3,6 +3,7 @@ kind: module
 summary: A run's process, records, environment, task worktrees, leftovers commits and process ledger
 covers:
   - packages/supervisor/src/runs.ts
+  - packages/supervisor/src/run-artifacts.ts
   - packages/supervisor/src/runenv.ts
   - packages/supervisor/src/proc.ts
   - packages/supervisor/src/procs.ts
@@ -26,6 +27,11 @@ Everything about one run after the launch: where it works, what it may see, what
   store has a `swarm.yaml` (see `core/defs`), and `variant` (also in `defs`) for a variant run; `runenv.ts` builds its environment
   (`SWARMUP_AGENT`, `SWARMUP_RUN`, `SWARMUP_RUN_TOKEN`, `SWARMUP_SCRATCH`, TEMP in scratch).
   `pageRuns` serves the desktop Runs view one page, narrowed by range, `resumed` and `model`.
+- `run-artifacts.ts` keeps what a run declares (`swarmup run artifact`) or writes into
+  `<scratch>/artifacts/` in `<state>/artifacts/<id>/` with a manifest, within
+  `swarmupd.artifacts` limits, refusing real paths outside the scratch folder and worktree; the
+  wrap-up keeps them after the reap, `swarmup review` from a run attaches them (kind `run`), and
+  housekeeping prunes them after `keep_days`.
 - `proc.ts` spawns hidden processes that can outlive swarmupd; `procs.ts` records every process a
   run starts and kills only by PID plus creation time.
 - `worktree.ts`: a task of its root's `workspace_types` (core's `workspaceTypes`; default task,
@@ -39,6 +45,7 @@ Everything about one run after the launch: where it works, what it may see, what
 
 - Never kill by name, user or start time.
 - Task stores (`.swarmup/`) and package caches are never part of a run's changes.
+- A run artifact is only stored and served, never run; only plain images are served inline.
 
 ## Gotchas
 

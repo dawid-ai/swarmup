@@ -25,6 +25,8 @@ import type { NotifyConfig } from './notify.js';
 import { checkNotify } from './notify.js';
 import type { PublishConfig } from './publish.js';
 import { checkPublishConfig } from './publish.js';
+import type { ArtifactLimits } from './run-artifacts.js';
+import { DEFAULT_ARTIFACT_LIMITS } from './run-artifacts.js';
 
 /** How to start one runtime. `{prompt}` is not used: the prompt always goes on stdin. */
 export interface RuntimeConfig {
@@ -465,6 +467,11 @@ export interface OpsdConfig {
   /** Days a run's scratch folder is kept after the run ends. */
   scratch_days: number;
   /**
+   * What swarmupd keeps of the files a run declares or writes into `<scratch>/artifacts/` (W4):
+   * at most `max_files` files and `max_mb` megabytes per run, for `keep_days` after it ends.
+   */
+  artifacts: ArtifactLimits;
+  /**
    * Days a run's log and process ledger, and a merge's log, are kept after they end. The run
    * record stays, so `swarmup runs` and the reports keep the run.
    */
@@ -649,6 +656,7 @@ export function opsdConfig(
     reclaim_worktrees: raw.reclaim_worktrees ?? true,
     reclaim_after_minutes: raw.reclaim_after_minutes ?? 60,
     scratch_days: raw.scratch_days ?? 2,
+    artifacts: checkArtifactLimits((raw as { artifacts?: unknown }).artifacts),
     log_days: raw.log_days ?? 14,
     repair_stores: raw.repair_stores ?? true,
     review_checks: raw.review_checks ?? false,
@@ -877,6 +885,47 @@ const JUDGE_KEYS = [
  * key, a runtime other than `claude` or `codex`, a bad model or effort, and a budget outside 1 to
  * 60 minutes, with exit 2.
  */
+const ARTIFACT_KEYS = ['max_files', 'max_mb', 'keep_days'];
+
+/** `swarmupd.artifacts` checked, with defaults for what it leaves out (W4). */
+export function checkArtifactLimits(raw: unknown): ArtifactLimits {
+  if (raw === undefined || raw === null) return { ...DEFAULT_ARTIFACT_LIMITS };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OpsError(`swarmupd.artifacts: use ${ARTIFACT_KEYS.join(', ')}`, 2);
+  }
+  const extra = Object.keys(raw).filter((k) => !ARTIFACT_KEYS.includes(k));
+  if (extra.length > 0) {
+    throw new OpsError(
+      `swarmupd.artifacts: unknown key ${extra[0]}; use ${ARTIFACT_KEYS.join(', ')}`,
+      2,
+    );
+  }
+  const a = raw as Record<string, unknown>;
+  const out: ArtifactLimits = { ...DEFAULT_ARTIFACT_LIMITS };
+  if (a.max_files !== undefined && a.max_files !== null) {
+    const v = a.max_files;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 500) {
+      throw new OpsError('swarmupd.artifacts.max_files: use a whole number from 0 to 500', 2);
+    }
+    out.max_files = v;
+  }
+  if (a.max_mb !== undefined && a.max_mb !== null) {
+    const v = a.max_mb;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1024) {
+      throw new OpsError('swarmupd.artifacts.max_mb: use megabytes from 0 to 1024', 2);
+    }
+    out.max_mb = v;
+  }
+  if (a.keep_days !== undefined && a.keep_days !== null) {
+    const v = a.keep_days;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+      throw new OpsError('swarmupd.artifacts.keep_days: use a number of at least 0', 2);
+    }
+    out.keep_days = v;
+  }
+  return out;
+}
+
 export function checkJudge(raw: unknown): JudgeConfig {
   if (raw === undefined || raw === null) return { ...DEFAULT_JUDGE };
   if (typeof raw !== 'object' || Array.isArray(raw)) {

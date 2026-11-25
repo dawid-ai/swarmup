@@ -91,12 +91,56 @@ export interface OpsEvent {
 
 /** One piece of reviewed work a review event names (mirrors `ReviewArtifact` in core). */
 export interface ReviewArtifact {
-  kind: 'file' | 'url' | 'image' | 'doc';
-  /** A path from the top of the workspace (file, image), or a URL (url, doc). */
+  kind: 'file' | 'url' | 'image' | 'doc' | 'run';
+  /**
+   * A path from the top of the workspace (file, image), a URL (url, doc), or the file's name in
+   * the run's kept folder (run).
+   */
   ref: string;
   blob?: string;
   rev?: string;
   label?: string;
+  /** run: the run that kept it, its size, media type and SHA-256 (W4). */
+  run?: string;
+  bytes?: number;
+  type?: string;
+  sha256?: string;
+}
+
+/** One file a run kept (mirrors `RunArtifact` in the supervisor's run-artifacts.ts, W4). */
+export interface RunArtifact {
+  name: string;
+  path: string;
+  label?: string;
+  bytes: number;
+  type: string;
+  sha256: string;
+  declared?: boolean;
+}
+
+/** `GET /api/runs/:id/artifacts` (mirrors `RunArtifactManifest`). */
+export interface RunArtifactManifest {
+  run: string;
+  kept_at: string;
+  artifacts: RunArtifact[];
+  declared: Array<{ path: string; label?: string }>;
+  skipped?: Array<{ path: string; why: string }>;
+}
+
+/** `GET /api/runs/:id/artifacts/:name?view=1` (mirrors `RunArtifactView`). */
+export interface RunArtifactView {
+  name: string;
+  label?: string;
+  type: string;
+  bytes: number;
+  sha256: string;
+  kind: 'image' | 'text' | 'file';
+  /** image: a data URL. */
+  data?: string;
+  text?: string;
+  cut?: boolean;
+  /** Where swarmupd keeps it on this PC. */
+  file: string;
 }
 
 /** `GET /api/tasks/:id/artifact` (mirrors `TaskArtifact` in the supervisor's artifact-api.ts). */
@@ -354,6 +398,8 @@ export interface RunRecord {
   defs?: RunDefs;
   model?: string;
   effort?: string;
+  /** The files swarmupd kept of the run (W4). */
+  artifacts?: Array<{ name: string; label?: string; bytes: number; type: string }>;
 }
 
 /** Which definitions a run started with: `RunRecord.defs`. */

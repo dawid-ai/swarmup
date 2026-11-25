@@ -20,6 +20,11 @@ describe('IPC allowlist', () => {
     expect(allowedCall('POST', '/api/projects/other')).toBe(false);
     expect(allowedCall('GET', '/api/runs/01ABC/procs')).toBe(true);
     expect(allowedCall('POST', '/api/runs/01ABC/procs')).toBe(true);
+    // A run's kept files (W4): read only; only the run itself declares them, with its token.
+    expect(allowedCall('GET', '/api/runs/01ABC/artifacts')).toBe(true);
+    expect(allowedCall('GET', '/api/runs/01ABC/artifacts/home.png?view=1')).toBe(true);
+    expect(allowedCall('POST', '/api/runs/01ABC/artifacts')).toBe(false);
+    expect(allowedCall('GET', '/api/runs/01ABC/artifacts/a/b')).toBe(false);
     expect(allowedCall('POST', '/api/waits')).toBe(false);
     expect(allowedCall('GET', '/api/inbox?as=human%3Adawid&markRead=1')).toBe(true);
     expect(allowedCall('GET', '/api/tasks?all')).toBe(true);

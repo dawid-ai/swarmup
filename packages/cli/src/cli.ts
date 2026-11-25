@@ -60,6 +60,7 @@ import {
   discoverRoots,
   initRoot,
   isHuman,
+  MAX_REVIEW_ARTIFACTS,
   decisionLines,
   DECISIONS_TOPIC,
   isStoreDirName,
@@ -87,6 +88,7 @@ import {
 import type {
   MergeStatus,
   ProcView,
+  RunArtifactManifest,
   RunRecord,
   RuntimeConfig,
   ScoreResult,
@@ -122,6 +124,11 @@ import {
   reportText,
   reportWindow,
   RunStore,
+  readManifest,
+  readRunArtifact,
+  runArtifactsDir,
+  runReviewArtifacts,
+  isTextType,
   runDaemon,
   seedUserConfig,
   setPaused,
@@ -518,11 +525,117 @@ function reviewArtifacts(ctx: Ctx, root: string, source: ReviewSourceFields): Re
 }
 
 /**
+ * Inside a supervised run: asks swarmupd to keep the run's artifacts now (what it declared and
+ * what is in `<scratch>/artifacts/`), and returns them as review artifacts of kind `run` (W4).
+ * Outside a run, or when swarmupd cannot be reached, none; the review goes on without them.
+ */
+async function keptRunArtifacts(ctx: Ctx): Promise<ReviewArtifact[]> {
+  const run = envVar(ctx.io.env, 'RUN');
+  if (!run) return [];
+  const info = readDaemon(ctx.io.env);
+  if (!info) return [];
+  try {
+    const m = await daemonCall<RunArtifactManifest>(
+      info,
+      'POST',
+      `/api/runs/${encodeURIComponent(run)}/artifacts`,
+      {},
+    );
+    return runReviewArtifacts(m.run, m.artifacts);
+  } catch (err) {
+    ctx.io.err(`note: the run's artifacts are not attached: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+/**
+ * `swarmup run artifact PATH [--label TEXT]`: from inside a supervised run, swarmupd keeps a file
+ * the run made, in its scratch folder or worktree, with the run record (W4).
+ */
+async function runArtifactCommand(ctx: Ctx): Promise<number | void> {
+  const sub = arg(ctx, 0, 'what: run artifact PATH');
+  if (sub !== 'artifact') usageError(`unknown command run ${sub}: use run artifact PATH`);
+  const id =
+    envVar(ctx.io.env, 'RUN') ??
+    usageError('swarmup run artifact works only inside a supervised run (SWARMUP_RUN)');
+  const info = readDaemon(ctx.io.env) ?? usageError('swarmupd is not running');
+  const path = resolve(ctx.io.cwd, arg(ctx, 1, 'path'));
+  const label = str(ctx.opts.label);
+  const m = await daemonCall<RunArtifactManifest>(
+    info,
+    'POST',
+    `/api/runs/${encodeURIComponent(id)}/artifacts`,
+    { path, ...(label ? { label } : {}) },
+  );
+  if (ctx.opts.json) return void ctx.io.out(JSON.stringify(m, null, 2));
+  let real = path;
+  try {
+    real = realpathSync(path);
+  } catch {
+    // swarmupd read it; the name as given is close enough.
+  }
+  const same = (p: string): boolean =>
+    process.platform === 'win32' ? p.toLowerCase() === real.toLowerCase() : p === real;
+  const a = m.artifacts.find((x) => same(x.path));
+  if (!a) {
+    const why = m.skipped?.find((x) => same(x.path))?.why ?? 'not kept';
+    ctx.io.err(`${path}: declared, but ${why}`);
+    return 1;
+  }
+  ctx.io.out(
+    `kept ${a.name} (${formatBytes(a.bytes)}, ${a.type}); run ${id} keeps ${m.artifacts.length} artifact(s)`,
+  );
+}
+
+/** A size for people: bytes, KB or MB. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** `swarmup runs show RUN`: one run's record, with the artifacts swarmupd kept of it (W4). */
+async function runsShowCommand(ctx: Ctx): Promise<number | void> {
+  const ref = arg(ctx, 1, 'run id').toUpperCase();
+  const dir = stateDir(ctx.io.env);
+  const runs = new RunStore(dir).list();
+  const hits = runs.filter((r) => r.id === ref || r.id.endsWith(ref) || r.id.startsWith(ref));
+  if (hits.length !== 1) usageError(hits.length ? `run '${ref}' is ambiguous` : `no run ${ref}`);
+  const r = hits[0]!;
+  const m = await readManifest(dir, r.id);
+  if (ctx.opts.json) {
+    return void ctx.io.out(JSON.stringify({ ...r, manifest: m ?? null }, null, 2));
+  }
+  const end = r.ended_at ? Date.parse(r.ended_at) : Date.now();
+  const mins = formatMinutes(Math.round((end - Date.parse(r.started_at)) / 60_000));
+  const how = r.status === 'running' ? 'running' : `${r.reason ?? 'ended'}, exit ${r.exit ?? '-'}`;
+  ctx.io.out(`${r.id} ${r.agent}${r.task ? ` on ${r.task}` : ''}`);
+  ctx.io.out(`  ${how}, ${mins}, ${r.tokens} tokens; started ${r.started_at}`);
+  if (r.model) ctx.io.out(`  model ${r.model}${r.effort ? `, effort ${r.effort}` : ''}`);
+  ctx.io.out(`  log ${r.log}`);
+  const items = m?.artifacts ?? [];
+  if (items.length === 0) {
+    ctx.io.out(
+      r.status === 'running'
+        ? '  artifacts: none kept yet; swarmupd keeps them when the run ends'
+        : '  artifacts: none',
+    );
+    return;
+  }
+  ctx.io.out(`  artifacts (${items.length}) in ${runArtifactsDir(dir, r.id)}:`);
+  for (const a of items) {
+    const label = a.label ? `  ${a.label}` : '';
+    ctx.io.out(`    ${pad(a.name, 28)} ${pad(formatBytes(a.bytes), 9)} ${pad(a.type, 22)}${label}`);
+  }
+  for (const s of m?.skipped ?? []) ctx.io.out(`    not kept: ${s.path} (${s.why})`);
+}
+
+/**
  * `swarmup artifact ID [N]`: the artifacts of the task's latest review that names any, or the
  * one at `N`: a file printed as it is at the reviewed commit (or `--at`), an image saved with
  * `--out`, a URL printed.
  */
-function artifactCommand(ctx: Ctx): number | void {
+function artifactCommand(ctx: Ctx): number | void | Promise<number | void> {
   const ws = ctx.ws();
   const ref = arg(ctx, 0, 'task id');
   const { root, id } = ws.resolve(ref);
@@ -555,6 +668,7 @@ function artifactCommand(ctx: Ctx): number | void {
     if (ctx.opts.json) return void ctx.io.out(JSON.stringify(a, null, 2));
     return void ctx.io.out(a.ref);
   }
+  if (a.kind === 'run') return keptArtifactOut(ctx, a);
   const path = workspacePath(a.ref);
   const tops = [
     gitRead(ctx.io.cwd, ['rev-parse', '--show-toplevel']),
@@ -598,6 +712,47 @@ function artifactCommand(ctx: Ctx): number | void {
   if (a.kind === 'image') {
     return void ctx.io.out(
       `${path} is an image (${data.length} bytes${at ? ` at ${at.slice(0, 10)}` : ''}): pass --out FILE to save it`,
+    );
+  }
+  ctx.io.out(data.toString('utf8').replace(/\n$/, ''));
+}
+
+/** Prints or saves (`--out`) a file a run kept (W4), read from swarmupd's kept folder. */
+async function keptArtifactOut(ctx: Ctx, a: ReviewArtifact): Promise<number | void> {
+  if (!a.run) throw new OpsError(`${a.ref}: the review names no run`, 1);
+  const dir = stateDir(ctx.io.env);
+  let data: Buffer;
+  let type = a.type ?? 'application/octet-stream';
+  try {
+    const got = await readRunArtifact(dir, a.run, a.ref);
+    data = got.data;
+    type = got.artifact.type;
+  } catch (err) {
+    throw new OpsError(
+      `${a.ref} of run ${a.run} is not on this PC: ${(err as Error).message}; swarmupd keeps run artifacts for swarmupd.artifacts.keep_days`,
+      1,
+    );
+  }
+  const out = str(ctx.opts.out);
+  if (out) {
+    const file = resolve(ctx.io.cwd, out);
+    writeFileSync(file, data);
+    return void ctx.io.out(`wrote ${file} (${data.length} bytes)`);
+  }
+  const text = isTextType(type);
+  if (ctx.opts.json) {
+    const file = join(runArtifactsDir(dir, a.run), a.ref);
+    return void ctx.io.out(
+      JSON.stringify(
+        { ...a, bytes: data.length, file, text: text ? data.toString('utf8') : undefined },
+        null,
+        2,
+      ),
+    );
+  }
+  if (!text) {
+    return void ctx.io.out(
+      `${a.ref} is ${type} (${data.length} bytes, kept by run ${a.run}): pass --out FILE to save it`,
     );
   }
   ctx.io.out(data.toString('utf8').replace(/\n$/, ''));
@@ -2499,17 +2654,26 @@ const COMMANDS: Record<string, Command> = {
         { commit: str(ctx.opts.commit), branch: str(ctx.opts.branch) },
       );
       if (note) ctx.io.err(`note: ${note}`);
-      const artifacts = reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
-      if (artifacts.length > 0) source.artifacts = artifacts;
+      const named = reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
       // The pair as the message's last line too, which the review diff reads (AO-0396).
       const body = line ? `${msg.replace(/\s+$/, '')}\n\n${line}\n` : msg;
-      return printAct(
-        ctx,
-        ws.review(ref, body, str(ctx.opts.to), str(ctx.opts.recommend), {
-          human: ctx.opts.human === true,
-          source,
-        }),
-      );
+      const send = (kept: ReviewArtifact[]): number | void => {
+        const artifacts = [...named.slice(0, MAX_REVIEW_ARTIFACTS - kept.length), ...kept];
+        if (artifacts.length > 0) source.artifacts = artifacts;
+        return printAct(
+          ctx,
+          ws.review(ref, body, str(ctx.opts.to), str(ctx.opts.recommend), {
+            human: ctx.opts.human === true,
+            source,
+          }),
+        );
+      };
+      // From inside a run, the files it kept go with the review (W4); that asks swarmupd, so
+      // only then does the command wait. Outside a run it stays synchronous.
+      if (envVar(ctx.io.env, 'RUN') && readDaemon(ctx.io.env)) {
+        return keptRunArtifacts(ctx).then(send);
+      }
+      return send([]);
     },
   },
   artifact: {
@@ -3544,10 +3708,12 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   runs: {
-    usage: 'runs [--all]',
-    summary: 'list supervised agent runs: live ones, or the last 30 with --all; then what waits',
+    usage: 'runs [--all] | runs show RUN',
+    summary:
+      'list supervised agent runs: live ones, or the last 30 with --all; then what waits. `runs show RUN` prints one run with the artifacts swarmupd kept of it',
     options: { all: { type: 'boolean' } },
     run: async (ctx) => {
+      if (ctx.args[0] === 'show') return runsShowCommand(ctx);
       const store = new RunStore(stateDir(ctx.io.env));
       const all = store.list();
       const runs = ctx.opts.all ? all.slice(0, 30) : all.filter((r) => r.status === 'running');
@@ -3669,6 +3835,13 @@ const COMMANDS: Record<string, Command> = {
         ctx.opts.json ? JSON.stringify(r, null, 2) : `${r.id} ${r.agent} pid ${r.pid}${side}${exp}`,
       );
     },
+  },
+  run: {
+    usage: 'run artifact PATH [--label TEXT]',
+    summary:
+      'from inside a supervised run: keep a file the run made (in its scratch folder or worktree) with the run record, for the reviewer and the person; files in $SWARMUP_SCRATCH/artifacts/ are kept on their own',
+    options: { label: { type: 'string' } },
+    run: (ctx) => runArtifactCommand(ctx),
   },
   spawn: {
     usage: 'spawn [AGENT] (-m PROMPT | --prompt-file F) [--budget 30m] [--tokens 200k]',

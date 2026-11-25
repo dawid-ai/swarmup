@@ -35,7 +35,8 @@ What the person sees: one React app with a view per area.
 - `ui/*.tsx` are shared pieces (markdown, diff, pickers, filters, palette, triage, voice, the
   map graph, the criteria builder, review, **Run checks** and **Judge** in `criteria.tsx`, the
   goal brief in `brief.tsx`, the task panel's **Work** section in `work.tsx`: review artifacts
-  at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`);
+  at the reviewed commit with a word-level `ProseDiff` from `diff.tsx`, see `/core/content`;
+  the files a run kept in `run-artifacts.tsx`, a gallery and a list for **Work** and **Runs**);
   `ui/score.tsx` and `ui/score-agent.tsx` draw scores (value, pass chip, SVG sparkline, links to
   the scored task or run) for Agents, Reports (`views/ScoresTable.tsx`), Runs and the task panel,
   and `ui/score-breakdown.tsx` opens a score's breakdown and "How scores work" from each of them;

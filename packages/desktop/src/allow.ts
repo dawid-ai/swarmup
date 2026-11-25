@@ -26,6 +26,9 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     `runs/${SEG}`,
     `runs/${SEG}/log`,
     `runs/${SEG}/procs`,
+    // The files a run kept (W4): the manifest, and one file to show (`?view=1`).
+    `runs/${SEG}/artifacts`,
+    `runs/${SEG}/artifacts/${SEG}`,
     'waits',
     'settings',
     'schedules',

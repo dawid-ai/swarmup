@@ -1020,12 +1020,38 @@ export function checkArtifacts(list: readonly ReviewArtifact[]): ReviewArtifact[
     }
     const rev = line(a.rev, 'rev', 200);
     const label = line(a.label, 'label', 200);
+    const run: Partial<ReviewArtifact> = {};
+    if (a.kind === 'run') {
+      // A file a run kept (W4): its name in the run's kept folder, never a path.
+      if (!a.run || !/^[0-9A-Za-z]{10,40}$/.test(a.run)) {
+        throw new OpsError(`artifact ${ref}: a run artifact names its run id`, 2);
+      }
+      if (/[\\/]/.test(ref) || ref === '.' || ref === '..') {
+        throw new OpsError(`artifact ${ref}: a run artifact is a file name, not a path`, 2);
+      }
+      run.run = a.run;
+      if (a.bytes !== undefined) {
+        if (!Number.isInteger(a.bytes) || a.bytes < 0) {
+          throw new OpsError(`artifact ${ref}: bytes must be a whole number`, 2);
+        }
+        run.bytes = a.bytes;
+      }
+      const type = line(a.type, 'type', 200);
+      if (type) run.type = type;
+      if (a.sha256 !== undefined) {
+        if (!/^[0-9a-f]{64}$/i.test(a.sha256)) {
+          throw new OpsError(`artifact ${ref}: sha256 must be 64 hex digits`, 2);
+        }
+        run.sha256 = a.sha256.toLowerCase();
+      }
+    }
     return {
       kind: a.kind,
       ref,
       ...(a.blob ? { blob: a.blob.toLowerCase() } : {}),
       ...(rev ? { rev } : {}),
       ...(label ? { label } : {}),
+      ...run,
     };
   });
 }

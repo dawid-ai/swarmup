@@ -11,6 +11,7 @@ import type { Stats } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { LeftoverCommit } from './checkout.js';
 import type { ProcLedger } from './procs.js';
+import type { RunArtifactBrief } from './run-artifacts.js';
 
 /** Renames into place, retrying while Windows holds the target open for a reader. */
 function replaceFile(tmp: string, file: string): void {
@@ -105,6 +106,12 @@ export interface RunRecord {
    * under swarmupd's state folder. Removed `scratch_days` after the run ends (AO-0230).
    */
   scratch?: string;
+  /**
+   * The files swarmupd kept of the run (W4): what it declared with `swarmup run artifact` and
+   * what it wrote into `<scratch>/artifacts/`, copied to `<state>/artifacts/<id>/` with a
+   * manifest. Absent when it kept none.
+   */
+  artifacts?: RunArtifactBrief[];
   /**
    * The names in each folder next to a writing run's checkout when it started, by folder. New
    * names there at its end are named in its `run-end` event (AO-0230).
