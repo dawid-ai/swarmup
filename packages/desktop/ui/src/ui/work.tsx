@@ -12,6 +12,7 @@ import {
   Link2,
   Loader2,
   Newspaper,
+  Paperclip,
 } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -20,6 +21,7 @@ import { cx, ErrorLine } from '../components';
 import type { OpsEvent, ReviewArtifact, TaskArtifact } from '../types';
 import { ProseDiff } from './diff';
 import { Markdown } from './markdown';
+import { RunArtifacts } from './run-artifacts';
 
 /** A request to open one artifact; a new `n` asks again for the same path. */
 export interface ArtifactFocus {
@@ -37,6 +39,7 @@ const KIND_ICON: Record<ReviewArtifact['kind'], LucideIcon> = {
   image: ImageIcon,
   url: Link2,
   doc: Newspaper,
+  run: Paperclip,
 };
 
 const isMarkdown = (path: string): boolean => /\.(md|markdown|mdx)$/i.test(path);
@@ -296,7 +299,17 @@ export function WorkSection({
   focus?: ArtifactFocus | null;
 }) {
   const review = reviewWithArtifacts(events);
-  const items = useMemo(() => review?.artifacts ?? [], [review]);
+  const all = useMemo(() => review?.artifacts ?? [], [review]);
+  // Files a run kept outside git (W4) show as a gallery and a list, by run.
+  const items = useMemo(() => all.filter((a) => a.kind !== 'run'), [all]);
+  const kept = useMemo(() => {
+    const byRun = new Map<string, ReviewArtifact[]>();
+    for (const a of all) {
+      if (a.kind !== 'run' || !a.run) continue;
+      byRun.set(a.run, [...(byRun.get(a.run) ?? []), a]);
+    }
+    return [...byRun.entries()];
+  }, [all]);
   const commit = review?.commit;
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
@@ -321,7 +334,7 @@ export function WorkSection({
     (el as HTMLElement | null)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   }, [focus]);
 
-  if (!review || items.length === 0) return null;
+  if (!review || all.length === 0) return null;
   const toggle = (ref: string): void => {
     if (isOpen(ref)) {
       setOpened((s) => {
@@ -347,6 +360,23 @@ export function WorkSection({
           {commit ? `· at ${commit.slice(0, 7)}` : '· in the workspace'}
         </span>
       </h3>
+      {kept.map(([run, list]) => (
+        <div key={run} data-work-run={run} className="mb-2">
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs text-fg-3">
+            <Paperclip size={12} className="text-fg-4" /> Kept by run{' '}
+            <span className="font-mono text-fg-2">{run.slice(-8)}</span>
+          </div>
+          <RunArtifacts
+            run={run}
+            items={list.map((a) => ({
+              name: a.ref,
+              ...(a.label ? { label: a.label } : {}),
+              bytes: a.bytes ?? 0,
+              type: a.type ?? 'application/octet-stream',
+            }))}
+          />
+        </div>
+      ))}
       <ul className="flex flex-col gap-1.5">
         {items.map((a) => (
           <ArtifactRow
