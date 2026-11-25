@@ -55,8 +55,11 @@ definition file.
 - The improver template (`claude-improver.md`) is a read-only role (`READ_ONLY_ROLES`) whose
   Claude runs may edit only in their scratch folder (`SCRATCH_WRITER_ROLES`, `invocation`).
 - `desktop/ui/src/ui/proposals.tsx` is the **Proposals** list in the Agents view: agents,
-  scorers, diff, benchmark, `improvement.requires`, **Promote** and **Reject**, the improver's
-  state, an empty state, and **Propose a change**; `score-agent.tsx` offers **Propose an
+  scorers, diff, benchmark, `improvement.requires`, **Promote** (off while `requires` is unmet,
+  with **Promote anyway…** as the recorded `force` override) and **Reject**, the improver's
+  state, an empty state, **Propose a change**, and **Promoted** with **Roll back**
+  (`Workspace.promotedChanges` over `listPromoted`, and `defsRollback`, through
+  `GET /api/defs/promoted` and `POST /api/defs/promoted/<name>/rollback`); `score-agent.tsx` offers **Propose an
   improvement** on a failing scorer.
 
 ## Invariants

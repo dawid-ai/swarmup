@@ -977,6 +977,22 @@ export function startApi(sup: Supervisor, opts: ApiOptions): Promise<ApiServer> 
           return send(res, 200, done);
         }
       }
+      // Promoted changes (W6): what `defs promote` recorded in `variants/.promoted/`; a person
+      // rolls one back with the function behind `swarmup defs rollback`.
+      if (id === 'promoted') {
+        if (method === 'GET' && !action) return send(res, 200, wsAs().promotedChanges());
+        if (method === 'POST' && action && parts[4] === 'rollback' && !parts[5]) {
+          humanOnly('rolling back a definition change');
+          const ws = wsAs();
+          if (!ws.actor) throw new HttpError(400, "set 'as', or `me` in the user config");
+          const done = ws.defsRollback(action, str(body.message) ?? '', {
+            root: str(body.root) || undefined,
+            force: body.force === true,
+          });
+          await sup.tick();
+          return send(res, 200, done);
+        }
+      }
       const defs = await defsRoute(sup, method, id, body, humanOnly);
       if (defs !== undefined) return send(res, 200, defs);
     }

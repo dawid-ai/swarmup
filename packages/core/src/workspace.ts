@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { ActivityItem, ActivityOptions, ActivityPage } from './activity.js';
 import type {
   CompiledWorkflow,
+  PromotedSummary,
   ProposalBenchmark,
   ProposalMeta,
   SwarmWorkType,
@@ -21,6 +22,7 @@ import {
   formatProblem,
   improvementPolicy,
   listVariantNames,
+  listPromoted,
   listVariants,
   loadDefinitions,
   overlayAgents,
@@ -4438,6 +4440,14 @@ export class Workspace {
     return this.scopedRoots()
       .filter((r) => !r.isMirror)
       .flatMap((r) => listVariants(r.dir).map((v) => ({ ...v, root: r.name })));
+  }
+
+  /** Every recorded promote of the visible roots, newest first, for **Roll back** in the app. */
+  promotedChanges(): Array<PromotedSummary & { root: string }> {
+    return this.scopedRoots()
+      .filter((r) => !r.isMirror)
+      .flatMap((r) => listPromoted(r.dir).map((p) => ({ ...p, root: r.name })))
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
   }
 
   /**

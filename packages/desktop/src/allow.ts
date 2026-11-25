@@ -60,6 +60,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'defs',
     // Proposals (W6): the variants with their diffs and benchmarks, and the improver's state.
     'defs/variants',
+    // Promoted changes (W6), for Roll back.
+    'defs/promoted',
     'improve',
     'bench/(sets|runs)',
     `bench/runs/${SEG}`,
@@ -109,6 +111,8 @@ const ALLOWED: Record<'GET' | 'POST', RegExp[]> = {
     'defs/(validate|import|create|save)',
     // A person promotes or rejects a proposal, and files an improvement task for an agent.
     `defs/variants/${SEG}/(promote|reject)`,
+    // A person rolls back a promoted change (`swarmup defs rollback`).
+    `defs/promoted/${SEG}/rollback`,
     'improve',
     // A person proposes a change to a role file, and turns the improvement loop on or off (W6).
     'defs/propose',

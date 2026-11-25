@@ -485,6 +485,11 @@ export async function judgeArtifactsOf(
   return out;
 }
 
+/** True for a name {@link safeName} could have made: one path segment, not `.` or `..`. */
+function keptName(name: string): boolean {
+  return name !== '' && name !== '.' && name !== '..' && !/[\\/]/.test(name);
+}
+
 /** One kept file of a run and its bytes; {@link NoRunArtifact} when the run kept no such file. */
 export async function readRunArtifact(
   stateDir: string,
@@ -494,6 +499,8 @@ export async function readRunArtifact(
   const m = await readManifest(stateDir, run);
   const artifact = m?.artifacts.find((a) => a.name === name);
   if (!artifact) throw new NoRunArtifact(`run ${run} kept no artifact ${name}`);
+  // swarmupd writes one-segment names; a manifest edited by hand must not reach past the folder.
+  if (!keptName(artifact.name)) throw new NoRunArtifact(`run ${run}: ${name} is no kept file name`);
   try {
     return { artifact, data: await readFile(join(runArtifactsDir(stateDir, run), artifact.name)) };
   } catch {

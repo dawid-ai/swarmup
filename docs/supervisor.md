@@ -199,7 +199,9 @@ label, size and type.
   [Rubric files](protocol.md#rubric-files).
 
 `GET /api/runs/:id/artifacts` and `GET /api/runs/:id/artifacts/:name` serve them; the desktop
-app's **Runs** view and the task panel's **Work** section show them.
+app's **Runs** view and the task panel's **Work** section show them, with **Download** on each.
+A name is looked up in the run's manifest and must be one path segment, so no request reaches a
+file outside the run's kept folder.
 
 ### Learn notes in the prompt
 
@@ -1574,7 +1576,11 @@ swarmupd:
 - The API: `GET /api/defs/variants` lists each variant with its diff against the base (`diffs`)
   and its benchmark (`benchmark`); `POST /api/defs/variants/<name>/promote` and `.../reject`
   (`{ root?, message }`) and `POST /api/improve` (`{ agent, kind? }`, where `kind: 'notes'` files the learn-note task)
-  are for a person: a run's token gets 403.
+  are for a person: a run's token gets 403. Promote takes `force: true` for the override
+  `defs promote --force` makes. `GET /api/defs/promoted` lists the recorded promotes of each
+  store, newest first, with the files each changed and those changed since (`changed`);
+  `POST /api/defs/promoted/<name>/rollback` (`{ root?, message, force? }`) does what
+  `defs rollback` does, for a person only.
 
 ## Merging approved work
 

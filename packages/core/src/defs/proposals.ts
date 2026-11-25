@@ -455,6 +455,57 @@ export function writePromoted(rootDir: string, rec: PromotedRecord): void {
   writeFileSync(file, `${JSON.stringify(rec, null, 2)}\n`);
 }
 
+/** A promote as the app lists it: the record without the file texts, and what changed since. */
+export interface PromotedSummary {
+  variant: string;
+  task?: string;
+  by: string;
+  at: string;
+  from: string;
+  to: string;
+  /** The files the promote wrote or removed. */
+  files: string[];
+  /** The files that changed after the promote: a rollback drops those changes. */
+  changed: string[];
+  rolled_back?: { by: string; at: string };
+}
+
+/** Every recorded promote of the store at `rootDir`, newest first. */
+export function listPromoted(rootDir: string): PromotedSummary[] {
+  let names: string[];
+  try {
+    names = readdirSync(join(rootDir, VARIANTS_DIR, PROMOTED_DIR));
+  } catch {
+    return [];
+  }
+  const out: PromotedSummary[] = [];
+  for (const file of names) {
+    if (!file.endsWith('.json')) continue;
+    let rec: PromotedRecord | undefined;
+    try {
+      rec = readPromoted(rootDir, file.slice(0, -'.json'.length));
+    } catch {
+      continue;
+    }
+    if (!rec) continue;
+    const files = Object.keys(rec.files).sort();
+    out.push({
+      variant: rec.variant,
+      ...(rec.task ? { task: rec.task } : {}),
+      by: rec.by,
+      at: rec.at,
+      from: rec.from,
+      to: rec.to,
+      files,
+      changed: rec.rolled_back
+        ? []
+        : files.filter((path) => currentText(rootDir, path) !== rec.files[path]!.after),
+      ...(rec.rolled_back ? { rolled_back: rec.rolled_back } : {}),
+    });
+  }
+  return out.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+}
+
 /**
  * Puts back the files the last promote of `name` changed. Refuses when there is no record, when it
  * was rolled back already, and, unless `force`, when a file changed since the promote, since the

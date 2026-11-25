@@ -548,6 +548,47 @@ describe('proposal routes', () => {
         'defs-promote',
         'defs-reject',
       ]);
+      // Promoted changes, and Roll back: only a person, only with a reason (W6).
+      const promotedList = await call('GET', '/api/defs/promoted');
+      expect(promotedList.status).toBe(200);
+      expect(promotedList.data).toEqual([
+        expect.objectContaining({
+          root: expect.any(String),
+          variant: 'tests-first',
+          files: ['agents/claude-engineer.md'],
+          changed: [],
+        }),
+      ]);
+      const agentRollback = await call('POST', '/api/defs/promoted/tests-first/rollback', {
+        as: 'claude:improver',
+        message: 'worse',
+      });
+      expect(agentRollback.status).toBe(409);
+      expect(JSON.stringify(agentRollback.data)).toMatch(/only a person rolls back/);
+      const noWhy = await call('POST', '/api/defs/promoted/tests-first/rollback', {
+        as: 'human:dawid',
+      });
+      expect(noWhy.status).toBe(400);
+      const rolled = await call('POST', '/api/defs/promoted/tests-first/rollback', {
+        as: 'human:dawid',
+        message: 'Review rounds went up.',
+      });
+      expect(rolled.status).toBe(200);
+      expect(rolled.data).toMatchObject({ variant: 'tests-first', written: [expect.any(String)] });
+      expect(readFileSync(join(store, 'agents', 'claude-engineer.md'), 'utf8')).toBe(ENGINEER);
+      expect(dawid.showEvents(task).events.map((e) => e.type)).toContain('defs-rollback');
+      const again = await call('GET', '/api/defs/promoted');
+      expect(again.data).toEqual([
+        expect.objectContaining({ rolled_back: expect.objectContaining({ by: 'human:dawid' }) }),
+      ]);
+      expect(
+        (
+          await call('POST', '/api/defs/promoted/tests-first/rollback', {
+            as: 'human:dawid',
+            message: 'again',
+          })
+        ).status,
+      ).toBe(409);
       const none = await call('POST', '/api/improve', {
         as: 'human:dawid',
         agent: 'claude:engineer',

@@ -328,7 +328,8 @@ has closed children and no brief), a hint names them; they are the ones the PM's
   link: click it to open that file in **Work**.
 - Files a run kept outside git (run artifacts, see
   [Run artifacts](supervisor.md#run-artifacts)) show under **Kept by run** with the run's id:
-  images as a gallery, other files as a list you open with a click.
+  images as a gallery, other files as a list you open with a click. Each file has **Download**,
+  as in the **Runs** view.
 
 **Mark published.** An open `publish` task a person owns shows **Mark published**. After you post
 the approved work, enter the URL it went live at and, optionally, the file you published, then
@@ -409,7 +410,7 @@ nothing.
 The settings live under `desktop.voice` in the user config: `engine` (`off`, `local` or `cloud`),
 `program`, `model`, `language` (`auto` or a code such as `pl`) and `cloud_model`.
 
-**Keyboard.** Ctrl+K (Cmd+K on macOS) opens the command palette: find a task by id or title, go to a view, create a task, or move the open task (start, review, block, done, back to to do) through the same calls as the board. Outside text fields, `n` starts a new task, `/` focuses the view's search, `g` then a letter goes to a view (`g b` board, `g l` tasks, `g i` inbox, `g c` channels, `g k` knowledge, `g m` map), and `?` lists every shortcut.
+**Keyboard.** Ctrl+K (Cmd+K on macOS) opens the command palette: find a task by id or title, go to a view, create a task, start a workflow (the same flow as **New task > Start a workflow**), or move the open task (start, review, block, done, back to to do) through the same calls as the board. Outside text fields, `n` starts a new task, `/` focuses the view's search, `g` then a letter goes to a view (`g b` board, `g l` tasks, `g i` inbox, `g c` channels, `g k` knowledge, `g m` map), and `?` lists every shortcut.
 
 **Back and Forward in the task panel.** Following a task link inside the open task panel (a thread, a comment, the parent, a blocked-on task, a message) keeps the task you came from. **Back** in the panel header returns to it, and **Forward** goes again after Back. Alt+Left, Alt+Right and the mouse back and forward buttons do the same outside text fields. A link to the task already open adds no step. Closing the panel clears the history, so a task opened from a view with no panel open has no **Back**.
 
@@ -450,6 +451,18 @@ The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
   promote, or that it is met. **Promote** writes it onto the definition files; **Reject** asks
   for a note for the improver. Both are yours alone: a run can't call them. The list always
   shows: with nothing waiting, it says what a proposal is and how one appears.
+  - While `improvement.requires` is not met, **Promote** is off and its tooltip names what is
+    missing. **Promote anyway…** is the override `swarmup defs promote --force` makes: it asks
+    for a reason, and the proposal's task records the override, what it skipped and the reason.
+    swarmupd checks `improvement.requires` on every promote, whatever the app shows.
+  - **Promoted** lists the changes promotes wrote, newest first (`GET /api/defs/promoted`, from
+    `variants/.promoted/`): the variant, the hashes before and after, who promoted it and when,
+    the files it changed and a link to its task. **Roll back** asks why and puts the files back
+    as they were before the promote, as `swarmup defs rollback NAME -m WHY` does, recorded on the
+    proposal's task (`POST /api/defs/promoted/NAME/rollback`). When a file changed after the
+    promote, the card names it, and **Roll back** stays off until you turn on **Drop the later
+    changes too** (`--force`). A rolled-back change shows who rolled it back and offers nothing
+    more. Both routes are yours alone: a run's token gets 403.
   - The improver's state heads the list: **Files tasks from failing scores** and **Folds learn
     notes into roles** turn `swarmupd.improve.enabled` and `swarmupd.improve.notes` on or off in
     your user config (`POST /api/improve/settings`); the benchmark gate, set as
@@ -477,8 +490,10 @@ The app shows the [scores](supervisor.md#scores) swarmupd keeps in `state.db`.
 - **Run artifacts.** A run that kept files (see [Run artifacts](supervisor.md#run-artifacts))
   shows **Artifacts** with their count in its header. Click it for a gallery of its images
   (click an image to show it at full width) and a list of its other files: a text file opens as
-  text, any other file shows the path swarmupd keeps it at. The app reads each file with
-  `GET /api/runs/ID/artifacts/NAME?view=1`, and never opens or runs one.
+  text; any other file, such as a PDF or a ZIP, offers **Download**. Every file has **Download**,
+  which saves it where you pick in a save dialog, the whole file even when the view cuts a long
+  text. The app reads each file with `GET /api/runs/ID/artifacts/NAME?view=1` and downloads it
+  with `GET /api/runs/ID/artifacts/NAME`; it never opens or runs one.
 
 A task or run trend counts each score at its subject's time, such as the approval or the run's
 start. An agent score, such as `stuck-runs`, is a running figure: its point is the last value of

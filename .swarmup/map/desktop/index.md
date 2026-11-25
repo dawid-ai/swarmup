@@ -30,7 +30,8 @@ tray icon that starts and stops swarmupd.
   bench, proposals, `improve` and a task's review artifact) needs a line here.
 - `service.ts` (tray, background service), `updates.ts` (Manual or Auto updates from GitHub
   Releases via `electron-updater`), `add-project.ts`, `voice.ts`, `models.ts`, and the save
-  helpers (`images.ts`, `gifs.ts`, `videos.ts`) are pure modules, tested without Electron.
+  helpers (`images.ts`, `gifs.ts`, `videos.ts`, and `artifact-save.ts`, which checks the run and
+  file name of a run artifact's **Download**) are pure modules, tested without Electron.
 - `scripts/package.mjs` and `electron-builder.yml` build the Windows installer;
   `build/path.ps1` and `installer.nsh` add the PATH entry; `extraResources` also
   ships `packages/core/templates` as `resources/templates`.

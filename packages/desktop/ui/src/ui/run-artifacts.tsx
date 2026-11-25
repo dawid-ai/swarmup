@@ -1,11 +1,11 @@
 // Files a run kept (W4): a gallery of its images and a list of its other files, read through
 // swarmupd (`GET /api/runs/:id/artifacts/:name?view=1`). The Runs view's run detail and the task
 // panel's **Work** section show them. Nothing here runs a file: images show from a data URL,
-// text shows as text, and other files show where swarmupd keeps them.
-import { ChevronDown, ChevronRight, File, FileText, Loader2 } from 'lucide-react';
+// text shows as text, and every file has **Download**, which saves it where the person picks.
+import { ChevronDown, ChevronRight, Download, File, FileText, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, q } from '../api';
-import { cx, ErrorLine } from '../components';
+import { api, bridge, q } from '../api';
+import { cx, ErrorLine, toast } from '../components';
 import type { RunArtifactView } from '../types';
 
 /** What a list of kept files needs of each: the run record's brief, or a review artifact's. */
@@ -43,6 +43,56 @@ function useView(run: string, name: string, on: boolean) {
     };
   }, [run, name, on]);
   return { data, error };
+}
+
+/**
+ * **Download**: saves the kept file where the person picks, through the main process, which
+ * reads its bytes from swarmupd. Closing the save dialog does nothing.
+ */
+export function DownloadButton({
+  run,
+  name,
+  label = false,
+}: {
+  run: string;
+  name: string;
+  /** Shows the word next to the icon. */
+  label?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      const res = await bridge().saveArtifact(run, name);
+      if (res.ok) toast(`Saved ${name} to ${res.data?.file ?? 'the folder you picked'}`);
+      else if (res.error !== 'cancelled') {
+        toast(`Cannot save ${name}: ${res.error ?? 'unknown error'}`, { tone: 'bad' });
+      }
+    } catch (err) {
+      toast(`Cannot save ${name}: ${err instanceof Error ? err.message : String(err)}`, {
+        tone: 'bad',
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      data-run-artifact-download={name}
+      disabled={busy}
+      onClick={() => void save()}
+      title={`Download ${name}`}
+      aria-label={label ? undefined : `Download ${name}`}
+      className={cx(
+        'inline-flex shrink-0 items-center gap-1 rounded-md text-fg-3 hover:bg-white/6 hover:text-fg disabled:opacity-40',
+        label ? 'h-7 px-2.5 text-xs ring-1 ring-white/8 ring-inset' : 'p-1',
+      )}
+    >
+      {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+      {label && 'Download'}
+    </button>
+  );
 }
 
 function Reading() {
@@ -84,7 +134,10 @@ function KeptImage({ run, file }: { run: string; file: KeptFile }) {
           />
         </button>
       ) : data ? (
-        <div className="p-2 text-xs text-fg-3">Too large to show here: {data.file}</div>
+        <div className="flex flex-col items-start gap-1.5 p-2 text-xs text-fg-3">
+          Too large to show here.
+          <DownloadButton run={run} name={file.name} label />
+        </div>
       ) : (
         <Reading />
       )}
@@ -93,12 +146,13 @@ function KeptImage({ run, file }: { run: string; file: KeptFile }) {
           {file.label ?? file.name}
         </span>
         <span className="shrink-0 text-fg-4">{sizeText(file.bytes)}</span>
+        <DownloadButton run={run} name={file.name} />
       </figcaption>
     </figure>
   );
 }
 
-/** One other file: a row that opens to its text, or to where swarmupd keeps it. */
+/** One other file: a row that opens to its text, or to Download for a file it cannot show. */
 function KeptRow({ run, file }: { run: string; file: KeptFile }) {
   const [open, setOpen] = useState(false);
   const { data, error } = useView(run, file.name, open);
@@ -108,24 +162,29 @@ function KeptRow({ run, file }: { run: string; file: KeptFile }) {
       data-run-artifact={file.name}
       className="rounded-lg border border-white/7 bg-white/[0.02] text-sm"
     >
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-white/[0.03]"
-      >
-        {open ? (
-          <ChevronDown size={13} className="text-fg-4" />
-        ) : (
-          <ChevronRight size={13} className="text-fg-4" />
-        )}
-        <Icon size={13} className="shrink-0 text-fg-4" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2">{file.name}</span>
-        {file.label && <span className="truncate text-xs text-fg-4">{file.label}</span>}
-        <span className="shrink-0 font-mono text-[11px] text-fg-4">
-          {file.type} · {sizeText(file.bytes)}
-        </span>
-      </button>
+      <div className="flex items-center gap-1 pr-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-left hover:bg-white/[0.03]"
+        >
+          {open ? (
+            <ChevronDown size={13} className="text-fg-4" />
+          ) : (
+            <ChevronRight size={13} className="text-fg-4" />
+          )}
+          <Icon size={13} className="shrink-0 text-fg-4" />
+          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2">
+            {file.name}
+          </span>
+          {file.label && <span className="truncate text-xs text-fg-4">{file.label}</span>}
+          <span className="shrink-0 font-mono text-[11px] text-fg-4">
+            {file.type} · {sizeText(file.bytes)}
+          </span>
+        </button>
+        <DownloadButton run={run} name={file.name} />
+      </div>
       {open && (
         <div className="px-3 pb-2">
           {error ? (
@@ -141,14 +200,20 @@ function KeptRow({ run, file }: { run: string; file: KeptFile }) {
                 {data.text}
               </pre>
               {data.cut && (
-                <div className="mt-1 text-[11px] text-fg-4">
-                  Cut at 256 KB; the whole file is at {data.file}
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-fg-4">
+                  Cut at 256 KB; download it for the whole file.
+                  <DownloadButton run={run} name={file.name} label />
                 </div>
               )}
             </>
           ) : (
-            <div data-run-artifact-file className="text-xs text-fg-3">
-              Kept at <span className="font-mono text-fg-2 select-all">{data.file}</span>
+            <div
+              data-run-artifact-file
+              className="flex flex-wrap items-center gap-2 text-xs text-fg-3"
+              title={`Kept at ${data.file}`}
+            >
+              <span>The app does not show this kind of file. Download it to open it.</span>
+              <DownloadButton run={run} name={file.name} label />
             </div>
           )}
         </div>

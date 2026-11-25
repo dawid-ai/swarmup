@@ -86,6 +86,14 @@ interface Bridge {
     name: string,
     data: Uint8Array,
   ) => Promise<{ ok: boolean; data?: { dir: string; file: string }; error?: string }>;
+  /**
+   * Download on a file a run kept: asks where to save it in a system dialog and writes its bytes
+   * there. Resolves `cancelled` when the person closes the dialog.
+   */
+  saveArtifact: (
+    run: string,
+    name: string,
+  ) => Promise<{ ok: boolean; data?: { file: string }; error?: string }>;
   setup: (
     me: string,
     roots: string[],
