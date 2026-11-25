@@ -3,7 +3,7 @@
 # -Action remove. It edits only HKCU\Environment\Path and never the machine-wide PATH.
 #
 # Ownership: add appends only when no entry already names the folder (any case, with or without a
-# trailing backslash), and records under HKCU\Software\Agent Ops the value it found (PathBefore)
+# trailing backslash), and records under HKCU\Software\SwarmUp the value it found (PathBefore)
 # and the exact text it appended (PathSuffix). Remove takes out only bytes it can prove are that
 # appended text: the value must still start with PathBefore + PathSuffix. If anything at or before
 # that point changed, remove leaves PATH as it is. An entry the person had before installing, or
@@ -15,7 +15,7 @@ param(
   [Parameter(Mandatory = $true)][string]$Dir,
   # Tests point these at scratch keys under HKCU\Software and skip the broadcast.
   [string]$EnvKey = 'Environment',
-  [string]$StateKey = 'Software\Agent Ops',
+  [string]$StateKey = 'Software\SwarmUp',
   [switch]$NoBroadcast
 )
 $ErrorActionPreference = 'Stop'
