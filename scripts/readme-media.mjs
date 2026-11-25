@@ -2,7 +2,10 @@
 // moving tasks across the board. Everything runs against scratch data roots in the temp folder,
 // with a scratch swarmupd whose "claude" and "codex" runtimes are a scripted stand-in (fake-agent.mjs,
 // written into the scratch folder), so no real agent starts and no user config or app data is
-// touched.
+// touched. The screenshots also cover the closed loop: workflows with a gate, triggers and merge
+// checks, a benchmark that a stand-in `codex` (first on PATH for that one command) runs, a score
+// breakdown, a proposed change to an agent, and the project map. The app shows the scratch
+// folder's path as `~`.
 //
 //   node scripts/readme-media.mjs                 # screenshots and animation into docs/media/
 //   node scripts/readme-media.mjs --only shots    # or --only anim
@@ -87,6 +90,59 @@ await sleep(plan.hold ?? 1500);
 if (!codex) say({ type: 'result', subtype: 'success', usage: total, result: 'Done.' });
 `;
 
+/**
+ * The stand-in `codex` the benchmark runs, from a folder put first on PATH for that one command:
+ * it reads the prompt, makes the entry's change in the worktree on some attempts only, so repeats
+ * differ, and prints Codex `--json` lines with token usage, so the run gets an estimated cost.
+ */
+const FAKE_CODEX = `import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+const argv = process.argv.slice(2);
+const cwd = argv[argv.indexOf('-C') + 1] || process.cwd();
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (d) => (prompt += d));
+await new Promise((r) => { process.stdin.on('end', r); setTimeout(r, 3000); });
+const say = (o) => console.log(JSON.stringify(o));
+const edit = (rel, add) => {
+  const f = join(cwd, rel);
+  mkdirSync(dirname(f), { recursive: true });
+  let text = '';
+  try { text = readFileSync(f, 'utf8'); } catch {}
+  writeFileSync(f, text + add + '\\n');
+  say({ type: 'item.completed', item: { type: 'file_change', changes: [{ path: rel, kind: 'update' }] } });
+};
+const usage = () => ({
+  input_tokens: 40000 + Math.floor(Math.random() * 60000),
+  cached_input_tokens: 20000,
+  output_tokens: 2000 + Math.floor(Math.random() * 6000),
+});
+say({ type: 'thread.started', thread_id: 'demo' });
+say({ type: 'turn.started' });
+for (const c of ['ls src', 'cat src/' + (prompt.match(/\\b(cart|search|coupon)\\b/i)?.[1] ?? 'cart').toLowerCase() + '.js']) {
+  say({ type: 'item.completed', item: { type: 'command_execution', command: c, exit_code: 0 } });
+}
+// Which attempts of an entry make each change, so every render shows the same spread.
+const attempt = (key) => {
+  const f = join(dirname(process.argv[1]), 'attempts-' + key);
+  let n = 0;
+  try { n = Number(readFileSync(f, 'utf8')); } catch {}
+  writeFileSync(f, String(n + 1));
+  return n;
+};
+if (/badge/i.test(prompt)) {
+  attempt('cart');
+  edit('src/cart.js', 'export const afterRemove = (q) => q.invalidate("cart");');
+} else if (/out-of-stock/i.test(prompt)) {
+  if (attempt('search') !== 1) edit('src/search.js', 'export const rank = (a, b) => Number(b.inStock) - Number(a.inStock);');
+} else if (/expired/i.test(prompt)) {
+  const n = attempt('coupon');
+  if (n === 0) edit('src/coupon.js', 'export const valid = (c, now) => !c.expires || c.expires > now;');
+  if (n < 2) edit('test/coupon.test.js', 'test("expired codes are refused", () => {});');
+}
+say({ type: 'turn.completed', usage: usage() });
+`;
+
 /** A fresh scratch workspace: two project repos, a user config, a state dir, a scratch swarmupd. */
 function workspace(tag) {
   const base = mkdtempSync(join(tmpdir(), `swarmup-readme-${tag}-`));
@@ -132,6 +188,7 @@ function workspace(tag) {
       '    codex:qa: {}',
       '    claude:reviewer: {}',
       '    claude:pm: {}',
+      '    claude:improver: {}',
       '  chat:',
       '    agent: claude:pm',
       '    mentions: false',
@@ -261,6 +318,12 @@ function seed(w) {
     XE,
     '-m',
     'Three plans, annual saves 20 %. Keep the comparison table below the fold.',
+    '--done-when',
+    'Annual prices show 20 % off on the plan cards and in the table',
+    '--done-when',
+    '{ kind: check, check: regex, args: { path: src/pricing/toggle.tsx, pattern: aria-pressed } }',
+    '--done-when',
+    'The toggle works with the keyboard',
   );
   T.images = task(
     'Serve responsive product images (srcset, AVIF)',
@@ -638,14 +701,16 @@ async function history(w, T, D) {
       'docs-site',
     ],
   ]);
-  // swarmupd refuses a launch while its sign-in check at start still runs, so the launch is tried
-  // again until the check has answered.
+  // swarmupd refuses a launch while its sign-in check at start still runs, and Codex launches
+  // while it repairs what Codex sessions left, so the launch is tried again until both are done.
   const launch = async (agent, task) => {
     for (let tries = 0; ; tries++) {
       try {
         return swarmup(ME, 'launch', agent, '--task', task);
       } catch (err) {
-        if (tries >= 60 || !/checks whether/.test(String(err.stderr))) throw err;
+        if (tries >= 60 || !/checks whether|runs start after that/.test(String(err.stderr))) {
+          throw err;
+        }
         await sleep(1000);
       }
     }
@@ -783,6 +848,411 @@ function writeChat(w, T) {
   );
 }
 
+/** Writes `rel` under the storefront's task store (`.swarmup/`), making its folders. */
+function storeFile(w, rel, lines) {
+  const f = join(w.shop, '.swarmup', ...rel.split('/'));
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, Array.isArray(lines) ? lines.join('\n') + '\n' : lines);
+}
+
+/**
+ * The closed loop around the queue, for the newer views: workflows with gates, triggers and merge
+ * checks in git, a project map, a finished benchmark with repeats and an estimated cost, and a
+ * proposed change to an agent. Runs after the run history, so the runs above stay as they are.
+ */
+function closedLoop(w, T) {
+  const { swarmup } = w;
+  const templates = join(top, 'packages', 'core', 'templates');
+  const commit = (...a) =>
+    execFileSync('git', ['-c', 'user.name=demo', '-c', 'user.email=demo@example.com', ...a], {
+      cwd: w.shop,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  // Definitions as code: the team settings, merge checks, workflows, a rubric and triggers.
+  storeFile(w, 'swarm.yaml', [
+    'swarmup_defs: 1',
+    'runtimes:',
+    '  claude: { model: opus }',
+    '  codex: { model: gpt-5.6-terra, effort: medium }',
+    'checks:',
+    '  test: npm test',
+    '  lint:',
+    '    run: npm run lint',
+    "    paths: ['src/**', '!docs/**']",
+    '    description: Lint the code',
+    'improvement:',
+    '  agent: claude:improver',
+  ]);
+  for (const wf of ['feature', 'bugfix', 'campaign-launch']) {
+    storeFile(w, `workflows/${wf}.yaml`, readFileSync(join(templates, 'workflows', `${wf}.yaml`)));
+  }
+  storeFile(w, 'rubrics/brand-voice.md', [
+    '---',
+    'id: brand-voice',
+    'scale: { min: 0, max: 4 }',
+    'criteria:',
+    '  - id: voice',
+    '    describe: Sounds like the brand guide, plain and specific.',
+    '  - id: claims',
+    '    describe: Every claim about price or delivery matches the offer.',
+    'inputs: [task, diff]',
+    '---',
+    '',
+    '# Brand voice',
+    '',
+    'Score each criterion from 0 (off brand) to 4 (could ship as is).',
+  ]);
+  storeFile(w, 'triggers/standup.yaml', [
+    "cron: '0 9 * * mon-fri'",
+    'action: run',
+    'agent: claude:pm',
+    'prompt: Post the standup in the general channel.',
+  ]);
+  storeFile(w, 'triggers/nightly-e2e.yaml', [
+    "at: '02:00'",
+    'action: run',
+    'agent: codex:qa',
+    'prompt: Run the guest checkout suite and file a finding for each failure.',
+  ]);
+  storeFile(w, 'triggers/github-issues.yaml', [
+    'webhook:',
+    '  verify: hmac',
+    '  secret: GITHUB_WEBHOOK_SECRET',
+    'action: run',
+    'agent: claude:pm',
+    'prompt: Triage the GitHub issue in the payload.',
+  ]);
+  swarmup(null, 'triggers', 'on', '--root', 'storefront', '--trust');
+  swarmup(null, 'defs', 'trust', '--root', 'storefront');
+  // A stand-in value, so the webhook card shows the secret as set; the listener stays off.
+  writeFileSync(
+    join(w.base, 'secrets.yml'),
+    'GITHUB_WEBHOOK_SECRET: demo-only-not-a-real-value-0000\n',
+  );
+
+  // A feature workflow started and approved, its spec done: the gate waits in the Inbox.
+  const started = swarmup(
+    ME,
+    'workflow',
+    'start',
+    'feature',
+    '--param',
+    'feature=Saved carts across devices',
+  );
+  const milestone = id(started);
+  const made = swarmup(ME, 'plan', 'approve', milestone);
+  const spec = [...made.matchAll(/[A-Z]+-\d{4}/g)].map((m) => m[0]).find((t) => t !== milestone);
+  if (spec) {
+    swarmup(CE, 'start', spec, 'Read the cart store first, then write the spec');
+    swarmup(CE, 'done', spec, 'Spec in the thread: merge on sign-in, newest quantity wins.');
+  }
+
+  // A project map: what each part of the shop is for, where it lives, and how parts link. The
+  // files the nodes cover exist, so the map check passes.
+  const node = (rel, front, body = []) =>
+    storeFile(w, `map/${rel}`, ['---', ...front, '---', '', ...body]);
+  for (const f of [
+    'cart.js',
+    'search.js',
+    'coupon.js',
+    'checkout/index.js',
+    'catalog/index.js',
+    'images/index.js',
+    'payments/webhooks.js',
+  ]) {
+    mkdirSync(dirname(join(w.shop, 'src', f)), { recursive: true });
+    writeFileSync(join(w.shop, 'src', f), `// ${f}\n`);
+  }
+  // A review refuses a checkout with uncommitted code, so the shop's code is committed.
+  commit('add', 'src');
+  commit('commit', '-q', '-m', 'Shop code');
+  swarmup(null, 'map', 'init', '--type', 'code');
+  node('index.md', [
+    'kind: root',
+    'type: code',
+    'summary: A web shop with checkout, search, a pricing page and payment webhooks',
+    'links: [checkout, cart, search, catalog, payments]',
+  ]);
+  node(
+    'checkout.md',
+    [
+      'kind: flow',
+      'summary: Guest and signed-in checkout, from cart to paid order',
+      'covers: [src/checkout/]',
+      'links: [cart, payments, coupons]',
+    ],
+    ['# Checkout', '', 'Totals are recomputed on every `input` event; Safari fires `change` late.'],
+  );
+  node('coupons.md', [
+    'kind: module',
+    "summary: 'Discount codes: validation, expiry, stacking rules'",
+    'covers: [src/coupon.js]',
+    'links: [checkout]',
+  ]);
+  node('cart.md', [
+    'kind: module',
+    'summary: The cart store, the badge count and saved carts',
+    'covers: [src/cart.js]',
+    'links: [catalog]',
+  ]);
+  node('search.md', [
+    'kind: module',
+    'summary: Product search and ranking; in-stock items rank first',
+    'covers: [src/search.js]',
+    'links: [catalog]',
+  ]);
+  node('catalog.md', [
+    'kind: module',
+    'summary: Products, prices, stock and responsive images',
+    'covers: [src/catalog/, src/images/]',
+  ]);
+  node('payments.md', [
+    'kind: module',
+    'summary: Payment provider calls and webhook retries with backoff',
+    'covers: [src/payments/]',
+    'links: [checkout]',
+  ]);
+  swarmup(null, 'map', 'index');
+
+  // A benchmark: three real bugs replayed three times by a stand-in Codex in a small app repo.
+  const app = join(w.base, 'shop-app');
+  mkdirSync(join(app, 'src'), { recursive: true });
+  for (const f of ['cart.js', 'search.js', 'coupon.js']) {
+    writeFileSync(join(app, 'src', f), `// ${f}\n`);
+  }
+  writeFileSync(join(app, 'package.json'), '{ "name": "shop-app", "private": true }\n');
+  const git = (...a) =>
+    execFileSync('git', ['-c', 'user.name=demo', '-c', 'user.email=demo@example.com', ...a], {
+      cwd: app,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  git('init', '-q');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'Shop app');
+  const set = (title, body, checks) => [
+    `  - id: ${title[0]}`,
+    '    base: { ref: HEAD }',
+    '    task:',
+    '      type: bug',
+    `      title: ${title[1]}`,
+    `      body: ${body}`,
+    '    done_when:',
+    ...checks.map((c) => `      - ${c}`),
+  ];
+  storeFile(w, 'benchmarks/storefront-bugs.yaml', [
+    'id: storefront-bugs',
+    'description: Bugs from the storefront queue, replayed against their base commit',
+    'defaults:',
+    '  agent: codex:engineer',
+    '  repeat: 3',
+    'entries:',
+    ...set(
+      ['CART-12', 'Cart badge count is stale after removing an item'],
+      'The badge reads a cached count. Refresh it after a remove.',
+      ['{ kind: check, check: regex, args: { path: src/cart.js, pattern: invalidate } }'],
+    ),
+    ...set(
+      ['SRCH-7', 'Search ranks out-of-stock products first'],
+      'Rank in-stock products before out-of-stock ones.',
+      ['{ kind: check, check: regex, args: { path: src/search.js, pattern: inStock } }'],
+    ),
+    ...set(
+      ['CPN-3', 'Coupon field accepts expired codes'],
+      'SUMMER24 still applies. Refuse expired codes in the browser too, with a test.',
+      [
+        '{ kind: check, check: regex, args: { path: src/coupon.js, pattern: expires } }',
+        '{ kind: check, check: file-exists, args: { path: test/coupon.test.js } }',
+      ],
+    ),
+  ]);
+  const bin = join(w.base, 'fake-bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'fake-codex.mjs'), FAKE_CODEX);
+  writeFileSync(
+    join(bin, 'codex.cmd'),
+    `@"${process.execPath}" "${join(bin, 'fake-codex.mjs')}" %*\r\n`,
+  );
+  writeFileSync(
+    join(bin, 'codex'),
+    `#!/bin/sh\nexec "${process.execPath}" "${join(bin, 'fake-codex.mjs')}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  // Only this command sees the stand-in first on PATH; the real codex is never started.
+  const benchEnv = Object.fromEntries(
+    Object.entries(w.env).filter(([k]) => k.toUpperCase() !== 'PATH'),
+  );
+  benchEnv.PATH = [bin, process.env.PATH ?? process.env.Path ?? ''].join(
+    process.platform === 'win32' ? ';' : ':',
+  );
+  const benchId = 'storefront-bugs-codex';
+  execFileSync(
+    process.execPath,
+    [
+      cli,
+      'bench',
+      'run',
+      join(w.shop, '.swarmup', 'benchmarks', 'storefront-bugs.yaml'),
+      '--repo',
+      app,
+      '--agent',
+      XE,
+      '--model',
+      'gpt-5.6-terra',
+      '--repeat',
+      '3',
+      '--max-usd',
+      '5',
+      '--out',
+      join(w.state, 'bench', benchId),
+    ],
+    { cwd: w.shop, env: benchEnv, stdio: 'ignore', windowsHide: true, timeout: 300_000 },
+  );
+
+  // Review rounds for codex:engineer: the accessibility pass goes through on its second review,
+  // dark mode on its third, so its score breakdown has a pass and a fail.
+  swarmup(XE, 'start', T.a11y, 'Move focus to the first invalid field');
+  swarmup(XE, 'review', T.a11y, 'Focus moves to the first invalid field after submit.', '--to', RV);
+  swarmup(RV, 'verdict', T.a11y, 'approve', 'Keyboard and VoiceOver pass.');
+  swarmup(XE, 'start', T.dark, 'CSS variables for the theme, then a toggle in the header');
+  swarmup(XE, 'review', T.dark, 'Dark theme and toggle in the header.', '--to', RV);
+  swarmup(RV, 'verdict', T.dark, 'changes', 'Sale badges are unreadable on dark: 2.1:1 contrast.');
+  swarmup(XE, 'start', T.dark, 'Dark palette for the sale badges');
+  swarmup(XE, 'review', T.dark, 'Badges use the dark palette now.', '--to', RV);
+  swarmup(RV, 'verdict', T.dark, 'changes', 'The toggle has no label for screen readers.');
+  swarmup(XE, 'start', T.dark, 'Label the toggle');
+  swarmup(XE, 'review', T.dark, 'The toggle has an aria-label and a focus ring.', '--to', RV);
+  swarmup(RV, 'verdict', T.dark, 'approve', 'Contrast and focus check out.');
+
+  // A proposed change to codex:engineer, from the improver, after its UI work kept bouncing.
+  storeFile(w, 'agents/codex-engineer.md', [
+    '---',
+    'id: codex:engineer',
+    'name: Engineer',
+    'description: Features and fixes in the storefront, delivered as reviewed branches',
+    'status: active',
+    '---',
+    '',
+    '# Engineer',
+    '',
+    '## Definition of done',
+    '',
+    'Tests pass, then `swarmup review <ID>` to a reviewer from another provider.',
+  ]);
+  const improve = id(
+    swarmup(
+      ME,
+      'new',
+      'Improve codex:engineer: UI work bounces on accessibility',
+      '--label',
+      'improve',
+      '--to',
+      'claude:improver',
+      '-m',
+      `Scorers: review-rounds\nEvidence: ${T.a11y} and ${T.dark} went back for focus, labels and contrast.`,
+    ),
+  );
+  const overlay = join(w.base, 'overlay');
+  mkdirSync(join(overlay, 'agents'), { recursive: true });
+  writeFileSync(
+    join(overlay, 'agents', 'codex-engineer.md'),
+    [
+      '---',
+      'id: codex:engineer',
+      'name: Engineer',
+      'description: Features and fixes in the storefront, delivered as reviewed branches',
+      'status: active',
+      '---',
+      '',
+      '# Engineer',
+      '',
+      '## Definition of done',
+      '',
+      'Tests pass, then `swarmup review <ID>` to a reviewer from another provider.',
+      '',
+      'On a task labeled `ui` or `a11y`, before review: run axe on the changed pages, tab through',
+      'every form you touched, and check where focus lands after a failed submit. Say what you',
+      'checked in the review message.',
+      '',
+    ].join('\n'),
+  );
+  swarmup(
+    'claude:improver',
+    'defs',
+    'propose',
+    improve,
+    '--dir',
+    overlay,
+    '--name',
+    'engineer-a11y-pass',
+    '--agent',
+    XE,
+    '--scorer',
+    'review-rounds',
+    '-m',
+    'Reviews send UI work back for keyboard and focus problems: check them before review.',
+  );
+  // The definitions are committed, so run stamps name a commit instead of "dirty".
+  commit('add', '-A');
+  commit('commit', '-q', '-m', 'Storefront');
+  return { benchId };
+}
+
+/**
+ * What the screenshot run does on a view after it opens, for views that need a click or a scroll
+ * first: the page script waits for its element, acts, then gives the result time to load.
+ */
+/** Views that read more before they show: the screenshot run waits longer on them. */
+const SLOW_VIEWS = ['bench', 'map', 'workflows', 'automation', 'reports', 'agents'];
+
+const ACTIONS = {
+  'reports:breakdown': `
+    const want = ['codex:engineer/review-rounds', 'codex:engineer/criteria-pass-rate'];
+    for (let i = 0; i < 60; i++) {
+      const cells = [...document.querySelectorAll('[data-score-cell]')];
+      const cell = want.map((w) => cells.find((c) => c.dataset.scoreCell === w)).find(Boolean)
+        ?? cells.find((c) => c.dataset.scoreCell.startsWith('codex:engineer/')) ?? cells[0];
+      if (cell) { cell.click(); break; }
+      await new Promise((r) => setTimeout(r, 100));
+    }`,
+  'agents:proposals': `
+    for (let i = 0; i < 60; i++) {
+      const el = document.querySelector('[data-testid="proposals"]');
+      if (el && el.querySelector('[data-testid^="proposal-"]')) {
+        el.scrollIntoView({ block: 'start' });
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }`,
+};
+
+/**
+ * A page script that shows the scratch folder's path as `~` wherever the app prints it (the map
+ * folder, run folders), in text and in tooltips, now and as views change.
+ */
+function scrubScript(base) {
+  const forms = [...new Set([base, base.replace(/\\/g, '/')])];
+  return `(() => {
+    const forms = ${JSON.stringify(forms)};
+    const fix = (s) => forms.reduce((t, f) => t.split(f).join('~'), s);
+    const walk = (root) => {
+      const it = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = it.nextNode(); n; n = it.nextNode()) {
+        if (forms.some((f) => n.nodeValue.includes(f))) n.nodeValue = fix(n.nodeValue);
+      }
+      for (const el of root.querySelectorAll('[title]')) {
+        const t = el.getAttribute('title');
+        if (forms.some((f) => t.includes(f))) el.setAttribute('title', fix(t));
+      }
+    };
+    walk(document.body);
+    new MutationObserver(() => walk(document.body)).observe(document.body, {
+      subtree: true, childList: true, characterData: true,
+    });
+  })()`;
+}
+
 /**
  * A wrapper app in the scratch folder that resizes the window and turns off the card rise
  * animation, then imports the real main process (packages/desktop/dist/main.js), so the build
@@ -800,10 +1270,32 @@ function wrapper(w) {
     join(dir, 'main.mjs'),
     [
       "import { app } from 'electron';",
+      `const ACTIONS = ${JSON.stringify(ACTIONS)};`,
+      `const SLOW = ${JSON.stringify(SLOW_VIEWS)};`,
+      // The app waits 1.2 s on each view before it keeps the frame. A view that loads more, or
+      // that an action clicks through, gets longer: the next 1.2 s wait after its navigate.
+      'const realTimeout = globalThis.setTimeout;',
+      'let longer = 0;',
+      'globalThis.setTimeout = (fn, ms, ...rest) => {',
+      '  if (longer && ms === 1200) { ms = longer; longer = 0; }',
+      '  return realTimeout(fn, ms, ...rest);',
+      '};',
       "app.on('browser-window-created', (_e, win) => {",
       `  win.setSize(${size[0]}, ${size[1]});`,
       // Cards rise in over 0.32 s when they change column; a frame taken then shows a gap.
       "  win.webContents.on('dom-ready', () => win.webContents.insertCSS('.animate-rise, .animate-fade { animation: none !important; }'));",
+      // The scratch folder's path would name the user's profile: show it as ~ instead.
+      `  const scrub = ${JSON.stringify(scrubScript(w.base))};`,
+      "  win.webContents.on('dom-ready', () => win.webContents.executeJavaScript(scrub).catch(() => {}));",
+      '  const send = win.webContents.send.bind(win.webContents);',
+      '  win.webContents.send = (channel, msg, ...rest) => {',
+      '    send(channel, msg, ...rest);',
+      "    if (channel !== 'swarmup:navigate' || !msg) return;",
+      "    const key = msg.id === undefined ? msg.view : msg.view + ':' + msg.id;",
+      '    const js = ACTIONS[key];',
+      '    if (js || SLOW.includes(msg.view)) longer = js ? 5000 : 3500;',
+      '    if (js) realTimeout(() => win.webContents.executeJavaScript(`(async () => {${js}})()`).catch(() => {}), 300);',
+      '  };',
       '});',
       `await import('${main}');`,
       '',
@@ -885,10 +1377,18 @@ const SHOTS = {
   chat: 'chat.png',
   runs: 'runs.png',
   activity: 'activity.png',
+  workflows: 'workflows.png',
+  automation: 'automation.png',
+  bench: 'benchmark.png',
+  'reports-breakdown': 'breakdown.png',
+  'agents-proposals': 'proposals.png',
+  map: 'map.png',
 };
 
 async function screenshots() {
   const { w, T } = await prepare('shots');
+  console.log('shots: workflows, triggers, map, benchmark, proposal');
+  const { benchId } = closedLoop(w, T);
   // Two live runs while the app looks: Claude on the images, QA on the e2e suite.
   w.setPlan(
     T.images,
@@ -920,6 +1420,13 @@ async function screenshots() {
     'knowledge',
     'schedules',
     'reports',
+    'workflows',
+    'automation',
+    `bench:${benchId}`,
+    'reports:breakdown',
+    'agents:proposals',
+    'map:graph:storefront',
+    'map:storefront#checkout',
   ];
   console.log('shots: rendering');
   const code = await launchApp(w, shots, views);
@@ -928,7 +1435,13 @@ async function screenshots() {
   console.log(`  exit ${code}, problems: ${problems.length ? problems.join(' | ') : 'none'}`);
   mkdirSync(out, { recursive: true });
   for (const [raw, name] of Object.entries(SHOTS)) {
-    const file = { task: `task-${T.pricing}`, runs: `runs-${run}` }[raw] ?? raw;
+    const file =
+      {
+        task: `task-${T.pricing}`,
+        runs: `runs-${run}`,
+        bench: `bench-${benchId}`,
+        map: 'map-graph-storefront',
+      }[raw] ?? raw;
     const from = join(shots, `${file}.png`);
     if (existsSync(from)) copyFileSync(from, join(out, name));
   }
