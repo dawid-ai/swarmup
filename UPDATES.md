@@ -3,6 +3,11 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.26 (2026-11-25)
+
+- **See what a run made.** Screenshots, reports and other files a run produces are kept with the run. Open them under **Runs > Artifacts**, and in the task's **Work** section when the run sent the work for review.
+- **Cleanup.** Leftovers from before the rename to SwarmUp are gone, including the automatic move of data from old installs.
+
 ## v0.3.0-beta.25 (2026-11-24)
 
 - **Updates always finish.** If SwarmUp is still syncing your projects when an update installs, the update now waits for it to finish instead of giving up.

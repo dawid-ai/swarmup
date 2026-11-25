@@ -6,6 +6,25 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.26 (2026-11-25)
+
+### Added
+
+- Runs keep what they produce besides commits. A run declares a file with
+  `swarmup run artifact PATH --label TEXT`, or writes it into `$SWARMUP_SCRATCH/artifacts/`, and
+  swarmupd copies it to `artifacts/<run-id>/` in its state folder with a manifest when the run
+  ends, within `swarmupd.artifacts.max_files` (20) and `max_mb` (25), for `keep_days` (30).
+- `swarmup review` from a run attaches the run's kept files, `swarmup runs show RUN` lists them,
+  and the desktop app shows them in the **Runs** view (**Artifacts**: a gallery of images and a
+  list of other files) and in the task panel's **Work** section.
+- Rubrics take a new `artifacts` input: the judge gets the kept text files and the names, types
+  and sizes of the others.
+
+### Removed
+
+- Installs from before the rename to SwarmUp are no longer migrated automatically, and the
+  `swarmup migrate` command is gone.
+
 ## 0.3.0-beta.25 (2026-11-24)
 
 ### Added
