@@ -2640,7 +2640,7 @@ const COMMANDS: Record<string, Command> = {
       artifact: { type: 'string', multiple: true },
       ...MESSAGE_OPTIONS,
     },
-    run: async (ctx) => {
+    run: (ctx) => {
       const ref = arg(ctx, 0, 'task id');
       const msg = message(ctx, 1, true);
       const refused = uncommittedReview(ctx, ref, msg);
@@ -2655,19 +2655,25 @@ const COMMANDS: Record<string, Command> = {
       );
       if (note) ctx.io.err(`note: ${note}`);
       const named = reviewArtifacts(ctx, ws.resolve(ref).root.name, source);
-      // From inside a run, the files it kept go with the review (W4).
-      const kept = await keptRunArtifacts(ctx);
-      const artifacts = [...named.slice(0, MAX_REVIEW_ARTIFACTS - kept.length), ...kept];
-      if (artifacts.length > 0) source.artifacts = artifacts;
       // The pair as the message's last line too, which the review diff reads (AO-0396).
       const body = line ? `${msg.replace(/\s+$/, '')}\n\n${line}\n` : msg;
-      return printAct(
-        ctx,
-        ws.review(ref, body, str(ctx.opts.to), str(ctx.opts.recommend), {
-          human: ctx.opts.human === true,
-          source,
-        }),
-      );
+      const send = (kept: ReviewArtifact[]): number | void => {
+        const artifacts = [...named.slice(0, MAX_REVIEW_ARTIFACTS - kept.length), ...kept];
+        if (artifacts.length > 0) source.artifacts = artifacts;
+        return printAct(
+          ctx,
+          ws.review(ref, body, str(ctx.opts.to), str(ctx.opts.recommend), {
+            human: ctx.opts.human === true,
+            source,
+          }),
+        );
+      };
+      // From inside a run, the files it kept go with the review (W4); that asks swarmupd, so
+      // only then does the command wait. Outside a run it stays synchronous.
+      if (envVar(ctx.io.env, 'RUN') && readDaemon(ctx.io.env)) {
+        return keptRunArtifacts(ctx).then(send);
+      }
+      return send([]);
     },
   },
   artifact: {
