@@ -306,8 +306,8 @@ has closed children and no brief), a hint names them; they are the ones the PM's
 (see [Goal briefs](protocol.md#goal-briefs)). `brief` events show in the thread.
 
 **Work.** When the task's latest review names artifacts (see
-[Review artifacts](protocol.md#review-artifacts)), the task panel shows **Work**: each piece the
-reviewer reads, at the reviewed commit, which the heading names.
+[Content work and publishing](protocol.md#content-work-and-publishing)), the task panel shows
+**Work**: each piece the reviewer reads, at the reviewed commit, which the heading names.
 
 - A Markdown file renders as it reads, its front matter shown as plain fields. Other text files
   show as text. The first Markdown file and the first images open on their own; click a file to
