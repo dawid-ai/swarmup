@@ -1315,6 +1315,9 @@ describe('a review request for code left uncommitted (AO-0136)', () => {
         SWARMUP_AGENT: 'claude:engineer',
         SWARMUP_RUN: runId,
         SWARMUP_RUN_STATE_DIR: state,
+        // Without its own state folder, the review would find a swarmupd running on this
+        // machine and wait on it, returning a promise instead of the exit code.
+        SWARMUP_STATE_DIR: state,
       } as NodeJS.ProcessEnv;
       const quiet = () => {};
       // The run holds the task under its own claim, not the one `started` made without a run.
