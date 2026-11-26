@@ -3,6 +3,10 @@
 What changed in each release, for people who use the app. Every change, including the small
 ones, is in [CHANGELOG.md](CHANGELOG.md).
 
+## v0.3.0-beta.28 (2026-11-26)
+
+- **Typing in the workflow form works.** List fields in a workflow's **Form** tab (**Options**, **After**, **Labels**, **Gate answers**) keep the commas, line breaks and spaces you type. Before, they disappeared as you typed.
+
 ## v0.3.0-beta.27 (2026-11-25)
 
 - **Download what a run made.** Every file a run kept has a **Download** button, including files the app can't show.

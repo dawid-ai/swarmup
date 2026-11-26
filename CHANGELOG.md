@@ -6,6 +6,14 @@ in [UPDATES.md](UPDATES.md); this file lists every change.
 Unreleased changes are in [`changelog.d/`](changelog.d/README.md). `scripts/fold-changelog.mjs` folds
 them in at release time (see [RELEASING.md](RELEASING.md)).
 
+## 0.3.0-beta.28 (2026-11-26)
+
+### Fixed
+
+- The workflow editor's **Form** tab keeps the comma, line break or space you type in list
+  fields (**Options**, **After**, **Labels**, **Gate answers**). Before, typing `unit, e2e` key by
+  key gave `unite2e`, and a second gate answer could only be pasted.
+
 ## 0.3.0-beta.27 (2026-11-25)
 
 ### Added
