@@ -266,8 +266,21 @@ function YField(props: {
     : props.list
       ? listText(props.value)
       : text(props.value);
-  const write = (v: string): void =>
-    props.set(props.path, props.lines ? textLines(v) : props.list ? textList(v) : v);
+  const parse = (v: string): unknown => (props.lines ? textLines(v) : props.list ? textList(v) : v);
+  // A list field shows what the person types, not the list read back: parsing each keystroke
+  // drops the comma, line break or space just typed, so `a, b` could not be typed key by key.
+  // The draft follows the value only when it changes elsewhere, such as in the YAML tab.
+  const listField = Boolean(props.lines || props.list);
+  const [draft, setDraft] = useState(shown);
+  useEffect(() => {
+    setDraft((d) => (JSON.stringify(parse(d)) === JSON.stringify(parse(shown)) ? d : shown));
+    // `parse` depends only on props.lines and props.list, which stay fixed for a field.
+  }, [shown]);
+  const write = (v: string): void => {
+    setDraft(v);
+    props.set(props.path, parse(v));
+  };
+  const current = listField ? draft : shown;
   // A typed value (a map) is left to the YAML tab: the form shows it but does not overwrite it.
   if (props.value && typeof props.value === 'object' && !Array.isArray(props.value)) {
     return (
@@ -279,9 +292,9 @@ function YField(props: {
   return (
     <Field label={props.label} hint={props.hint} className={props.className}>
       {props.area || props.lines ? (
-        <TextArea value={shown} onChange={write} rows={2} placeholder={props.placeholder} />
+        <TextArea value={current} onChange={write} rows={2} placeholder={props.placeholder} />
       ) : (
-        <Input value={shown} onChange={write} placeholder={props.placeholder} />
+        <Input value={current} onChange={write} placeholder={props.placeholder} />
       )}
     </Field>
   );

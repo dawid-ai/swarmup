@@ -288,6 +288,44 @@ describe('Workflows view', () => {
     expect((value.params as Record<string, Record<string, unknown>>).bug!.pattern).toBe('[a-z ]+');
   });
 
+  it('keeps the comma, line break or space just typed in a list field, key by key', async () => {
+    await mount(createElement(Workflows, { nav: nav() }));
+    await click(button('Edit'));
+    const form = document.querySelector('[data-testid="workflow-form"]')!;
+    const field = (scope: Element, label: string, tag: 'input' | 'textarea') =>
+      [...scope.querySelectorAll('label')]
+        .find((l) => l.textContent?.startsWith(label))!
+        .querySelector(tag)!;
+    // One input event per key, each with the text so far, as a person types it.
+    const keys = async (el: HTMLInputElement | HTMLTextAreaElement, s: string): Promise<void> => {
+      for (let i = 1; i <= s.length; i++) await type(el, el.value + s[i - 1]);
+    };
+    const options = field(form.querySelector('[data-param="bug"]')!, 'Options', 'input');
+    await keys(options, 'unit, e2e');
+    expect(options.value).toBe('unit, e2e');
+    const answers = field(
+      form.querySelector('[data-stage-form="ok"]')!,
+      'Gate answers',
+      'textarea',
+    );
+    await type(answers, '');
+    await keys(answers, 'yes now\nyes, with notes');
+    expect(answers.value).toBe('yes now\nyes, with notes');
+    await click(button('YAML'));
+    const yaml = document.querySelector(
+      'textarea[aria-label="Workflow YAML"]',
+    ) as HTMLTextAreaElement;
+    const value = readWorkflowYaml(yaml.value).value!;
+    expect((value.params as Record<string, Record<string, unknown>>).bug!.options).toEqual([
+      'unit',
+      'e2e',
+    ]);
+    expect(
+      ((value.stages as Array<Record<string, unknown>>)[1]!.gate as Record<string, unknown>)
+        .options,
+    ).toEqual(['yes now', 'yes, with notes']);
+  });
+
   it('shows problems with their lines and keeps Save off while the text has errors', async () => {
     check = {
       ok: false,
